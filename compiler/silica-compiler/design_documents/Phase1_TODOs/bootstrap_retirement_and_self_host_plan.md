@@ -43,7 +43,7 @@ This document intentionally contains no Silica source code. It is written as fin
 4. **Phase 3** — Replace `data_structures/bst.silica` in emitter literal pools.
 5. **Phase 4** — Replace linear-scan association lists (symbol/effect tables).
 6. **Phase 5** — Type alias and bootstrap API cleanup.
-7. **Phase 6** — Self-host integrate suite and bootstrap removal.
+7. **Phase 6** — Self-host integrate suite; deprecate bootstrap; Makefile backups; default host at `compiler/binaries/silica-compiler`.
 8. **Phase 7** — Migrate the complete parser `Expr` AST and all compiler consumers to standard `BinaryTree`.
 
 Phases 3 and 4 can proceed in parallel once Phase 1 stage **`build-selfhost`** exists. Phase 2 should precede deleting duplicated lookup functions (Step 2.2).
@@ -183,13 +183,13 @@ These are compiler/runtime fixes or stdlib gaps that block compiling the full `s
 
 **Actions:**
 
-1. Document **fixed-point procedure:** bootstrap → host₁ → host₂; compare artifacts or run full `make integrate`.
-2. Remove `silica-bootstrap-compiler` from default `src/Makefile` once gate passes.
-3. Update `design_documents/README.md` bootstrap-analysis entry to "historical / retired."
+1. Document **fixed-point procedure:** seed/`host_n` → `host_{n+1}`; compare artifacts or run full `make integrate`.
+2. Land the host binary at `compiler/binaries/silica-compiler` and point default Makefiles there (full cutover detail in Phase 6.3 / implementation-plan §13: deprecate bootstrap, backup Makefiles, rewrite defaults).
+3. Update `design_documents/README.md` bootstrap-analysis entry to "historical / deprecated."
 
 **Exit criteria:**
 
-- Clean clone can build `silica-compiler` with only LLVM toolchain + prior release binary (or documented one-time seed binary).
+- Clean clone can build `silica-compiler` with only LLVM toolchain + `compiler/binaries/silica-compiler` (or a documented one-time seed that is installed there).
 
 ## Phase 2 — Remove bootstrap workarounds in compiler source
 
@@ -417,16 +417,21 @@ Work items map to W-ids from Step 0.2. Fix in `silica-compiler` first where clas
 2. When compiler adopts WBT maps, add a note to `data_structures_as_traits.md` §Related documents or a short "Compiler adoption" subsection (implementation status remains driven by acceptance trials).
 3. Mark bootstrap-analysis doc historical.
 
-### Step 6.3 — Remove `silica-bootstrap-compiler` from repo workflow
+### Step 6.3 — Deprecate bootstrap; Makefile backups; host binary in `compiler/binaries`
+
+Aligned with implementation-plan **§13** (bootstrap removal gate).
 
 **Actions:**
 
-1. Delete bootstrap references from all Makefiles.
-2. Archive or remove `silica-bootstrap-compiler` crate per project policy (outside this plan's file scope).
+1. **Deprecate** `silica-bootstrap-compiler` / `silica-boot` for all default and CI build paths (docs + Makefile comments). No new work may depend on `silica-boot` as the host compiler. Bootstrap remains only as an explicit, non-default historical path until project policy archives or removes the crate.
+2. **Inventory and backup** every Makefile that references `silica-boot`, `silica-bootstrap-compiler`, or bootstrap `libsilica_compiler.a` (at minimum `silica-compiler/src/Makefile` and `src/*/` Makefiles that set `SILICA_COMPILER` to `silica-boot`). Write a sibling backup (e.g. `Makefile.bootstrap.bak`) for each before editing.
+3. **Install the host binary** at `compiler/binaries/silica-compiler` (create `compiler/binaries/` if needed). This is the canonical path default Makefiles use after cutover—not `silica-bootstrap-compiler/target/release/silica-boot`.
+4. **Rewrite** each backed-up Makefile so default `SILICA_COMPILER` (or equivalent) points at `compiler/binaries/silica-compiler`. Remove bootstrap `cargo build` / `libsilica_compiler.a` from the default critical path; keep bootstrap only behind an opt-in target if retained at all.
+5. Fixed-point installs may refresh `compiler/binaries/silica-compiler` when `host_n` produces `host_{n+1}`.
 
 **Exit criteria:**
 
-- No `silica-boot` in default build path.
+- Bootstrap deprecated for default builds; Makefile backups exist; default path uses `compiler/binaries/silica-compiler` with no `silica-boot` on the critical path.
 
 ## Phase 7 — Compiler-wide parser AST migration to BinaryTree
 

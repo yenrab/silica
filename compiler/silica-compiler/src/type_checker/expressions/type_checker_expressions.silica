@@ -3628,8 +3628,20 @@ fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: strin
     // type.  When the result is discarded, infer it from the initial
     // accumulator (argument two) instead; discarding a fold result must not
     // erase the callback's concrete signature.
-    acc_witness: string <- case expected_type == "discard" and count_call_args_user_call(expr) >= 2 of {
-        true -> type_checker_tuple_decompose_helpers@infer_expr_type(call_second_arg_expr(expr), context);
+    // AccType in callee formals is witnessed by the call's expected result, or —
+    // when the result is discarded / still the AccType placeholder (trait impl
+    // bodies) — by the concrete initial-accumulator argument.
+    acc_witness: string <- case expected_type == "discard" or expected_type == "AccType" of {
+        true -> case count_call_args_user_call(expr) >= 2 of {
+            true -> do
+                from_init: string <- type_checker_tuple_decompose_helpers@infer_expr_type(call_second_arg_expr(expr), context);
+                case len(from_init) > 0 and from_init != "AccType" of {
+                    true -> from_init;
+                    false -> expected_type
+                }
+            end;
+            false -> expected_type
+        };
         false -> expected_type
     };
     params_use: string <- type_checker_collections@resolve_accumulator_call_formal(acc_witness, params_from_receiver);
@@ -3663,8 +3675,14 @@ fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: strin
                                     }
                                 end;
                                 false -> do
+                                    // Collection bind types must witness ItemType/KeyType/ValueType inside
+                                    // constructor formals (e.g. OrderedMap[...] <- wbt_map@empty({...})).
+                                    col_ctx: string <- case type_checker_collections@is_collection_trait_type(expected_type) of {
+                                        true -> expected_type;
+                                        false -> ""
+                                    };
                                     params_lr: ListParam <- parser_ast@list_param_reverse_with_acc(callee_decl.parameters, parser_ast@nil_list_param());
-                                    (inf_ok: TypeCheckResult, inf_left: ListParam) <- infer_trait_site_call_args_walk(expr, params_lr, context, world, expr, pprog, "", "", 0);
+                                    (inf_ok: TypeCheckResult, inf_left: ListParam) <- infer_trait_site_call_args_walk(expr, params_lr, context, world, expr, pprog, col_ctx, "", 0);
                                     case inf_ok.is_ok of {
                                         false -> inf_ok;
                                         true -> do
@@ -3992,7 +4010,10 @@ fn empty_call_constructor_witness_fn_type(rhs: Expr, field: string, context: Typ
 }
 
 fn check_collection_trait_let(expr: Expr, expected_type: string, context: TypeContext, bind_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    rhs_result: TypeCheckResult <- check_expr(expr.inner, "discard", context, world);
+    // Pass the declared collection type (OrderedMap[...], OrderedSet[...], ...) so
+    // KeyType/ValueType/ItemType inside constructor formals are witnessed. Checking
+    // with "discard" leaves those placeholders unresolved for generic empty/1.
+    rhs_result: TypeCheckResult <- check_expr(expr.inner, bind_type, context, world);
     case rhs_result.is_ok of {
         false -> rhs_result;
         true -> do

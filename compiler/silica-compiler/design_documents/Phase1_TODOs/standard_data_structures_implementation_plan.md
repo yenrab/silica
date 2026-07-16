@@ -1242,38 +1242,125 @@ Only after this gate passes may §9 begin. §15–§37 wait until §13 (bootstra
 
 ## 9. `wbt_map` and `OrderedMap`
 
+**Authority:** [`ordered_map_trait.md`](data_structure_designs/ordered_map_trait.md); shared core [`weight_balanced_tree.md`](data_structure_designs/weight_balanced_tree.md).
 **Dependencies:** accepted §8A WBT core and Layer 1 trait substrate.
-**Downstream consumers:** live weighted graphs, node-to-slot indexes, CSR/dense indexing.
+**Downstream consumers:** live weighted graphs, node-to-slot indexes, CSR/dense indexing; §12 compiler BST replacement.
 
-Implement:
+**Already delivered by §8A (do not reimplement):** map node shape; smart constructor; search/`get`/`contains_key`/`fold`/`size`; insert/replace with `{inserted, replaced}`; delete; `from_sorted`; validate; `compare_value` unused on key placement paths (`wbt_map_compare_value_not_called`).
 
-- distinct key and value parameters;
-- key comparator as placement identity;
-- value comparator only where the trait design calls for value search/equality;
-- constructor function record via Layer 1 §7.9 lowering (runnable `@empty`, bundles on merged records);
-- generated `wbt_map` surface;
-- exact `:not_found | :found` lookup shape;
-- replacement semantics for comparator-equal keys;
-- deterministic `from_sorted`;
-- validation export.
+**Remaining work:** public `OrderedMap` trait + generated-module registration, §7.9 constructor lowering for `OrderedMap[...]`, thin public surface over the core (including `find_value` / `from_list` / `singleton`), and `ordered_collections/` acceptance trials.
 
-Acceptance includes a test proving value comparison is not called during key descent, insertion, deletion, or balancing.
+Complete the steps below in order. A later step may add trials for an earlier helper, but must not leave an earlier step's gate failing.
+
+#### Step 1 — Public registration and `@empty`
+
+1. Register `OrderedMap` / generated `wbt_map` as the public map family (not only the §8A compiler-private core path).
+2. Constructor record `{compare_key, compare_value}` via §7.9: runnable `wbt_map@empty`, canonical arena, specialization key, ordering bundles on merged records.
+3. Negative constructor goldens for missing/extra/mismatched fields (`error_enforcement/` → `ordered_map_constructor_record` or equivalent).
+
+**Step 1 check:** `OrderedMap[K, V, mem(normal)] <- wbt_map@empty({...})` compiles and runs; constructor-record compile-fails match goldens.
+
+#### Step 2 — Required trait methods
+
+1. Land `export trait OrderedMap` with required `compare_key`, `compare_value`, `get`, `fold`.
+2. Wire each required method to the §8A core (no second balancing algorithm).
+3. Preserve exact lookup shape `{status: :not_found | :found, value: ValueType}`.
+
+**Step 2 check:** `ordered_collections/` → `ordered_map_trait_dispatch` (or equivalent) exercises required methods on an empty and nonempty map.
+
+#### Step 3 — Provided methods and `find_value`
+
+1. Provided `contains_key` and cached `O(1)` `size` override (fold-derived fallbacks remain valid for other impls).
+2. Implement `find_value/2` as ascending in-order linear search returning the smallest key whose value compares equal via `compare_value`.
+3. This is the only placement-adjacent path that may invoke `compare_value`.
+
+**Step 3 check:** `ordered_map_find_value_linear` — hit/miss, first-of-equal-values, and trap/`compare_value` only on the find path.
+
+#### Step 4 — Public module surface
+
+1. Export the generated-module surface from `ordered_map_trait.md` §4 over the core: `empty`, `singleton`, `insert`, `delete`, `get`, `contains_key`, `find_value`, `size`, `fold`, `from_list`, `from_sorted`, `validate`.
+2. Prefer thin wrappers / re-exports; do not fork insert/delete/`from_sorted`/validate algorithms.
+3. Align bulk list element shape `List[{key, value}, SpaceType]` with the design (adapt core tuple lists if needed at the public boundary only).
+
+**Step 4 check:** `wbt_map_get_insert`, `ordered_map_insert_replace`, `ordered_map_delete_absent`, `ordered_map_from_sorted`, `ordered_map_not_found_status` (or merged equivalents) pass on the public module.
+
+#### Step 5 — Placement vs value-comparator acceptance
+
+1. Re-prove on the public/`OrderedMap` path that `compare_value` is not called during key descent, insertion, replacement, deletion, balancing, `get`, or `contains_key` (reuse or extend `wbt_map_compare_value_not_called`).
+2. Persistence and string/example trials from the ledger (`ordered_map_persistence`, `ordered_map_string_example`).
+
+**Step 5 check:** value-comparator trap trial + persistence/example positives exit `0`.
+
+#### Step 6 — Gate integration
+
+1. Add new positives to `ordered_collections/POSITIVE_SILICA` (and compile-fail goldens under `error_enforcement/` as needed).
+2. `make record-positive-golden` then `make integrate` for the affected leaves / Phase 1 root.
+3. Update requirements-to-trials ledger rows for `ordered_map_trait.md`.
+4. Mark §9 Complete with dated status.
+
+**§9 exit gate:** public `OrderedMap` + generated `wbt_map` satisfy `ordered_map_trait.md`; core algorithms remain sole WBT implementations; `compare_value` is used only for `find_value` / value equality; integrate passes on a clean golden baseline.
+
+**§9 status:** Complete (2026-07-16).
 
 ## 10. `wbt_set` and `OrderedSet`
 
+**Authority:** [`ordered_set_trait.md`](data_structure_designs/ordered_set_trait.md); shared core [`weight_balanced_tree.md`](data_structure_designs/weight_balanced_tree.md).
 **Dependencies:** accepted §8A WBT core and Layer 1 trait substrate.
 **Downstream consumers:** `SearchTree`, live graph outer vertex sets/maps, graph neighbor sets, CSR/dense indexing.
 
-Implement:
+**Already delivered by §8A (do not reimplement):** set node shape; smart constructor; search/`contains`/`fold`/`size`; insert (duplicate no-op); delete; `from_sorted`; validate; persistence and invalid-comparator coverage in `wbt_core/`.
 
-- the exact constructor function record (via Layer 1 §7.9 lowering — runnable `@empty`, bundles on merged records);
-- canonical-arena construction;
-- generated `wbt_set` surface;
-- required `OrderedSet` methods;
-- optimized overrides for provided methods where the design permits;
-- fold order, `from_sorted`, error behavior, and validation export.
+**Remaining work:** public `OrderedSet` trait + generated-module registration, §7.9 constructor lowering for `OrderedSet[...]`, thin public surface (`singleton` / `from_list` if not already public), and `ordered_collections/` acceptance trials.
 
-Acceptance includes every operation and complexity-sensitive cached-size behavior in `ordered_set_trait.md`.
+Complete the steps below in order. A later step may add trials for an earlier helper, but must not leave an earlier step's gate failing.
+
+#### Step 1 — Public registration and `@empty`
+
+1. Register `OrderedSet` / generated `wbt_set` as the public set family.
+2. Constructor record `{compare_item}` via §7.9: runnable `wbt_set@empty`, canonical arena, specialization key, ordering bundle on merged records.
+3. Negative constructor goldens (`error_enforcement/` → `ordered_set_constructor_record` or equivalent).
+
+**Step 1 check:** `OrderedSet[T, mem(normal)] <- wbt_set@empty({compare_item: ...})` compiles and runs; constructor-record compile-fails match goldens.
+
+#### Step 2 — Required trait methods
+
+1. Land `export trait OrderedSet` with required `compare_item` and `fold`.
+2. Wire both to the §8A core; fold remains strictly ascending.
+
+**Step 2 check:** `ordered_collections/` → `ordered_set_trait_dispatch` (or equivalent) on empty and nonempty sets.
+
+#### Step 3 — Provided method overrides
+
+1. Override provided `contains` with `O(log n)` WBT search and `size` with cached `O(1)` root metadata.
+2. Fold-derived provided definitions remain valid fallbacks for non-WBT impls.
+
+**Step 3 check:** nonempty contains hit/miss; size matches fold cardinality and stays `O(1)` observationally (no full walk in the override path).
+
+#### Step 4 — Public module surface
+
+1. Export the generated-module surface from `ordered_set_trait.md` §4 over the core: `empty`, `singleton`, `insert`, `delete`, `contains`, `size`, `fold`, `from_list`, `from_sorted`, `validate`.
+2. Prefer thin wrappers / re-exports; do not fork core algorithms.
+3. Public insert/delete result shapes match the design (`{set, inserted}` / `{set, removed}`).
+
+**Step 4 check:** `wbt_set_empty_insert`, `ordered_set_duplicate_insert`, `ordered_set_invalid_comparator`, and bulk/`from_sorted` public-path trials pass.
+
+#### Step 5 — Persistence, example, and complexity-sensitive acceptance
+
+1. Persistence and string/example trials from the ledger (`ordered_set_persistence`, `ordered_set_string_example`).
+2. Confirm complexity-sensitive cached-size and fold-order behavior required by `ordered_set_trait.md` on the public path (core §8A.11 observations remain authoritative for asymptotics).
+
+**Step 5 check:** persistence/example positives exit `0`; no public API regresses duplicate-insert identity or absent-delete identity.
+
+#### Step 6 — Gate integration
+
+1. Add new positives to `ordered_collections/POSITIVE_SILICA` (and compile-fail goldens under `error_enforcement/` as needed).
+2. `make record-positive-golden` then `make integrate` for the affected leaves / Phase 1 root.
+3. Update requirements-to-trials ledger rows for `ordered_set_trait.md`.
+4. Mark §10 Complete with dated status.
+
+**§10 exit gate:** public `OrderedSet` + generated `wbt_set` satisfy `ordered_set_trait.md`; core algorithms remain sole WBT implementations; integrate passes on a clean golden baseline.
+
+**§10 status:** Planned.
 
 ## 11. Build flip and ABI fixes
 
@@ -1317,9 +1404,41 @@ Acceptance includes every operation and complexity-sensitive cached-size behavio
 **Scope:**
 
 - **Phase 5:** type alias and bootstrap API cleanup — remove `TokenKind` alias, grep-clean legacy `btree_*` / `graph_adj_*` / width-specialized bootstrap exports from compiler `use` paths.
-- **Phase 6:** self-host integrate suite (`trials/self_host_addition/`), fixed-point procedure (`host_n` compiles `host_{n+1}`), documentation cross-links, and removal of `silica-bootstrap-compiler` from the default build path.
+- **Phase 6:** self-host integrate suite (`trials/self_host_addition/`), fixed-point procedure (`host_n` compiles `host_{n+1}`), documentation cross-links, then the bootstrap deprecation and Makefile cutover below.
 
-**§13 exit gate:** bootstrap-retirement Phase 6.1 fixed-point integrate passes; `make integrate` includes the self-host trial; `silica-compiler` builds and maintains itself without `silica-bootstrap-compiler` on the default path. Blocks §14 onward until this gate passes.
+Complete the cutover steps in order after Phase 5 and the self-host/fixed-point work are ready.
+
+#### Step 1 — Deprecate the bootstrap compiler
+
+1. Mark `silica-bootstrap-compiler` / `silica-boot` **deprecated** for all default and CI build paths (README, design-doc status, Makefile comments).
+2. Bootstrap remains available only as an explicit, non-default historical path until project policy archives or removes the crate.
+3. No new work may depend on `silica-boot` as the host compiler.
+
+#### Step 2 — Backup Makefiles that invoke the bootstrap
+
+1. Inventory every Makefile that references `silica-boot`, `silica-bootstrap-compiler`, or `libsilica_compiler.a` from the bootstrap crate (at minimum: `silica-compiler/src/Makefile` and per-subdir Makefiles under `src/` that set `SILICA_COMPILER` to `silica-boot`; also any experiment/tool Makefiles under `compiler/` that still do).
+2. For each such Makefile, keep a backup beside it (e.g. `Makefile.bootstrap.bak`) capturing the pre-cutover bootstrap recipe unchanged.
+3. Do not delete those backups in this gate; they are the rollback record.
+
+#### Step 3 — Install the self-hosted binary under `compiler/binaries`
+
+1. Create `compiler/binaries/` (repo path: `compiler/binaries/`) as the canonical location for the shipped host `silica-compiler` used to rebuild the compiler and to drive default Makefiles.
+2. After a successful self-host / fixed-point build, copy or install the resulting `silica-compiler` executable into `compiler/binaries/silica-compiler`.
+3. Document that default Makefiles resolve the host as `compiler/binaries/silica-compiler` (relative path from each Makefile as appropriate), not as `silica-bootstrap-compiler/target/release/silica-boot`.
+
+#### Step 4 — Replace Makefiles to use `compiler/binaries/silica-compiler`
+
+1. Rewrite each backed-up Makefile so its default `SILICA_COMPILER` (or equivalent) points at `compiler/binaries/silica-compiler`.
+2. Drop bootstrap `cargo build` / `libsilica_compiler.a` from the default critical path; link/runtime must use the self-hosted pipeline (`.sams` / `__silica_runtime` as established in §11).
+3. Keep bootstrap invocation only behind an opt-in target (if retained at all), never as `make build` / `make integrate` default.
+
+#### Step 5 — Gate integration
+
+1. Fixed-point: `host_n` from `compiler/binaries/silica-compiler` builds `host_{n+1}`; install the new binary back to `compiler/binaries/silica-compiler` when the procedure requires it.
+2. `make integrate` includes the self-host trial; a clean tree builds and maintains `silica-compiler` without `silica-boot` on the default path.
+3. Update bootstrap-retirement plan Phase 6 exit criteria and any flowchart/README pointers to match this cutover.
+
+**§13 exit gate:** bootstrap compiler is deprecated for default builds; every former bootstrap Makefile has a `.bootstrap.bak` (or equivalent) backup; default Makefiles use `compiler/binaries/silica-compiler`; Phase 6.1 fixed-point integrate passes; `make integrate` includes the self-host trial. Blocks §14 onward until this gate passes.
 
 **§13 status:** Planned — blocked on §12.
 

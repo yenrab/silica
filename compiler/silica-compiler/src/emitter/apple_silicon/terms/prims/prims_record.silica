@@ -19,6 +19,7 @@
 // record_make / record_proj mirror tuple flat stack layout: field order matches `{ f1: T1, ... }`.
 
 use sir_ast;
+use reg_conventions;
 
 export record_type_starts/1;
 export find_field_type_in_record/2;
@@ -393,6 +394,8 @@ fn count_record_fields(record_str: string) -> int64 {
     }
 }
 
+// Fn-value types are often normalized to `(T1,T2) -> R` (same spelling as tuples). Those are
+// one pointer (8 bytes), not a tuple shell — see reg_conventions@is_tuple_type.
 fn slot_bytes_for_field_type(fty: string) -> int64 {
     t: string <- strip_spaces_rt(fty);
     case record_type_starts(t) of {
@@ -400,7 +403,7 @@ fn slot_bytes_for_field_type(fty: string) -> int64 {
             nf: int64 <- count_record_fields(t);
             tuple_shell_flat_bytes(nf)
         end;
-        false -> case len(t) > 0 and substring(t, 0, 1) == "(" of {
+        false -> case len(t) > 0 and substring(t, 0, 1) == "(" and reg_conventions@is_tuple_type(t) of {
             true -> do
                 ne: int64 <- count_paren_tuple_type_elements(t);
                 tuple_shell_flat_bytes(ne)
@@ -514,7 +517,7 @@ fn nested_stack_bytes_for_field_type(fty: string) -> int64 {
     t: string <- strip_spaces_rt(fty);
     case record_type_starts(t) of {
         true -> record_type_flat_stack_bytes(t);
-        false -> case len(t) > 0 and substring(t, 0, 1) == "(" of {
+        false -> case len(t) > 0 and substring(t, 0, 1) == "(" and reg_conventions@is_tuple_type(t) of {
             true -> tuple_shell_flat_bytes(count_paren_tuple_type_elements(t));
             false -> 0
         }

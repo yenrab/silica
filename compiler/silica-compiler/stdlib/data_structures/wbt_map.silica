@@ -9,7 +9,12 @@ export size/1;
 export search_status/2;
 export get/3;
 export contains_key/2;
+export find_value/3;
 export fold/3;
+export singleton/3;
+export from_list/2;
+export apply_compare_key/3;
+export apply_compare_value/3;
 export minimum/3;
 export maximum/3;
 export weight/1;
@@ -29,7 +34,7 @@ export from_sorted_preflight_status/4;
 export validate/1;
 export validate_error_code/1;
 
-fn empty(
+fn empty_map(
     functions: {
         compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
         compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater
@@ -66,6 +71,23 @@ fn empty(
     produces
         pure out
     end
+}
+
+fn empty(
+    functions: {
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater
+    }
+) -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+    compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    empty_map(functions)
 }
 
 fn walk_search_cmp(
@@ -450,6 +472,345 @@ fn contains_invalid_halt(_: atom) -> boolean {
         _: int64 <- 1 / 0
     produces
         pure false
+    end
+}
+
+fn compare_value_checked(
+    left: ValueType,
+    right: ValueType,
+    compare_value: fn(ValueType, ValueType) -> atom
+) -> atom {
+    sequence
+        result: atom <- comparator_result_validate(compare_value(left, right))
+    produces
+        pure result
+    end
+}
+
+fn apply_compare_key(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    a: KeyType,
+    b: KeyType
+) -> :less | :equal | :greater {
+    sequence
+        result: atom <- compare_checked(a, b, tree.compare_key)
+    produces
+        pure case result of {
+            :less -> :less;
+            :equal -> :equal;
+            :greater -> :greater;
+            bad: atom -> apply_compare_invalid_halt_key(bad, a)
+        }
+    end
+}
+
+fn apply_compare_invalid_halt_key(_: atom, placeholder: KeyType) -> :less | :equal | :greater {
+    sequence
+        _: int64 <- 1 / 0;
+        _: KeyType <- placeholder
+    produces
+        pure :equal
+    end
+}
+
+fn apply_compare_value(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    a: ValueType,
+    b: ValueType
+) -> :less | :equal | :greater {
+    sequence
+        result: atom <- compare_value_checked(a, b, tree.compare_value)
+    produces
+        pure case result of {
+            :less -> :less;
+            :equal -> :equal;
+            :greater -> :greater;
+            bad: atom -> apply_compare_invalid_halt_value(bad, a)
+        }
+    end
+}
+
+fn apply_compare_invalid_halt_value(_: atom, placeholder: ValueType) -> :less | :equal | :greater {
+    sequence
+        _: int64 <- 1 / 0;
+        _: ValueType <- placeholder
+    produces
+        pure :equal
+    end
+}
+
+fn find_value_after_left(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    value: ValueType,
+    node_key: KeyType,
+    node_value: ValueType,
+    right: ref?(L, normal, rec),
+    placeholder_key: KeyType
+) -> { status: :not_found | :found, key: KeyType } {
+    sequence
+        cmp: atom <- compare_value_checked(value, node_value, tree.compare_value)
+    produces
+        pure case cmp of {
+            :equal -> { status: :found, key: node_key };
+            :less -> find_value_subtree(tree, value, right, placeholder_key);
+            :greater -> find_value_subtree(tree, value, right, placeholder_key);
+            bad: atom -> find_value_invalid_halt(bad, placeholder_key)
+        }
+    end
+}
+
+fn find_value_invalid_halt(_: atom, placeholder_key: KeyType) -> { status: :not_found | :found, key: KeyType } {
+    sequence
+        _: int64 <- 1 / 0
+    produces
+        pure { status: :not_found, key: placeholder_key }
+    end
+}
+
+fn find_value_node(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    placeholder_key: KeyType
+) -> { status: :not_found | :found, key: KeyType } {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (node_key, node_value, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node;
+        left_hit: { status: :not_found | :found, key: KeyType } <- find_value_subtree(tree, value, left, placeholder_key)
+    produces
+        pure case left_hit.status of {
+            :found -> left_hit;
+            :not_found -> find_value_after_left(tree, value, node_key, node_value, right, placeholder_key)
+        }
+    end
+}
+
+fn find_value_subtree(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    value: ValueType,
+    subtree: ref?(L, normal, rec),
+    placeholder_key: KeyType
+) -> { status: :not_found | :found, key: KeyType } {
+    case subtree of {
+        :none -> { status: :not_found, key: placeholder_key };
+        node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            find_value_node(tree, value, node_ref, placeholder_key)
+    }
+}
+
+// Ascending in-order search: smallest key whose value compares equal via compare_value.
+fn find_value(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    value: ValueType,
+    placeholder_key: KeyType
+) -> { status: :not_found | :found, key: KeyType } {
+    case tree.root of {
+        :none -> { status: :not_found, key: placeholder_key };
+        root_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            find_value_node(tree, value, root_ref, placeholder_key)
+    }
+}
+
+fn singleton(
+    functions: {
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater
+    },
+    key: KeyType,
+    value: ValueType
+) -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+    compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+            compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- empty_map(functions);
+        ins: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+                compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- insert(empty0, key, value)
+    produces
+        pure ins.map
+    end
+}
+
+fn from_list_cons(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    head: (KeyType, ValueType),
+    tail: List[(KeyType, ValueType), mem(normal)]
+) -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+    compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    sequence
+        (k, v) <- head;
+        ins: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+                compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- insert(map, k, v)
+    produces
+        pure from_list_go(ins.map, tail)
+    end
+}
+
+fn from_list_go(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    items: List[(KeyType, ValueType), mem(normal)]
+) -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+    compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    case items of {
+        []: List[(KeyType, ValueType), mem(normal)] -> map;
+        [h: (KeyType, ValueType), t: List[(KeyType, ValueType), mem(normal)]] ->
+            from_list_cons(map, h, t)
+    }
+}
+
+fn from_list(
+    functions: {
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater
+    },
+    items: List[(KeyType, ValueType), mem(normal)]
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+            compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- empty_map(functions);
+        built: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+            compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- from_list_go(empty0, items)
+    produces
+        pure { map: built, valid: true, error: :ok }
     end
 }
 

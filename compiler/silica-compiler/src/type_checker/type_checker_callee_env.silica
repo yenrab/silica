@@ -286,13 +286,19 @@ fn local_function_shadow_scan(env: ListSymbolEntry, fn_name: string, new_fn_ty: 
         true -> type_checker_core@type_check_ok();
         false -> case env.head.name == fn_name of {
             false -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, loc);
-            true -> case env.head.is_effect_alias of {
-                true -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
-                false -> case is_function_type_symbol(env.head.type_name) of {
-                    false -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
-                    true -> case env.head.type_name == new_fn_ty of {
-                        true -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
-                        false -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, loc)
+            // Imported symbols (source_module set) may be shadowed by local fn / impl fn.
+            // Qualified calls (module@name) still resolve to the import; this enables
+            // trait impl fn get(...) { wbt_map@get(...) } after `use wbt_map`.
+            true -> case len(env.head.source_module) > 0 of {
+                true -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, loc);
+                false -> case env.head.is_effect_alias of {
+                    true -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
+                    false -> case is_function_type_symbol(env.head.type_name) of {
+                        false -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
+                        true -> case env.head.type_name == new_fn_ty of {
+                            true -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
+                            false -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, loc)
+                        }
                     }
                 }
             }

@@ -1147,7 +1147,6 @@ fn assoc_type_from_record_witness(placeholder: string, record_type: string) -> s
 fn resolve_trait_formal_with_contexts(formal: string, collection_type: string, record_type: string, param_index: int64) -> string {
     f: string <- strip_spaces_col(formal);
     case is_assoc_type_placeholder(f) of {
-        false -> f;
         true -> do
             from_col: string <- case len(collection_type) > 0 of {
                 true -> resolve_assoc_type_placeholder(f, collection_type, param_index);
@@ -1155,9 +1154,29 @@ fn resolve_trait_formal_with_contexts(formal: string, collection_type: string, r
             };
             case len(from_col) > 0 of {
                 true -> from_col;
-                false -> assoc_type_from_record_witness(f, record_type)
+                false -> do
+                    from_rec: string <- assoc_type_from_record_witness(f, record_type);
+                    case len(from_rec) > 0 of {
+                        true -> from_rec;
+                        // AccType is witnessed by the call's accumulator/result, not by a
+                        // collection receiver.  Leave the placeholder so AccType~AccType
+                        // matches inside trait impl bodies that forward to wbt_map@fold.
+                        false -> case f == "AccType" of {
+                            true -> "AccType";
+                            false -> ""
+                        }
+                    }
+                end
             }
-        end
+        end;
+        // Composite formals (constructor records, fn types) may embed ItemType/KeyType/ValueType.
+        false -> case len(collection_type) > 0 of {
+            true -> resolve_constructor_call_formal(collection_type, formal);
+            false -> case len(record_type) > 0 of {
+                true -> resolve_constructor_call_formal(record_type, formal);
+                false -> f
+            }
+        }
     }
 }
 
@@ -1181,10 +1200,16 @@ fn replace_assoc_token_scan(s: string, token: string, replacement: string, i: in
 fn constructor_witness_type_for_placeholder(bind_type: string, placeholder: string) -> string {
     case is_collection_trait_type(bind_type) of {
         true -> resolve_assoc_type_placeholder(placeholder, bind_type, 1);
-        false -> case bind_type_has_collection_runtime_fields(bind_type) of {
-            true -> assoc_type_from_record_witness(placeholder, bind_type);
-            false -> ""
-        }
+        false -> do
+            // Full runtime records (root/region/specialization_key) and bare
+            // constructor records ({compare_key, compare_value}) both witness
+            // ItemType/KeyType/ValueType via their comparator fields.
+            from_rec: string <- assoc_type_from_record_witness(placeholder, bind_type);
+            case len(from_rec) > 0 of {
+                true -> from_rec;
+                false -> ""
+            }
+        end
     }
 }
 

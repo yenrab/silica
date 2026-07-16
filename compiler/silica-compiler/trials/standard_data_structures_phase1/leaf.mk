@@ -45,7 +45,7 @@ silica.config:
 	@echo "$(MSG_PREFIX)regenerating silica.config..."
 	@cd "$(THIS_DIR)" && { \
 		printf '%s\n' $(POSITIVE_SILICA); \
-		if [ -d lib ]; then find lib -type f -name '*.silica' | sort; fi; \
+		if [ -d lib ]; then find lib \( -type f -o -type l \) -name '*.silica' | sort; fi; \
 	} > silica.config
 
 all: executables

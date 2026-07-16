@@ -242,19 +242,20 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 | Sec | Summary | Kind | Artifact |
 |---|---|---|---|
 | 1 | Finite key→value map | I | Design §1 |
-| 2 | `{compare_key, compare_value}` constructor | C | `error_enforcement/` → `ordered_map_constructor_record` (planned) |
-| 3 | Trait contract | T | `ordered_collections/` → `ordered_map_trait_dispatch` (planned) |
-| 4 | `wbt_map` module surface | T | `ordered_collections/` → `wbt_map_get_insert` (planned) |
-| 5 | Key identity; replace on duplicate | T | `ordered_collections/` → `ordered_map_insert_replace` (planned) |
-| 6 | Get/contains/fold/find_value | T | `ordered_collections/` → `ordered_map_find_value_linear` (planned) |
-| 7 | Delete by key | T | `ordered_collections/` → `ordered_map_delete_absent` (planned) |
-| 8 | `from_list` / `from_sorted` bulk | T | `ordered_collections/` → `ordered_map_from_sorted` (planned) |
-| 9 | Empty/failure behavior | T | `ordered_collections/` → `ordered_map_not_found_status` (planned) |
+| 2 | `{compare_key, compare_value}` constructor | C | `error_enforcement/` → `trial_compile_fail_ordered_map_constructor_{missing,extra}_field` (**§9 pass**) |
+| 3 | Trait contract | T | `ordered_collections/` → `ordered_map_trait_dispatch`, `ordered_map_empty_public` (**§9 pass**) |
+| 4 | `wbt_map` module surface | T | `ordered_collections/` → `wbt_map_get_insert` (**§9 pass**) |
+| 5 | Key identity; replace on duplicate | T | `ordered_collections/` → `ordered_map_insert_replace` (**§9 pass**) |
+| 6 | Get/contains/fold/find_value | T | `ordered_collections/` → `ordered_map_find_value_linear` (**§9 pass**) |
+| 7 | Delete by key | T | `ordered_collections/` → `ordered_map_delete_absent` (**§9 pass**) |
+| 8 | `from_list` / `from_sorted` bulk | T | `ordered_collections/` → `ordered_map_from_sorted` (**§9 pass**) |
+| 9 | Empty/failure behavior | T | `ordered_collections/` → `ordered_map_not_found_status` (**§9 pass**) |
 | 10 | Invariants | T | `wbt_core/` → `wbt_validate_invariants`, `wbt_validate_map_pairing` (**§8A.10 pass**) |
-| 11 | Persistence | T | `ordered_collections/` → `ordered_map_persistence` (planned) |
+| 11 | Persistence | T | `ordered_collections/` → `ordered_map_persistence` (**§9 pass**) |
 | 12 | Complexity | I | Design §12 table |
-| 13 | Example | T | `ordered_collections/` → `ordered_map_string_example` (planned) |
+| 13 | Example | T | `ordered_collections/` → `ordered_map_string_example` (**§9 pass**) |
 | 14 | Exclusions | O | Design §14 exclusion list |
+| — | `compare_value` unused on key paths | T | `ordered_collections/` → `ordered_map_compare_value_not_called` (**§9 pass**) |
 
 ---
 
@@ -468,4 +469,4 @@ Source: implementation plan §6.4; designs `csr_graph_snapshot.md`, `dense_matri
 - [x] Each row uses exactly one coverage kind (`T`, `C`, `I`, or `O`)  
 - [x] Trial leaf assignment for all `T` and `C` rows  
 
-**Next step:** §8A exit gate complete (2026-07-16) — proceed to §9 `OrderedMap` / §10 `OrderedSet`. Skew RAL and Brodal–Okasaki may proceed in parallel on Layer 2. BinaryTree requires §7.10 before §8D. §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.
+**Next step:** §9 `OrderedMap` exit gate complete (2026-07-16) — proceed to §10 `OrderedSet`. Skew RAL and Brodal–Okasaki may proceed in parallel on Layer 2. BinaryTree requires §7.10 before §8D. §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.
