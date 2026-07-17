@@ -10,7 +10,9 @@
 TARGET ?= apple_silicon
 
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-SILICA_COMPILER ?= $(abspath $(THIS_DIR)../src/silica-compiler)
+BINARIES_DIR := $(abspath $(THIS_DIR)../../../binaries)
+SILICA_COMPILER ?= $(BINARIES_DIR)/silica-compiler
+UPDATE_SILICA_COMPILER_LINK := $(BINARIES_DIR)/update_silica_compiler_link.bash
 SILICA_LINK_SH := $(abspath $(THIS_DIR)../trials/silica_link.sh)
 STDLIB_DS := $(abspath $(THIS_DIR)../stdlib/data_structures)
 BOOTSTRAP_DIR := $(abspath $(THIS_DIR)../../silica-bootstrap-compiler)
@@ -36,7 +38,11 @@ LIB_STDLIB_MODULES := wbt_map OrderedMap
 all: clean build
 
 check-seed:
-	@test -x "$(SILICA_COMPILER)" || (echo "Missing seed host: $(SILICA_COMPILER)"; echo "Build frozen src first: make -C $(abspath $(THIS_DIR)../src)"; exit 1)
+	@if [ ! -e "$(BINARIES_DIR)/silica-compiler" ]; then \
+		echo "Missing $(BINARIES_DIR)/silica-compiler; running update_silica_compiler_link.bash..."; \
+		"$(UPDATE_SILICA_COMPILER_LINK)"; \
+	fi
+	@test -x "$(SILICA_COMPILER)" || (echo "Missing seed host: $(SILICA_COMPILER)"; exit 1)
 
 # Stage stdlib WBT/OrderedMap sources into lib/ for config membership (module name = basename).
 lib-sources:
