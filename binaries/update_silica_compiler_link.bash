@@ -9,7 +9,8 @@ latest_file="$(
         -maxdepth 1 \
         -type f \
         -name 'silica-[0-9][0-9][0-9][0-9][0-9][0-9]-*' \
-        -printf '%f\n' |
+        -print |
+    sed 's|^\./||' |
     LC_ALL=C sort |
     head -n 1
 )"
@@ -19,7 +20,7 @@ if [[ -z "$latest_file" ]]; then
     exit 1
 fi
 
-chmod +x -- "$latest_file"
-ln -sfn -- "$latest_file" silica-compiler
+chmod +x "$latest_file"
+ln -sfn "$latest_file" silica-compiler
 
 echo "silica-compiler -> $latest_file"

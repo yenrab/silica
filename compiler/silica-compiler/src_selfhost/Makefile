@@ -38,11 +38,14 @@ LIB_STDLIB_MODULES := wbt_map OrderedMap
 all: clean build
 
 check-seed:
-	@if [ ! -e "$(BINARIES_DIR)/silica-compiler" ]; then \
-		echo "Missing $(BINARIES_DIR)/silica-compiler; running update_silica_compiler_link.bash..."; \
-		"$(UPDATE_SILICA_COMPILER_LINK)"; \
+	@if [ ! -x "$(SILICA_COMPILER)" ]; then \
+		echo "Missing $(SILICA_COMPILER); running update_silica_compiler_link.bash..."; \
+		"$(UPDATE_SILICA_COMPILER_LINK)" || exit 1; \
+		if [ ! -x "$(SILICA_COMPILER)" ]; then \
+			echo "Missing seed host after update: $(SILICA_COMPILER)"; \
+			exit 1; \
+		fi; \
 	fi
-	@test -x "$(SILICA_COMPILER)" || (echo "Missing seed host: $(SILICA_COMPILER)"; exit 1)
 
 # Stage stdlib WBT/OrderedMap sources into lib/ for config membership (module name = basename).
 lib-sources:

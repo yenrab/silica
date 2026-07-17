@@ -1,0 +1,195 @@
+# Makefile for Silica actor trials in actors_addition
+# Uses silica-compiler to generate assembly, then assembles and links.
+#
+# silica-compiler reads silica.config in this directory and emits .sams files.
+# Assembler: clang -c; linker: rust-lld if available, else clang.
+#
+# Run from this directory: cd actors_addition && make
+# Or from anywhere: make -C /path/to/actors_addition
+
+THIS_DIR        := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+include $(THIS_DIR)../silica_compiler.mk
+
+TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
+MSG_PREFIX := $(TRIAL_DIR)/
+
+# Rust toolchain linker (rust-lld) - optional override
+RUST_SYSROOT := $(shell rustc --print sysroot 2>/dev/null)
+RUST_TARGET := $(shell rustc -vV 2>/dev/null | sed -n "s/^host: *//p")
+RUST_LLD := $(RUST_SYSROOT)/lib/rustlib/$(RUST_TARGET)/bin/rust-lld
+
+LINKER := $(shell test -x "$(RUST_LLD)" && echo "$(RUST_LLD)" || echo "clang")
+ASSEMBLER := clang
+
+MACOS_SDK := $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
+MACOS_MIN_VERSION ?= 26.0
+ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
+LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
+LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
+
+.DEFAULT_GOAL := all
+.PHONY: all clean assembly objects executables integrate help silica.config
+
+silica.config: | clean
+	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
+
+all: executables
+
+# Stage 1: silica-compiler generates .sams (reads silica.config in THIS_DIR)
+assembly: clean silica.config
+	@echo "Compiling with silica-compiler..."
+	@cd "$(THIS_DIR)" && $(SILICA_COMPILER)
+	@echo "✅ $(MSG_PREFIX)Assembly generated"
+
+# Stage 2: Assemble .sams -> .o
+objects: assembly
+	@cd "$(THIS_DIR)" && for sams in *.sams; do \
+		[ -f "$$sams" ] || continue; \
+		base=$${sams%.sams}; \
+		echo "Assembling: $$sams -> $$base.o"; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o; \
+	done
+
+# Stage 3: Link .o -> executable
+executables: objects
+	@cd "$(THIS_DIR)" && for o in *.o; do \
+		[ -f "$$o" ] || continue; \
+		base=$${o%.o}; \
+	[ "$$base" = "__silica_runtime" ] && continue; \
+	runtime_obj=""; \
+	[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
+		if test -x "$(RUST_LLD)"; then \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
+		else \
+			$(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base (clang)"; \
+		fi; \
+	done
+
+# integrate: compile, diff .sams vs .ascomp (if present), run, diff .sout vs .scout (if present).
+# Trials with <base>.wait_for_exit print one or more "done" markers and then call wait_for_exit/0; they are
+# run through run_integration_exit_after_marker.py, which sends "exit\n" after seeing the marker count.
+# Unmarked trials use the ordinary direct executable runner.
+integrate: clean silica.config
+	@cd "$(THIS_DIR)" || exit 1; \
+	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
+	if [ ! -s silica.config ]; then \
+		echo "SKIP: no silica.config"; \
+		printf '%d %d\n' 0 0 > .integrate_counts; \
+		exit 0; \
+	fi; \
+	rm -f *.sams; \
+	echo "Compiling with silica-compiler..."; \
+	if ! $(SILICA_COMPILER); then \
+		echo "FAIL: Compilation failed"; \
+		printf '%d %d\n' 0 1 > .integrate_counts; \
+		exit 1; \
+	fi; \
+	for sams in *.sams; do \
+		[ -f "$$sams" ] || continue; \
+		base=$${sams%.sams}; \
+		if [ -f "$$base.ascomp" ]; then \
+			if ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
+				echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
+				diff -Bw "$$sams" "$$base.ascomp" || true; \
+				ko=$$((ko + 1)); failed=1; \
+			else \
+				echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
+				ok=$$((ok + 1)); \
+			fi; \
+		fi; \
+	done; \
+	for sams in *.sams; do \
+		[ -f "$$sams" ] || continue; \
+		base=$${sams%.sams}; \
+		echo "Assembling $$sams..."; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o || { failed=1; break; }; \
+	done; \
+	for o in *.o; do \
+		[ -f "$$o" ] || continue; \
+		base=$${o%.o}; \
+	[ "$$base" = "__silica_runtime" ] && continue; \
+	runtime_obj=""; \
+	[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
+		echo "Linking $$base..."; \
+		runtime_obj=""; \
+		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
+		if test -x "$(RUST_LLD)"; then \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
+		else \
+			$(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang) || failed=1; \
+		fi; \
+	done; \
+	for exe in *.sams; do \
+		[ -f "$$exe" ] || continue; \
+		base=$${exe%.sams}; \
+	[ "$$base" = "__silica_runtime" ] && continue; \
+	[ "$$base" = "__silica_runtime" ] && continue; \
+		if [ -x "$$base" ]; then \
+			if [ -f "$$base.scout" ]; then \
+				if [ -f "$$base.wait_for_exit" ]; then \
+					if [ -f "$(THIS_DIR)run_integration_exit_after_marker.py" ]; then \
+						marker=$$(awk 'NF { print $$1; found=1; exit } END { if (!found) print "done" }' "$$base.wait_for_exit"); \
+						marker_count=$$(awk 'NF { print ($$2 == "" ? 1 : $$2); found=1; exit } END { if (!found) print 1 }' "$$base.wait_for_exit"); \
+						python3 "$(THIS_DIR)run_integration_exit_after_marker.py" "$(THIS_DIR)" "$$base" "$$base.sout" "$$marker" "$$marker_count"; \
+					else \
+						echo "❌❌ $(MSG_PREFIX)$$base missing run_integration_exit_after_marker.py"; \
+						ko=$$((ko + 1)); failed=1; \
+						continue; \
+					fi; \
+				else \
+					{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
+				fi; \
+				if [ -f "$$base.scout.multiset" ]; then \
+					if [ -f "$(THIS_DIR)compare_scout_multiset.sh" ] && ! "$(SHELL)" "$(THIS_DIR)compare_scout_multiset.sh" "$$base.sout" "$$base.scout"; then \
+						echo "❌❌ $(MSG_PREFIX)$$base .sout multiset-compare differs from .scout"; \
+						ko=$$((ko + 1)); failed=1; \
+					elif [ ! -f "$(THIS_DIR)compare_scout_multiset.sh" ] && ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
+						echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout (missing compare_scout_multiset.sh; used diff -Bw)"; \
+						diff -Bw "$$base.sout" "$$base.scout" || true; \
+						ko=$$((ko + 1)); failed=1; \
+					else \
+						echo "✅✅ $(MSG_PREFIX)$$base output multiset-matches .scout"; \
+						ok=$$((ok + 1)); \
+					fi; \
+				elif ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
+					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
+					diff -Bw "$$base.sout" "$$base.scout" || true; \
+					ko=$$((ko + 1)); failed=1; \
+				else \
+					echo "✅✅ $(MSG_PREFIX)$$base output matches .scout"; \
+					ok=$$((ok + 1)); \
+				fi; \
+			else \
+				echo "✅✅ $(MSG_PREFIX)$$base built (no .scout; skipped run check)"; \
+				ok=$$((ok + 1)); \
+			fi; \
+		fi; \
+	done; \
+	[ "$$failed" -ne 0 ] && [ "$$ko" -eq 0 ] && ko=$$((ko + 1)); \
+	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
+	exit $$failed
+
+clean:
+	@cd "$(THIS_DIR)" && \
+	for s in *.sams; do \
+		[ -f "$$s" ] || continue; \
+		rm -f $${s%.sams}; \
+	done; \
+	rm -f *.sams *.o *.sout silica.config .integrate_counts; \
+	echo "✅ $(MSG_PREFIX)Clean complete"
+
+help:
+	@echo "Makefile - Silica actor trials (actors_addition)"
+	@echo "================================================="
+	@echo "Uses: silica-compiler -> .sams -> .o -> executable"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all         - Build executables (default)"
+	@echo "  assembly    - Run silica-compiler (generates .sams)"
+	@echo "  objects     - Assemble .sams to .o"
+	@echo "  executables - Full build: assembly + link"
+	@echo "  integrate   - Compile; optional .ascomp / .scout checks if those files exist"
+	@echo "  clean       - Remove .sams, .o, executables, .sout"
+	@echo "  help        - Show this help"
+	@echo ""
+	@echo "Linker: $(LINKER)"
