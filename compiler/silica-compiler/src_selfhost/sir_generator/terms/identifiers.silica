@@ -1,0 +1,90 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Identifier expression to SIR term (Expr kind 1, extension)
+
+use parser_ast;
+use type_checker_core;
+use sir_ast;
+use types;
+
+export expr_to_sir/2;
+export expr_to_sir_with_bound/4;
+
+fn first_at_in_identifier_name(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "@" of {
+            true -> i;
+            false -> first_at_in_identifier_name(s, i + 1)
+        }
+    }
+}
+
+fn lookup_symbol_found_identifier_module(env: ListSymbolEntry, fn_name: string, required_module: string) -> (bool, string) {
+    case env.is_nil of {
+        true -> (false, "");
+        false -> case env.head.name == fn_name and env.head.is_effect_alias == false and env.head.source_module == required_module of {
+            true -> (true, env.head.type_name);
+            false -> lookup_symbol_found_identifier_module(env.tail, fn_name, required_module)
+        }
+    }
+}
+
+fn lookup_symbol_found_identifier(env: ListSymbolEntry, name: string) -> (bool, string) {
+    at: int64 <- first_at_in_identifier_name(name, 0);
+    case at < 0 of {
+        true -> type_checker_core@lookup_symbol_found(env, name);
+        false -> lookup_symbol_found_identifier_module(env, substring(name, at + 1, len(name)), substring(name, 0, at))
+    }
+}
+
+// Build SIR var term for identifier (Expr kind 1)
+// name uses % prefix per sir_design_spec §5.2.2
+// Match type checker pattern: lookup_symbol_found at top level, branch on result.
+// Workaround: "true"/"false" as identifiers are treated as boolean literals (parser may produce identifier instead of boolean literal)
+fn expr_to_sir(context: TypeContext, expr: Expr) -> SIRTerm {
+    case expr.name == "true" or expr.name == "false" of {
+        true -> SIRTerm { kind: 0, type_name: types@type_name_to_sir("boolean"), value: expr.name, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+        false -> do
+            prefixed: string <- concat("%", expr.name);
+            (found: bool, resolved: string) <- lookup_symbol_found_identifier(context.env, expr.name);
+            type_name: string <- case found of { true -> resolved; false -> "int64" };
+            sir_type: string <- types@type_name_to_sir(type_name);
+            SIRTerm { kind: 1, type_name: sir_type, value: "", name: prefixed, inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
+        end
+    }
+}
+
+// Same as expr_to_sir but when identifier matches bound_name, use bound_type (avoids lookup for let-bound var).
+// Match type checker pattern: call lookup_symbol_found at top level, then branch on result (avoids bootstrap codegen issues with nested tuple destructuring).
+// Workaround: "true"/"false" as identifiers are treated as boolean literals
+fn expr_to_sir_with_bound(context: TypeContext, expr: Expr, bound_name: string, bound_type: string) -> SIRTerm {
+    case expr.name == "true" or expr.name == "false" of {
+        true -> SIRTerm { kind: 0, type_name: types@type_name_to_sir("boolean"), value: expr.name, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+        false -> do
+            prefixed: string <- concat("%", expr.name);
+            (found: bool, resolved: string) <- lookup_symbol_found_identifier(context.env, expr.name);
+            type_name: string <- case expr.name == bound_name of {
+                true -> bound_type;
+                false -> case found of { true -> resolved; false -> "int64" }
+            };
+            sir_type: string <- types@type_name_to_sir(type_name);
+            SIRTerm { kind: 1, type_name: sir_type, value: "", name: prefixed, inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
+        end
+    }
+}

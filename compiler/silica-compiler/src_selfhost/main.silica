@@ -1,0 +1,939 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Main entry point for Phase 2 compiler
+// Reads file list from silica.config, resolves dependencies, compiles each file in order
+
+use lexer_runner;
+use lexer_core;
+use lexer_token_kind;
+use parser_core;
+use parser_runner;
+use parser_ast;
+use type_checker_core;
+use type_checker_modules;
+use effect_checker_core;
+use effect_checker_capabilities;
+use sir_generator_core;
+use sir_ast;
+use emitter_core;
+use atom_table;
+use build_output;
+use diagnostics_core;
+use module_checker_core;
+use trait_checker_core;
+use trait_specialization;
+use qualified_call_mangler;
+use ffi_sidecar_loader;
+use ffi_placement_checker;
+use ffi_taint_checker;
+use ffi_abi_checker;
+use ffi_link_manifest;
+
+fn build_module_world(all: ListParsedFile, exclude_path: string) -> ListNamedProgram {
+    case all.is_nil of {
+        true -> type_checker_modules@empty_named_program_list();
+        false -> case all.head.path == exclude_path of {
+            true -> build_module_world(all.tail, exclude_path);
+            false -> type_checker_modules@cons_named_program(
+                module_checker_core@module_from_path(all.head.path),
+                all.head.program,
+                build_module_world(all.tail, exclude_path)
+            )
+        }
+    }
+}
+
+fn parse_all_files_recursive(files: ListString, acc: ListParsedFile) -> (bool, ListParsedFile) proc[DeviceIO] {
+    case files.is_nil of {
+        true -> (true, reverse_parsed_files(acc, empty_parsed_files()));
+        false -> do
+            println("Parsing ");
+            print(files.head);
+            println("...");
+            println("  Lexing...");
+            tokens: ListToken <- lexer_runner@lexer_runner(files.head);
+            println("  Parsing...");
+            parse_result: ParseResult <- parser_runner@parse_program(tokens);
+            case parse_result.is_ok of {
+                false -> do
+                    error_code: string <- case parse_result.error_code == "" of {
+                        true -> "E1001";
+                        false -> parse_result.error_code
+                    };
+                    spec_section: string <- case parse_result.spec_section == "" of {
+                        true -> "sect3";
+                        false -> parse_result.spec_section
+                    };
+                    diagnostics_core@print_compiler_error("ParseError", error_code, parse_result.error_location, parse_result.error_message, spec_section);
+                    (false, empty_parsed_files())
+                end;
+                true -> parse_all_files_recursive(files.tail, cons_parsed_file(files.head, parse_result.program, acc))
+            }
+        end
+    }
+}
+
+fn list_string_length(lst: ListString) -> int64 {
+    case lst.is_nil of {
+        true -> 0;
+        false -> 1 + list_string_length(lst.tail)
+    }
+}
+
+// Parse config: split by newlines, skip empty and # lines, return list (order preserved)
+fn parse_config_lines(content: string, start: int64, acc: ListString) -> ListString proc[DeviceIO] {
+    case start >= len(content) of {
+        true -> acc;
+        false -> do
+            line: string <- substring_until_char(content, start, '\n');
+            line_len: int64 <- len(line);
+            next_start: int64 <- start + line_len + 1;
+            trimmed: string <- trim_leading(line);
+            is_comment: bool <- starts_with(trimmed, "#");
+            is_empty: bool <- len(trimmed) == 0;
+            new_acc: ListString <- case is_comment of {
+                true -> acc;
+                false -> case is_empty of {
+                    true -> acc;
+                    false -> cons_string(trimmed, acc)
+                }
+            };
+            parse_config_lines(content, next_start, new_acc)
+        end
+    }
+}
+
+fn trim_leading(s: string) -> string {
+    trim_leading_from(s, 0)
+}
+
+fn trim_leading_from(s: string, pos: int64) -> string {
+    case pos >= len(s) of {
+        true -> "";
+        false -> case is_whitespace_at(s, pos) of {
+            true -> trim_leading_from(s, pos + 1);
+            false -> substring(s, pos, len(s))
+        }
+    }
+}
+
+fn is_whitespace_at(s: string, pos: int64) -> bool {
+    c: string <- substring(s, pos, pos + 1);
+    c == " " or c == "\t" or c == "\n" or c == "\r"
+}
+
+fn trim_trailing(s: string) -> string {
+    trim_trailing_from(s, len(s) - 1)
+}
+
+fn trim_trailing_from(s: string, pos: int64) -> string {
+    case pos < 0 of {
+        true -> "";
+        false -> case is_whitespace_at(s, pos) of {
+            true -> trim_trailing_from(s, pos - 1);
+            false -> substring(s, 0, pos + 1)
+        }
+    }
+}
+
+// Reverse a ListString (since we cons in reverse order during parse)
+fn reverse_list_string(lst: ListString) -> ListString {
+    reverse_list_string_acc(lst, empty_list_string())
+}
+
+fn reverse_list_string_acc(lst: ListString, acc: ListString) -> ListString {
+    case lst.is_nil of {
+        true -> acc;
+        false -> reverse_list_string_acc(lst.tail, cons_string(lst.head, acc))
+    }
+}
+
+// Check if list contains string (exact match)
+fn list_contains(lst: ListString, s: string) -> bool {
+    case lst.is_nil of {
+        true -> false;
+        false -> case lst.head == s of {
+            true -> true;
+            false -> list_contains(lst.tail, s)
+        }
+    }
+}
+
+// Get file path for module from our file list (module name -> path)
+fn path_for_module(files: ListString, mod_name: string) -> string {
+    case files.is_nil of {
+        true -> "";
+        false -> case module_checker_core@module_from_path(files.head) == mod_name of {
+            true -> files.head;
+            false -> path_for_module(files.tail, mod_name)
+        }
+    }
+}
+
+fn resolve_deps_to_paths(modules: ListString, files: ListString, acc: ListString) -> ListString {
+    case modules.is_nil of {
+        true -> acc;
+        false -> do
+            path: string <- path_for_module(files, modules.head);
+            new_acc: ListString <- case len(path) > 0 of {
+                true -> module_checker_core@cons_string(path, acc);
+                false -> acc
+            };
+            resolve_deps_to_paths(modules.tail, files, new_acc)
+        end
+    }
+}
+
+// Declaration tag 2 = use; parameters.name holds each imported module (parser_ast.silica).
+fn collect_use_modules_from_params(params: ListParam, acc: ListString) -> ListString {
+    case params.is_nil of {
+        true -> acc;
+        false -> collect_use_modules_from_params(params.tail, module_checker_core@cons_string(params.head.name, acc))
+    }
+}
+
+fn collect_use_modules_from_decls(decls: ListDeclaration, acc: ListString) -> ListString {
+    case decls.is_nil of {
+        true -> acc;
+        false -> case decls.head.tag == 2 of {
+            true -> collect_use_modules_from_decls(decls.tail, collect_use_modules_from_params(decls.head.parameters, acc));
+            false -> collect_use_modules_from_decls(decls.tail, acc)
+        }
+    }
+}
+
+fn extract_use_modules_from_program(program: Program) -> ListString {
+    collect_use_modules_from_decls(program.declarations, module_checker_core@empty_list_string())
+}
+
+fn dep_paths_for_parsed_file(path: string, parsed: ListParsedFile, config_files: ListString) -> ListString {
+    sequence
+        (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, path);
+        result: ListString <- case found of {
+            true -> resolve_deps_to_paths(extract_use_modules_from_program(prog), config_files, module_checker_core@empty_list_string());
+            false -> module_checker_core@empty_list_string()
+        }
+    produces
+        pure result
+    end
+}
+
+// Edge: dependent must compile after prerequisite (both are config file paths).
+// Per-unit node for Kahn's algorithm (in-degree = unmet prerequisites in config).
+
+fn nil_dep_edge_list() -> List[{ dependent: string, prerequisite: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ dependent: string, prerequisite: string }, mem(normal)] <- empty[{ dependent: string, prerequisite: string }, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_dep_edge(edge: { dependent: string, prerequisite: string }, tail: List[{ dependent: string, prerequisite: string }, mem(normal)]) -> List[{ dependent: string, prerequisite: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ dependent: string, prerequisite: string }, mem(normal)] <- prepend[{ dependent: string, prerequisite: string }, mem(normal)](edge, tail)
+    produces
+        pure result
+    end
+}
+
+fn nil_compile_unit_deps_list() -> List[{ path: string, in_degree: int64 }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ path: string, in_degree: int64 }, mem(normal)] <- empty[{ path: string, in_degree: int64 }, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_compile_unit_deps(entry: { path: string, in_degree: int64 }, tail: List[{ path: string, in_degree: int64 }, mem(normal)]) -> List[{ path: string, in_degree: int64 }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ path: string, in_degree: int64 }, mem(normal)] <- prepend[{ path: string, in_degree: int64 }, mem(normal)](entry, tail)
+    produces
+        pure result
+    end
+}
+
+fn reverse_compile_unit_deps_list(lst: List[{ path: string, in_degree: int64 }, mem(normal)], acc: List[{ path: string, in_degree: int64 }, mem(normal)]) -> List[{ path: string, in_degree: int64 }, mem(normal)] {
+    case lst.is_nil of {
+        true -> acc;
+        false -> reverse_compile_unit_deps_list(lst.tail, cons_compile_unit_deps(lst.head, acc))
+    }
+}
+
+fn cons_dep_edges_for_paths(dependent: string, prereq_paths: ListString, acc: List[{ dependent: string, prerequisite: string }, mem(normal)]) -> List[{ dependent: string, prerequisite: string }, mem(normal)] {
+    case prereq_paths.is_nil of {
+        true -> acc;
+        false -> cons_dep_edges_for_paths(dependent, prereq_paths.tail, cons_dep_edge({ dependent: dependent, prerequisite: prereq_paths.head }, acc))
+    }
+}
+
+fn build_dep_edges_rev(config_files: ListString, parsed: ListParsedFile, acc: List[{ dependent: string, prerequisite: string }, mem(normal)]) -> List[{ dependent: string, prerequisite: string }, mem(normal)] {
+    case config_files.is_nil of {
+        true -> acc;
+        false -> do
+            dep_paths: ListString <- dep_paths_for_parsed_file(config_files.head, parsed, config_files);
+            with_edges: List[{ dependent: string, prerequisite: string }, mem(normal)] <- cons_dep_edges_for_paths(config_files.head, dep_paths, acc);
+            build_dep_edges_rev(config_files.tail, parsed, with_edges)
+        end
+    }
+}
+
+fn count_incoming_edges_for_path(edges: List[{ dependent: string, prerequisite: string }, mem(normal)], path: string) -> int64 {
+    case edges.is_nil of {
+        true -> 0;
+        false -> case edges.head.dependent == path of {
+            true -> 1 + count_incoming_edges_for_path(edges.tail, path);
+            false -> count_incoming_edges_for_path(edges.tail, path)
+        }
+    }
+}
+
+fn build_compile_units_rev(config_files: ListString, edges: List[{ dependent: string, prerequisite: string }, mem(normal)], acc: List[{ path: string, in_degree: int64 }, mem(normal)]) -> List[{ path: string, in_degree: int64 }, mem(normal)] {
+    case config_files.is_nil of {
+        true -> acc;
+        false -> do
+            in_deg: int64 <- count_incoming_edges_for_path(edges, config_files.head);
+            entry: { path: string, in_degree: int64 } <- { path: config_files.head, in_degree: in_deg };
+            build_compile_units_rev(config_files.tail, edges, cons_compile_unit_deps(entry, acc))
+        end
+    }
+}
+
+fn has_edge_from_to(edges: List[{ dependent: string, prerequisite: string }, mem(normal)], dependent: string, prerequisite: string) -> bool {
+    case edges.is_nil of {
+        true -> false;
+        false -> case edges.head.dependent == dependent and edges.head.prerequisite == prerequisite of {
+            true -> true;
+            false -> has_edge_from_to(edges.tail, dependent, prerequisite)
+        }
+    }
+}
+
+fn remove_unit_from_dep_graph(graph: List[{ path: string, in_degree: int64 }, mem(normal)], path: string) -> List[{ path: string, in_degree: int64 }, mem(normal)] {
+    case graph.is_nil of {
+        true -> nil_compile_unit_deps_list();
+        false -> case graph.head.path == path of {
+            true -> graph.tail;
+            false -> cons_compile_unit_deps(graph.head, remove_unit_from_dep_graph(graph.tail, path))
+        }
+    }
+}
+
+fn decrement_in_degrees_for_emit(graph: List[{ path: string, in_degree: int64 }, mem(normal)], edges: List[{ dependent: string, prerequisite: string }, mem(normal)], emitted_path: string) -> List[{ path: string, in_degree: int64 }, mem(normal)] {
+    case graph.is_nil of {
+        true -> nil_compile_unit_deps_list();
+        false -> do
+            new_in_degree: int64 <- case has_edge_from_to(edges, graph.head.path, emitted_path) of {
+                true -> graph.head.in_degree - 1;
+                false -> graph.head.in_degree
+            };
+            updated: { path: string, in_degree: int64 } <- { path: graph.head.path, in_degree: new_in_degree };
+            cons_compile_unit_deps(updated, decrement_in_degrees_for_emit(graph.tail, edges, emitted_path))
+        end
+    }
+}
+
+fn take_first_zero_in_degree(graph: List[{ path: string, in_degree: int64 }, mem(normal)]) -> (string, List[{ path: string, in_degree: int64 }, mem(normal)]) {
+    take_first_zero_in_degree_impl(graph, graph)
+}
+
+fn take_first_zero_in_degree_impl(scan: List[{ path: string, in_degree: int64 }, mem(normal)], full_graph: List[{ path: string, in_degree: int64 }, mem(normal)]) -> (string, List[{ path: string, in_degree: int64 }, mem(normal)]) {
+    case scan.is_nil of {
+        true -> ("", full_graph);
+        false -> case scan.head.in_degree == 0 of {
+            true -> do
+                rest: List[{ path: string, in_degree: int64 }, mem(normal)] <- remove_unit_from_dep_graph(full_graph, scan.head.path);
+                (scan.head.path, rest)
+            end;
+            false -> take_first_zero_in_degree_impl(scan.tail, full_graph)
+        }
+    }
+}
+
+// Kahn's algorithm: O(V+E) over config files using AST-derived deps (no per-probe disk reads).
+fn kahn_topological_sort(graph: List[{ path: string, in_degree: int64 }, mem(normal)], edges: List[{ dependent: string, prerequisite: string }, mem(normal)], result_rev: ListString) -> (bool, ListString) {
+    case graph.is_nil of {
+        true -> (true, reverse_list_string(result_rev));
+        false -> do
+            (ready_path: string, rest_graph: List[{ path: string, in_degree: int64 }, mem(normal)]) <- take_first_zero_in_degree(graph);
+            case len(ready_path) == 0 of {
+                true -> (false, result_rev);
+                false -> do
+                    updated: List[{ path: string, in_degree: int64 }, mem(normal)] <- decrement_in_degrees_for_emit(rest_graph, edges, ready_path);
+                    kahn_topological_sort(updated, edges, module_checker_core@cons_string(ready_path, result_rev))
+                end
+            }
+        end
+    }
+}
+
+fn topological_sort_from_parsed(config_files: ListString, parsed: ListParsedFile) -> (bool, ListString) {
+    sequence
+        edges_rev: List[{ dependent: string, prerequisite: string }, mem(normal)] <- build_dep_edges_rev(config_files, parsed, nil_dep_edge_list());
+        units_rev: List[{ path: string, in_degree: int64 }, mem(normal)] <- build_compile_units_rev(config_files, edges_rev, nil_compile_unit_deps_list());
+        units: List[{ path: string, in_degree: int64 }, mem(normal)] <- reverse_compile_unit_deps_list(units_rev, nil_compile_unit_deps_list());
+        result: (bool, ListString) <- kahn_topological_sort(units, edges_rev, module_checker_core@empty_list_string())
+    produces
+        pure result
+    end
+}
+
+// Validate that all files listed in config exist; return 0 if ok, 1 if any missing
+fn announce_compiling_file(filename: string) -> int64 {
+    sequence proc[DeviceIO]
+        _: int8 <- println("Compiling ");
+        _: int8 <- print(filename);
+        _: int8 <- println("...");
+        result: int64 <- 0
+    produces
+        pure result
+    end
+}
+
+fn announce_compiled_file(filename: string) -> int64 {
+    sequence proc[DeviceIO]
+        mod_name: string <- module_checker_core@module_from_path(filename);
+        _: int8 <- println(concat("Finished compiling ", mod_name));
+        result: int64 <- 0
+    produces
+        pure result
+    end
+}
+
+fn validate_config_files(files: ListString) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- case files.is_nil of {
+            true -> 0;
+            false -> do
+                exists: bool <- file_exists(files.head);
+                case exists of {
+                    true -> validate_config_files(files.tail);
+                    false -> do
+                        _: int8 <- println(concat("Error: File not found: ", files.head));
+                        _: int8 <- println("Check silica.config - the file listed does not exist.");
+                        1
+                    end
+                }
+            end
+        }
+    produces
+        pure result
+    end
+}
+
+// Debug: print tokens (kind and lexeme) for string_test/string_simple tracing
+fn debug_print_tokens(tokens: ListToken) -> int64 {
+    sequence proc[DeviceIO]
+        kinds: TokenKinds <- lexer_token_kind@token_kinds();
+        result: int64 <- debug_print_tokens_acc(tokens, kinds)
+    produces
+        pure result
+    end
+}
+
+fn debug_print_tokens_acc(tokens: ListToken, kinds: TokenKinds) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- case tokens.is_nil of {
+            true -> 0;
+            false -> do
+                t: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- tokens.head;
+                kind_label: string <- case t.kind == kinds.string_literal of { true -> "string_literal"; false -> case t.kind == kinds.identifier of { true -> "identifier"; false -> case t.kind == kinds.string_keyword of { true -> "string_keyword"; false -> t.lexeme } } };
+                _: unit <- println(concat(concat(concat("  [DEBUG LEX] kind=", kind_label), " lexeme="), t.lexeme));
+                debug_print_tokens_acc(tokens.tail, kinds)
+            end
+        }
+    produces
+        pure result
+    end
+}
+
+// Debug: print expr structure (kind, name, value) for body tracing
+fn debug_print_expr(expr: Expr, indent: string) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- case expr.kind < 0 of {
+            true -> do
+                _: unit <- println(concat(concat("  [DEBUG EXPR] ", indent), "DUMMY(kind<0)"));
+                0
+            end;
+            false -> case expr.kind of {
+                0 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "literal value="), expr.value)); 0 end;
+                1 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "identifier name="), expr.name)); 0 end;
+                4 -> do
+                    _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "call name="), expr.name));
+                    _: int64 <- debug_print_expr(expr.inner, concat(indent, "  arg1:"));
+                    _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  arg2:"));
+                    0
+                end;
+                6 -> do
+                    _: unit <- println(concat(concat(concat(concat("  [DEBUG EXPR] ", indent), "let "), expr.name), concat(": ", expr.value)));
+                    _: int64 <- debug_print_expr(expr.inner, concat(indent, "  rhs:"));
+                    _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  body:"));
+                    0
+                end;
+                8 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "string_literal value="), expr.value)); 0 end;
+                11 -> do
+                    _: unit <- println(concat(concat("  [DEBUG EXPR] ", indent), "SEQUENCE_BLOCK"));
+                    _: int64 <- debug_print_expr(expr.inner, concat(indent, "  seq_body:"));
+                    _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  seq_result:"));
+                    0
+                end;
+                _: int64 -> do
+                    _: unit <- println(concat(concat(concat(concat("  [DEBUG EXPR] ", indent), "OTHER kind name="), expr.name), concat(" value=", expr.value)));
+                    _: int64 <- debug_print_expr(expr.inner, concat(indent, "  inner:"));
+                    _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  right:"));
+                    0
+                end
+            }
+        }
+    produces
+        pure result
+    end
+}
+{-
+    Use this function to enable debug compilation for a specific file.
+    filename should be the full path to the file.
+    Example:
+    debug_compile("~/silica-compiler/trials/int64_addition/print_int64_expression.silica")
+    will return true if the filename is "print_int64_expression.silica"
+-}
+fn filename_ends_with(path: string, suffix: string) -> bool {
+    ls: int64 <- len(path);
+    lf: int64 <- len(suffix);
+    case ls < lf of {
+        true -> false;
+        false -> substring(path, ls - lf, ls) == suffix
+    }
+}
+
+fn debug_compile(filename: string) -> bool {
+    case filename_ends_with(filename, "dangerous_legacy_math.silica") of {
+        true -> true;
+        false -> case filename_ends_with(filename, "dangerous_legacy_math_meta.silica") of {
+            true -> true;
+            false -> filename_ends_with(filename, "dangerous_net.silica")
+        }
+    }
+}
+
+fn debug_walk_decls(decls: ListDeclaration) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- case decls.is_nil of {
+            true -> 0;
+            false -> do
+                _: unit <- println(concat("  decl name=", decls.head.name));
+                _: int64 <- debug_print_expr(decls.head.body, "BODY>");
+                debug_walk_decls(decls.tail)
+            end
+        }
+    produces
+        pure result
+    end
+}
+
+// Module-check → SIR only (used for multi-unit silica.config: merge atoms, then emit with shared { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }).
+fn compile_to_sir_module(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile) -> (int64, SIRModule) proc[DeviceIO] {
+    _: int64 <- announce_compiling_file(filename);
+    println("  Module checking...");
+    mc: int64 <- module_checker_core@module_checker_check_program(program, config_files, all_parsed, filename);
+    case mc == 0 of {
+        false -> (1, sir_ast@dummy_sir_module());
+        true -> do
+            println("  FFI metadata...");
+            ffi_meta: int64 <- ffi_sidecar_loader@validate_program_sidecar_metadata(program);
+            case ffi_meta == 0 of {
+                false -> (1, sir_ast@dummy_sir_module());
+                true -> do
+                    println("  FFI placement...");
+                    placement: int64 <- ffi_placement_checker@validate_program_ffi_placement(program);
+                    case placement == 0 of {
+                        false -> (1, sir_ast@dummy_sir_module());
+                        true -> do
+                            println("  Type checking...");
+                            context: TypeContext <- type_checker_core@create_type_context();
+                            mod_name: string <- module_checker_core@module_from_path(filename);
+                            world_with_self: ListNamedProgram <- parser_ast@cons_named_program(mod_name, program, module_world);
+                            tc_out: ModuleTypecheckOutcome <- type_checker_modules@type_check_program_with_modules_outcome(program, mod_name, world_with_self, context);
+                            case tc_out.is_ok of {
+                                true -> do
+                                    println("  FFI ABI...");
+                                    abi_st: int64 <- ffi_abi_checker@validate_program_ffi_abi(program);
+                                    case abi_st == 0 of {
+                                        false -> (1, sir_ast@dummy_sir_module());
+                                        true -> do
+                                            println("  FFI taint...");
+                                            taint_st: int64 <- ffi_taint_checker@validate_program_ffi_taint(program);
+                                            case taint_st == 0 of {
+                                                false -> (1, sir_ast@dummy_sir_module());
+                                                true -> do
+                                                    println("  Trait checking...");
+                                                    tr_code: int64 <- trait_checker_core@trait_checker_check_program(program);
+                                                    case tr_code != 0 of {
+                                                        true -> (1, sir_ast@dummy_sir_module());
+                                                        false -> do
+                                                            println("  Effect checking...");
+                                                            effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program, world_with_self);
+                                                            case effect_result.is_ok of {
+                                                                true -> do
+                                                                    _: int64 <- case debug_compile(filename) of {
+                                                                        true -> do
+                                                                            println("  [DEBUG AST] decl-count walk:");
+                                                                            debug_walk_decls(program.declarations);
+                                                                            0
+                                                                        end;
+                                                                        false -> 0
+                                                                    };
+                                                                    println("  Generating SIR...");
+                                                                    specialized_program: Program <- trait_specialization@specialize_program(program);
+                                                                    specialized_world: ListNamedProgram <- trait_specialization@specialize_named_program_list(world_with_self);
+                                                                    mangled_program: Program <- qualified_call_mangler@mangle_calls_in_program(specialized_program, specialized_world);
+                                                                    link_libs: ListSirString <- ffi_sidecar_loader@collect_program_link_libraries(program);
+                                                                    sir_module: SIRModule <- sir_generator_core@emit_program_for_unit_with_link_libraries(mangled_program, tc_out.context, mod_name, link_libs);
+                                                                    _: int64 <- case debug_compile(filename) of {
+                                                                        true -> do
+                                                                            println("  [DEBUG SIR]:");
+                                                                            println(sir_ast@sir_module_to_text(sir_module));
+                                                                            0
+                                                                        end;
+                                                                        false -> 0
+                                                                    };
+                                                                    (0, sir_module)
+                                                                end;
+                                                                false -> do
+                                                                    effect_error_code: string <- case effect_result.error_code == "" of {
+                                                                        true -> "E3000";
+                                                                        false -> effect_result.error_code
+                                                                    };
+                                                                    effect_spec_section: string <- case effect_result.spec_section == "" of {
+                                                                        true -> "sect9";
+                                                                        false -> effect_result.spec_section
+                                                                    };
+                                                                    diagnostics_core@print_compiler_error("EffectError", effect_error_code, effect_result.error_location, effect_result.error_message, effect_spec_section);
+                                                                    (1, sir_ast@dummy_sir_module())
+                                                                end
+                                                            }
+                                                        end
+                                                    }
+                                                end
+                                            }
+                                        end
+                                    }
+                                end;
+                                false -> do
+                                    error_code: string <- case tc_out.error_code == "" of {
+                                        true -> "E2000";
+                                        false -> tc_out.error_code
+                                    };
+                                    spec_section: string <- case tc_out.spec_section == "" of {
+                                        true -> "sect6";
+                                        false -> tc_out.spec_section
+                                    };
+                                    diagnostics_core@print_compiler_error("TypeError", error_code, tc_out.error_location, tc_out.error_message, spec_section);
+                                    (1, sir_ast@dummy_sir_module())
+                                end
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+// Module-check, type-check, trait-check, effect-check, SIR, emit for one unit; module_world is other parsed units (spec §19).
+fn compile_parsed_unit(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile) -> int64 {
+    sequence proc[DeviceIO]
+        (sir_code: int64, sir_module: SIRModule) <- compile_to_sir_module(filename, program, module_world, config_files, all_parsed);
+        result: int64 <- case sir_code != 0 of {
+            true -> sir_code;
+            false -> do
+                _: int8 <- println("  Emitting...");
+                asm: string <- case debug_compile(filename) of {
+                    true -> emitter_core@emit_module_with_atom_and_debug(sir_module, atom_table@build_atom_table(sir_module), true);
+                    false -> emitter_core@emit_module(sir_module)
+                };
+                _: int8 <- build_output@write_assembly(filename, asm);
+                _: int64 <- build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module(sir_module));
+                announce_compiled_file(filename)
+            end
+        }
+    produces
+        pure result
+    end
+}
+
+// Reverse cons-built ListSIRModule (newest at head) into forward topological order.
+fn reverse_sir_modules_into_forward(lst: ListSIRModule, acc: ListSIRModule) -> ListSIRModule {
+    case lst.is_nil of {
+        true -> acc;
+        false -> reverse_sir_modules_into_forward(lst.tail, sir_ast@cons_sir_module(lst.head, acc))
+    }
+}
+
+// Walk sorted_topo; accumulate SIR in reverse (cons) for each unit, then caller reverses to match topo order.
+fn gather_sirs_rev(sorted_rem: ListString, parsed: ListParsedFile, config_files: ListString, acc_rev: ListSIRModule) -> (int64, ListSIRModule) proc[DeviceIO] {
+    case sorted_rem.is_nil of {
+        true -> (0, acc_rev);
+        false -> do
+            (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, sorted_rem.head);
+            world: ListNamedProgram <- build_module_world(parsed, sorted_rem.head);
+            case found of {
+                false -> do
+                    println("Error: internal parse table missing file");
+                    print(sorted_rem.head);
+                    (1, sir_ast@nil_sir_modules())
+                end;
+                true -> do
+                    (sir_c: int64, sir_val: SIRModule) <- compile_to_sir_module(sorted_rem.head, prog, world, config_files, parsed);
+                    case sir_c != 0 of {
+                        true -> (sir_c, sir_ast@nil_sir_modules());
+                        false -> gather_sirs_rev(sorted_rem.tail, parsed, config_files, sir_ast@cons_sir_module(sir_val, acc_rev))
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn sir_queue_any_need_actor_runtime(mods: ListSIRModule) -> bool {
+    case mods.is_nil of {
+        true -> false;
+        false -> case emitter_core@module_needs_actor_runtime(mods.head) of {
+            true -> true;
+            false -> sir_queue_any_need_actor_runtime(mods.tail)
+        }
+    }
+}
+
+fn emit_batch_with_exe_atom_table(paths: ListString, sirs: ListSIRModule, exe_tbl: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- case paths.is_nil of {
+            true -> 0;
+            false -> case sirs.is_nil of {
+                true -> 1;
+                false -> do
+                    _: int8 <- println("  Emitting...");
+                    asm: string <- case debug_compile(paths.head) of {
+                        true -> emitter_core@emit_module_with_atom_and_debug(sirs.head, exe_tbl, true);
+                        false -> emitter_core@emit_module_with_atom_table(sirs.head, exe_tbl)
+                    };
+                    _: int8 <- build_output@write_assembly(paths.head, asm);
+                    _: int64 <- announce_compiled_file(paths.head);
+                    emit_batch_with_exe_atom_table(paths.tail, sirs.tail, exe_tbl)
+                end
+            }
+        }
+    produces
+        pure result
+    end
+}
+
+fn finish_multi_unit_emit(sorted_topo: ListString, fwd_queue: ListSIRModule, exe_atom_tbl: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> int64 {
+    sequence proc[DeviceIO]
+        emit_c: int64 <- emit_batch_with_exe_atom_table(sorted_topo, fwd_queue, exe_atom_tbl);
+        result: int64 <- case emit_c != 0 of {
+            true -> emit_c;
+            false -> build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module_with_atom_table(exe_atom_tbl))
+        }
+    produces
+        pure result
+    end
+}
+
+// Two or more units: one merged atom table for the whole config (link-batch / process-image atom ids), then emit each .sams with that table.
+fn compile_multi_unit_with_merged_atoms(sorted_topo: ListString, parsed_all: ListParsedFile, config_files: ListString) -> int64 {
+    sequence proc[DeviceIO]
+        (gather_code: int64, rev_queue: ListSIRModule) <- gather_sirs_rev(sorted_topo, parsed_all, config_files, sir_ast@nil_sir_modules());
+        result: int64 <- case gather_code != 0 of {
+            true -> gather_code;
+            false -> do
+                fwd_queue: ListSIRModule <- reverse_sir_modules_into_forward(rev_queue, sir_ast@nil_sir_modules());
+                finish_multi_unit_emit(sorted_topo, fwd_queue, atom_table@build_atom_table_executable(fwd_queue))
+            end
+        }
+    produces
+        pure result
+    end
+}
+
+fn compile_parsed_list_incremental(sorted: ListString, parsed: ListParsedFile, all_config_files: ListString) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- case sorted.is_nil of {
+            true -> 0;
+            false -> do
+                (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, sorted.head);
+                world: ListNamedProgram <- build_module_world(parsed, sorted.head);
+                case found of {
+                    false -> do
+                        _: int8 <- println("Error: internal parse table missing file");
+                        _: int8 <- print(sorted.head);
+                        1
+                    end;
+                    true -> do
+                        code: int64 <- compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed);
+                        case code != 0 of {
+                            true -> code;
+                            false -> compile_parsed_list_incremental(sorted.tail, parsed, all_config_files)
+                        }
+                    end
+                }
+            end
+        }
+    produces
+        pure result
+    end
+}
+
+// all_config_files: every path from silica.config (not the recursive suffix) — needed for `use` / module@ validation per unit.
+fn compile_parsed_list(sorted: ListString, parsed: ListParsedFile, all_config_files: ListString) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- case sorted.is_nil of {
+            true -> 0;
+            false -> case sorted.tail.is_nil of {
+                true -> do
+                    (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, sorted.head);
+                    world: ListNamedProgram <- build_module_world(parsed, sorted.head);
+                    case found of {
+                        false -> do
+                            _: int8 <- println("Error: internal parse table missing file");
+                            _: int8 <- print(sorted.head);
+                            1
+                        end;
+                        true -> compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed)
+                    }
+                end;
+                false -> compile_parsed_list_incremental(sorted, parsed, all_config_files)
+            }
+        }
+    produces
+        pure result
+    end
+}
+
+// Lex + parse one file, then compile with an empty module world (no cross-file `use`).
+fn compile_file(filename: string) -> int64 {
+    sequence proc[DeviceIO]
+        _: int8 <- println("Parsing ");
+        _: int8 <- print(filename);
+        _: int8 <- println("...");
+        _: int8 <- println("  Lexing...");
+        tokens: ListToken <- lexer_runner@lexer_runner(filename);
+        _: int64 <- case debug_compile(filename) of {
+            true -> 0;
+            false -> 0
+        };
+        _: int8 <- println("  Parsing...");
+        parse_result: ParseResult <- parser_runner@parse_program(tokens);
+        _: int64 <- case debug_compile(filename) of {
+            true -> 0;
+            false -> 0
+        };
+        result: int64 <- case parse_result.is_ok of {
+            true -> do
+                mod_nm: string <- module_checker_core@module_from_path(filename);
+                world_one: ListNamedProgram <- parser_ast@cons_named_program(mod_nm, parse_result.program, type_checker_modules@empty_named_program_list());
+                compile_parsed_unit(filename, parse_result.program, world_one, cons_string(filename, empty_list_string()), cons_parsed_file(filename, parse_result.program, empty_parsed_files()))
+            end;
+            false -> do
+                error_code: string <- case parse_result.error_code == "" of {
+                    true -> "E1001";
+                    false -> parse_result.error_code
+                };
+                spec_section: string <- case parse_result.spec_section == "" of {
+                    true -> "sect3";
+                    false -> parse_result.spec_section
+                };
+                _: int8 <- diagnostics_core@print_compiler_error("ParseError", error_code, parse_result.error_location, parse_result.error_message, spec_section);
+                1
+            end
+        }
+    produces
+        pure result
+    end
+}
+
+// Compile already-parsed units in dependency order (spec §19). Caller parses once before sorting.
+fn compile_all_parsed(sorted_files: ListString, parsed_all: ListParsedFile) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- case sorted_files.is_nil of {
+            true -> 0;
+            false -> do
+                compile_code: int64 <- compile_parsed_list(sorted_files, parsed_all, sorted_files);
+                case compile_code != 0 of {
+                    true -> compile_code;
+                    false -> do
+                        _: int64 <- ffi_link_manifest@write_link_manifest_for_parsed(parsed_all);
+                        _: int8 <- println("Compilation complete.");
+                        0
+                    end
+                }
+            end
+        }
+    produces
+        pure result
+    end
+}
+
+// Main: read config, parse, sort by deps, compile
+fn main() -> int64 {
+    sequence proc[DeviceIO]
+        config_path: string <- "silica.config";
+        config_exists: bool <- file_exists(config_path);
+        content: string <- case config_exists of {
+            true -> read_lines(config_path);
+            false -> ""
+        };
+        files_rev: ListString <- case len(content) > 0 of {
+            true -> parse_config_lines(content, 0, empty_list_string());
+            false -> empty_list_string()
+        };
+        files: ListString <- reverse_list_string(files_rev);
+        result: int64 <- case list_string_length(files) == 0 of {
+            true -> do
+                _: int8 <- println("Error: silica.config not found or empty. Create silica.config with one .silica file per line.");
+                1
+            end;
+            false -> do
+                validation: int64 <- validate_config_files(files);
+                case validation != 0 of {
+                    true -> 1;
+                    false -> do
+                        _: int8 <- println("Files to compile: ");
+                        _: int8 <- print_int64(list_string_length(files));
+                        _: int8 <- println("");
+                        (ok_parse: bool, parsed_all: ListParsedFile) <- parse_all_files_recursive(files, empty_parsed_files());
+                        case ok_parse of {
+                            false -> 1;
+                            true -> do
+                                (sort_ok: bool, sorted_files: ListString) <- topological_sort_from_parsed(files, parsed_all);
+                                case sort_ok of {
+                                    false -> do
+                                        _: int8 <- println("Error: cyclic module dependencies among files in silica.config");
+                                        1
+                                    end;
+                                    true -> compile_all_parsed(sorted_files, parsed_all)
+                                }
+                            end
+                        }
+                    end
+                }
+            end
+        }
+    produces
+        pure result
+    end
+}

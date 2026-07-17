@@ -1,0 +1,491 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not employ this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+{- Core effect checking infrastructure.
+   Provides EffectCheckResult, EffectEntry environment, and helper functions
+   for effect comparison, validation, and built-in effect recognition.
+   Implements spec §9.1 (Effect Types), §9.1.2 (Effect Aliases).
+
+   Supervisors — design_documents/supervisors_implementation_development_plan.md:
+   Phase B (§15.4.9, §16.2.7): ingress vs standard mailbox ordering is runtime-only — no extra
+   compile-time effect for “ingress”.
+   Phase C (§15.4.10–§15.4.11): exit notifications and failure_reason payloads are constructed
+   in the runtime; no separate user-visible effect for delivering to supervisor ingress.
+   Phase D (§15.4.8.3, §15.4.13): behavior-only spawn_linked / link are enforced in the type
+   checker (E2091), not here; when they appear in an effect-checked body they still require
+   proc[concurrency] like other actor intrinsics.
+   Phase E (§15.4.12.1, §15.4.12.3, §15.4.13.1–§15.4.13.2, §15.4.13.3): static child_spec table,
+   automatic restart, restart caps / escalation, and dynamic children (spawn_linked only, no
+   auto-restart row) are applied by the runtime; there is no additional compile-time effect.
+   Module-level Supervisor init return shape (flags + List[child_spec, normal]) is validated
+   in module_checker (E2092), not here; dynamic child spawn in behavior still uses the same
+   proc[concurrency] classification as Phase D.
+   Phase F (§15.4.11.4, §15.4.13.4–§15.4.13.6): unwind reports go to the root FailureReporter via
+   runtime-invoked handle_report; that path is independent of supervisor ingress and does not
+   introduce a separate compile-time effect—implementations of region_dump_limit / handle_report
+   are ordinary functions: declare proc[device_io], proc[concurrency], etc. only for what the
+   body actually uses (stderr fallback when no reporter is runtime-only).
+   Phase G (§15.4.8.4–§15.4.8.7): `link` / `monitor` / `demonitor`, linked-exit to supervisor
+   ingress vs `DOWN` to standard mailbox, and cascading shutdown on supervisor death are all
+   runtime routing and scheduling concerns. The effect checker still classifies `link`, `monitor`,
+   and `demonitor` (and recv/cast/send for matching `DOWN` / messages) as proc[concurrency] only
+   (§15.4.8.3 behavior-only rules for `link` / `spawn_linked` remain in the type checker as E2091;
+   there is no separate `mailbox` or `ingress` effect in this layer).
+   User-facing actor intrinsics (including spawn_linked, link, monitor, demonitor, call, cast,
+   send, self, recv) are classified as proc[concurrency] here (is_builtin_fn / builtin_fn_effects).
+   Note: user code cannot call recv today (§15.1.2; type checker), but recv is listed for parity
+   with the actor-runtime surface and module_checker intrinsics.
+-}
+
+use parser_ast;
+use lexer_core;
+
+export EffectCheckResult/0;
+export EffectEntry/0;
+export ListEffectEntry/0;
+export EffectContext/0;
+export TypeEntry/0;
+export ListTypeEntry/0;
+export effect_check_ok/0;
+export effect_check_err/4;
+export effects_equal/2;
+export effect_list_contains/2;
+export effect_list_length/1;
+export effect_name_to_string/1;
+export normalize_effect/1;
+export empty_effect_entry_list/0;
+export add_effect_entry/3;
+export lookup_fn_effects/2;
+export create_effect_context/4;
+export effect_context_with_type_env/2;
+export empty_type_entry_list/0;
+export add_type_entry/3;
+export lookup_type_entry/2;
+export is_builtin_effect/1;
+export is_empty_param/1;
+export is_valid_mem_parameter/1;
+export is_builtin_alias_name/1;
+export is_builtin_fn/1;
+export expand_builtin_alias/1;
+export builtin_fn_effects/1;
+
+// --- Structs ---
+
+struct EffectCheckResult {
+    is_ok: bool,
+    error_code: string,
+    error_location: SourceLocation,
+    error_message: string,
+    spec_section: string
+}
+
+struct EffectEntry {
+    name: string,
+    effects: ListEffectName
+}
+
+struct ListEffectEntry {
+    is_nil: bool,
+    head: EffectEntry,
+    tail: ListEffectEntry
+}
+
+struct TypeEntry {
+    name: string,
+    type_name: string
+}
+
+struct ListTypeEntry {
+    is_nil: bool,
+    head: TypeEntry,
+    tail: ListTypeEntry
+}
+
+struct EffectContext {
+    fn_env: ListEffectEntry,
+    foreign_c_wrapper_env: ListEffectEntry,
+    alias_env: ListEffectEntry,
+    type_env: ListTypeEntry,
+    world: ListNamedProgram
+}
+
+// --- Result constructors ---
+
+fn effect_check_ok() -> EffectCheckResult {
+    EffectCheckResult {
+        is_ok: true,
+        error_code: "",
+        error_location: parser_ast@zero_location(),
+        error_message: "",
+        spec_section: ""
+    }
+}
+
+fn effect_check_err(error_code: string, error_location: SourceLocation, error_message: string, spec_section: string) -> EffectCheckResult {
+    EffectCheckResult {
+        is_ok: false,
+        error_code: error_code,
+        error_location: error_location,
+        error_message: error_message,
+        spec_section: spec_section
+    }
+}
+
+// --- Environment helpers ---
+
+fn dummy_effect_entry() -> EffectEntry {
+    EffectEntry { name: "", effects: parser_ast@empty_effect_name_list() }
+}
+
+fn empty_effect_entry_list() -> ListEffectEntry {
+    nil_placeholder: ListEffectEntry <- ListEffectEntry {
+        is_nil: true,
+        head: dummy_effect_entry(),
+        tail: nil_placeholder
+    };
+    nil_placeholder
+}
+
+fn add_effect_entry(env: ListEffectEntry, name: string, effects: ListEffectName) -> ListEffectEntry {
+    entry: EffectEntry <- EffectEntry { name: name, effects: effects };
+    ListEffectEntry { is_nil: false, head: entry, tail: env }
+}
+
+fn lookup_fn_effects(env: ListEffectEntry, name: string) -> (bool, ListEffectName) {
+    case env.is_nil of {
+        true -> (false, parser_ast@empty_effect_name_list());
+        false -> case env.head.name == name of {
+            true -> (true, env.head.effects);
+            false -> lookup_fn_effects(env.tail, name)
+        }
+    }
+}
+
+fn create_effect_context(fn_env: ListEffectEntry, foreign_c_wrapper_env: ListEffectEntry, alias_env: ListEffectEntry, world: ListNamedProgram) -> EffectContext {
+    fn_env_t: ListEffectEntry <- fn_env;
+    foreign_env_t: ListEffectEntry <- foreign_c_wrapper_env;
+    alias_env_t: ListEffectEntry <- alias_env;
+    type_env_t: ListTypeEntry <- empty_type_entry_list();
+    world_t: ListNamedProgram <- world;
+    EffectContext { fn_env: fn_env_t, foreign_c_wrapper_env: foreign_env_t, alias_env: alias_env_t, type_env: type_env_t, world: world_t }
+}
+
+fn effect_context_with_type_env(ctx: EffectContext, type_env: ListTypeEntry) -> EffectContext {
+    fn_env_t: ListEffectEntry <- ctx.fn_env;
+    foreign_env_t: ListEffectEntry <- ctx.foreign_c_wrapper_env;
+    alias_env_t: ListEffectEntry <- ctx.alias_env;
+    type_env_t: ListTypeEntry <- type_env;
+    world_t: ListNamedProgram <- ctx.world;
+    EffectContext { fn_env: fn_env_t, foreign_c_wrapper_env: foreign_env_t, alias_env: alias_env_t, type_env: type_env_t, world: world_t }
+}
+
+fn dummy_type_entry() -> TypeEntry {
+    TypeEntry { name: "", type_name: "" }
+}
+
+fn empty_type_entry_list() -> ListTypeEntry {
+    nil_placeholder: ListTypeEntry <- ListTypeEntry {
+        is_nil: true,
+        head: dummy_type_entry(),
+        tail: nil_placeholder
+    };
+    nil_placeholder
+}
+
+fn add_type_entry(env: ListTypeEntry, name: string, type_name: string) -> ListTypeEntry {
+    entry: TypeEntry <- TypeEntry { name: name, type_name: type_name };
+    ListTypeEntry { is_nil: false, head: entry, tail: env }
+}
+
+fn lookup_type_entry(env: ListTypeEntry, name: string) -> (bool, string) {
+    case env.is_nil of {
+        true -> (false, "");
+        false -> case env.head.name == name of {
+            true -> (true, env.head.type_name);
+            false -> lookup_type_entry(env.tail, name)
+        }
+    }
+}
+
+// --- Effect comparison ---
+
+fn effects_equal(a: EffectName, b: EffectName) -> bool {
+    case a.name == b.name of {
+        true -> a.parameter == b.parameter;
+        false -> false
+    }
+}
+
+fn effect_list_contains(list: ListEffectName, eff: EffectName) -> bool {
+    case list.is_nil of {
+        true -> false;
+        false -> case effects_equal(list.head, eff) of {
+            true -> true;
+            false -> effect_list_contains(list.tail, eff)
+        }
+    }
+}
+
+fn effect_list_length(list: ListEffectName) -> int64 {
+    case list.is_nil of {
+        true -> 0;
+        false -> 1 + effect_list_length(list.tail)
+    }
+}
+
+// --- Display ---
+
+fn effect_name_to_string(eff: EffectName) -> string {
+    case eff.parameter == "" of {
+        true -> eff.name;
+        false -> concat(eff.name, concat("(", concat(eff.parameter, ")")))
+    }
+}
+
+{- Normalize legacy effect names to spec-standard forms.
+   DeviceIO -> device_io per spec §9.1.1. -}
+fn normalize_effect(eff: EffectName) -> EffectName {
+    case eff.name of {
+        "DeviceIO" -> EffectName { name: "device_io", parameter: "", location: eff.location };
+        _: string -> eff
+    }
+}
+
+// --- Built-in effect validation (§9.1.1) ---
+// Use param == "" instead of len(param) == 0: bootstrap compiler len("") bug (returns non-zero)
+
+fn is_empty_param(param: string) -> bool {
+    param == ""
+}
+
+fn is_builtin_effect(eff: EffectName) -> bool {
+    norm: EffectName <- normalize_effect(eff);
+    case norm.name of {
+        "mem" -> is_valid_mem_parameter(norm.parameter);
+        "concurrency" -> is_empty_param(norm.parameter);
+        "atomic" -> is_empty_param(norm.parameter);
+        "device_io" -> is_empty_param(norm.parameter);
+        "external_danger" -> is_empty_param(norm.parameter);
+        _: string -> false
+    }
+}
+
+fn is_valid_mem_parameter(param: string) -> bool {
+    case param of {
+        "normal" -> true;
+        "normal_writeback" -> true;
+        "normal_writethrough" -> true;
+        "normal_noncacheable" -> true;
+        "atomic" -> true;
+        "device" -> true;
+        _: string -> false
+    }
+}
+
+// --- Built-in alias checks (§9.1.2) ---
+
+fn is_builtin_alias_name(name: string) -> bool {
+    case name of {
+        "actor_eff" -> true;
+        "io_eff" -> true;
+        "atomic_eff" -> true;
+        _: string -> false
+    }
+}
+
+{- Expand a built-in alias to its constituent effects.
+   actor_eff = [concurrency] per spec §9.1.2
+   io_eff = [mem(normal), device_io]
+   atomic_eff = [mem(atomic), atomic]  -}
+fn expand_builtin_alias(name: string) -> (bool, ListEffectName) {
+    zero: SourceLocation <- parser_ast@zero_location();
+    case name of {
+        "actor_eff" -> do
+            e1: EffectName <- EffectName { name: "concurrency", parameter: "", location: zero };
+            (true, parser_ast@cons_effect_name(e1, parser_ast@empty_effect_name_list()))
+        end;
+        "io_eff" -> do
+            e1: EffectName <- EffectName { name: "mem", parameter: "normal", location: zero };
+            e2: EffectName <- EffectName { name: "device_io", parameter: "", location: zero };
+            (true, parser_ast@cons_effect_name(e1, parser_ast@cons_effect_name(e2, parser_ast@empty_effect_name_list())))
+        end;
+        "atomic_eff" -> do
+            e1: EffectName <- EffectName { name: "mem", parameter: "atomic", location: zero };
+            e2: EffectName <- EffectName { name: "atomic", parameter: "", location: zero };
+            (true, parser_ast@cons_effect_name(e1, parser_ast@cons_effect_name(e2, parser_ast@empty_effect_name_list())))
+        end;
+        _: string -> (false, parser_ast@empty_effect_name_list())
+    }
+}
+
+// --- Built-in function effect knowledge ---
+// Supervisors (supervisors_implementation_development_plan.md): Phase B ingress ordering;
+// Phase C exit/failure payloads (runtime); Phase D behavior-only spawn_linked/link (type check);
+// Phase E automatic restart / child_spec + escalation (runtime only—no extra builtin);
+// Phase F FailureReporter.handle_report / unwind (runtime delivery, §15.4.13.4)—no extra builtin here;
+// Phase G link/monitor/demonitor / DOWN / cascading shutdown (§15.4.8.4–§15.4.8.7)—runtime only.
+// All of: spawn, spawn_linked, link, monitor, demonitor, call, cast, send, self, recv — same
+// concurrency classification (no separate compile-time effect for ingress, standard mailbox, DOWN, or failure payload delivery).
+
+fn is_builtin_fn(name: string) -> bool {
+    case name of {
+        "println" -> true;
+        "print_string_stderr" -> true;
+        "println_stderr" -> true;
+        "print" -> true;
+        "print_string" -> true;
+        "print_int64" -> true;
+        "print_int32" -> true;
+        "print_int16" -> true;
+        "print_int8" -> true;
+        "print_float64" -> true;
+        "print_float16" -> true;
+        "print_float32" -> true;
+        "print_bool" -> true;
+        "print_atom" -> true;
+        "read_lines" -> true;
+        "file_exists" -> true;
+        "append_file" -> true;
+        "delete_file" -> true;
+        "spawn" -> true;
+        "spawn_dangerous" -> true;
+        "spawn_dangerous_registered" -> true;
+        "spawn_registered" -> true;
+        "spawn_registered_supervisor" -> true;
+        "spawn_linked" -> true;
+        "add_child" -> true;
+        "link" -> true;
+        "monitor" -> true;
+        "demonitor" -> true;
+        "supervision_ingress_enqueue" -> true;
+        "supervision_wait_and_drain_one" -> true;
+        "failure_reason_tag" -> true;
+        "failure_reason_atom" -> true;
+        "failure_agent_type" -> true;
+        "failure_release" -> true;
+        "kill_abnormal" -> true;
+        "wait_for_exit" -> true;
+        "call" -> true;
+        "call_registered" -> true;
+        "cast" -> true;
+        "cast_registered" -> true;
+        "cast_dangerous_registered" -> true;
+        "send" -> true;
+        "self" -> true;
+        "recv" -> true;
+        "pin_actor_to_core" -> true;
+        "pin_actor_to_efficiency_core" -> true;
+        "pin_actor_to_performance_core" -> true;
+        "pin_actor_realtime" -> true;
+        "unpin_actor" -> true;
+        "remove_actor" -> true;
+        "register_actor" -> true;
+        "get_registry_actor" -> true;
+        "get_pid_registry" -> true;
+        "set_actor_priority" -> true;
+        "pin_actor_to_numa_node" -> true;
+        "get_cpu_topology" -> true;
+        "get_efficiency_cores" -> true;
+        "get_performance_cores" -> true;
+        "get_core_capabilities" -> true;
+        _: string -> false
+    }
+}
+
+{- Returns the effects required by known built-in functions.
+   I/O built-ins require device_io per spec §9.1.1.
+   Actor primitives (including §15.4.8.5–§15.4.8.7 link, monitor, demonitor; recv for runtime/surface parity),
+   pinning, removal, priority, and §22.10 CPU Affinity Functions
+   (get_cpu_topology, get_efficiency_cores, get_performance_cores, get_core_capabilities, etc.)
+   require concurrency per spec §22.4, §16.1, §15.2, and §22.10 (not pure). -}
+fn builtin_fn_effects(name: string) -> (bool, ListEffectName) {
+    zero: SourceLocation <- parser_ast@zero_location();
+    dev_io: EffectName <- EffectName { name: "device_io", parameter: "", location: zero };
+    dev_io_list: ListEffectName <- parser_ast@cons_effect_name(dev_io, parser_ast@empty_effect_name_list());
+    conc: EffectName <- EffectName { name: "concurrency", parameter: "", location: zero };
+    conc_list: ListEffectName <- parser_ast@cons_effect_name(conc, parser_ast@empty_effect_name_list());
+    conc_then_dev_io: ListEffectName <- parser_ast@cons_effect_name(conc, dev_io_list);
+    case name of {
+        "println" -> (true, dev_io_list);
+        "print_string_stderr" -> (true, dev_io_list);
+        "println_stderr" -> (true, dev_io_list);
+        "print" -> (true, dev_io_list);
+        "print_string" -> (true, dev_io_list);
+        "print_int64" -> (true, dev_io_list);
+        "print_int32" -> (true, dev_io_list);
+        "print_int16" -> (true, dev_io_list);
+        "print_int8" -> (true, dev_io_list);
+        "print_uint64" -> (true, dev_io_list);
+        "print_uint32" -> (true, dev_io_list);
+        "print_uint16" -> (true, dev_io_list);
+        "print_uint8" -> (true, dev_io_list);
+        "print_float64" -> (true, dev_io_list);
+        "print_float16" -> (true, dev_io_list);
+        "print_float32" -> (true, dev_io_list);
+        "print_bool" -> (true, dev_io_list);
+        "print_atom" -> (true, dev_io_list);
+        "atom_bits" -> (true, parser_ast@empty_effect_name_list());
+        "actor_ref_bits" -> (true, parser_ast@empty_effect_name_list());
+        "actor_ref_of_word" -> (true, parser_ast@empty_effect_name_list());
+        "read_lines" -> (true, dev_io_list);
+        "file_exists" -> (true, dev_io_list);
+        "append_file" -> (true, dev_io_list);
+        "delete_file" -> (true, dev_io_list);
+        "spawn" -> (true, conc_list);
+        "spawn_dangerous" -> (true, conc_list);
+        "spawn_dangerous_registered" -> (true, conc_list);
+        "spawn_registered" -> (true, conc_list);
+        "spawn_registered_supervisor" -> (true, conc_list);
+        "spawn_linked" -> (true, conc_list);
+        "add_child" -> (true, conc_list);
+        "link" -> (true, conc_list);
+        "monitor" -> (true, conc_list);
+        "demonitor" -> (true, conc_list);
+        "supervision_ingress_enqueue" -> (true, conc_list);
+        "supervision_wait_and_drain_one" -> (true, conc_list);
+        "failure_reason_tag" -> (true, conc_list);
+        "failure_reason_atom" -> (true, conc_list);
+        "failure_agent_type" -> (true, conc_list);
+        "failure_release" -> (true, conc_list);
+        "kill_abnormal" -> (true, conc_list);
+        "wait_for_exit" -> (true, conc_then_dev_io);
+        "call" -> (true, conc_list);
+        "call_registered" -> (true, conc_list);
+        "cast" -> (true, conc_list);
+        "cast_registered" -> (true, conc_list);
+        "cast_dangerous_registered" -> (true, conc_list);
+        "send" -> (true, conc_list);
+        "self" -> (true, conc_list);
+        "recv" -> (true, conc_list);
+        "pin_actor_to_core" -> (true, conc_list);
+        "pin_actor_to_efficiency_core" -> (true, conc_list);
+        "pin_actor_to_performance_core" -> (true, conc_list);
+        "pin_actor_realtime" -> (true, conc_list);
+        "unpin_actor" -> (true, conc_list);
+        "remove_actor" -> (true, conc_list);
+        "register_actor" -> (true, conc_list);
+        "get_registry_actor" -> (true, conc_list);
+        "get_pid_registry" -> (true, conc_list);
+        "set_actor_priority" -> (true, conc_list);
+        "pin_actor_to_numa_node" -> (true, conc_list);
+        "get_cpu_topology" -> (true, conc_list);
+        "get_efficiency_cores" -> (true, conc_list);
+        "get_performance_cores" -> (true, conc_list);
+        "get_core_capabilities" -> (true, conc_list);
+        _: string -> (false, parser_ast@empty_effect_name_list())
+    }
+}

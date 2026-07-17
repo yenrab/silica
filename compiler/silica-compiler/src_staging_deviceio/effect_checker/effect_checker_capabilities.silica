@@ -1,0 +1,409 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not employ this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+{- Effect capability enforcement.
+   Implements the subeffecting lattice, checks that function bodies only use
+   effects declared in their signatures, and provides the main entry point
+   for effect checking an entire program.
+   Implements spec §9.2.4 (Effect Subeffecting), §9.3.1 (Effect Propagation),
+   §9.4.1 (Effect Checking).
+
+   Supervisors (supervisors_implementation_development_plan.md): Phases B/C/D/E/F — no extra
+   compile-time effect for supervision ingress (B), exit/failure payload delivery (C),
+   Supervisor trait surface (D), static child_spec / automatic restart / escalation (E; runtime
+   per §15.4.12–§15.4.13.2; dynamic children §15.4.13.3 use same spawn_linked effect as D), or
+   FailureReporter unwind delivery (F; §15.4.11.4, §15.4.13.4).
+   Phase G (§15.4.8.4–§15.4.8.7) — link/monitor/demonitor, `DOWN` vs ingress, cascading shutdown:
+   still proc[concurrency] only; no split effect for “standard mailbox” vs supervision ingress.
+   E3001 hints still reference Section 15.4.8.3-15.4.8.7;
+   behavior-only spawn_linked/link (Phase D) is E2091 in the type checker; Phase E return-shape
+   checks are E2092 in module_checker.
+-}
+
+use parser_ast;
+use lexer_core;
+use effect_checker_core;
+use effect_checker_declarations;
+use effect_checker_propagation;
+use effect_checker_lists;
+
+export is_subeffect/2;
+export is_mem_subeffect/2;
+export is_effect_subsumed/2;
+export all_effects_subsumed/2;
+export check_function_decl/2;
+export check_all_fn_decls/2;
+export check_program_effects/2;
+
+// --- Subeffecting lattice (§9.2.4) ---
+
+{- Check if effect sub is a subeffect of effect super (sub <: super).
+   Rules:
+     mem(normal) <: mem(atomic)
+     mem(normal_writeback) <: mem(normal)
+     mem(normal_writethrough) <: mem(normal)
+     mem(normal_noncacheable) <: mem(normal)
+     atomic <: mem(atomic)   -- bare atomic (§17.1.2 region ops) is covered by proc[mem(atomic)]
+   Transitivity:
+     mem(normal_writeback) <: mem(atomic)    (via mem(normal))
+     mem(normal_writethrough) <: mem(atomic) (via mem(normal))
+     mem(normal_noncacheable) <: mem(atomic) (via mem(normal))
+   Reflexivity: every effect is a subeffect of itself. -}
+fn is_subeffect(sub: EffectName, super: EffectName) -> bool {
+    norm_sub: EffectName <- effect_checker_core@normalize_effect(sub);
+    norm_super: EffectName <- effect_checker_core@normalize_effect(super);
+    case effect_checker_core@effects_equal(norm_sub, norm_super) of {
+        true -> true;
+        false -> case norm_sub.name == "atomic" and effect_checker_core@is_empty_param(norm_sub.parameter) of {
+            true -> case norm_super.name == "mem" and norm_super.parameter == "atomic" of {
+                true -> true;
+                false -> false
+            };
+            false -> case norm_sub.name == "mem" of {
+                true -> case norm_super.name == "mem" of {
+                    true -> is_mem_subeffect(norm_sub.parameter, norm_super.parameter);
+                    false -> false
+                };
+                false -> false
+            }
+        }
+    }
+}
+
+{- Check mem parameter subeffecting.
+   normal <: atomic
+   normal_writeback <: normal
+   normal_writethrough <: normal
+   normal_noncacheable <: normal
+   normal_writeback <: atomic   (transitive)
+   normal_writethrough <: atomic (transitive)
+   normal_noncacheable <: atomic (transitive) -}
+fn is_mem_subeffect(sub_param: string, super_param: string) -> bool {
+    case sub_param == super_param of {
+        true -> true;
+        false -> case sub_param of {
+            "normal" -> super_param == "atomic";
+            "normal_writeback" -> case super_param of {
+                "normal" -> true;
+                "atomic" -> true;
+                _: string -> false
+            };
+            "normal_writethrough" -> case super_param of {
+                "normal" -> true;
+                "atomic" -> true;
+                _: string -> false
+            };
+            "normal_noncacheable" -> case super_param of {
+                "normal" -> true;
+                "atomic" -> true;
+                _: string -> false
+            };
+            _: string -> false
+        }
+    }
+}
+
+{- Check if a single effect is subsumed by any effect in a list.
+   An effect is subsumed if it is equal to or a subeffect of any effect in the list. -}
+fn is_effect_subsumed(eff: EffectName, declared: ListEffectName) -> bool {
+    case declared.is_nil of {
+        true -> false;
+        false -> case is_subeffect(eff, declared.head) of {
+            true -> true;
+            false -> is_effect_subsumed(eff, declared.tail)
+        }
+    }
+}
+
+{- Check that every effect in required_effects is subsumed by some effect in declared_effects.
+   Returns effect_check_ok if all are subsumed, or E3002 error for the first unsubsumed effect. -}
+fn all_effects_subsumed(required: ListEffectName, declared: ListEffectName) -> EffectCheckResult {
+    case required.is_nil of {
+        true -> effect_checker_core@effect_check_ok();
+        false -> case is_effect_subsumed(required.head, declared) of {
+            true -> all_effects_subsumed(required.tail, declared);
+            false -> effect_checker_core@effect_check_err(
+                "E3002",
+                required.head.location,
+                concat("Effect not declared in caller: ", effect_checker_core@effect_name_to_string(required.head)),
+                "sect9.3.1"
+            )
+        }
+    }
+}
+
+// --- Function-level checking ---
+
+{- Check a single function declaration (tag 0).
+   1. Expand aliases in the function's declared effects.
+   2. Collect all effects used in the function body (from calls).
+   3. Verify every body effect is subsumed by a declared effect.
+   Returns effect_check_ok or E3001/E3002 error. -}
+{- Functions no longer have function-scope effect declarations.
+   Effect checking is done at sequence block level in check_sequence_blocks_in_expr. -}
+fn check_function_decl(decl: Declaration, _ctx: EffectContext) -> EffectCheckResult {
+    effect_checker_core@effect_check_ok()
+}
+
+fn add_param_types_to_env(params: ListParam, env: ListTypeEntry) -> ListTypeEntry {
+    case params.is_nil of {
+        true -> env;
+        // TODO: replace do...end with modern syntax
+        false -> do
+            next_env: ListTypeEntry <- effect_checker_core@add_type_entry(env, params.head.name, params.head.type_name);
+            add_param_types_to_env(params.tail, next_env)
+        end
+    }
+}
+
+fn context_for_decl_params(ctx: EffectContext, decl: Declaration) -> EffectContext {
+    param_env: ListTypeEntry <- add_param_types_to_env(decl.parameters, ctx.type_env);
+    effect_checker_core@effect_context_with_type_env(ctx, param_env)
+}
+
+{- Build E3001 message; when the missing effect is device_io or mem, add a suggestion. -}
+fn e3001_message(fn_name: string, eff: EffectName) -> string {
+    base: string <- concat("Function '", concat(fn_name, concat("' uses effect ", concat(effect_checker_core@effect_name_to_string(eff), " but does not declare it in its signature"))));
+    norm: EffectName <- effect_checker_core@normalize_effect(eff);
+    case norm.name == "device_io" of {
+        true -> concat(base, ". Add proc[device_io] to the function signature, or remove any use of print, print_string, println, print_int64, print_int32, print_int16, print_int8, print_float64, print_bool, print_atom, read_lines, file_exists, append_file, or delete_file");
+        false -> case norm.name == "mem" of {
+            true -> concat(base, concat(". Add proc[mem(", concat(norm.parameter, ")] for region operations (alloc_region, alloc_ref, read_ref, write_ref, alloc_rec, build) and list operations (literals, empty, prepend, remove_head, length, map, filter, reduce)")));
+            false -> case norm.name == "concurrency" of {
+                true -> concat(base, ". Add proc[concurrency] for actor operations (spawn, spawn_registered, spawn_registered_supervisor, spawn_linked, link, monitor, demonitor, call, cast, send, self, recv, pin_actor_to_*, unpin_actor, remove_actor, set_actor_priority, get_cpu_topology, get_efficiency_cores, get_performance_cores, get_core_capabilities, etc.) per spec Section 15.4.8.3-15.4.8.7, Section 22.4, Section 16.1, and Section 22.10 (CPU Affinity; supervisors Phases B/C/D/E/F/G: ingress, exit payloads, behavior-only spawn/link, Phase E runtime restart/child_spec/escalation, runtime→FailureReporter unwind, and Phase G link/monitor/demonitor / DOWN / cascading shutdown do not add a separate effect—routing is runtime-only)");
+                false -> base
+            }
+        }
+    }
+}
+
+{- E3001 message for effectful code outside a sequence block.
+   The fix is to wrap in a do proc[effect] ... end block, not to add proc to the function signature. -}
+fn e3001_outside_sequence_message(fn_name: string, eff: EffectName) -> string {
+    base: string <- concat("Function '", concat(fn_name, concat("' uses effect ", concat(effect_checker_core@effect_name_to_string(eff), " but the effectful code is not inside a sequence block"))));
+    norm: EffectName <- effect_checker_core@normalize_effect(eff);
+    case norm.name == "device_io" of {
+        true -> concat(base, ". Add proc[device_io] to a sequence-produces pure-end block (do proc[device_io] ... end)");
+        false -> case norm.name == "mem" of {
+            true -> concat(base, concat(". Add proc[mem(", concat(norm.parameter, ")] to a sequence-produces pure-end block for region operations (alloc_region, alloc_ref, read_ref, write_ref, alloc_rec, build) and list operations (literals, empty, prepend, remove_head, length, map, filter, reduce)")));
+            false -> case norm.name == "concurrency" of {
+                true -> concat(base, ". Add proc[concurrency] to a sequence-produces pure-end block for actor operations (spawn, spawn_registered, spawn_registered_supervisor, spawn_linked, link, monitor, demonitor, call, cast, send, self, recv, pin_actor_to_*, unpin_actor, remove_actor, set_actor_priority, etc.; spec Section 15.4.8.3-15.4.8.7, Section 22.4, Section 16.1) and Section 22.10 CPU Affinity (supervisors Phases B/C/D/E/F/G: no separate effect for ingress, exit-notification plumbing, Phase E automatic restart, FailureReporter unwind delivery, or Phase G link/monitor/demonitor and DOWN/ingress vs standard mailbox—runtime only)");
+                false -> concat(base, ". Add the appropriate effect to a sequence-produces pure-end block")
+            }
+        }
+    }
+}
+
+{- Check that all body effects are declared. Produces E3001 for the first missing effect
+   with context about which function is missing the declaration. -}
+fn check_body_effects(body_effects: ListEffectName, declared: ListEffectName, fn_name: string, fn_loc: SourceLocation) -> EffectCheckResult {
+    case body_effects.is_nil of {
+        true -> effect_checker_core@effect_check_ok();
+        false -> case is_effect_subsumed(body_effects.head, declared) of {
+            true -> check_body_effects(body_effects.tail, declared, fn_name, fn_loc);
+            false -> effect_checker_core@effect_check_err(
+                "E3001",
+                fn_loc,
+                e3001_message(fn_name, body_effects.head),
+                "sect9.3.1"
+            )
+        }
+    }
+}
+
+{- Check all function declarations (tag 0) in a list.
+   Returns the first error, or effect_check_ok if all pass.
+   Effectful code must be inside a do proc[...] ... end block; bare effectful calls at function body level fail. -}
+fn check_all_fn_decls(decls: ListDeclaration, ctx: EffectContext) -> EffectCheckResult {
+    case decls.is_nil of {
+        true -> effect_checker_core@effect_check_ok();
+        false -> case decls.head.tag == 0 of {
+            true -> do
+                body: Expr <- decls.head.body;
+                decl_ctx: EffectContext <- context_for_decl_params(ctx, decls.head);
+                case body.kind == 11 of {
+                    true -> do
+                        seq_result: EffectCheckResult <- check_sequence_blocks_in_expr(body, decl_ctx);
+                        case seq_result.is_ok of {
+                            true -> check_all_fn_decls(decls.tail, ctx);
+                            false -> seq_result
+                        }
+                    end;
+                    false -> do
+                        body_effects: ListEffectName <- effect_checker_propagation@collect_expr_effects_outside_sequence_blocks(body, decl_ctx);
+                        case body_effects.is_nil of {
+                            true -> do
+                                inner_result: EffectCheckResult <- check_sequence_blocks_in_expr(body, ctx);
+                                case inner_result.is_ok of {
+                                    true -> check_all_fn_decls(decls.tail, ctx);
+                                    false -> inner_result
+                                }
+                            end;
+                            false -> effect_checker_core@effect_check_err(
+                                "E3001",
+                                body.location,
+                                e3001_outside_sequence_message(decls.head.name, body_effects.head),
+                                "sect9.3.1"
+                            )
+                        }
+                    end
+                }
+            end;
+            false -> check_all_fn_decls(decls.tail, ctx)
+        }
+    }
+}
+
+{- Check that every declared effect in a sequence block is used by some function in the block.
+   E3010 UnusedEffectDeclaration: effect declared but no function in block requires it.
+   A declared effect D is "used" if some effect in used subsumes D (i.e. D <: U for some U in used). -}
+fn check_sequence_unused_effects(declared: ListEffectName, used: ListEffectName, _location: SourceLocation) -> EffectCheckResult {
+    case declared.is_nil of {
+        true -> effect_checker_core@effect_check_ok();
+        false -> case is_effect_subsumed(declared.head, used) of {
+            true -> check_sequence_unused_effects(declared.tail, used, _location);
+            false -> effect_checker_core@effect_check_err(
+                "E3010",
+                declared.head.location,
+                concat("Unused effect declaration: ", concat(effect_checker_core@effect_name_to_string(declared.head), " - no function in sequence block requires this effect")),
+                "sect9.3.1"
+            )
+        }
+    }
+}
+
+{- Recurse through expr and validate each sequence block (kind 11).
+   For each: (a) used effects subsumed by declared, (b) every declared effect is used. -}
+fn check_sequence_blocks_in_expr(expr: Expr, ctx: EffectContext) -> EffectCheckResult {
+    case expr.kind == 11 of {
+        true -> do
+            name_validation: EffectCheckResult <- effect_checker_declarations@validate_declared_effects(expr.sequence_effects, ctx.alias_env);
+            case name_validation.is_ok of {
+                false -> name_validation;
+                true -> do
+                    expanded_declared: ListEffectName <- effect_checker_propagation@expand_effect_list(expr.sequence_effects, ctx.alias_env);
+                    used: ListEffectName <- effect_checker_propagation@collect_expr_effects(expr, ctx);
+                    subsumed_result: EffectCheckResult <- all_effects_subsumed(used, expanded_declared);
+                    case subsumed_result.is_ok of {
+                        true -> do
+                            unused_result: EffectCheckResult <- check_sequence_unused_effects(expanded_declared, used, expr.location);
+                            case unused_result.is_ok of {
+                                true -> do
+                                    list_align: EffectCheckResult <- effect_checker_lists@check_list_mem_alignment_in_sequence(expr, expanded_declared);
+                                    case list_align.is_ok of {
+                                        false -> list_align;
+                                        true -> do
+                                            inner_result: EffectCheckResult <- check_sequence_blocks_in_expr(expr.inner, ctx);
+                                            case inner_result.is_ok of {
+                                                true -> check_sequence_blocks_in_expr(expr.right_expr, ctx);
+                                                false -> inner_result;
+                                            }
+                                        end
+                                    }
+                                end;
+                                false -> unused_result
+                            }
+                        end;
+                        false -> subsumed_result
+                    }
+                end;
+            }
+        end;
+        false -> check_sequence_blocks_in_expr_default(expr, ctx)
+    }
+}
+
+fn check_sequence_blocks_in_expr_default(expr: Expr, ctx: EffectContext) -> EffectCheckResult {
+    case expr.kind == 4 of {
+        true -> do
+            arg_result: EffectCheckResult <- check_sequence_blocks_in_expr(expr.inner, ctx);
+            case arg_result.is_ok of {
+                true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                    true -> do
+                        r2: EffectCheckResult <- check_sequence_blocks_in_expr(expr.right_expr.inner, ctx);
+                        case r2.is_ok of {
+                            true -> check_sequence_blocks_in_expr(expr.right_expr.right_expr, ctx);
+                            false -> r2;
+                        }
+                    end;
+                    false -> check_sequence_blocks_in_expr(expr.right_expr, ctx);
+                };
+                false -> arg_result;
+            }
+        end;
+        false -> case expr.kind == 3 of {
+            true -> check_sequence_binop_3(expr, ctx);
+            false -> case expr.kind == 6 of {
+                true -> check_sequence_binop_6(expr, ctx);
+                false -> case expr.kind == 2 of {
+                    true -> check_sequence_blocks_in_expr(expr.inner, ctx);
+                    false -> case expr.kind == 10 of {
+                        true -> check_sequence_binop_10(expr, ctx);
+                        false -> case expr.kind == 11 of {
+                            true -> check_sequence_blocks_in_expr(expr, ctx);
+                            false -> effect_checker_core@effect_check_ok();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn check_sequence_binop_3(expr: Expr, ctx: EffectContext) -> EffectCheckResult {
+    left_result: EffectCheckResult <- check_sequence_blocks_in_expr(expr.inner, ctx);
+    case left_result.is_ok of {
+        true -> check_sequence_blocks_in_expr(expr.right_expr, ctx);
+        false -> left_result;
+    }
+}
+
+fn check_sequence_binop_6(expr: Expr, ctx: EffectContext) -> EffectCheckResult {
+    rhs_result: EffectCheckResult <- check_sequence_blocks_in_expr(expr.inner, ctx);
+    case rhs_result.is_ok of {
+        true -> check_sequence_blocks_in_expr(expr.right_expr, ctx);
+        false -> rhs_result;
+    }
+}
+
+fn check_sequence_binop_10(expr: Expr, ctx: EffectContext) -> EffectCheckResult {
+    rhs_result: EffectCheckResult <- check_sequence_blocks_in_expr(expr.inner, ctx);
+    case rhs_result.is_ok of {
+        true -> check_sequence_blocks_in_expr(expr.right_expr, ctx);
+        false -> rhs_result;
+    }
+}
+
+// --- Main entry point ---
+
+{- Check effect safety for an entire program.
+   1. Build function effect environment (fn name -> declared effects).
+   2. Build alias environment (alias name -> expanded effects).
+   3. Validate all declared effect names are recognized.
+   4. Check every function's body effects against its declared effects.
+   Returns the first error, or effect_check_ok if the program is effect-safe. -}
+fn check_program_effects(program: Program, world: ListNamedProgram) -> EffectCheckResult {
+    fn_env: ListEffectEntry <- effect_checker_declarations@build_fn_env(program.declarations);
+    foreign_c_wrapper_env: ListEffectEntry <- effect_checker_declarations@build_foreign_c_wrapper_env(program.declarations);
+    alias_env: ListEffectEntry <- effect_checker_declarations@build_alias_env(program.declarations);
+    ctx: EffectContext <- effect_checker_core@create_effect_context(fn_env, foreign_c_wrapper_env, alias_env, world);
+    validation: EffectCheckResult <- effect_checker_declarations@validate_all_fn_declarations(program.declarations, alias_env);
+    case validation.is_ok of {
+        true -> check_all_fn_decls(program.declarations, ctx);
+        false -> validation
+    }
+}

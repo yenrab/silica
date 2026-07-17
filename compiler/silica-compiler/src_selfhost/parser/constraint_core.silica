@@ -1,0 +1,251 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } propagation parser core
+// { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], propagation engine
+
+use lexer_core;
+use lexer_token_kind;
+
+export empty_list_int/0;
+export cons_int/2;
+export empty_list_constraint/0;
+export cons_constraint/2;
+export append_list_constraint/2;
+export empty_list_slot/0;
+export cons_slot/2;
+export make_token_slot/3;
+export propagate_until_fixed/2;
+export slot_has_single_role/1;
+export slot_has_empty_roles/1;
+export slot_role/1;
+
+fn empty_list_int() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_int(x: int64, xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+    produces
+        pure result
+    end
+}
+
+// Token slot list is List[<token-slot record>, mem(normal)].
+
+// Constraint list is List[<constraint record>, mem(normal)].
+
+fn empty_list_constraint() -> List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] <- empty[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_constraint(c: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, cs: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)]) -> List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] <- prepend[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)](c, cs)
+    produces
+        pure result
+    end
+}
+
+// Concatenate two constraint lists: all of `a` followed by all of `b`.
+fn append_list_constraint(a: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)], b: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)]) -> List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] {
+    case a.is_nil of {
+        true -> b;
+        false -> cons_constraint(a.head, append_list_constraint(a.tail, b))
+    }
+}
+
+fn empty_list_slot() -> List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- empty[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_slot(s: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, ss: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- prepend[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)](s, ss)
+    produces
+        pure result
+    end
+}
+
+fn make_token_slot(token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, roles: List[int64, mem(normal)]) -> { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] } {
+    sequence
+        result: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] } <- { token: token, possible_roles: roles }
+    produces
+        pure result
+    end
+}
+
+// Intersect two sorted lists of role codes (assumes no duplicates; result unordered)
+fn intersect_roles(a: List[int64, mem(normal)], b: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    case a.is_nil of {
+        true -> empty_list_int();
+        false -> case member_int(a.head, b) of {
+            true -> cons_int(a.head, intersect_roles(a.tail, b));
+            false -> intersect_roles(a.tail, b)
+        }
+    }
+}
+
+fn member_int(x: int64, xs: List[int64, mem(normal)]) -> bool {
+    case xs.is_nil of {
+        true -> false;
+        false -> case x == xs.head of {
+            true -> true;
+            false -> member_int(x, xs.tail)
+        }
+    }
+}
+
+fn slot_has_single_role(slot: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }) -> bool {
+    case slot.possible_roles.is_nil of {
+        true -> false;
+        false -> slot.possible_roles.tail.is_nil
+    }
+}
+
+fn slot_has_empty_roles(slot: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }) -> bool {
+    slot.possible_roles.is_nil
+}
+
+fn slot_role(slot: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }) -> int64 {
+    slot.possible_roles.head
+}
+
+// Find constraints where trigger_role matches; collect their next_token_roles (skip empty)
+fn constraints_for_role(role: int64, constraint_list: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)]) -> List[int64, mem(normal)] {
+    case constraint_list.is_nil of {
+        true -> empty_list_int();
+        false -> case constraint_list.head.trigger_role == role of {
+            true -> case constraint_list.head.next_token_roles.is_nil of {
+                true -> constraints_for_role(role, constraint_list.tail);
+                false -> merge_roles(constraint_list.head.next_token_roles, constraints_for_role(role, constraint_list.tail))
+            };
+            false -> constraints_for_role(role, constraint_list.tail)
+        }
+    }
+}
+
+// Find constraints where trigger_role matches; collect their prev_token_roles (only non-empty)
+fn constraints_for_prev_role(role: int64, constraint_list: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)]) -> List[int64, mem(normal)] {
+    case constraint_list.is_nil of {
+        true -> empty_list_int();
+        false -> case constraint_list.head.trigger_role == role of {
+            true -> case constraint_list.head.prev_token_roles.is_nil of {
+                true -> constraints_for_prev_role(role, constraint_list.tail);
+                false -> merge_roles(constraint_list.head.prev_token_roles, constraints_for_prev_role(role, constraint_list.tail))
+            };
+            false -> constraints_for_prev_role(role, constraint_list.tail)
+        }
+    }
+}
+
+fn merge_roles(a: List[int64, mem(normal)], b: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    case a.is_nil of {
+        true -> b;
+        false -> cons_int(a.head, merge_roles(a.tail, b))
+    }
+}
+
+fn narrow_slot(slot_i: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, slot_next: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, constraint_list: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)]) -> { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] } {
+    case slot_has_single_role(slot_i) of {
+        true -> do
+            allowed: List[int64, mem(normal)] <- constraints_for_role(slot_role(slot_i), constraint_list);
+            case allowed.is_nil of {
+                true -> slot_next;
+                false -> do
+                    new_roles: List[int64, mem(normal)] <- intersect_roles(slot_next.possible_roles, allowed);
+                    { token: slot_next.token, possible_roles: new_roles }
+                end
+            }
+        end;
+        false -> slot_next
+    }
+}
+
+// Backward: when slot_next has single role, narrow slot_prev to allowed prev_token_roles
+fn narrow_slot_backward(slot_prev: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, slot_next: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, constraint_list: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)]) -> { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] } {
+    case slot_has_single_role(slot_next) of {
+        true -> do
+            allowed: List[int64, mem(normal)] <- constraints_for_prev_role(slot_role(slot_next), constraint_list);
+            case allowed.is_nil of {
+                true -> slot_prev;
+                false -> do
+                    new_roles: List[int64, mem(normal)] <- intersect_roles(slot_prev.possible_roles, allowed);
+                    { token: slot_prev.token, possible_roles: new_roles }
+                end
+            }
+        end;
+        false -> slot_prev
+    }
+}
+
+fn propagate_pass(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], constraint_list: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)]) -> (List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], bool) {
+    case slots.is_nil of {
+        true -> (slots, false);
+        false -> case slots.tail.is_nil of {
+            true -> (slots, false);
+            false -> do
+                slot_i: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] } <- slots.head;
+                slot_next: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] } <- slots.tail.head;
+                rest: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- slots.tail.tail;
+                new_slot_next: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] } <- narrow_slot(slot_i, slot_next, constraint_list);
+                new_slot_i: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] } <- narrow_slot_backward(slot_i, slot_next, constraint_list);
+                changed_next: bool <- case list_int_equal(slot_next.possible_roles, new_slot_next.possible_roles) of { true -> false; false -> true };
+                changed_prev: bool <- case list_int_equal(slot_i.possible_roles, new_slot_i.possible_roles) of { true -> false; false -> true };
+                changed_here: bool <- case changed_next of { true -> true; false -> changed_prev };
+                (rest_result: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], changed_rest: bool) <- propagate_pass(cons_slot(new_slot_next, rest), constraint_list);
+                result: (List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], bool) <- (cons_slot(new_slot_i, rest_result), case changed_here of { true -> true; false -> changed_rest });
+                result
+            end
+        }
+    }
+}
+
+fn list_int_equal(a: List[int64, mem(normal)], b: List[int64, mem(normal)]) -> bool {
+    case a.is_nil of {
+        true -> b.is_nil;
+        false -> case b.is_nil of {
+            true -> false;
+            false -> case a.head == b.head of {
+                true -> list_int_equal(a.tail, b.tail);
+                false -> false
+            }
+        }
+    }
+}
+
+fn propagate_until_fixed(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], constraint_list: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)]) -> List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] {
+    (new_slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], changed: bool) <- propagate_pass(slots, constraint_list);
+    case changed of {
+        true -> propagate_until_fixed(new_slots, constraint_list);
+        false -> new_slots
+    }
+}
+

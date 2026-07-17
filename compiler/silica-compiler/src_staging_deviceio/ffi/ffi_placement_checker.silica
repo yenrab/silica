@@ -1,0 +1,528 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Cast-mediated FFI worker placement (silica_ffi_wrapper_specification.md §4): external_danger sequences,
+// dangerous_* module calls, and cast-only client behaviors. Phase 5 — compile-time validation only.
+
+use parser_ast;
+use sir_ast;
+use diagnostics_core;
+use type_checker_core;
+
+export validate_program_ffi_placement/1;
+export collect_spawn_behavior_names/1;
+export collect_ffi_worker_names/1;
+
+fn dangerous_prefix() -> string {
+    "dangerous_"
+}
+
+fn is_dangerous_module_name(name: string) -> bool {
+    pref: string <- dangerous_prefix();
+    case len(name) >= len(pref) of {
+        false -> false;
+        true -> substring(name, 0, len(pref)) == pref
+    }
+}
+
+fn trim_leading_actor_from(s: string, i: int64) -> string {
+    case i >= len(s) of {
+        true -> "";
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> trim_leading_actor_from(s, i + 1);
+            false -> substring(s, i, len(s))
+        }
+    }
+}
+
+fn trim_leading_actor(s: string) -> string {
+    trim_leading_actor_from(s, 0)
+}
+
+fn behavior_return_is_call_only(return_type: string) -> bool {
+    t: string <- trim_leading_actor(return_type);
+    case len(t) >= 8 of {
+        false -> false;
+        true -> substring(t, 0, 8) == "(:reply,"
+    }
+}
+
+fn behavior_return_is_cast_only(return_type: string) -> bool {
+    t: string <- trim_leading_actor(return_type);
+    case len(t) >= 11 of {
+        false -> false;
+        true -> substring(t, 0, 11) == "(:no_reply,"
+    }
+}
+
+fn effect_list_has_external_danger(effects: ListEffectName) -> bool {
+    case effects.is_nil of {
+        true -> false;
+        false -> case effects.head.name == "external_danger" of {
+            true -> true;
+            false -> effect_list_has_external_danger(effects.tail)
+        }
+    }
+}
+
+fn is_spawn_behavior_call(name: string) -> bool {
+    base: string <- type_checker_core@user_call_base_function_name(name);
+    case base == "spawn" of {
+        true -> true;
+        false -> case base == "spawn_linked" of {
+            true -> true;
+            false -> base == "spawn_registered"
+        }
+    }
+}
+
+fn is_spawn_dangerous_behavior_call(name: string) -> bool {
+    base: string <- type_checker_core@user_call_base_function_name(name);
+    case base == "spawn_dangerous" of {
+        true -> true;
+        false -> base == "spawn_dangerous_registered"
+    }
+}
+
+fn expr_contains_spawn_dangerous_call(expr: Expr) -> bool {
+    case expr.kind < 0 of {
+        true -> false;
+        false -> case expr.kind == 4 of {
+            true -> do
+                case is_spawn_dangerous_behavior_call(expr.name) of {
+                    true -> true;
+                    false -> expr_contains_spawn_dangerous_pair(expr.inner, expr.right_expr)
+                }
+            end;
+            false -> expr_contains_spawn_dangerous_pair(expr.inner, expr.right_expr)
+        }
+    }
+}
+
+fn expr_contains_spawn_dangerous_pair(inner: Expr, right: Expr) -> bool {
+    case expr_contains_spawn_dangerous_call(inner) of {
+        true -> true;
+        false -> expr_contains_spawn_dangerous_call(right)
+    }
+}
+
+fn spawn_behavior_expr(call_expr: Expr) -> Expr {
+    call_expr.right_expr.inner
+}
+
+fn append_unique_sir_string(items: ListSirString, s: string) -> ListSirString {
+    case len(s) == 0 of {
+        true -> items;
+        false -> case sir_ast@sir_string_list_contains(items, s) of {
+            true -> items;
+            false -> sir_ast@cons_sir_string(s, items)
+        }
+    }
+}
+
+fn collect_spawn_dangerous_behavior_names_expr(expr: Expr, acc: ListSirString) -> ListSirString {
+    case expr.kind < 0 of {
+        true -> acc;
+        false -> case expr.kind == 4 of {
+            true -> do
+                next: ListSirString <- case is_spawn_dangerous_behavior_call(expr.name) of {
+                    true -> do
+                        beh: Expr <- spawn_behavior_expr(expr);
+                        case beh.kind == 1 of {
+                            true -> append_unique_sir_string(acc, beh.name);
+                            false -> acc
+                        }
+                    end;
+                    false -> acc
+                };
+                collect_spawn_dangerous_behavior_names_pair(expr.inner, expr.right_expr, next)
+            end;
+            false -> collect_spawn_dangerous_behavior_names_pair(expr.inner, expr.right_expr, acc)
+        }
+    }
+}
+
+fn collect_spawn_dangerous_behavior_names_pair(inner: Expr, right: Expr, acc: ListSirString) -> ListSirString {
+    mid: ListSirString <- collect_spawn_dangerous_behavior_names_expr(inner, acc);
+    collect_spawn_dangerous_behavior_names_expr(right, mid)
+}
+
+fn collect_spawn_dangerous_behavior_names_from_decls(decls: ListDeclaration) -> ListSirString {
+    case decls.is_nil of {
+        true -> sir_ast@nil_sir_strings();
+        false -> case decls.head.tag == 0 of {
+            true -> collect_spawn_dangerous_behavior_names_expr(decls.head.body, collect_spawn_dangerous_behavior_names_from_decls(decls.tail));
+            false -> collect_spawn_dangerous_behavior_names_from_decls(decls.tail)
+        }
+    }
+}
+
+fn collect_spawn_behavior_names_expr(expr: Expr, acc: ListSirString) -> ListSirString {
+    case expr.kind < 0 of {
+        true -> acc;
+        false -> case expr.kind == 4 of {
+            true -> do
+                next: ListSirString <- case is_spawn_behavior_call(expr.name) of {
+                    true -> do
+                        beh: Expr <- spawn_behavior_expr(expr);
+                        case beh.kind == 1 of {
+                            true -> append_unique_sir_string(acc, beh.name);
+                            false -> acc
+                        }
+                    end;
+                    false -> acc
+                };
+                collect_spawn_behavior_names_pair(expr.inner, expr.right_expr, next)
+            end;
+            false -> collect_spawn_behavior_names_pair(expr.inner, expr.right_expr, acc)
+        }
+    }
+}
+
+fn collect_spawn_behavior_names_pair(inner: Expr, right: Expr, acc: ListSirString) -> ListSirString {
+    mid: ListSirString <- collect_spawn_behavior_names_expr(inner, acc);
+    collect_spawn_behavior_names_expr(right, mid)
+}
+
+fn collect_spawn_behavior_names_from_decls(decls: ListDeclaration) -> ListSirString {
+    case decls.is_nil of {
+        true -> sir_ast@nil_sir_strings();
+        false -> case decls.head.tag == 0 of {
+            true -> collect_spawn_behavior_names_expr(decls.head.body, collect_spawn_behavior_names_from_decls(decls.tail));
+            false -> collect_spawn_behavior_names_from_decls(decls.tail)
+        }
+    }
+}
+
+fn statement_chain_has_external_danger_sequence(expr: Expr) -> bool {
+    case expr.kind < 0 of {
+        true -> false;
+        false -> case expr.kind == 11 of {
+            true -> effect_list_has_external_danger(expr.sequence_effects);
+            false -> case expr.kind == 6 of {
+                true -> statement_chain_has_external_danger_sequence(expr.right_expr);
+                false -> case expr.kind == 10 of {
+                    true -> statement_chain_has_external_danger_sequence(expr.right_expr);
+                    false -> false
+                }
+            }
+        }
+    }
+}
+
+fn build_ffi_worker_names_loop(decls: ListDeclaration, spawn_names: ListSirString, acc: ListSirString) -> ListSirString {
+    case decls.is_nil of {
+        true -> acc;
+        false -> case decls.head.tag == 0 of {
+            true -> do
+                next_acc: ListSirString <- case sir_ast@sir_string_list_contains(spawn_names, decls.head.name) of {
+                    false -> acc;
+                    true -> case statement_chain_has_external_danger_sequence(decls.head.body) of {
+                        false -> acc;
+                        true -> append_unique_sir_string(acc, decls.head.name)
+                    }
+                };
+                build_ffi_worker_names_loop(decls.tail, spawn_names, next_acc)
+            end;
+            false -> build_ffi_worker_names_loop(decls.tail, spawn_names, acc)
+        }
+    }
+}
+
+fn program_uses_dangerous_module_loop(decls: ListDeclaration) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 2 of {
+            true -> case is_dangerous_module_name(decls.head.parameters.head.name) of {
+                true -> true;
+                false -> program_uses_dangerous_module_params(decls.head.parameters.tail)
+            };
+            false -> program_uses_dangerous_module_loop(decls.tail)
+        }
+    }
+}
+
+fn program_uses_dangerous_module_params(params: ListParam) -> bool {
+    case params.is_nil of {
+        true -> false;
+        false -> case is_dangerous_module_name(params.head.name) of {
+            true -> true;
+            false -> program_uses_dangerous_module_params(params.tail)
+        }
+    }
+}
+
+fn program_uses_dangerous_module(decls: ListDeclaration) -> bool {
+    program_uses_dangerous_module_loop(decls)
+}
+
+fn expr_contains_cast_call(expr: Expr) -> bool {
+    case expr.kind < 0 of {
+        true -> false;
+        false -> case expr.kind == 4 of {
+            true -> do
+                base: string <- type_checker_core@user_call_base_function_name(expr.name);
+                case base == "cast" of {
+                    true -> true;
+                    false -> case base == "cast_registered" or base == "cast_dangerous_registered" of {
+                        true -> true;
+                        false -> expr_contains_cast_pair(expr.inner, expr.right_expr)
+                    }
+                }
+            end;
+            false -> expr_contains_cast_pair(expr.inner, expr.right_expr)
+        }
+    }
+}
+
+fn expr_contains_cast_pair(inner: Expr, right: Expr) -> bool {
+    case expr_contains_cast_call(inner) of {
+        true -> true;
+        false -> expr_contains_cast_call(right)
+    }
+}
+
+fn is_dangerous_qualified_call(name: string) -> bool {
+    case type_checker_core@call_name_is_module_qualified(name) of {
+        false -> false;
+        true -> do
+            (qmod: string, _: string) <- type_checker_core@split_module_qualified_call_name(name);
+            is_dangerous_module_name(qmod)
+        end
+    }
+}
+
+fn is_ffi_worker_fn(current_fn: string, ffi_worker_names: ListSirString) -> bool {
+    case len(current_fn) == 0 of {
+        true -> false;
+        false -> sir_ast@sir_string_list_contains(ffi_worker_names, current_fn)
+    }
+}
+
+fn sequence_body_flag(has_ed: bool, prev: int64) -> int64 {
+    case has_ed of {
+        true -> 1;
+        false -> prev
+    }
+}
+
+fn print_placement_error(code: string, loc: SourceLocation, msg: string) -> int64 proc[DeviceIO] {
+    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", code, loc, msg, "sect4");
+    1
+}
+
+fn validate_expr_placement(expr: Expr, current_fn: string, lambda_depth: int64, in_external_danger_body: int64, ffi_worker_names: ListSirString) -> int64 proc[DeviceIO] {
+    case expr.kind < 0 of {
+        true -> 0;
+        false -> case expr.kind == 11 of {
+            true -> do
+                has_ed: bool <- effect_list_has_external_danger(expr.sequence_effects);
+                placement_st: int64 <- case has_ed of {
+                    true -> case is_ffi_worker_fn(current_fn, ffi_worker_names) of {
+                        false -> case expr_contains_spawn_dangerous_pair(expr.inner, expr.right_expr) of {
+                            true -> print_placement_error("E4047", expr.location, "sequence blocks that call spawn_dangerous must not declare external_danger. The external_danger effect is valid only inside the FFI worker behavior passed to spawn_dangerous (spec 4.4)");
+                            false -> print_placement_error("E4041", expr.location, "external_danger sequence blocks are only valid directly inside the cast-only behavior function installed by spawn_dangerous for an FFI worker actor (spec 4.6)")
+                        };
+                        true -> case lambda_depth > 0 of {
+                            true -> print_placement_error("E4041", expr.location, "external_danger sequence blocks are only valid directly inside the cast-only behavior function installed by spawn_dangerous for an FFI worker actor (spec 4.6)");
+                            false -> 0
+                        }
+                    };
+                    false -> 0
+                };
+                case placement_st == 0 of {
+                    false -> placement_st;
+                    true -> do
+                        body_flag: int64 <- sequence_body_flag(has_ed, in_external_danger_body);
+                        inner_st: int64 <- validate_expr_placement(expr.inner, current_fn, lambda_depth, body_flag, ffi_worker_names);
+                        case inner_st == 0 of {
+                            false -> inner_st;
+                            true -> validate_expr_placement(expr.right_expr, current_fn, lambda_depth, in_external_danger_body, ffi_worker_names)
+                        }
+                    end
+                }
+            end;
+            false -> case expr.kind == 991 of {
+                true -> validate_expr_placement(expr.inner, current_fn, lambda_depth + 1, in_external_danger_body, ffi_worker_names);
+                false -> case expr.kind == 4 of {
+                    true -> do
+                        danger_st: int64 <- case is_dangerous_qualified_call(expr.name) of {
+                            false -> 0;
+                            true -> case in_external_danger_body == 1 of {
+                                false -> print_placement_error("E4042", expr.location, "Calls to dangerous_* module functions must appear in the sequence portion of sequence proc[external_danger] ... produces pure ... end inside an FFI worker actor behavior (spec 4.5)");
+                                true -> case is_ffi_worker_fn(current_fn, ffi_worker_names) of {
+                                    false -> print_placement_error("E4042", expr.location, "Calls to dangerous_* module functions must appear in the sequence portion of sequence proc[external_danger] ... produces pure ... end inside an FFI worker actor behavior (spec 4.5)");
+                                    true -> 0
+                                }
+                            }
+                        };
+                        case danger_st == 0 of {
+                            false -> danger_st;
+                            true -> validate_expr_placement_pair(expr.inner, expr.right_expr, current_fn, lambda_depth, in_external_danger_body, ffi_worker_names)
+                        }
+                    end;
+                    false -> validate_expr_placement_pair(expr.inner, expr.right_expr, current_fn, lambda_depth, in_external_danger_body, ffi_worker_names)
+                }
+            }
+        }
+    }
+}
+
+fn validate_expr_placement_pair(inner: Expr, right: Expr, current_fn: string, lambda_depth: int64, in_external_danger_body: int64, ffi_worker_names: ListSirString) -> int64 proc[DeviceIO] {
+    first: int64 <- validate_expr_placement(inner, current_fn, lambda_depth, in_external_danger_body, ffi_worker_names);
+    case first == 0 of {
+        false -> first;
+        true -> validate_expr_placement(right, current_fn, lambda_depth, in_external_danger_body, ffi_worker_names)
+    }
+}
+
+fn validate_decls_placement_loop(decls: ListDeclaration, ffi_worker_names: ListSirString) -> int64 proc[DeviceIO] {
+    case decls.is_nil of {
+        true -> 0;
+        false -> case decls.head.tag == 0 of {
+            true -> do
+                body_st: int64 <- validate_expr_placement(decls.head.body, decls.head.name, 0, 0, ffi_worker_names);
+                case body_st == 0 of {
+                    false -> body_st;
+                    true -> validate_decls_placement_loop(decls.tail, ffi_worker_names)
+                }
+            end;
+            false -> validate_decls_placement_loop(decls.tail, ffi_worker_names)
+        }
+    }
+}
+
+fn validate_foreign_work_client_behaviors_loop(decls: ListDeclaration, spawn_names: ListSirString, ffi_workers: ListSirString, uses_dangerous: bool) -> int64 proc[DeviceIO] {
+    case decls.is_nil of {
+        true -> 0;
+        false -> case decls.head.tag == 0 of {
+            true -> do
+                is_spawn: bool <- sir_ast@sir_string_list_contains(spawn_names, decls.head.name);
+                is_worker: bool <- sir_ast@sir_string_list_contains(ffi_workers, decls.head.name);
+                client_st: int64 <- case uses_dangerous of {
+                    false -> 0;
+                    true -> case is_spawn of {
+                        false -> 0;
+                        true -> case is_worker of {
+                            true -> 0;
+                            false -> case expr_contains_cast_call(decls.head.body) of {
+                                false -> 0;
+                                true -> case behavior_return_is_cast_only(decls.head.return_type_name) of {
+                                    false -> case behavior_return_is_call_only(decls.head.return_type_name) of {
+                                        true -> print_placement_error("E4040", decls.head.location, "Actors that initiate foreign work must use cast-only behaviors (spec 4.3)");
+                                        false -> 0
+                                    };
+                                    true -> 0
+                                }
+                            }
+                        }
+                    }
+                };
+                case client_st == 0 of {
+                    false -> client_st;
+                    true -> validate_foreign_work_client_behaviors_loop(decls.tail, spawn_names, ffi_workers, uses_dangerous)
+                }
+            end;
+            false -> validate_foreign_work_client_behaviors_loop(decls.tail, spawn_names, ffi_workers, uses_dangerous)
+        }
+    }
+}
+
+fn validate_program_ffi_placement(program: Program) -> int64 proc[DeviceIO] {
+    spawn_names: ListSirString <- collect_spawn_behavior_names(program);
+    ffi_workers: ListSirString <- collect_ffi_worker_names(program);
+    uses_dangerous: bool <- program_uses_dangerous_module(program.declarations);
+    placement_st: int64 <- validate_decls_placement_loop(program.declarations, ffi_workers);
+    case placement_st == 0 of {
+        false -> placement_st;
+        true -> validate_foreign_work_client_behaviors_loop(program.declarations, spawn_names, ffi_workers, uses_dangerous)
+    }
+}
+
+fn collect_spawn_behavior_names(program: Program) -> ListSirString {
+    collect_spawn_behavior_names_from_decls(program.declarations)
+}
+
+fn find_atom_field_in_record_chain(field_chain: Expr, field_name: string) -> string {
+    case field_chain.kind == 21 of {
+        false -> "";
+        true -> case field_chain.name == field_name of {
+            true -> case field_chain.inner.kind == 5 of {
+                true -> field_chain.inner.value;
+                false -> ""
+            };
+            false -> find_atom_field_in_record_chain(field_chain.right_expr, field_name)
+        }
+    }
+}
+
+fn find_fn_ref_name_in_record_chain(field_chain: Expr, field_name: string) -> string {
+    case field_chain.kind == 21 of {
+        false -> "";
+        true -> case field_chain.name == field_name of {
+            true -> case field_chain.inner.kind == 1 of {
+                true -> field_chain.inner.name;
+                false -> ""
+            };
+            false -> find_fn_ref_name_in_record_chain(field_chain.right_expr, field_name)
+        }
+    }
+}
+
+fn collect_static_dangerous_child_behavior_names_expr(expr: Expr, acc: ListSirString) -> ListSirString {
+    case expr.kind < 0 of {
+        true -> acc;
+        false -> do
+            next: ListSirString <- case expr.kind == 21 and find_atom_field_in_record_chain(expr, "flavor") == ":dangerous" of {
+                true -> append_unique_sir_string(acc, find_fn_ref_name_in_record_chain(expr, "behavior"));
+                false -> acc
+            };
+            collect_static_dangerous_child_behavior_names_pair(expr.inner, expr.right_expr, next)
+        end
+    }
+}
+
+fn collect_static_dangerous_child_behavior_names_pair(inner: Expr, right: Expr, acc: ListSirString) -> ListSirString {
+    mid: ListSirString <- collect_static_dangerous_child_behavior_names_expr(inner, acc);
+    collect_static_dangerous_child_behavior_names_expr(right, mid)
+}
+
+fn collect_static_dangerous_child_behavior_names_from_decls(decls: ListDeclaration) -> ListSirString {
+    case decls.is_nil of {
+        true -> sir_ast@nil_sir_strings();
+        false -> case decls.head.tag == 0 of {
+            true -> collect_static_dangerous_child_behavior_names_expr(decls.head.body, collect_static_dangerous_child_behavior_names_from_decls(decls.tail));
+            false -> collect_static_dangerous_child_behavior_names_from_decls(decls.tail)
+        }
+    }
+}
+
+fn merge_sir_string_lists(acc: ListSirString, items: ListSirString) -> ListSirString {
+    case items.is_nil of {
+        true -> acc;
+        false -> merge_sir_string_lists(append_unique_sir_string(acc, items.head), items.tail)
+    }
+}
+
+fn collect_ffi_worker_names(program: Program) -> ListSirString {
+    spawn_dangerous_names: ListSirString <- collect_spawn_dangerous_behavior_names_from_decls(program.declarations);
+    spawn_behavior_names: ListSirString <- collect_spawn_behavior_names_from_decls(program.declarations);
+    static_dangerous_child_names: ListSirString <- collect_static_dangerous_child_behavior_names_from_decls(program.declarations);
+    merged_dangerous_names: ListSirString <- merge_sir_string_lists(spawn_dangerous_names, static_dangerous_child_names);
+    merged_spawn_names: ListSirString <- merge_sir_string_lists(merged_dangerous_names, spawn_behavior_names);
+    build_ffi_worker_names_loop(program.declarations, merged_spawn_names, sir_ast@nil_sir_strings())
+}

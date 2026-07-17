@@ -1377,9 +1377,18 @@ Until the §13 cutover gate passes:
 3. **All self-host source edits** land only under `compiler/silica-compiler/src_selfhost/` (parallel copy of `src/`, plus any new helpers such as `compiler_maps.silica`).
 4. Default `make` / integrate path continues to use bootstrap → current `src/`.
 
-**Hard constraint (parallel tree only):** `src_selfhost/` must contain **no `type` aliases of any kind** (including `type TokenKind = int64`). Prefer bare types (`int64`) or existing named structs (`TokenKinds`); do not introduce new aliases as a migration aid.
+**Hard constraints (parallel tree only — [silica-specification.md](../silica-specification.md) §3.4.2):**
 
-**Rationale:** Full-tree self-host compile fails while `bst.silica` and `type` aliases remain in the graph being self-hosted. Those removals happen in the parallel tree first so production `src/` and bootstrap stay a known-good fallback.
+1. **No `type` aliases** of any kind (including `type TokenKind = int64`).
+2. **No named `struct Name { … }` declarations.** Record types are written **inline** as `{ field: Type, … }` wherever a type is required. Record values use **struct literals** only (`{ … }`, or `identifier { … }` as a value form where the grammar allows — never as a type declaration).
+3. **Host for `src_selfhost/` is the seed** `compiler/silica-compiler/src` → `silica-compiler` (E1047 enforced). Do **not** disable E1047 or re-teach boot-era named structs in the seed to make the parallel tree compile.
+4. Linear recursive ADTs use built-in **`List[T, mem(S)]`**, not custom `ListX` cons-cell structs. Tree-shaped ADTs (`Expr`, `SIRTerm`) use a seed-legal encoding (see §12 Wave C) — not named self-typed structs.
+
+**Rationale:** Frozen `src/` still uses bootstrap-era named structs because **silica-boot** compiles that tree. The parallel tree must match the surface language the seed already implements, so `build-selfhost` is a deliberate rewrite off boot-only ADTs — not a seed dialect expansion.
+
+### Edit discipline (non-negotiable)
+
+**Crafted edits only** under `src_selfhost/`. Do **not** run tree-wide / multi-file batch rewriters, bulk regex migrations, or “fix the whole dialect in one pass” scripts. Each change is hand-scoped to the files and APIs named in the active step, reviewed before the next step starts. Mechanical helpers (if any) may inventory or transform a **single named file** under explicit review — never the whole tree unattended.
 
 Complete the steps below in order.
 
@@ -1391,49 +1400,97 @@ Complete the steps below in order.
 
 **Step 1 check:** Inventory checked into the authority plan’s Completion Tracking table; `src_selfhost/` exists and is the only tree listed for §11–§12 edits.
 
-#### Step 2 — Ban all `type` aliases in `src_selfhost/`
+#### Step 2 — Replace emitter `bst` with WBT maps in `src_selfhost/` (first source edit)
 
-1. In `src_selfhost/` only: remove `type TokenKind = int64` and every other `type` alias.
-2. Rewrite call sites to `int64` or `TokenKinds` fields; grep under `src_selfhost/` returns zero aliases.
-3. Grep-clean legacy bootstrap exports from `src_selfhost/` `use` paths (`btree_*`, `graph_adj_*`, width-specialized empties) as encountered.
+This is the **first** self-host source change after the parallel tree exists. Keep boot-era `struct` / `type` shapes intact in this step; only swap the index representation.
 
-**Step 2 check:** No `type` declarations in `src_selfhost/`; frozen `src/` still contains its current aliases untouched; current lexer trials still pass via bootstrap → `src/`.
-
-#### Step 3 — Replace emitter `bst` with WBT maps in `src_selfhost/`
-
-1. Land `compiler_maps.silica` under `src_selfhost/` with explicit `OrderedMap[…, mem(normal)]` bindings — **no aliases**.
-2. Migrate all `use bst` emitter modules in `src_selfhost/` (atom / int / float / int_rodata pools, then string literal pool) to `wbt_map` + `OrderedMap@get` / `wbt_map@insert`.
-3. Remove `bst` from the **parallel** search graph once `use` count in `src_selfhost/` is zero. Do **not** delete `src/data_structures/bst.silica` yet (frozen production tree still needs it).
+1. Land `data_structures/compiler_maps.silica` under `src_selfhost/` with explicit `OrderedMap[…, mem(normal)]` bindings — **no aliases**.
+2. Crafted migration of each `use bst` emitter module in `src_selfhost/` (atom table, int/float literal pools, `int_rodata`) to `compiler_maps` / `wbt_map` + `OrderedMap@get` / `wbt_map@insert`. One module (or one coherent helper API) at a time.
+3. Remove `data_structures/bst.silica` from the **parallel** tree once `use bst` / `bst@` / `BstNode` counts in `src_selfhost/` are zero. Do **not** delete `src/data_structures/bst.silica` (frozen production tree still needs it).
 
 **Compiler WBT surface:** `wbt_map@empty`, `wbt_map@insert`, `OrderedMap@get` (set analogues where adopted). No `join`, `concat`, or `split`.
 
-**Step 3 check:** Zero `use bst` under `src_selfhost/`; parallel emitter trials (or dedicated self-host leaf) pass with WBT-backed pools; frozen `src/` still uses `bst` as today.
+**Step 2 check:** Zero `use bst` / `bst@` / `BstNode` under `src_selfhost/`; frozen `src/` still uses `bst` as today.
+
+#### Step 3 — Ban all `type` aliases in `src_selfhost/`
+
+1. In `src_selfhost/` only: remove `type TokenKind = int64` and every other `type` alias — **file by file**, not a tree-wide strip.
+2. Rewrite call sites to bare `int64` (token kind codes) and **inline** constant records from `token_kinds()` — not a named `TokenKinds` struct type.
+3. Grep-clean legacy bootstrap exports from `src_selfhost/` `use` paths (`btree_*`, `graph_adj_*`, width-specialized empties) as encountered.
+
+**Step 3 check:** No `type` declarations in `src_selfhost/`; frozen `src/` still contains its current aliases untouched; current lexer trials still pass via bootstrap → `src/`.
 
 #### Step 4 — Class-A compile blockers on the parallel tree
 
-1. Fix class-A items **in `src_selfhost/`** (and only if unavoidable, in shared stdlib / host bugfixes that do not change frozen `src/` semantics) so `silica-compiler` can compile the full `src_selfhost/` graph.
-2. Do not claim §12 until a seed host (bootstrap-built from frozen `src/` is fine) can compile-only smoke `src_selfhost/silica.config.compiler`.
+1. Fix class-A items **in `src_selfhost/`** (and only if unavoidable, in shared stdlib / host bugfixes that do not change frozen `src/` semantics) so the **seed** can compile the full `src_selfhost/` graph under §3.4.2 (no named structs / no aliases). Crafted, incremental fixes only.
+2. Do not claim §12 until that seed host can compile-only smoke `src_selfhost/silica.config.compiler`.
 
-**§11 exit gate:** `src_selfhost/` has zero `type` aliases and zero `bst` uses; emitter pools there are WBT-backed; Phase 0 inventory recorded; remaining class-A items are fixed or explicitly listed as §12 inputs. Frozen `src/` and `silica-bootstrap-compiler` remain untouched; default build still bootstrap → `src/`.
+**§11 exit gate:** `src_selfhost/` has zero `type` aliases and zero `bst` uses; emitter pools there are WBT-backed; Phase 0 inventory recorded; remaining class-A items (including the named-struct dialect rewrite) are fixed or explicitly listed as §12 inputs. Frozen `src/` and `silica-bootstrap-compiler` remain untouched; default build still bootstrap → `src/`.
 
-**§11 status:** Planned.
+**§11 status:** In progress (2026-07-17) — parallel tree **re-frozen** from `src/` (includes block-comment lexer in the seed host); Step 2 (BST → WBT) restored after re-copy; Steps 3–4 open.
+
+**§11 delivered (so far):**
+
+1. `compiler/silica-compiler/src_selfhost/` re-stood up as a faithful copy of frozen `src/`.
+2. `data_structures/compiler_maps.silica` + crafted emitter-pool migration (`atom_table`, `int64_literal_pool`, `float32_literal_pool`, `float64_literal_pool`, `int_rodata`) onto WBT `OrderedMap` via `compiler_maps`; `data_structures/bst.silica` removed from the parallel tree only.
+3. Grep gate: zero `use bst` / `bst@` / `BstNode` under `src_selfhost/`.
+
+**§11 open:**
+
+- Step 3: remove `type` aliases (crafted).
+- Step 4 / §12 inputs: named-struct dialect rewrite and remaining class-A W-ids (still deferred; no batch rewrite).
 
 ## 12. Build flip and ABI hardening (parallel path only)
 
-**Authority:** [bootstrap_retirement_and_self_host_plan.md](bootstrap_retirement_and_self_host_plan.md) Phases 1–2.
+**Authority:** [bootstrap_retirement_and_self_host_plan.md](bootstrap_retirement_and_self_host_plan.md) Phases 1–2; surface language [silica-specification.md](../silica-specification.md) §3.4.2 / §3.3.7.
 
-**Dependencies:** §11 exit gate (self-hostable **parallel** tree: no aliases, no `bst`).
+**Dependencies:** §11 exit gate (self-hostable **parallel** tree: no aliases, no `bst`) plus the dialect rewrite below.
+
+**Host rule:** `assembly-selfhost` / `build-selfhost` compile `src_selfhost/` with **`../src/silica-compiler`** (seed built from frozen `src/`, optionally refreshed from a DeviceIO staging overlay for file intrinsics). The host keeps **E1047 on**. Success means the parallel **source** is seed-legal — not that the host was weakened to accept boot-era named structs.
 
 **Scope:**
 
 - Dual-build Makefile switch: **`build-bootstrap` (default)** continues to build frozen `src/` with `silica-boot`; **`build-selfhost` / `assembly-selfhost`** compile and link only from `src_selfhost/`.
 - `src_selfhost/silica.config.compiler` batch mode; self-hosted `.sams` → `.o` → link recipe; stack/resource limits for the full parallel graph.
+- **Dialect rewrite of `src_selfhost/`** off bootstrap-only named structs (waves A–C below).
 - Finish Phase 2 workaround removals **inside `src_selfhost/`** once the self-host path exists.
 - Do **not** change the default production recipe or delete bootstrap in this section.
 
-**§12 exit gate:** `make build-selfhost` / `assembly-selfhost` produces a self-host binary from `src_selfhost/` without `silica-boot` on that path’s compile critical path (runtime `.a` may remain temporarily); full `src_selfhost/silica.config.compiler` batch compiles. Default `make` / integrate still uses bootstrap → frozen `src/`.
+### §12 dialect rewrite waves (parallel tree only)
 
-**§12 status:** Planned — blocked on §11.
+| Wave | What | Target shape |
+| ---- | ---- | ------------ |
+| **A** | Custom `ListX` cons-cell structs (~36) | `List[<inline element>, mem(normal)]`; `[]` / prepend / list patterns |
+| **B** | Non-recursive records (`SourceLocation`, `Token`, `Param`, `SymbolEntry`, tables, results, `token_kinds()` payload, …) | Inline `{ field: Type, … }` types; `{ … }` values; factory fns instead of `export TypeName/0` |
+| **C** | Recursive trees `Expr`, `SIRTerm` (and any other self-typed nodes) | Seed-legal encoding: **index-arena** `{ nodes: List[<inline node>, mem(normal)], root: int64 }` with `-1` = none (replaces cyclic `kind=-1` dummies). Long-term Phase 7 may replace the arena with `BinaryTree[<inline payload>, mem(normal)]` without reopening named structs. |
+| **D** | Residual class-A W-ids | Keyword binding renames (`required`/`provided` as idents), comment/`sequence` token quirks, E3009 residuals, string/ABI W-ids as needed for batch green |
+
+**Grep gates before claiming §12:**
+
+- `rg '^\s*struct\s+\w+' compiler/silica-compiler/src_selfhost` → zero
+- `rg '^\s*type\s+\w+\s*=' compiler/silica-compiler/src_selfhost` → zero
+- `rg 'use bst' compiler/silica-compiler/src_selfhost` → zero
+
+**§12 exit gate:** `make build-selfhost` / `assembly-selfhost` produces a self-host binary from `src_selfhost/` without `silica-boot` on that path’s compile critical path (runtime `.a` may remain temporarily); full `src_selfhost/silica.config.compiler` batch compiles under the seed with **E1047 on** and **zero** named struct / `type` alias declarations in the parallel tree. Default `make` / integrate still uses bootstrap → frozen `src/`.
+
+**§12 status:** Reset (2026-07-17) — prior batch dialect waves discarded with the `src_selfhost/` re-copy. Dual-build / DeviceIO infrastructure may still exist on disk; dialect rewrite of the parallel tree has **not** been re-started. Do not treat “staging seed with E1047 disabled” as progress toward the exit gate.
+
+**Dialect rewrite progress:**
+
+| Wave | Status | Notes |
+| ---- | ------ | ----- |
+| Plan / host rules | Done | §11 hard constraints + crafted-edit discipline; `src_selfhost/README.md` |
+| Emitter WBT (§11 Step 2) | Done | Zero `use bst` under `src_selfhost/`; pools via `compiler_maps` / WBT |
+| Wave A/B | Not started | Parallel tree still has boot-era named `struct` / `type` (faithful re-copy). Crafted only. |
+| Wave C `Expr` / `SIRTerm` | Not started | Still boot-era named recursive structs. |
+| Wave D residuals | Not started | Blocked on A–C. |
+
+**§12 open (blocks exit gate):**
+
+1. Finish §11 Steps 3–4 (alias ban; class-A list) under crafted-edit rules.
+2. **Waves A–C:** remove named `struct` declarations; migrate ListX → `List`, records → inline, `Expr`/`SIRTerm` → arena — **crafted, no batch rewriters**.
+3. **Wave D:** remaining class-A compile failures under the strict seed.
+4. `make -C src_selfhost build-selfhost` with `HOST_COMPILER=../src/silica-compiler` (E1047 on) until green.
 
 ## 13. Remaining keyed lookups + cutover / fixed-point / bootstrap retirement
 
@@ -2053,7 +2110,7 @@ Sections §6–§37 are the authoritative serial queue. Complete each section in
 3. WBT core (§8 / §8A) — finish §8A.11; §§8A.1–8A.10 accepted.
 4. `wbt_map` and `OrderedMap` (§9). **(complete)**
 5. `wbt_set` and `OrderedSet` (§10). **(complete)**
-6. Self-host source prerequisites on `src_selfhost/` only: alias ban + emitter BST → WBT (§11); frozen `src/` + bootstrap untouched.
+6. Self-host source prerequisites on `src_selfhost/` only: crafted BST → WBT, then alias ban (§11). **(Steps 1–2 done 2026-07-17; Steps 3–4 open; no batch rewrites)**
 7. Additive build-selfhost / ABI hardening on the parallel tree (§12); default still bootstrap → `src/`.
 8. Remaining keyed lookups + fixed-point + cutover / bootstrap retirement (§13).
 9. Join/split reopen checkpoint (§14).

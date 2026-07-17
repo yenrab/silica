@@ -1,0 +1,42 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// String substring and substring_until_char helpers: non-MTE fallback for Apple Silicon (macOS ARM64).
+// Per silica-specification §21.3: software-based bounds checking when MTE unavailable.
+//
+// L_substring_helper: X0 = ptr (literal or SilicaString), X1 = start_char (int64), X2 = end_char (int64).
+// X8 = UTF-8 payload base (rodata or heap data ptr). Character-based indices; then mmap copy.
+// Returns X0 = ptr to newly allocated substring [start_char, end_char). Clamps to valid range.
+//
+// L_substring_until_char_helper: X0 = ptr, X1 = start (int64), X2 = encoded char (len<<56|packed).
+// Returns X0 = ptr to substring from start until (exclusive) first occurrence of char, or rest of string.
+// Full UTF-8 code-point matching: len=1..4 bytes, packed=byte0|(byte1<<8)|(byte2<<16)|(byte3<<24).
+//
+// Uses mmap syscall (no libc). Targets: Apple Silicon, macOS ARM64.
+
+export emit_string_substring_helper/0;
+export emit_string_substring_until_char_helper/0;
+
+fn emit_string_substring_helper() -> string {
+    // Character-based: detect SilicaString (tag 0xFF) vs literal; X8 = payload; UTF-8 scan; mmap copy.
+    "L_substring_helper:\n    STP X19, X20, [SP, #-64]!\n    STP X21, X22, [SP, #16]\n    STP X23, X14, [SP, #32]\n    STR X15, [SP, #48]\n    MOV X19, X0\n    MOV X20, X1\n    MOV X21, X2\n    CMP X20, #0\n    CSEL X20, XZR, X20, LT\n    CMP X21, #0\n    CSEL X21, XZR, X21, LT\n    LDRB W10, [X19]\n    CMP W10, #0xFF\n    B.NE L_ss_lit_base\n    LDR X8, [X19, #8]\n    LDR X22, [X19, #16]\n    B L_ss_len_done\nL_ss_lit_base:\n    MOV X8, X19\n    MOV X9, X19\n    MOV X22, #0\nL_ss_len:\n    LDRB W10, [X9]\n    CBZ W10, L_ss_len_done\n    ADD X22, X22, #1\n    ADD X9, X9, #1\n    B L_ss_len\nL_ss_len_done:\n    MOV X9, #0\n    MOV X14, #0\nL_ss_find_start:\n    CMP X14, X20\n    B.GE L_ss_start_found\n    CMP X9, X22\n    B.GE L_ss_start_found\n    LDRB W10, [X8, X9]\n    CMP W10, #0x80\n    B.LO L_ss_adv1\n    CMP W10, #0xC2\n    B.LO L_ss_adv1\n    CMP W10, #0xE0\n    B.LO L_ss_adv2\n    CMP W10, #0xF0\n    B.LO L_ss_adv3\n    CMP W10, #0xF8\n    B.LO L_ss_adv4\nL_ss_adv1:\n    ADD X9, X9, #1\n    ADD X14, X14, #1\n    B L_ss_find_start\nL_ss_adv2:\n    SUB X18, X22, X9\n    MOV X17, #2\n    CMP X18, #2\n    CSEL X17, X18, X17, LO\n    ADD X9, X9, X17\n    ADD X14, X14, #1\n    B L_ss_find_start\nL_ss_adv3:\n    SUB X18, X22, X9\n    MOV X17, #3\n    CMP X18, #3\n    CSEL X17, X18, X17, LO\n    ADD X9, X9, X17\n    ADD X14, X14, #1\n    B L_ss_find_start\nL_ss_adv4:\n    SUB X18, X22, X9\n    MOV X17, #4\n    CMP X18, #4\n    CSEL X17, X18, X17, LO\n    ADD X9, X9, X17\n    ADD X14, X14, #1\n    B L_ss_find_start\nL_ss_start_found:\n    MOV X23, X9\nL_ss_find_end:\n    CMP X14, X21\n    B.GE L_ss_end_found\n    CMP X9, X22\n    B.GE L_ss_end_found\n    LDRB W10, [X8, X9]\n    CMP W10, #0x80\n    B.LO L_ss_eadv1\n    CMP W10, #0xC2\n    B.LO L_ss_eadv1\n    CMP W10, #0xE0\n    B.LO L_ss_eadv2\n    CMP W10, #0xF0\n    B.LO L_ss_eadv3\n    CMP W10, #0xF8\n    B.LO L_ss_eadv4\nL_ss_eadv1:\n    ADD X9, X9, #1\n    ADD X14, X14, #1\n    B L_ss_find_end\nL_ss_eadv2:\n    SUB X18, X22, X9\n    MOV X17, #2\n    CMP X18, #2\n    CSEL X17, X18, X17, LO\n    ADD X9, X9, X17\n    ADD X14, X14, #1\n    B L_ss_find_end\nL_ss_eadv3:\n    SUB X18, X22, X9\n    MOV X17, #3\n    CMP X18, #3\n    CSEL X17, X18, X17, LO\n    ADD X9, X9, X17\n    ADD X14, X14, #1\n    B L_ss_find_end\nL_ss_eadv4:\n    SUB X18, X22, X9\n    MOV X17, #4\n    CMP X18, #4\n    CSEL X17, X18, X17, LO\n    ADD X9, X9, X17\n    ADD X14, X14, #1\n    B L_ss_find_end\nL_ss_end_found:\n    CMP X23, X22\n    CSEL X23, X22, X23, GT\n    CMP X9, X23\n    CSEL X9, X23, X9, LO\n    CMP X9, X22\n    CSEL X9, X22, X9, GT\n    SUB X11, X9, X23\n    CBZ X11, L_ss_empty\n    ADD X0, X11, #1\n    MOV X1, X0\n    MOV X0, #0\n    MOV X2, #3\n    MOV X3, #0x1002\n    MOV X4, #-1\n    MOV X5, #0\n    MOVZ X16, #0xC5\n    MOVK X16, #0x200, LSL #16\n    SVC #0x80\n    MOV X15, X0\n    MOV X9, X15\n    ADD X10, X8, X23\n    MOV X12, X11\nL_ss_cp:\n    CBZ X12, L_ss_cp_done\n    LDRB W13, [X10]\n    STRB W13, [X9]\n    ADD X9, X9, #1\n    ADD X10, X10, #1\n    SUB X12, X12, #1\n    B L_ss_cp\nL_ss_cp_done:\n    STRB WZR, [X9]\n    MOV X0, X15\n    B L_ss_ret\nL_ss_empty:\n    MOV X0, #1\n    MOV X1, X0\n    MOV X0, #0\n    MOV X2, #3\n    MOV X3, #0x1002\n    MOV X4, #-1\n    MOV X5, #0\n    MOVZ X16, #0xC5\n    MOVK X16, #0x200, LSL #16\n    SVC #0x80\n    STRB WZR, [X0]\nL_ss_ret:\n    LDR X15, [SP, #48]\n    LDP X23, X14, [SP, #32]\n    LDP X21, X22, [SP, #16]\n    LDP X19, X20, [SP], #64\n    RET"
+}
+
+fn emit_string_substring_until_char_helper() -> string {
+    // UTF-8 code-point matching: X2 = (len<<56)|packed. Decode len, packed; scan by UTF-8 char length.
+    "L_substring_until_char_helper:\n    STP X19, X20, [SP, #-64]!\n    STP X21, X22, [SP, #16]\n    STP X23, X14, [SP, #32]\n    STR X15, [SP, #48]\n    MOV X19, X0\n    MOV X20, X1\n    MOV X21, X2\n    LSR X14, X21, #56\n    MOV W15, W21\n    CMP X14, #0\n    CINC X14, X14, EQ\n    MOV X9, X19\n    MOV X22, #0\nL_suc_len:\n    LDRB W10, [X9]\n    CBZ W10, L_suc_len_done\n    ADD X22, X22, #1\n    ADD X9, X9, #1\n    B L_suc_len\nL_suc_len_done:\n    CMP X20, #0\n    CSEL X20, XZR, X20, LT\n    CMP X20, X22\n    CSEL X20, X22, X20, GT\n    MOV X23, X20\n    ADD X9, X19, X20\nL_suc_scan:\n    CMP X20, X22\n    B.GE L_suc_scan_done\n    LDRB W10, [X9]\n    ADD X17, X20, X14\n    CMP X17, X22\n    B.GT L_suc_no_match\n    CMP X14, #1\n    B.EQ L_suc_cmp1\n    CMP X14, #2\n    B.EQ L_suc_cmp2\n    CMP X14, #3\n    B.EQ L_suc_cmp3\n    LDR W13, [X9]\n    CMP W13, W15\n    B.EQ L_suc_scan_done\n    B L_suc_no_match\nL_suc_cmp1:\n    LDRB W13, [X9]\n    UBFX W16, W15, #0, #8\n    CMP W13, W16\n    B.EQ L_suc_scan_done\n    B L_suc_no_match\nL_suc_cmp2:\n    LDRH W13, [X9]\n    UBFX W16, W15, #0, #16\n    CMP W13, W16\n    B.EQ L_suc_scan_done\n    B L_suc_no_match\nL_suc_cmp3:\n    LDR W13, [X9]\n    UBFX W13, W13, #0, #24\n    UBFX W16, W15, #0, #24\n    CMP W13, W16\n    B.EQ L_suc_scan_done\nL_suc_no_match:\n    CMP W10, #0x80\n    B.LO L_suc_adv1\n    CMP W10, #0xC2\n    B.LO L_suc_adv1\n    CMP W10, #0xE0\n    B.LO L_suc_adv2\n    CMP W10, #0xF0\n    B.LO L_suc_adv3\n    CMP W10, #0xF8\n    B.LO L_suc_adv4\nL_suc_adv1:\n    ADD X9, X9, #1\n    ADD X20, X20, #1\n    B L_suc_scan\nL_suc_adv2:\n    SUB X18, X22, X20\n    MOV X17, #2\n    CMP X18, #2\n    CSEL X17, X18, X17, LO\n    ADD X9, X9, X17\n    ADD X20, X20, X17\n    B L_suc_scan\nL_suc_adv3:\n    SUB X18, X22, X20\n    MOV X17, #3\n    CMP X18, #3\n    CSEL X17, X18, X17, LO\n    ADD X9, X9, X17\n    ADD X20, X20, X17\n    B L_suc_scan\nL_suc_adv4:\n    SUB X18, X22, X20\n    MOV X17, #4\n    CMP X18, #4\n    CSEL X17, X18, X17, LO\n    ADD X9, X9, X17\n    ADD X20, X20, X17\n    B L_suc_scan\nL_suc_scan_done:\n    SUB X11, X20, X23\n    CBZ X11, L_suc_empty\n    ADD X10, X19, X23\n    ADD X0, X11, #1\n    MOV X1, X0\n    MOV X0, #0\n    MOV X2, #3\n    MOV X3, #0x1002\n    MOV X4, #-1\n    MOV X5, #0\n    MOVZ X16, #0xC5\n    MOVK X16, #0x200, LSL #16\n    SVC #0x80\n    MOV X23, X0\n    MOV X9, X23\n    MOV X12, X11\nL_suc_cp:\n    CBZ X12, L_suc_cp_done\n    LDRB W13, [X10]\n    STRB W13, [X9]\n    ADD X9, X9, #1\n    ADD X10, X10, #1\n    SUB X12, X12, #1\n    B L_suc_cp\nL_suc_cp_done:\n    STRB WZR, [X9]\n    MOV X0, X23\n    B L_suc_ret\nL_suc_empty:\n    MOV X0, #1\n    MOV X1, X0\n    MOV X0, #0\n    MOV X2, #3\n    MOV X3, #0x1002\n    MOV X4, #-1\n    MOV X5, #0\n    MOVZ X16, #0xC5\n    MOVK X16, #0x200, LSL #16\n    SVC #0x80\n    STRB WZR, [X0]\nL_suc_ret:\n    LDR X15, [SP, #48]\n    LDP X23, X14, [SP, #32]\n    LDP X21, X22, [SP, #16]\n    LDP X19, X20, [SP], #64\n    RET"
+}

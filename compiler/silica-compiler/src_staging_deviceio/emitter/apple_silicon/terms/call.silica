@@ -1,0 +1,212 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// call term emission (SIRTerm kind 4)
+// sir_emitter_pattern_spec §7.4: call -> BLR callee; result in X0
+// Effect-aware: barriers before/after effectful calls per spec §9.1.1 Effect-to-Barrier Mapping
+//   device_io: no barriers (syscall-based; kernel handles ordering)
+//   register_rwr: DSB SY before, ISB after (direct mmap device access)
+//   mem(atomic): DMB ISH before and after (cross-core visibility)
+// term_emitter emits arg to X0 before calling; this emits barriers + BLR
+
+use sir_ast;
+use emitter_effects;
+use control;
+use module_linkage;
+use reg_conventions;
+use var;
+
+export emit_call_body/3;
+export emit_call_body_effects/5;
+export emit_call_body_with_callee/3;
+export emit_tail_call_body/4;
+export sir_call_targets_bound_callee/2;
+export emit_indirect_callee_address_to_x17/2;
+
+fn sir_call_targets_bound_callee(outer_reg: string, sir_callee: string) -> bool {
+    (qmod: string, qfn: string) <- module_linkage@split_qualified_callee(sir_callee);
+    case len(qmod) > 0 of {
+        true -> false;
+        false -> do
+            b: string <- var@find_sp_binding_bare_or_percent_param(outer_reg, sir_callee);
+            case len(b) == 0 of {
+                true -> false;
+                false -> var@binding_is_physical_int_reg(b) or var@is_memory_ref(b)
+            }
+        end
+    }
+}
+
+fn emit_indirect_callee_address_to_x17(outer_reg: string, sir_callee: string) -> string {
+    case sir_call_targets_bound_callee(outer_reg, sir_callee) of {
+        false -> "";
+        true -> do
+            b: string <- var@find_sp_binding_bare_or_percent_param(outer_reg, sir_callee);
+            case var@is_memory_ref(b) of {
+                true -> concat(concat(concat("    LDR X17, ", b), "\n"), "");
+                false -> case b == "X17" of {
+                    true -> "";
+                    false -> concat(concat(concat("    MOV X17, ", b), "\n"), "")
+                }
+            }
+        end
+    }
+}
+
+fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string, outer_reg: string, indirect_via_x9: bool) -> string {
+    call_effects: string <- effect_value;
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    adrp_line: string <- case indirect_via_x9 of {
+        true -> "    BLR X17";
+        false -> do
+            callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.name);
+            adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
+            add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
+            concat(concat(adrp_part, add_part), "    BLR X9")
+        end
+    };
+    // ARM64 AAPCS: integer returns land in W0/X0, floats in S0/D0/H0. Move into `dest`
+    // unless it is already the corresponding return register. Earlier code treated any
+    // W-/D-/S-/H-prefixed dest as "already in place", which corrupted every call whose
+    // result had to flow into a non-zero register (e.g. W9 for a binary-op left operand).
+    aggregate_return: bool <- reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name);
+    effective_dest: string <- case aggregate_return and len(dest) > 0 and substring(dest, 0, 1) == "W" of {
+        true -> concat("X", substring(dest, 1, len(dest)));
+        false -> dest
+    };
+    result_mov: string <- case effective_dest == "X0" or effective_dest == "W0" or effective_dest == "D0" or effective_dest == "S0" or effective_dest == "H0" of {
+        true -> "";
+        false -> case len(effective_dest) > 0 of {
+            true -> do
+                prefix: string <- substring(effective_dest, 0, 1);
+                src: string <- case prefix == "D" or prefix == "S" or prefix == "H" of {
+                    true -> concat(prefix, "0");
+                    // Integer destinations (W, X, or anything else default): move from W0 for
+                    // W-prefix destinations, X0 otherwise. This keeps the 32-bit zero-extending
+                    // semantics of int32 results and preserves 64-bit moves for X-destinations.
+                    false -> case prefix == "W" of {
+                        true -> "W0";
+                        false -> "X0"
+                    }
+                };
+                op: string <- case prefix == "D" or prefix == "S" or prefix == "H" of {
+                    true -> "FMOV";
+                    false -> "MOV"
+                };
+                concat("\n", concat(concat(concat("    ", op), " "), concat(effective_dest, concat(", ", src))))
+            end;
+            false -> ""
+        }
+    };
+    with_comment: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(with_comment, concat(pre_barrier, concat("\n", adrp_line)));
+        false -> concat(with_comment, adrp_line)
+    };
+    with_post: string <- case len(post_barrier) > 0 of {
+        true -> concat(with_pre, concat("\n", post_barrier));
+        false -> with_pre
+    };
+    concat(with_post, result_mov)
+}
+
+fn emit_call_body(term: SIRTerm, dest: string, outer_reg: string) -> string {
+    emit_call_body_effects(term, dest, term.value, outer_reg, false)
+}
+
+// Tail call (SIRTerm kind 5): args already in registers — release frame, then BR (no BLR / no return to this frame).
+// recursion_implementation.md Phase 5: native tail transfer; fn_effects controls DMB+LDP like epilogue (atomic release).
+fn emit_tail_call_body(term: SIRTerm, fn_effects: string, outer_reg: string, indirect_via_x9: bool) -> string {
+    call_effects: string <- term.value;
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    br_line: string <- case indirect_via_x9 of {
+        true -> "    BR X17";
+        false -> do
+            callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.name);
+            adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
+            add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
+            concat(concat(adrp_part, add_part), "    BR X9")
+        end
+    };
+    frame_rel: string <- control@function_tail_frame_release(fn_effects);
+    with_comment: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(with_comment, concat(pre_barrier, concat("\n", frame_rel)));
+        false -> concat(with_comment, frame_rel)
+    };
+    concat(with_pre, concat("\n", br_line))
+}
+
+// Emit call with explicit callee symbol (e.g. silica_print_float64 for print_float64).
+fn emit_call_body_with_callee(term: SIRTerm, dest: string, callee: string) -> string {
+    call_effects: string <- term.value;
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
+    add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
+    adrp_line: string <- concat(concat(adrp_part, add_part), "    BLR X9");
+    // No move when result already in dest: X0/W0 (int), D0/S0/H0 (float)
+    aggregate_return: bool <- reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name);
+    effective_dest: string <- case aggregate_return and len(dest) > 0 and substring(dest, 0, 1) == "W" of {
+        true -> concat("X", substring(dest, 1, len(dest)));
+        false -> dest
+    };
+    result_mov: string <- case effective_dest == "X0" or effective_dest == "W0" or effective_dest == "D0" or effective_dest == "S0" or effective_dest == "H0" of {
+        true -> "";
+        false -> case len(effective_dest) > 0 of {
+            true -> do
+                prefix: string <- substring(effective_dest, 0, 1);
+                src: string <- case prefix == "D" or prefix == "S" or prefix == "H" of {
+                    true -> concat(prefix, "0");
+                    false -> case prefix == "W" of {
+                        true -> "W0";
+                        false -> "X0"
+                    }
+                };
+                op: string <- case prefix == "D" or prefix == "S" or prefix == "H" of {
+                    true -> "FMOV";
+                    false -> "MOV"
+                };
+                concat("\n", concat(concat(concat("    ", op), " "), concat(effective_dest, concat(", ", src))))
+            end;
+            false -> ""
+        }
+    };
+    with_comment: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(with_comment, concat(pre_barrier, concat("\n", adrp_line)));
+        false -> concat(with_comment, adrp_line)
+    };
+    with_post: string <- case len(post_barrier) > 0 of {
+        true -> concat(with_pre, concat("\n", post_barrier));
+        false -> with_pre
+    };
+    concat(with_post, result_mov)
+}

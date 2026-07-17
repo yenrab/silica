@@ -1,0 +1,272 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not employ this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Shared string→int64 / numeric-string→int64 maps for compiler-internal emitter pools.
+// No type aliases. Explicit OrderedMap[string, int64, mem(normal)] at bindings.
+
+use wbt_map;
+use OrderedMap;
+
+export compare_string/2;
+export compare_int64/2;
+export compare_string_as_int64/2;
+export empty_string_int64_map/0;
+export empty_numeric_string_int64_map/0;
+export map_insert_or_get_index/3;
+export map_index_of/2;
+
+fn compare_string(a: string, b: string) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn compare_int64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn digit_value(ch: string) -> int64 {
+    case ch of {
+        "0" -> 0;
+        "1" -> 1;
+        "2" -> 2;
+        "3" -> 3;
+        "4" -> 4;
+        "5" -> 5;
+        "6" -> 6;
+        "7" -> 7;
+        "8" -> 8;
+        "9" -> 9;
+        _: string -> 0 - 1
+    }
+}
+
+fn parse_int64_at(s: string, pos: int64, acc: int64, neg: int64) -> int64 {
+    case substring(s, pos, pos + 1) == substring(s, pos, pos) of {
+        true -> case neg == 1 of { true -> 0 - acc; false -> acc };
+        false -> do
+            ch: string <- substring(s, pos, pos + 1);
+            d: int64 <- digit_value(ch);
+            case d < 0 of {
+                true -> case neg == 1 of { true -> 0 - acc; false -> acc };
+                false -> parse_int64_at(s, pos + 1, acc * 10 + d, neg)
+            }
+        end
+    }
+}
+
+fn parse_decimal_string(s: string) -> int64 {
+    case s == "" of {
+        true -> 0;
+        false -> do
+            first: string <- substring(s, 0, 1);
+            case first == "-" of {
+                true -> parse_int64_at(s, 1, 0, 1);
+                false -> parse_int64_at(s, 0, 0, 0)
+            }
+        end
+    }
+}
+
+// Match legacy bst numeric compare on decimal string keys.
+fn compare_string_as_int64(a: string, b: string) -> :less | :equal | :greater {
+    compare_int64(parse_decimal_string(a), parse_decimal_string(b))
+}
+
+fn empty_string_int64_map() -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(string, string) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    sequence
+        m: OrderedMap[string, int64, mem(normal)] <- wbt_map@empty({
+            compare_key: compare_string,
+            compare_value: compare_int64
+        })
+    produces
+        pure m
+    end
+}
+
+fn empty_numeric_string_int64_map() -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(string, string) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    sequence
+        m: OrderedMap[string, int64, mem(normal)] <- wbt_map@empty({
+            compare_key: compare_string_as_int64,
+            compare_value: compare_int64
+        })
+    produces
+        pure m
+    end
+}
+
+fn insert_new_index(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: string,
+    next_index: int64
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    index: int64,
+    inserted: boolean
+} {
+    sequence
+        r: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(string, string) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(map, key, next_index);
+        out: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(string, string) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            index: int64,
+            inserted: boolean
+        } <- {
+            map: r.map,
+            index: next_index,
+            inserted: true
+        }
+    produces
+        pure out
+    end
+}
+
+fn map_insert_or_get_index(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: string,
+    next_index: int64
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    index: int64,
+    inserted: boolean
+} {
+    sequence
+        g: { status: :not_found | :found, value: int64 } <- OrderedMap@get(map, key, 0);
+        out: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(string, string) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            index: int64,
+            inserted: boolean
+        } <- case g.status of {
+            :found -> {
+                map: map,
+                index: g.value,
+                inserted: false
+            };
+            :not_found -> insert_new_index(map, key, next_index)
+        }
+    produces
+        pure out
+    end
+}
+
+fn map_index_of(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: string
+) -> int64 {
+    sequence
+        g: { status: :not_found | :found, value: int64 } <- OrderedMap@get(map, key, 0);
+        idx: int64 <- case g.status of {
+            :found -> g.value;
+            :not_found -> 0 - 1
+        }
+    produces
+        pure idx
+    end
+}

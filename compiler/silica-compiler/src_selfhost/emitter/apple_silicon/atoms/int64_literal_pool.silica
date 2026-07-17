@@ -1,0 +1,266 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Int64 literal pool: collect large integer constants (all widths) that don't fit MOV immediate
+// Emit .rodata section with L_i64_N labels; const emitter uses LDR for large values
+// Seed-legal: no named structs. Work tables carry next_index; export tables omit it.
+
+use sir_ast;
+use compiler_maps;
+use atom_table;
+use constraints;
+use string_parse;
+
+export build_int64_literal_table/1;
+export int64_literal_value_to_index/2;
+export emit_int64_literal_rodata_section/1;
+export module_uses_int64_literal_pool/1;
+
+fn nil_literal_values() -> List[string, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[string, mem(normal)] <- empty[string, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_literal_value(s: string, t: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[string, mem(normal)] <- prepend[string, mem(normal)](s, t)
+    produces
+        pure result
+    end
+}
+
+fn empty_i64_work_table() -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+    sequence proc[mem(normal)]
+        index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 } <- compiler_maps@empty_numeric_string_int64_map();
+        values: List[string, mem(normal)] <- nil_literal_values();
+        result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- { is_empty: true, index_map: index_map, values: values, next_index: 0 }
+    produces
+        pure result
+    end
+}
+
+fn to_export_i64_table(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } {
+    result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } <- { is_empty: table.is_empty, index_map: table.index_map, values: table.values };
+    result
+}
+
+fn add_literal_value(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }, value: string) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+    sequence proc[mem(normal)]
+        r: { map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, index: int64, inserted: boolean } <- compiler_maps@map_insert_or_get_index(table.index_map, value, table.next_index);
+        new_values: List[string, mem(normal)] <- case r.inserted of {
+            true -> cons_literal_value(value, table.values);
+            false -> table.values
+        };
+        new_next: int64 <- case r.inserted of {
+            true -> table.next_index + 1;
+            false -> table.next_index
+        };
+        result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- { is_empty: false, index_map: r.map, values: new_values, next_index: new_next }
+    produces
+        pure result
+    end
+}
+
+fn int64_literal_value_to_index(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, value: string) -> int64 {
+    case table.is_empty of {
+        true -> 0 - 1;
+        false -> compiler_maps@map_index_of(table.index_map, value)
+    }
+}
+
+fn collect_int64_literal_from_term(term: SIRTerm, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+    sequence proc[mem(normal)]
+        result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }
+            <- case term.kind < 0 of {
+            true -> table;
+            false -> case term.kind of {
+                0 -> case term.type_name == "int64" or term.type_name == "i64" or term.type_name == "uint64" or term.type_name == "u64"
+                    or term.type_name == "int32" or term.type_name == "uint32"
+                    or term.type_name == "int16" or term.type_name == "uint16"
+                    or term.type_name == "int8" or term.type_name == "uint8" of {
+                    true -> case constraints@fits_mov_imm(string_parse@string_to_int64(term.value)) of {
+                        true -> table;
+                        false -> add_literal_value(table, term.value)
+                    };
+                    false -> table
+                };
+                1 -> table;
+                2 -> do
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_literal_from_term(term.inner, table);
+                    collect_int64_literal_from_term(term.right_expr, t1)
+                end;
+                3 -> do
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_literal_from_term(term.inner, table);
+                    collect_int64_literal_from_case_branch_list(term.right_expr, t1)
+                end;
+                4 -> do
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_literal_from_term(term.inner, table);
+                    collect_int64_literal_from_term(term.right_expr, t1)
+                end;
+                5 -> do
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_literal_from_term(term.inner, table);
+                    collect_int64_literal_from_term(term.right_expr, t1)
+                end;
+                6 -> do
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_literal_from_term(term.inner, table);
+                    collect_int64_literal_from_term(term.right_expr, t1)
+                end;
+                _: int64 -> table
+            }
+        }
+    produces
+        pure result
+    end
+}
+
+fn collect_int64_literal_from_case_branch(branch: SIRTerm, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+    sequence proc[mem(normal)]
+        result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }
+            <- case branch.kind < 0 of {
+            true -> table;
+            false -> case branch.kind == 8 of {
+                true -> do
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_literal_from_term(branch.inner, table);
+                    collect_int64_literal_from_term(branch.right_expr, t1)
+                end;
+                false -> collect_int64_literal_from_term(branch, table)
+            }
+        }
+    produces
+        pure result
+    end
+}
+
+fn collect_int64_literal_from_case_branch_list(seq: SIRTerm, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+    sequence proc[mem(normal)]
+        result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }
+            <- case seq.kind < 0 of {
+            true -> table;
+            false -> case seq.kind == 7 of {
+                true -> do
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_literal_from_case_branch(seq.inner, table);
+                    collect_int64_literal_from_case_branch_list(seq.right_expr, t1)
+                end;
+                false -> table
+            }
+        }
+    produces
+        pure result
+    end
+}
+
+fn collect_int64_literal_from_functions_cons(fns: ListSIRFunction, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+    sequence proc[mem(normal)]
+        t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_literal_from_term(fns.head.body, table);
+        result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_literal_from_functions(fns.tail, t1)
+    produces
+        pure result
+    end
+}
+
+fn collect_int64_literal_from_functions(fns: ListSIRFunction, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+    case fns.is_nil of {
+        true -> table;
+        false -> collect_int64_literal_from_functions_cons(fns, table)
+    }
+}
+
+fn build_int64_literal_table(sir_module: SIRModule) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } {
+    sequence proc[mem(normal)]
+        empty: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- empty_i64_work_table();
+        collected: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_literal_from_functions(sir_module.functions, empty);
+        result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } <- to_export_i64_table(collected)
+    produces
+        pure result
+    end
+}
+
+fn rev_literal_values_acc(values: List[string, mem(normal)], acc: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[string, mem(normal)] <- case values of {
+            []: List[string, mem(normal)] -> acc;
+            [head: string, tail: List[string, mem(normal)]] -> rev_literal_values_acc(tail, cons_literal_value(head, acc));
+            _: List[string, mem(normal)] -> acc
+        }
+    produces
+        pure result
+    end
+}
+
+fn reverse_literal_values(values: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[string, mem(normal)] <- rev_literal_values_acc(values, nil_literal_values())
+    produces
+        pure result
+    end
+}
+
+fn emit_int64_literal_values_rodata_cons(head: string, tail: List[string, mem(normal)], index: int64) -> string {
+    rest: string <- emit_int64_literal_values_rodata(tail, index + 1);
+    label_colon: string <- concat(concat(concat("L_i64_", atom_table@int64_to_decimal_string(index)), ":"), "\n");
+    quad_line: string <- concat(concat("    .quad ", head), "\n");
+    one: string <- concat(label_colon, quad_line);
+    case len(rest) > 0 of {
+        true -> concat(concat(one, "\n"), rest);
+        false -> one
+    }
+}
+
+fn emit_int64_literal_values_rodata(values: List[string, mem(normal)], index: int64) -> string {
+    sequence proc[mem(normal)]
+        result: string <- case values of {
+            []: List[string, mem(normal)] -> "";
+            [head: string, tail: List[string, mem(normal)]] -> emit_int64_literal_values_rodata_cons(head, tail, index);
+            _: List[string, mem(normal)] -> ""
+        }
+    produces
+        pure result
+    end
+}
+
+fn emit_int64_literal_rodata_section_nonempty(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }) -> string {
+    sequence proc[mem(normal)]
+        header: string <- ".section __TEXT,__rodata\n.align\t8\n";
+        in_order: List[string, mem(normal)] <- reverse_literal_values(table.values);
+        body: string <- emit_int64_literal_values_rodata(in_order, 0);
+        result: string <- concat(header, body)
+    produces
+        pure result
+    end
+}
+
+fn emit_int64_literal_rodata_section(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }) -> string {
+    case table.is_empty of {
+        true -> "";
+        false -> emit_int64_literal_rodata_section_nonempty(table)
+    }
+}
+
+fn module_uses_int64_literal_pool(sir_module: SIRModule) -> bool {
+    sequence proc[mem(normal)]
+        table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } <- build_int64_literal_table(sir_module);
+        result: bool <- case table.is_empty of {
+            true -> false;
+            false -> true
+        }
+    produces
+        pure result
+    end
+}

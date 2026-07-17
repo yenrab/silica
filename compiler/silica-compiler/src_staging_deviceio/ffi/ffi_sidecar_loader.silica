@@ -1,0 +1,636 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Sidecar `.meta` loader (silica_ffi_wrapper_specification.md §13): parse link_library / wrapper entries,
+// associate foreign c_wrapper bindings with referenced sidecar files. Phase 4 — compile-time validation only.
+
+use parser_ast;
+use sir_ast;
+use diagnostics_core;
+
+export validate_program_sidecar_metadata/1;
+export collect_program_link_libraries/1;
+export collect_program_foreign_symbols/1;
+export foreign_symbol_from_decl/1;
+export sidecar_paths_for_foreign_decl/2;
+export collect_module_default_sidecar_lexemes_from_program/1;
+export lookup_sidecar_wrapper_result_kind/2;
+export first_foreign_or_meta_location_from_program/1;
+
+struct SidecarWrapper {
+    symbol: string,
+    result: string,
+    error_domain: string,
+    has_result: int64,
+    has_error_domain: int64
+}
+
+struct ListSidecarWrapper {
+    is_nil: bool,
+    head: SidecarWrapper,
+    tail: ListSidecarWrapper
+}
+
+struct ParsedSidecar {
+    link_library: string,
+    has_link_library: bool,
+    wrappers: ListSidecarWrapper
+}
+
+fn nil_sidecar_wrappers() -> ListSidecarWrapper {
+    ph: SidecarWrapper <- SidecarWrapper { symbol: "", result: "", error_domain: "", has_result: 0, has_error_domain: 0 };
+    phl: ListSidecarWrapper <- ListSidecarWrapper { is_nil: true, head: ph, tail: phl };
+    phl
+}
+
+fn cons_sidecar_wrapper(w: SidecarWrapper, rest: ListSidecarWrapper) -> ListSidecarWrapper {
+    ListSidecarWrapper { is_nil: false, head: w, tail: rest }
+}
+
+fn dummy_sidecar_wrapper() -> SidecarWrapper {
+    SidecarWrapper { symbol: "", result: "", error_domain: "", has_result: 0, has_error_domain: 0 }
+}
+
+fn strip_string_literal_quotes(lexeme: string) -> string {
+    case len(lexeme) >= 2 of {
+        false -> lexeme;
+        true -> case substring(lexeme, 0, 1) == "\"" of {
+            false -> lexeme;
+            true -> case substring(lexeme, len(lexeme) - 1, len(lexeme)) == "\"" of {
+                false -> lexeme;
+                true -> substring(lexeme, 1, len(lexeme) - 1)
+            }
+        }
+    }
+}
+
+fn string_starts_with(s: string, prefix: string) -> bool {
+    case len(s) >= len(prefix) of {
+        false -> false;
+        true -> substring(s, 0, len(prefix)) == prefix
+    }
+}
+
+fn string_ends_with(s: string, suffix: string) -> bool {
+    ls: int64 <- len(s);
+    lf: int64 <- len(suffix);
+    case ls < lf of {
+        true -> false;
+        false -> substring(s, ls - lf, ls) == suffix
+    }
+}
+
+fn is_whitespace_char(c: string) -> bool {
+    c == " " or c == "\t" or c == "\n" or c == "\r"
+}
+
+fn trim_leading_from(s: string, pos: int64) -> string {
+    case pos >= len(s) of {
+        true -> "";
+        false -> do
+            c: string <- substring(s, pos, pos + 1);
+            case is_whitespace_char(c) of {
+                true -> trim_leading_from(s, pos + 1);
+                false -> substring(s, pos, len(s))
+            }
+        end
+    }
+}
+
+fn trim_leading(s: string) -> string {
+    trim_leading_from(s, 0)
+}
+
+fn trim_trailing_from(s: string, pos: int64) -> string {
+    case pos < 0 of {
+        true -> "";
+        false -> do
+            c: string <- substring(s, pos, pos + 1);
+            case is_whitespace_char(c) of {
+                true -> trim_trailing_from(s, pos - 1);
+                false -> substring(s, 0, pos + 1)
+            }
+        end
+    }
+}
+
+fn trim_trailing(s: string) -> string {
+    trim_trailing_from(s, len(s) - 1)
+}
+
+fn trim_line(s: string) -> string {
+    trim_trailing(trim_leading(s))
+}
+
+fn find_char_from(s: string, pos: int64, ch: string) -> int64 {
+    case pos >= len(s) of {
+        true -> -1;
+        false -> case substring(s, pos, pos + 1) == ch of {
+            true -> pos;
+            false -> find_char_from(s, pos + 1, ch)
+        }
+    }
+}
+
+fn extract_first_quoted_string(s: string) -> string {
+    q1: int64 <- find_char_from(s, 0, "\"");
+    case q1 < 0 of {
+        true -> "";
+        false -> do
+            q2: int64 <- find_char_from(s, q1 + 1, "\"");
+            case q2 < 0 of {
+                true -> "";
+                false -> substring(s, q1 + 1, q2)
+            }
+        end
+    }
+}
+
+fn extract_value_after_key(line: string, key: string) -> string {
+    case string_starts_with(trim_line(line), key) of {
+        false -> "";
+        true -> extract_first_quoted_string(line)
+    }
+}
+
+fn sidecar_path_from_lexeme(lexeme: string) -> string {
+    strip_string_literal_quotes(lexeme)
+}
+
+fn append_sir_strings_unique(items: ListSirString, s: string) -> ListSirString {
+    case len(s) == 0 of {
+        true -> items;
+        false -> case sir_ast@sir_string_list_contains(items, s) of {
+            true -> items;
+            false -> sir_ast@cons_sir_string(s, items)
+        }
+    }
+}
+
+fn collect_wrapper_meta_paths_loop(decls: ListDeclaration) -> ListSirString {
+    case decls.is_nil of {
+        true -> sir_ast@nil_sir_strings();
+        false -> case decls.head.tag == 8 of {
+            true -> sir_ast@cons_sir_string(decls.head.name, collect_wrapper_meta_paths_loop(decls.tail));
+            false -> collect_wrapper_meta_paths_loop(decls.tail)
+        }
+    }
+}
+
+fn collect_default_sidecar_paths(decls: ListDeclaration) -> ListSirString {
+    collect_wrapper_meta_paths_loop(decls)
+}
+
+fn program_has_foreign_binding_loop(decls: ListDeclaration) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 9 of {
+            true -> true;
+            false -> program_has_foreign_binding_loop(decls.tail)
+        }
+    }
+}
+
+fn sidecar_wrapper_has_complete_fields(w: SidecarWrapper) -> bool {
+    case len(w.symbol) > 0 of {
+        false -> false;
+        true -> case w.has_result == 1 of {
+            false -> false;
+            true -> w.has_error_domain == 1
+        }
+    }
+}
+
+fn merge_wrapper_field(existing: SidecarWrapper, key: string, value: string) -> SidecarWrapper {
+    case key == "symbol:" of {
+        true -> SidecarWrapper { symbol: value, result: existing.result, error_domain: existing.error_domain, has_result: existing.has_result, has_error_domain: existing.has_error_domain };
+        false -> case key == "result:" of {
+            true -> SidecarWrapper { symbol: existing.symbol, result: value, error_domain: existing.error_domain, has_result: 1, has_error_domain: existing.has_error_domain };
+            false -> case key == "error_domain:" of {
+                true -> SidecarWrapper { symbol: existing.symbol, result: existing.result, error_domain: value, has_result: existing.has_result, has_error_domain: 1 };
+                false -> existing
+            }
+        }
+    }
+}
+
+fn apply_wrapper_field_line(w: SidecarWrapper, line: string) -> SidecarWrapper {
+    trimmed: string <- trim_line(line);
+    case string_starts_with(trimmed, "symbol:") of {
+        true -> merge_wrapper_field(w, "symbol:", extract_value_after_key(trimmed, "symbol:"));
+        false -> case string_starts_with(trimmed, "result:") of {
+            true -> merge_wrapper_field(w, "result:", extract_value_after_key(trimmed, "result:"));
+            false -> case string_starts_with(trimmed, "error_domain:") of {
+                true -> merge_wrapper_field(w, "error_domain:", extract_value_after_key(trimmed, "error_domain:"));
+                false -> w
+            }
+        }
+    }
+}
+
+fn parse_sidecar_link_library_scan(content: string, pos: int64, have_link_library: int64, link_library: string) -> (int64, string) {
+    case pos >= len(content) of {
+        true -> (have_link_library, link_library);
+        false -> do
+            line: string <- substring_until_char(content, pos, '\n');
+            line_len: int64 <- len(line);
+            next_pos: int64 <- pos + line_len + 1;
+            trimmed: string <- trim_line(line);
+            case have_link_library == 1 of {
+                true -> parse_sidecar_link_library_scan(content, next_pos, 1, link_library);
+                false -> case string_starts_with(trimmed, "link_library:") of {
+                    true -> parse_sidecar_link_library_scan(content, next_pos, 1, extract_value_after_key(trimmed, "link_library:"));
+                    false -> parse_sidecar_link_library_scan(content, next_pos, 0, link_library)
+                }
+            }
+        end
+    }
+}
+
+fn parse_wrapper_block_lines(content: string, pos: int64, in_arguments: bool, acc: SidecarWrapper) -> (SidecarWrapper, int64) {
+    case pos >= len(content) of {
+        true -> (acc, pos);
+        false -> do
+            line: string <- substring_until_char(content, pos, '\n');
+            line_len: int64 <- len(line);
+            next_pos: int64 <- pos + line_len + 1;
+            trimmed: string <- trim_line(line);
+            case in_arguments of {
+                true -> case string_ends_with(trimmed, "]") of {
+                    true -> parse_wrapper_block_lines(content, next_pos, false, acc);
+                    false -> parse_wrapper_block_lines(content, next_pos, true, acc)
+                };
+                false -> case trimmed == "}" of {
+                    true -> (acc, next_pos);
+                    false -> case string_starts_with(trimmed, "arguments:") of {
+                        true -> parse_wrapper_block_lines(content, next_pos, true, acc);
+                        false -> do
+                            updated: SidecarWrapper <- apply_wrapper_field_line(acc, line);
+                            parse_wrapper_block_lines(content, next_pos, false, updated)
+                        end
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn skip_to_next_line(content: string, pos: int64) -> int64 {
+    case pos >= len(content) of {
+        true -> pos;
+        false -> do
+            line: string <- substring_until_char(content, pos, '\n');
+            pos + len(line) + 1
+        end
+    }
+}
+
+fn parse_sidecar_wrappers_scan(content: string, pos: int64, acc: ListSidecarWrapper) -> ListSidecarWrapper {
+    case pos >= len(content) of {
+        true -> acc;
+        false -> do
+            line: string <- substring_until_char(content, pos, '\n');
+            line_len: int64 <- len(line);
+            next_pos: int64 <- pos + line_len + 1;
+            trimmed: string <- trim_line(line);
+            case string_starts_with(trimmed, "wrapper ") of {
+                false -> parse_sidecar_wrappers_scan(content, next_pos, acc);
+                true -> do
+                    block_start: int64 <- next_pos;
+                    (wrapper: SidecarWrapper, after_block: int64) <- parse_wrapper_block_lines(content, block_start, false, dummy_sidecar_wrapper());
+                    case sidecar_wrapper_has_complete_fields(wrapper) of {
+                        false -> parse_sidecar_wrappers_scan(content, after_block, acc);
+                        true -> parse_sidecar_wrappers_scan(content, after_block, cons_sidecar_wrapper(wrapper, acc))
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn parse_sidecar_content(content: string) -> ParsedSidecar {
+    (have_ll: int64, ll: string) <- parse_sidecar_link_library_scan(content, 0, 0, "");
+    wrappers: ListSidecarWrapper <- parse_sidecar_wrappers_scan(content, 0, nil_sidecar_wrappers());
+    ParsedSidecar { link_library: ll, has_link_library: have_ll == 1, wrappers: wrappers }
+}
+
+fn sidecar_wrapper_list_find_symbol(items: ListSidecarWrapper, sym: string) -> bool {
+    case items.is_nil of {
+        true -> false;
+        false -> case items.head.symbol == sym of {
+            true -> true;
+            false -> sidecar_wrapper_list_find_symbol(items.tail, sym)
+        }
+    }
+}
+
+fn sidecar_wrapper_list_find_incomplete(items: ListSidecarWrapper) -> bool {
+    case items.is_nil of {
+        true -> false;
+        false -> case sidecar_wrapper_has_complete_fields(items.head) of {
+            false -> true;
+            true -> sidecar_wrapper_list_find_incomplete(items.tail)
+        }
+    }
+}
+
+fn foreign_symbol_from_decl(decl: Declaration) -> string {
+    strip_string_literal_quotes(decl.body.value)
+}
+
+fn sidecar_paths_for_foreign_decl(decl: Declaration, default_paths: ListSirString) -> ListSirString {
+    case len(decl.body.name) > 0 of {
+        true -> sir_ast@cons_sir_string(decl.body.name, sir_ast@nil_sir_strings());
+        false -> default_paths
+    }
+}
+
+fn sidecar_path_list_contains(items: ListSirString, path_lexeme: string) -> bool {
+    case items.is_nil of {
+        true -> false;
+        false -> case items.head == path_lexeme of {
+            true -> true;
+            false -> sidecar_path_list_contains(items.tail, path_lexeme)
+        }
+    }
+}
+
+fn append_unique_sidecar_path_lexeme(items: ListSirString, path_lexeme: string) -> ListSirString {
+    case sidecar_path_list_contains(items, path_lexeme) of {
+        true -> items;
+        false -> sir_ast@cons_sir_string(path_lexeme, items)
+    }
+}
+
+fn collect_referenced_sidecar_lexemes_loop(decls: ListDeclaration) -> ListSirString {
+    case decls.is_nil of {
+        true -> sir_ast@nil_sir_strings();
+        false -> case decls.head.tag == 8 of {
+            true -> append_unique_sidecar_path_lexeme(collect_referenced_sidecar_lexemes_loop(decls.tail), decls.head.name);
+            false -> case decls.head.tag == 9 of {
+                true -> case len(decls.head.body.name) > 0 of {
+                    true -> append_unique_sidecar_path_lexeme(collect_referenced_sidecar_lexemes_loop(decls.tail), decls.head.body.name);
+                    false -> collect_referenced_sidecar_lexemes_loop(decls.tail)
+                };
+                false -> collect_referenced_sidecar_lexemes_loop(decls.tail)
+            }
+        }
+    }
+}
+
+fn collect_module_default_sidecar_lexemes(decls: ListDeclaration, acc: ListSirString) -> ListSirString {
+    case decls.is_nil of {
+        true -> acc;
+        false -> case decls.head.tag == 8 of {
+            true -> append_unique_sidecar_path_lexeme(collect_module_default_sidecar_lexemes(decls.tail, acc), decls.head.name);
+            false -> collect_module_default_sidecar_lexemes(decls.tail, acc)
+        }
+    }
+}
+
+fn collect_module_default_sidecar_lexemes_from_program(decls: ListDeclaration) -> ListSirString {
+    collect_module_default_sidecar_lexemes(decls, sir_ast@nil_sir_strings())
+}
+
+fn print_sidecar_error(code: string, loc: SourceLocation, msg: string) -> int64 proc[DeviceIO] {
+    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", code, loc, msg, "sect13.2");
+    1
+}
+
+fn validate_loaded_sidecar(parsed: ParsedSidecar, path_lexeme: string, loc: SourceLocation) -> int64 proc[DeviceIO] {
+    case parsed.has_link_library of {
+        false -> do
+            msg: string <- concat(concat("sidecar file ", sidecar_path_from_lexeme(path_lexeme)), " is missing link_library (spec 13.2)");
+            print_sidecar_error("E4032", loc, msg)
+        end;
+        true -> case sidecar_wrapper_list_find_incomplete(parsed.wrappers) of {
+            true -> do
+                msg2: string <- concat(concat("sidecar file ", sidecar_path_from_lexeme(path_lexeme)), " has wrapper entry missing required result or error_domain fields (spec 13.2)");
+                print_sidecar_error("E4033", loc, msg2)
+            end;
+            false -> 0
+        }
+    }
+}
+
+fn find_wrapper_in_sidecar(parsed: ParsedSidecar, sym: string) -> bool {
+    sidecar_wrapper_list_find_symbol(parsed.wrappers, sym)
+}
+
+fn validate_foreign_binding_sidecar_loop(decls: ListDeclaration, default_paths: ListSirString) -> int64 proc[DeviceIO] {
+    case decls.is_nil of {
+        true -> 0;
+        false -> case decls.head.tag == 9 of {
+            true -> do
+                paths: ListSirString <- sidecar_paths_for_foreign_decl(decls.head, default_paths);
+                sym: string <- foreign_symbol_from_decl(decls.head);
+                st: int64 <- validate_symbol_in_sidecar_paths(paths, sym, decls.head.location);
+                case st == 0 of {
+                    false -> st;
+                    true -> validate_foreign_binding_sidecar_loop(decls.tail, default_paths)
+                }
+            end;
+            false -> validate_foreign_binding_sidecar_loop(decls.tail, default_paths)
+        }
+    }
+}
+
+fn validate_symbol_in_one_sidecar(path_lexeme: string, sym: string, loc: SourceLocation) -> int64 proc[DeviceIO] {
+    disk_path: string <- sidecar_path_from_lexeme(path_lexeme);
+    exists: bool <- file_exists(disk_path);
+    case exists of {
+        false -> do
+            msg: string <- concat(concat("sidecar file not found: ", disk_path), " (spec 13.1)");
+            print_sidecar_error("E4030", loc, msg)
+        end;
+        true -> do
+            content: string <- read_lines(disk_path);
+            parsed: ParsedSidecar <- parse_sidecar_content(content);
+            vld: int64 <- validate_loaded_sidecar(parsed, path_lexeme, loc);
+            case vld == 0 of {
+                false -> vld;
+                true -> case find_wrapper_in_sidecar(parsed, sym) of {
+                    false -> do
+                        p1: string <- concat("no wrapper entry for symbol ", sym);
+                        p2: string <- concat(p1, " in sidecar ");
+                        msg: string <- concat(p2, disk_path);
+                        print_sidecar_error("E4031", loc, msg)
+                    end;
+                    true -> 0
+                }
+            }
+        end
+    }
+}
+
+fn validate_symbol_in_sidecar_paths(paths: ListSirString, sym: string, loc: SourceLocation) -> int64 proc[DeviceIO] {
+    case paths.is_nil of {
+        true -> do
+            msg: string <- concat("no sidecar path available for foreign symbol ", sym);
+            print_sidecar_error("E4031", loc, msg)
+        end;
+        false -> do
+            first: int64 <- validate_symbol_in_one_sidecar(paths.head, sym, loc);
+            case first == 0 of {
+                true -> 0;
+                false -> case paths.tail.is_nil of {
+                    true -> first;
+                    false -> validate_symbol_in_sidecar_paths(paths.tail, sym, loc)
+                }
+            }
+        end
+    }
+}
+
+fn validate_each_sidecar_file_loop(paths: ListSirString, loc: SourceLocation) -> int64 proc[DeviceIO] {
+    case paths.is_nil of {
+        true -> 0;
+        false -> do
+            st: int64 <- validate_symbol_in_one_sidecar_for_file_only(paths.head, loc);
+            case st == 0 of {
+                false -> st;
+                true -> validate_each_sidecar_file_loop(paths.tail, loc)
+            }
+        end
+    }
+}
+
+fn validate_symbol_in_one_sidecar_for_file_only(path_lexeme: string, loc: SourceLocation) -> int64 proc[DeviceIO] {
+    disk_path: string <- sidecar_path_from_lexeme(path_lexeme);
+    exists: bool <- file_exists(disk_path);
+    case exists of {
+        false -> do
+            msg: string <- concat(concat("sidecar file not found: ", disk_path), " (spec 13.1)");
+            print_sidecar_error("E4030", loc, msg)
+        end;
+        true -> do
+            content: string <- read_lines(disk_path);
+            parsed: ParsedSidecar <- parse_sidecar_content(content);
+            validate_loaded_sidecar(parsed, path_lexeme, loc)
+        end
+    }
+}
+
+fn first_foreign_or_meta_location_from_program(program: Program) -> SourceLocation {
+    first_foreign_or_meta_location(program.declarations)
+}
+
+fn first_foreign_or_meta_location(decls: ListDeclaration) -> SourceLocation {
+    case decls.is_nil of {
+        true -> parser_ast@zero_location();
+        false -> case decls.head.tag == 9 of {
+            true -> decls.head.location;
+            false -> case decls.head.tag == 8 of {
+                true -> decls.head.location;
+                false -> first_foreign_or_meta_location(decls.tail)
+            }
+        }
+    }
+}
+
+fn collect_link_libraries_from_sidecar_paths(paths: ListSirString, acc: ListSirString) -> ListSirString proc[DeviceIO] {
+    case paths.is_nil of {
+        true -> acc;
+        false -> do
+            disk_path: string <- sidecar_path_from_lexeme(paths.head);
+            exists: bool <- file_exists(disk_path);
+            rest: ListSirString <- collect_link_libraries_from_sidecar_paths(paths.tail, acc);
+            case exists of {
+                false -> rest;
+                true -> do
+                    content: string <- read_lines(disk_path);
+                    parsed: ParsedSidecar <- parse_sidecar_content(content);
+                    case parsed.has_link_library of {
+                        false -> rest;
+                        true -> append_sir_strings_unique(rest, parsed.link_library)
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn sidecar_wrapper_list_get_symbol(items: ListSidecarWrapper, sym: string) -> SidecarWrapper {
+    case items.is_nil of {
+        true -> dummy_sidecar_wrapper();
+        false -> case items.head.symbol == sym of {
+            true -> items.head;
+            false -> sidecar_wrapper_list_get_symbol(items.tail, sym)
+        }
+    }
+}
+
+fn lookup_sidecar_wrapper_in_one_path(path_lexeme: string, sym: string) -> SidecarWrapper proc[DeviceIO] {
+    disk_path: string <- sidecar_path_from_lexeme(path_lexeme);
+    exists: bool <- file_exists(disk_path);
+    case exists of {
+        false -> dummy_sidecar_wrapper();
+        true -> do
+            content: string <- read_lines(disk_path);
+            parsed: ParsedSidecar <- parse_sidecar_content(content);
+            sidecar_wrapper_list_get_symbol(parsed.wrappers, sym)
+        end
+    }
+}
+
+fn lookup_sidecar_wrapper_result_kind(paths: ListSirString, sym: string) -> (bool, string) proc[DeviceIO] {
+    case paths.is_nil of {
+        true -> (false, "");
+        false -> do
+            found: SidecarWrapper <- lookup_sidecar_wrapper_in_one_path(paths.head, sym);
+            case len(found.symbol) > 0 of {
+                true -> (true, found.result);
+                false -> lookup_sidecar_wrapper_result_kind(paths.tail, sym)
+            }
+        end
+    }
+}
+
+fn validate_program_sidecar_metadata(program: Program) -> int64 proc[DeviceIO] {
+    case program_has_foreign_binding_loop(program.declarations) of {
+        false -> 0;
+        true -> do
+            default_paths: ListSirString <- collect_module_default_sidecar_lexemes_from_program(program.declarations);
+            all_paths: ListSirString <- collect_referenced_sidecar_lexemes_loop(program.declarations);
+            meta_loc: SourceLocation <- first_foreign_or_meta_location(program.declarations);
+            file_st: int64 <- validate_each_sidecar_file_loop(all_paths, meta_loc);
+            case file_st == 0 of {
+                false -> file_st;
+                true -> validate_foreign_binding_sidecar_loop(program.declarations, default_paths)
+            }
+        end
+    }
+}
+
+fn collect_foreign_symbols_loop(decls: ListDeclaration, acc: ListSirString) -> ListSirString {
+    case decls.is_nil of {
+        true -> acc;
+        false -> case decls.head.tag == 9 of {
+            true -> collect_foreign_symbols_loop(decls.tail, append_sir_strings_unique(acc, foreign_symbol_from_decl(decls.head)));
+            false -> collect_foreign_symbols_loop(decls.tail, acc)
+        }
+    }
+}
+
+fn collect_program_foreign_symbols(program: Program) -> ListSirString {
+    collect_foreign_symbols_loop(program.declarations, sir_ast@nil_sir_strings())
+}
+
+fn collect_program_link_libraries(program: Program) -> ListSirString proc[DeviceIO] {
+    paths: ListSirString <- collect_referenced_sidecar_lexemes_loop(program.declarations);
+    collect_link_libraries_from_sidecar_paths(paths, sir_ast@nil_sir_strings())
+}

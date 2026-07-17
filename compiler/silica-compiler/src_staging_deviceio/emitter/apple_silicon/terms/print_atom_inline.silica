@@ -1,0 +1,189 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Fully inline emission for print_atom(atom) built-in
+// Const arg: emit write(2) with known label/length. Var/other arg: arg already in X0, emit switch on index.
+// No external symbol required; can be extended or fixed in this file without touching call.silica.
+
+use sir_ast;
+use atom_table;
+use emitter_effects;
+
+export emit_print_atom_inline/3;
+export is_print_atom_const_arg/2;
+export emit_print_atom_by_index/4;
+export emit_print_atom_helper/1;
+export module_uses_print_atom_var/1;
+export emit_print_atom_rodata_table/1;
+
+// True when term is a call to main.print_atom and the argument is a const atom.
+// Used by term_emitter to decide whether to emit inline or generic call.
+fn is_print_atom_const_arg(term: SIRTerm, table: AtomTable) -> bool {
+    case term.name == "main.print_atom" of {
+        false -> false;
+        true -> case term.inner.kind of {
+            0 -> term.inner.type_name == "atom";
+            _: int64 -> false
+        }
+    }
+}
+
+// Emit fully inline assembly for print_atom(const_atom).
+// Precondition: term.name == "main.print_atom" and term.inner is const atom (kind 0, type_name "atom").
+// Uses write(2) syscall: fd=1 (stdout), buf=atom string in rodata, count=len(lexeme).
+// macOS ARM64: write syscall number 4; X0=fd, X1=buf, X2=count; result in X0.
+// Returns atom index 0 (:ok) in dest after the syscall.
+fn emit_print_atom_inline(term: SIRTerm, dest: string, table: AtomTable) -> string {
+    lexeme: string <- term.inner.value;
+    index: int64 <- atom_table@atom_lexeme_to_index(table, lexeme);
+    index_str: string <- atom_table@int64_to_decimal_string(index);
+    label: string <- concat("atom_", index_str);
+    length: int64 <- len(lexeme);
+    length_str: string <- atom_table@int64_to_decimal_string(length);
+    call_effects: string <- term.value;
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
+    comment_line: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    mov_fd: string <- "    MOV X0, #1\n";
+    adrp_part: string <- concat(concat(concat("    ADRP X1, ", label), "@PAGE"), "\n");
+    add_part: string <- concat(concat(concat("    ADD X1, X1, ", label), "@PAGEOFF"), "\n");
+    mov_count: string <- concat(concat("    MOV X2, ", concat("#", length_str)), "\n");
+    adrp_line: string <- concat(concat(adrp_part, add_part), mov_count);
+    syscall_line: string <- "\n    MOV X16, #4\n    SVC #0x80\n";
+    result_part: string <- concat("    MOV ", dest);
+    result_line: string <- concat(concat(result_part, ", #0\n"), "");
+    with_comment: string <- concat(comment_line, mov_fd);
+    with_adrp: string <- concat(with_comment, concat(adrp_line, syscall_line));
+    with_post: string <- case len(post_barrier) > 0 of {
+        true -> concat(with_adrp, concat(concat("\n", post_barrier), "\n"));
+        false -> concat(with_adrp, "\n")
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(pre_barrier, concat("\n", with_post));
+        false -> with_post
+    };
+    concat(with_pre, result_line)
+}
+
+fn count_lexemes(xs: ListAtomLexeme) -> int64 {
+    case xs.is_nil of {
+        true -> 0;
+        false -> 1 + count_lexemes(xs.tail)
+    }
+}
+
+fn emit_rodata_entries(lexemes: ListAtomLexeme, index: int64) -> string {
+    case lexemes.is_nil of {
+        true -> "";
+        false -> do
+            idx_s: string <- atom_table@int64_to_decimal_string(index);
+            atom_label: string <- concat("atom_", idx_s);
+            len_s: string <- atom_table@int64_to_decimal_string(len(lexemes.head));
+            one: string <- concat(concat("    .quad ", concat(atom_label, "\n")), concat("    .quad ", concat(len_s, "\n")));
+            concat(one, emit_rodata_entries(lexemes.tail, index + 1))
+        end
+    }
+}
+
+// Emit callsite assembly for print_atom(var): X0 already holds atom index.
+fn emit_print_atom_by_index(term: SIRTerm, dest: string, table: AtomTable, uid: string) -> string {
+    _unused_uid: string <- uid;
+    _unused_table: AtomTable <- table;
+    call_effects: string <- term.value;
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
+    comment_line: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    bl_line: string <- "    BL L_pa_helper\n";
+    mov_ret: string <- concat(concat("    MOV ", dest), ", #0\n");
+    with_comment: string <- concat(comment_line, bl_line);
+    with_ret: string <- concat(with_comment, mov_ret);
+    with_post: string <- case len(post_barrier) > 0 of {
+        true -> concat(with_ret, concat(concat("\n", post_barrier), "\n"));
+        false -> with_ret
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(pre_barrier, concat("\n", with_post));
+        false -> with_post
+    };
+    with_pre
+}
+
+fn term_has_print_atom_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_atom" of {
+                true -> term.inner.kind != 0;
+                false -> term_has_print_atom_var(term.inner)
+            };
+            2 -> case term_has_print_atom_var(term.inner) of {
+                true -> true;
+                false -> term_has_print_atom_var(term.right_expr)
+            };
+            6 -> case term_has_print_atom_var(term.inner) of {
+                true -> true;
+                false -> term_has_print_atom_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn print_atom_var_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_print_atom_var(fns.head.body) of {
+            true -> true;
+            false -> print_atom_var_in_functions(fns.tail)
+        }
+    }
+}
+
+fn module_uses_print_atom_var(sir_module: SIRModule) -> bool {
+    print_atom_var_in_functions(sir_module.functions)
+}
+
+// Shared helper for print_atom(var). Expects X0 = atom index.
+fn emit_print_atom_helper(table: AtomTable) -> string {
+    in_order: ListAtomLexeme <- atom_table@reverse_lexemes(table.lexemes);
+    count: int64 <- count_lexemes(in_order);
+    count_s: string <- atom_table@int64_to_decimal_string(count);
+    concat(
+        concat(
+            "L_pa_helper:\n    CMP X0, #0\n    B.lt L_pa_oob\n    CMP X0, #",
+            concat(count_s, "\n    B.ge L_pa_oob\n    ADRP X9, L_pa_table@PAGE\n    ADD X9, X9, L_pa_table@PAGEOFF\n    LSL X10, X0, #4\n    ADD X9, X9, X10\n    LDR X1, [X9]\n    LDR X2, [X9, #8]\n")
+        ),
+        "    MOV X0, #1\n    MOV X16, #4\n    SVC #0x80\n    MOV X0, #0\n    RET\nL_pa_oob:\n    MOV X0, #0\n    RET\n"
+    )
+}
+
+// Per-module atom lookup table consumed by L_pa_helper.
+fn emit_print_atom_rodata_table(table: AtomTable) -> string {
+    in_order: ListAtomLexeme <- atom_table@reverse_lexemes(table.lexemes);
+    entries: string <- emit_rodata_entries(in_order, 0);
+    // Pointer table must live in a fixup-permitted data section (not __TEXT,__rodata),
+    // otherwise dyld chained fixups fault when rebasing .quad symbol addresses.
+    concat(".section __DATA_CONST,__const\n.align\t3\nL_pa_table:\n", entries)
+}

@@ -1,0 +1,145 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Prim dispatcher: case term.type_name -> type-specific emit_prim_op
+// term_emitter emits subterms to r1, r2 before calling this
+// Converts dest (X0/X1/X2) to D/S/W form for float/narrow types
+
+use sir_ast;
+use prims_float64;
+use prims_float32;
+use prims_float16;
+use prims_int64;
+use prims_uint64;
+use prims_narrow;
+use prims_bool;
+use prims_string;
+use prims_tuple;
+use prims_memory;
+use prims_list;
+use prims_atom;
+use prims_ordering_identity;
+use reg_conventions;
+
+export emit_prim_op/2;
+
+fn dest_for_type(dest: string, type_name: string) -> string {
+    case reg_conventions@is_float64_type(type_name) of {
+        true -> case dest of {
+            "X0" -> "D0";
+            "X1" -> "D1";
+            "X2" -> "D2";
+            "D0" -> "D0";
+            "D1" -> "D1";
+            "D2" -> "D2";
+            _: string -> case len(dest) > 0 and substring(dest, 0, 1) == "X" of {
+                true -> concat("D", substring(dest, 1, len(dest)));
+                false -> dest
+            }
+        };
+        false -> case reg_conventions@is_float32_type(type_name) of {
+            true -> case dest of {
+                "X0" -> "S0";
+                "X1" -> "S1";
+                "X2" -> "S2";
+                "S0" -> "S0";
+                "S1" -> "S1";
+                "S2" -> "S2";
+                _: string -> case len(dest) > 0 and substring(dest, 0, 1) == "X" of {
+                    true -> concat("S", substring(dest, 1, len(dest)));
+                    false -> dest
+                }
+            };
+            false -> case reg_conventions@is_float16_type(type_name) of {
+                true -> case dest of {
+                    "X0" -> "H0";
+                    "X1" -> "H1";
+                    "X2" -> "H2";
+                    "H0" -> "H0";
+                    "H1" -> "H1";
+                    "H2" -> "H2";
+                    _: string -> case len(dest) > 0 and substring(dest, 0, 1) == "X" of {
+                        true -> concat("H", substring(dest, 1, len(dest)));
+                        false -> dest
+                    }
+                };
+                false -> case reg_conventions@is_narrow_type(type_name) of {
+                    true -> case len(dest) > 0 of {
+                        true -> concat("W", substring(dest, 1, len(dest)));
+                        false -> dest
+                    };
+                    false -> dest
+                }
+            }
+        }
+    }
+}
+
+fn is_comparison_prim(name: string) -> bool {
+    name == "lt" or name == "gt" or name == "le" or name == "ge"
+}
+
+fn bool_result_compare_prim(term: SIRTerm) -> bool {
+    term.type_name == "bool" and (is_comparison_prim(term.name) or term.name == "eq" or term.name == "nq" or term.name == "is_nan" or term.name == "is_inf" or term.name == "is_finite")
+}
+
+fn emit_prim_op(term: SIRTerm, dest: string) -> string {
+    // Tuple projection dispatches to prims_tuple (tuple_make handled by term_emitter flat layout).
+    // Check before narrow/float so "(int16,...)" etc. don't match "int16".
+    case term.name == "tuple_proj" of {
+        true -> prims_tuple@emit_prim_op(term, dest);
+        false -> case prims_list@is_list_prim(term.name) of {
+            true -> prims_list@emit_prim_op(term, dest);
+            false -> case prims_memory@is_memory_prim(term.name) of {
+            true -> prims_memory@emit_prim_op(term, dest);
+            false -> case prims_ordering_identity@is_ordering_identity_prim(term.name) of {
+            true -> prims_ordering_identity@emit_prim_op(term, dest);
+            false -> do
+    dispatch_type: string <- case bool_result_compare_prim(term) of {
+        true -> term.inner.type_name;
+        false -> term.type_name
+    };
+    dest_reg: string <- case bool_result_compare_prim(term) of {
+        true -> dest;
+        false -> dest_for_type(dest, dispatch_type)
+    };
+    case dispatch_type of {
+        "float64" -> prims_float64@emit_prim_op(term, dest_reg);
+        "float32" -> prims_float32@emit_prim_op(term, dest_reg);
+        "float16" -> prims_float16@emit_prim_op(term, dest_reg);
+        "int64" -> prims_int64@emit_prim_op(term, dest_reg);
+        "uint64" -> prims_uint64@emit_prim_op(term, dest_reg);
+        "bool" -> prims_bool@emit_prim_op(term, dest_reg);
+        "int32" -> prims_narrow@emit_prim_op(term, dest_reg);
+        "int16" -> prims_narrow@emit_prim_op(term, dest_reg);
+        "int8" -> prims_narrow@emit_prim_op(term, dest_reg);
+        "uint32" -> prims_narrow@emit_prim_op(term, dest_reg);
+        "uint16" -> prims_narrow@emit_prim_op(term, dest_reg);
+        "uint8" -> prims_narrow@emit_prim_op(term, dest_reg);
+        "string" -> prims_string@emit_prim_op(term, dest_reg);
+        "atom" -> prims_atom@emit_prim_op(term, dest_reg);
+        _: string -> case reg_conventions@is_atom_option_type(dispatch_type) of {
+            true -> prims_atom@emit_prim_op(term, dest_reg);
+            false -> concat("    ; unsupported prim type: ", dispatch_type)
+        }
+    }
+    end
+    }
+    }
+    }
+    }
+}

@@ -1,0 +1,197 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Guarded FFI boundary helpers (Phase 11). Linked via __silica_runtime.sams.
+// Per-thread state (pthread key -> 512-byte block):
+//   [+0]  depth (int64)
+//   [+8]  current actor ACB at outermost enter
+//   [+16] call generation (monotonic, incremented on each depth 0->1)
+//   [+24] inside flag (1 while depth > 0)
+//   [+32] fault_signal, [+40] fault_addr, [+48] fault_code, [+56] fault_in_arena
+//   [+64] sigjmp_buf (448 B) for Phase 13 recovery boundary
+
+export emit_guarded_ffi_runtime_asm/0;
+
+fn emit_guarded_ffi_runtime_asm() -> string {
+    bss: string <- "	.section	__DATA,__bss
+	.p2align	3
+_silica_guarded_ffi_pthread_key:
+	.zero	8
+_silica_guarded_ffi_tls_init_lock:
+	.zero	4
+_silica_guarded_ffi_tls_key_ready:
+	.zero	1
+";
+    text: string <- "	.section	__TEXT,__text,regular,pure_instructions
+	.globl	_silica_rt_ensure_guarded_ffi_tls_key
+	.p2align	2
+_silica_rt_ensure_guarded_ffi_tls_key:
+	.cfi_startproc
+	stp	x21, x20, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w21, -32
+	.cfi_offset w20, -24
+	adrp	x20, _silica_guarded_ffi_tls_key_ready@PAGE
+	add	x20, x20, _silica_guarded_ffi_tls_key_ready@PAGEOFF
+	ldrb	w8, [x20]
+	cbnz	w8, L_gffi_tls_done
+	adrp	x0, _silica_guarded_ffi_tls_init_lock@PAGE
+	add	x0, x0, _silica_guarded_ffi_tls_init_lock@PAGEOFF
+	bl	_os_unfair_lock_lock
+	ldrb	w8, [x20]
+	cbnz	w8, L_gffi_tls_unlock
+	adrp	x0, _silica_guarded_ffi_pthread_key@PAGE
+	add	x0, x0, _silica_guarded_ffi_pthread_key@PAGEOFF
+	mov	x1, xzr
+	bl	_pthread_key_create
+	cbnz	w0, L_gffi_tls_unlock
+	mov	w8, #1
+	strb	w8, [x20]
+L_gffi_tls_unlock:
+	adrp	x0, _silica_guarded_ffi_tls_init_lock@PAGE
+	add	x0, x0, _silica_guarded_ffi_tls_init_lock@PAGEOFF
+	bl	_os_unfair_lock_unlock
+L_gffi_tls_done:
+	ldp	x29, x30, [sp, #16]
+	ldp	x21, x20, [sp], #32
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_guarded_ffi_state_get_or_create
+	.p2align	2
+_silica_rt_guarded_ffi_state_get_or_create:
+	.cfi_startproc
+	stp	x29, x30, [sp, #-16]!
+	mov	x29, sp
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	bl	_silica_rt_ensure_guarded_ffi_tls_key
+	adrp	x8, _silica_guarded_ffi_pthread_key@PAGE
+	add	x8, x8, _silica_guarded_ffi_pthread_key@PAGEOFF
+	ldr	x0, [x8]
+	bl	_pthread_getspecific
+	cbnz	x0, L_gffi_state_have
+	mov	x0, #512
+	bl	_calloc
+	cbz	x0, L_gffi_state_fail
+	mov	x9, x0
+	adrp	x8, _silica_guarded_ffi_pthread_key@PAGE
+	add	x8, x8, _silica_guarded_ffi_pthread_key@PAGEOFF
+	ldr	x0, [x8]
+	mov	x1, x9
+	bl	_pthread_setspecific
+	mov	x0, x9
+L_gffi_state_have:
+	ldp	x29, x30, [sp], #16
+	ret
+L_gffi_state_fail:
+	mov	x0, xzr
+	ldp	x29, x30, [sp], #16
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_ffi_guarded_enter
+	.p2align	2
+_silica_rt_ffi_guarded_enter:
+	.cfi_startproc
+	stp	x29, x30, [sp, #-16]!
+	stp	x19, x20, [sp, #-16]!
+	mov	x29, sp
+	bl	_silica_rt_guarded_ffi_state_get_or_create
+	cbz	x0, L_gffi_enter_abort
+	mov	x19, x0
+	ldr	x9, [x19, #0]
+	add	x9, x9, #1
+	str	x9, [x19, #0]
+	cmp	x9, #1
+	b.ne	L_gffi_enter_flag
+	bl	_silica_rt_tls_current_actor_get
+	str	x0, [x19, #8]
+	cbz	x0, L_gffi_enter_gen
+	mov	x20, x0
+	bl	_silica_rt_ffi_arena_ensure
+L_gffi_enter_gen:
+	ldr	x10, [x19, #16]
+	add	x10, x10, #1
+	str	x10, [x19, #16]
+L_gffi_enter_flag:
+	mov	x9, #1
+	str	x9, [x19, #24]
+	ldp	x19, x20, [sp], #16
+	ldp	x29, x30, [sp], #16
+	ret
+L_gffi_enter_abort:
+	bl	_abort
+	.cfi_endproc
+	.globl	_silica_rt_ffi_guarded_setjmp
+	.p2align	2
+_silica_rt_ffi_guarded_setjmp:
+	.cfi_startproc
+	stp	x29, x30, [sp, #-16]!
+	stp	x19, x20, [sp, #-16]!
+	mov	x29, sp
+	bl	_silica_rt_guarded_ffi_state_get_or_create
+	cbz	x0, L_gffi_sj_zero
+	mov	x19, x0
+	ldr	x9, [x19, #0]
+	cmp	x9, #1
+	b.ne	L_gffi_sj_zero
+	bl	_silica_rt_install_sync_fault_handlers
+	add	x0, x19, #64
+	mov	x1, xzr
+	bl	_sigsetjmp
+L_gffi_sj_zero:
+	ldp	x19, x20, [sp], #16
+	ldp	x29, x30, [sp], #16
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_ffi_guarded_exit
+	.p2align	2
+_silica_rt_ffi_guarded_exit:
+	.cfi_startproc
+	stp	x29, x30, [sp, #-16]!
+	stp	x19, x20, [sp, #-16]!
+	mov	x29, sp
+	bl	_silica_rt_ensure_guarded_ffi_tls_key
+	adrp	x8, _silica_guarded_ffi_pthread_key@PAGE
+	add	x8, x8, _silica_guarded_ffi_pthread_key@PAGEOFF
+	ldr	x0, [x8]
+	bl	_pthread_getspecific
+	cbz	x0, L_gffi_exit_done
+	mov	x19, x0
+	ldr	x9, [x19, #0]
+	cbz	x9, L_gffi_exit_done
+	subs	x9, x9, #1
+	b.lt	L_gffi_exit_done
+	str	x9, [x19, #0]
+	cbnz	x9, L_gffi_exit_done
+	ldr	x0, [x19, #8]
+	str	xzr, [x19, #8]
+	str	xzr, [x19, #24]
+	cbz	x0, L_gffi_exit_done
+	bl	_silica_rt_ffi_arena_reset
+L_gffi_exit_done:
+	ldp	x19, x20, [sp], #16
+	ldp	x29, x30, [sp], #16
+	ret
+	.cfi_endproc
+";
+    concat(bss, text)
+}

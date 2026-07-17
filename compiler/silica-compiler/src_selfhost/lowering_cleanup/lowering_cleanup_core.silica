@@ -1,0 +1,205 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Cleanup layer between checking and SIR generation.
+//
+// Checkers should see source-level annotations such as supervisor child_spec
+// `flavor`, but the checked-in SIR/emitter/runtime child-spec ABI does not
+// include those compile-time-only fields. This pass strips such annotations
+// after all checkers run and before lowering to SIR.
+
+use parser_ast;
+
+export cleanup_program_before_sir/1;
+export cleanup_named_program_list_before_sir/1;
+
+fn cleanup_string_contains_from(haystack: string, needle: string, i: int64, nlen: int64) -> bool {
+    case i + nlen > len(haystack) of {
+        true -> false;
+        false -> case substring(haystack, i, i + nlen) == needle of {
+            true -> true;
+            false -> cleanup_string_contains_from(haystack, needle, i + 1, nlen)
+        }
+    }
+}
+
+fn cleanup_string_contains(haystack: string, needle: string) -> bool {
+    nlen: int64 <- len(needle);
+    case nlen == 0 of {
+        true -> true;
+        false -> cleanup_string_contains_from(haystack, needle, 0, nlen)
+    }
+}
+
+fn cleanup_remove_all_from(s: string, needle: string, i: int64, acc: string) -> string {
+    nlen: int64 <- len(needle);
+    case i >= len(s) of {
+        true -> acc;
+        false -> case i + nlen <= len(s) and substring(s, i, i + nlen) == needle of {
+            true -> cleanup_remove_all_from(s, needle, i + nlen, acc);
+            false -> cleanup_remove_all_from(s, needle, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn cleanup_remove_all(s: string, needle: string) -> string {
+    case len(needle) == 0 of {
+        true -> s;
+        false -> cleanup_remove_all_from(s, needle, 0, "")
+    }
+}
+
+fn strip_compile_only_type_fields(s: string) -> string {
+    a: string <- cleanup_remove_all(s, ", flavor : :plain | :dangerous");
+    b: string <- cleanup_remove_all(a, ", flavor: :plain | :dangerous");
+    c: string <- cleanup_remove_all(b, ",flavor::plain|:dangerous");
+    cleanup_remove_all(c, ",flavor: :plain | :dangerous")
+}
+
+fn cleanup_param_list(params: ListParam) -> ListParam {
+    case params.is_nil of {
+        true -> parser_ast@nil_list_param();
+        false -> parser_ast@cons_param(
+            parser_ast@rebuild_param(params.head.name, strip_compile_only_type_fields(params.head.type_name), params.head.location),
+            cleanup_param_list(params.tail)
+        )
+    }
+}
+
+fn cleanup_effect_list(effects: ListEffectName) -> ListEffectName {
+    case effects.is_nil of {
+        true -> parser_ast@empty_effect_name_list();
+        false -> parser_ast@cons_effect_name(
+            parser_ast@rebuild_effect_name(effects.head.name, effects.head.parameter, effects.head.location),
+            cleanup_effect_list(effects.tail)
+        )
+    }
+}
+
+fn cleanup_tuple_bindings(bindings: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
+    case bindings.is_nil of {
+        true -> parser_ast@nil_tuple_decompose_bindings();
+        false -> parser_ast@cons_tuple_decompose_binding(
+            parser_ast@make_tuple_decompose_binding(bindings.head.name, bindings.head.path, strip_compile_only_type_fields(bindings.head.type_str)),
+            cleanup_tuple_bindings(bindings.tail)
+        )
+    }
+}
+
+fn record_chain_has_field(chain: Expr, field_name: string) -> bool {
+    case chain.kind == 21 of {
+        false -> false;
+        true -> case chain.name == field_name of {
+            true -> true;
+            false -> record_chain_has_field(chain.right_expr, field_name)
+        }
+    }
+}
+
+fn is_supervisor_child_spec_record_chain(chain: Expr) -> bool {
+    record_chain_has_field(chain, "id")
+        and record_chain_has_field(chain, "agent_type")
+        and record_chain_has_field(chain, "initial_state")
+        and record_chain_has_field(chain, "behavior")
+        and record_chain_has_field(chain, "restart")
+        and record_chain_has_field(chain, "shutdown")
+        and record_chain_has_field(chain, "flavor")
+}
+
+fn cleanup_record_chain(chain: Expr, strip_flavor_here: bool) -> Expr {
+    case chain.kind == 21 of {
+        false -> cleanup_expr(chain);
+        true -> do
+            tail_clean: Expr <- cleanup_record_chain(chain.right_expr, strip_flavor_here);
+            case strip_flavor_here and chain.name == "flavor" of {
+                true -> tail_clean;
+                false -> Expr {
+                    kind: chain.kind,
+                    value: strip_compile_only_type_fields(chain.value),
+                    name: chain.name,
+                    location: chain.location,
+                    inner: cleanup_expr(chain.inner),
+                    right_expr: tail_clean,
+                    pattern_bindings: cleanup_tuple_bindings(chain.pattern_bindings),
+                    sequence_effects: cleanup_effect_list(chain.sequence_effects)
+                }
+            }
+        end
+    }
+}
+
+fn cleanup_expr(expr: Expr) -> Expr {
+    case expr.kind < 0 of {
+        true -> parser_ast@dummy_expr();
+        false -> case expr.kind == 21 of {
+            true -> cleanup_record_chain(expr, is_supervisor_child_spec_record_chain(expr));
+            false -> Expr {
+                kind: expr.kind,
+                value: strip_compile_only_type_fields(expr.value),
+                name: expr.name,
+                location: expr.location,
+                inner: cleanup_expr(expr.inner),
+                right_expr: cleanup_expr(expr.right_expr),
+                pattern_bindings: cleanup_tuple_bindings(expr.pattern_bindings),
+                sequence_effects: cleanup_effect_list(expr.sequence_effects)
+            }
+        }
+    }
+}
+
+fn cleanup_declaration(decl: Declaration) -> Declaration {
+    sequence
+        result: Declaration <- Declaration {
+            tag: decl.tag,
+            name: decl.name,
+            parameters: cleanup_param_list(decl.parameters),
+            return_type_name: strip_compile_only_type_fields(decl.return_type_name),
+            return_type_location: decl.return_type_location,
+            location: decl.location,
+            body: cleanup_expr(decl.body),
+            declared_effects: cleanup_effect_list(decl.declared_effects)
+        }
+    produces
+        pure result
+    end
+}
+
+fn cleanup_declarations(decls: ListDeclaration) -> ListDeclaration {
+    case decls.is_nil of {
+        true -> parser_ast@empty_list_decl();
+        false -> parser_ast@cons_declaration(cleanup_declaration(decls.head), cleanup_declarations(decls.tail))
+    }
+}
+
+fn cleanup_program_before_sir(program: Program) -> Program {
+    sequence
+        result: Program <- Program { declarations: cleanup_declarations(program.declarations), location: program.location }
+    produces
+        pure result
+    end
+}
+
+fn cleanup_named_program_list_before_sir(world: ListNamedProgram) -> ListNamedProgram {
+    case world.is_nil of {
+        true -> parser_ast@empty_named_program_list();
+        false -> parser_ast@cons_named_program(
+            world.head.module_name,
+            cleanup_program_before_sir(world.head.program),
+            cleanup_named_program_list_before_sir(world.tail)
+        )
+    }
+}

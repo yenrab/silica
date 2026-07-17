@@ -1,0 +1,120 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Let dispatcher: compute rhs_reg by term.inner.type_name
+// Delegates to type-specific modules for register allocation
+
+use sir_ast;
+use let_float64;
+use let_float32;
+use let_float16;
+use let_int64;
+use let_narrow;
+use let_tuple;
+use reg_conventions;
+use var;
+
+export compute_rhs_reg_in_let/5;
+export compute_rhs_reg_top_level/3;
+
+// Lifted lambda / fn refs in let RHS lower to kind 0 `fn_ptr` (sir_generator expr_to_sir_with_expected),
+// not a `fn(...)` type string. Treat like function values: materialize in dest (typically X0), never
+// the int64 top-level X1 scratch — X1 may hold closure captures passed at call time.
+fn let_rhs_is_fn_pointer_materialization(type_name: string) -> bool {
+    case type_name == "fn_ptr" of {
+        true -> true;
+        false -> var@type_name_is_function(type_name)
+    }
+}
+
+fn compute_rhs_reg_in_let(term: SIRTerm, dest: string, bound_name: string, bound_reg: string, outer_reg: string) -> string {
+    case reg_conventions@is_tuple_type(term.inner.type_name) of {
+        true -> let_tuple@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
+        false -> case let_rhs_is_fn_pointer_materialization(term.inner.type_name) of {
+            true -> dest;
+            false -> case term.inner.type_name of {
+        "atom" -> dest;
+        "float64" -> let_float64@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
+        "float32" -> let_float32@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
+        "float16" -> let_float16@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
+        "int64" -> case term.inner.kind == 0 and dest == "X0" of {
+            true -> case bound_reg == "X1" of {
+                true -> "X2";
+                false -> case term.right_expr.kind == 4 of {
+                    true -> dest;
+                    false -> "X1"
+                }
+            };
+            false -> let_int64@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg)
+        };
+        "uint64" -> case term.inner.kind == 0 and dest == "X0" of {
+            true -> case bound_reg == "X1" of {
+                true -> "X2";
+                false -> case term.right_expr.kind == 4 of {
+                    true -> dest;
+                    false -> "X1"
+                }
+            };
+            false -> let_int64@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg)
+        };
+        "int32" -> let_narrow@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
+        "int16" -> let_narrow@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
+        "int8" -> let_narrow@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
+        "uint32" -> let_narrow@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
+        "uint16" -> let_narrow@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
+        "uint8" -> let_narrow@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
+        // and/or load operands into X9/X10; logical@emit_and_op uses dest for AND/CMP/CSET. When the let
+        // result is ultimately in X0, use X0 directly instead of a higher scratch (e.g. X3) + MOV.
+        "bool" -> case term.inner.kind == 6 and (term.inner.name == "and" or term.inner.name == "or") and dest == "X0" of {
+            true -> "X0";
+            false -> let_int64@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg)
+        };
+        _: string -> let_int64@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg)
+            }
+        }
+    }
+}
+
+fn compute_rhs_reg_top_level(term: SIRTerm, bound_reg: string, dest: string) -> string {
+    case reg_conventions@is_tuple_type(term.inner.type_name) of {
+        true -> let_tuple@compute_rhs_reg_top_level(term, bound_reg, dest);
+        false -> case let_rhs_is_fn_pointer_materialization(term.inner.type_name) of {
+            true -> dest;
+            false -> case term.inner.type_name of {
+        "atom" -> dest;
+        "float64" -> let_float64@compute_rhs_reg_top_level(term, bound_reg, dest);
+        "float32" -> let_float32@compute_rhs_reg_top_level(term, bound_reg, dest);
+        "float16" -> let_float16@compute_rhs_reg_top_level(term, bound_reg, dest);
+        "int64" -> case term.inner.kind == 0 and dest == "X0" of {
+            true -> "X1";
+            false -> let_int64@compute_rhs_reg_top_level(term, bound_reg, dest)
+        };
+        "uint64" -> case term.inner.kind == 0 and dest == "X0" of {
+            true -> "X1";
+            false -> let_int64@compute_rhs_reg_top_level(term, bound_reg, dest)
+        };
+        "int32" -> let_narrow@compute_rhs_reg_top_level(term, bound_reg, dest);
+        "int16" -> let_narrow@compute_rhs_reg_top_level(term, bound_reg, dest);
+        "int8" -> let_narrow@compute_rhs_reg_top_level(term, bound_reg, dest);
+        "uint32" -> let_narrow@compute_rhs_reg_top_level(term, bound_reg, dest);
+        "uint16" -> let_narrow@compute_rhs_reg_top_level(term, bound_reg, dest);
+        "uint8" -> let_narrow@compute_rhs_reg_top_level(term, bound_reg, dest);
+        _: string -> let_int64@compute_rhs_reg_top_level(term, bound_reg, dest)
+            }
+        }
+    }
+}

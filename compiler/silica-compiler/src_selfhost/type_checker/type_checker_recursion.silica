@@ -1,0 +1,282 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Semantic hooks for recursion lowering (explicit frames, preemption, tail calls).
+// Aligns with design_documents/recursion_implementation.jsonld and recursion_implementation.md.
+// Phase tags RECURSION_PHASE_* map to jsonld steps: 1=frames/stack/saved state, 2=lowering/dispatch,
+// 3=fuel/back-edges, 4=source-mapped frames / stack traces, 5=tail-call optimization, 6=trampoline fallback.
+// After a function body type-checks, recursion_analyze_body walks the AST to classify call sites
+// (direct self vs other, tail vs non-tail, back-edge hints) for downstream codegen — no new type errors.
+
+use parser_ast;
+use type_checker_core;
+
+export RECURSION_PHASE_CORE_FRAMES/0;
+export RECURSION_PHASE_LOWERING/0;
+export RECURSION_PHASE_PREEMPTION/0;
+export RECURSION_PHASE_DEBUG/0;
+export RECURSION_PHASE_OPTIMIZATION/0;
+export RECURSION_PHASE_FALLBACK/0;
+export CALL_RECURSION_NONE/0;
+export CALL_RECURSION_DIRECT_SELF/0;
+export CALL_RECURSION_OTHER_FUNCTION/0;
+export TAIL_CALL_HINT_NOT_TAIL/0;
+export TAIL_CALL_HINT_TAIL/0;
+export BACK_EDGE_HINT_NONE/0;
+export BACK_EDGE_HINT_TAIL_OR_LOOP/0;
+export source_location_eq/2;
+export expr_same_by_location/2;
+export expr_is_tail_position/2;
+export classify_call_recursion/2;
+export tail_call_hint_for_site/2;
+export back_edge_hint_for_site/2;
+export recursion_phase_name/1;
+export recursion_analyze_body/2;
+
+fn RECURSION_PHASE_CORE_FRAMES() -> int64 { 1 }
+fn RECURSION_PHASE_LOWERING() -> int64 { 2 }
+fn RECURSION_PHASE_PREEMPTION() -> int64 { 3 }
+fn RECURSION_PHASE_DEBUG() -> int64 { 4 }
+fn RECURSION_PHASE_OPTIMIZATION() -> int64 { 5 }
+fn RECURSION_PHASE_FALLBACK() -> int64 { 6 }
+
+fn CALL_RECURSION_NONE() -> int64 { 0 }
+fn CALL_RECURSION_DIRECT_SELF() -> int64 { 1 }
+fn CALL_RECURSION_OTHER_FUNCTION() -> int64 { 2 }
+
+fn TAIL_CALL_HINT_NOT_TAIL() -> int64 { 0 }
+fn TAIL_CALL_HINT_TAIL() -> int64 { 1 }
+
+fn BACK_EDGE_HINT_NONE() -> int64 { 0 }
+fn BACK_EDGE_HINT_TAIL_OR_LOOP() -> int64 { 1 }
+
+fn source_location_eq(a: { file: string, line: int64, column: int64, offset: int64 }, b: { file: string, line: int64, column: int64, offset: int64 }) -> bool {
+    case a.line == b.line and a.column == b.column and a.offset == b.offset of {
+        true -> a.file == b.file;
+        false -> false
+    }
+}
+
+fn expr_same_by_location(a: Expr, b: Expr) -> bool {
+    source_location_eq(a.location, b.location)
+}
+
+fn expr_is_tail_case_branches(branches: Expr, target: Expr) -> bool {
+    case branches.kind == -1 of {
+        true -> false;
+        false -> case branches.kind == 17 of {
+            true -> do
+                b: Expr <- branches.inner;
+                rest: Expr <- branches.right_expr;
+                case b.kind == 18 of {
+                    true -> do
+                        here: bool <- expr_is_tail_position(b.right_expr, target);
+                        case here of {
+                            true -> true;
+                            false -> expr_is_tail_case_branches(rest, target)
+                        }
+                    end;
+                    false -> expr_is_tail_case_branches(rest, target)
+                }
+            end;
+            false -> false
+        }
+    }
+}
+
+// If else branch is tail of target, true; else use then_ok (from then-branch tail check).
+fn merge_tail_if_else(then_ok: bool, tail_in_else: bool) -> bool {
+    case tail_in_else of {
+        true -> true;
+        false -> then_ok
+    }
+}
+
+fn expr_is_tail_if(root: Expr, target: Expr) -> bool {
+    case root.kind == 19 of {
+        false -> false;
+        true -> do
+            then_ok: bool <- expr_is_tail_position(root.right_expr.inner, target);
+            has_else: bool <- root.right_expr.right_expr.kind >= 0;
+            // List the merge call before plain then_ok: codegen incorrectly used alloca i64 for the first arm.
+            case has_else of {
+                true -> merge_tail_if_else(then_ok, expr_is_tail_position(root.right_expr.right_expr, target));
+                false -> then_ok
+            }
+        end
+    }
+}
+
+fn expr_is_tail_position(root: Expr, target: Expr) -> bool {
+    case expr_same_by_location(root, target) of {
+        true -> true;
+        false -> case root.kind of {
+            2 -> expr_is_tail_position(root.inner, target);
+            4 -> false;
+            6 -> expr_is_tail_position(root.right_expr, target);
+            9 -> false;
+            10 -> expr_is_tail_position(root.right_expr, target);
+            11 -> expr_is_tail_position(root.right_expr, target);
+            12 -> false;
+            13 -> expr_is_tail_case_branches(root.right_expr, target);
+            19 -> expr_is_tail_if(root, target);
+            3 -> false;
+            20 -> false;
+            _: int64 -> false
+        }
+    }
+}
+
+fn first_at_rec_call_name(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "@" of {
+            true -> i;
+            false -> first_at_rec_call_name(s, i + 1)
+        }
+    }
+}
+
+fn classify_call_recursion(callee_name: string, current_function_name: string) -> int64 {
+    case len(current_function_name) == 0 of {
+        true -> CALL_RECURSION_NONE();
+        false -> case first_at_rec_call_name(callee_name, 0) >= 0 of {
+            true -> CALL_RECURSION_OTHER_FUNCTION();
+            false -> case callee_name == current_function_name of {
+                true -> CALL_RECURSION_DIRECT_SELF();
+                false -> CALL_RECURSION_OTHER_FUNCTION()
+            }
+        }
+    }
+}
+
+fn tail_call_hint_for_site(call_expr: Expr, body_root: Expr) -> int64 {
+    case call_expr.kind != 4 of {
+        true -> TAIL_CALL_HINT_NOT_TAIL();
+        false -> case body_root.kind < 0 of {
+            true -> TAIL_CALL_HINT_NOT_TAIL();
+            false -> case expr_is_tail_position(body_root, call_expr) of {
+                true -> TAIL_CALL_HINT_TAIL();
+                false -> TAIL_CALL_HINT_NOT_TAIL()
+            }
+        }
+    }
+}
+
+fn back_edge_hint_for_site(call_expr: Expr, body_root: Expr) -> int64 {
+    case tail_call_hint_for_site(call_expr, body_root) == TAIL_CALL_HINT_TAIL() of {
+        true -> BACK_EDGE_HINT_TAIL_OR_LOOP();
+        false -> BACK_EDGE_HINT_NONE()
+    }
+}
+
+fn recursion_phase_name(phase: int64) -> string {
+    case phase of {
+        1 -> "phase1_core_frames";
+        2 -> "phase2_lowering";
+        3 -> "phase3_preemption";
+        4 -> "phase4_debug";
+        5 -> "phase5_optimization";
+        6 -> "phase6_fallback";
+        _: int64 -> "phase_unknown"
+    }
+}
+
+fn merge_two_results(a: TypeCheckResult, b: TypeCheckResult) -> TypeCheckResult {
+    case a.is_ok of {
+        true -> b;
+        false -> a
+    }
+}
+
+fn merge_three_results(a: TypeCheckResult, b: TypeCheckResult, c: TypeCheckResult) -> TypeCheckResult {
+    merge_two_results(a, merge_two_results(b, c))
+}
+
+fn note_one_call_site(root_body: Expr, call: Expr, function_name: string) -> TypeCheckResult {
+    k: int64 <- classify_call_recursion(call.name, function_name);
+    h: int64 <- tail_call_hint_for_site(call, root_body);
+    b: int64 <- back_edge_hint_for_site(call, root_body);
+    case k + h + b >= 0 of {
+        true -> type_checker_core@type_check_ok();
+        false -> type_checker_core@type_check_ok()
+    }
+}
+
+fn recurse_branch_list(root_body: Expr, branches: Expr, function_name: string) -> TypeCheckResult {
+    case branches.kind == -1 of {
+        true -> type_checker_core@type_check_ok();
+        false -> case branches.kind == 17 of {
+            true -> do
+                b: Expr <- branches.inner;
+                rest: Expr <- branches.right_expr;
+                r1: TypeCheckResult <- merge_two_results(recurse_analyze_expr(root_body, b.inner, function_name), recurse_analyze_expr(root_body, b.right_expr, function_name));
+                case r1.is_ok of {
+                    false -> r1;
+                    true -> recurse_branch_list(root_body, rest, function_name)
+                }
+            end;
+            false -> recurse_analyze_expr(root_body, branches, function_name)
+        }
+    }
+}
+
+fn recurse_analyze_expr(root_body: Expr, e: Expr, function_name: string) -> TypeCheckResult {
+    case e.kind < 0 of {
+        true -> type_checker_core@type_check_ok();
+        false -> do
+            after_call: TypeCheckResult <- case e.kind == 4 of {
+                true -> note_one_call_site(root_body, e, function_name);
+                false -> type_checker_core@type_check_ok()
+            };
+            case after_call.is_ok of {
+                false -> after_call;
+                true -> recurse_children(root_body, e, function_name)
+            }
+        end
+    }
+}
+
+fn recurse_children(root_body: Expr, e: Expr, function_name: string) -> TypeCheckResult {
+    case e.kind of {
+        0 -> type_checker_core@type_check_ok();
+        1 -> type_checker_core@type_check_ok();
+        5 -> type_checker_core@type_check_ok();
+        7 -> type_checker_core@type_check_ok();
+        8 -> type_checker_core@type_check_ok();
+        2 -> recurse_analyze_expr(root_body, e.inner, function_name);
+        12 -> recurse_analyze_expr(root_body, e.inner, function_name);
+        3 -> merge_two_results(recurse_analyze_expr(root_body, e.inner, function_name), recurse_analyze_expr(root_body, e.right_expr, function_name));
+        4 -> merge_two_results(recurse_analyze_expr(root_body, e.inner, function_name), recurse_analyze_expr(root_body, e.right_expr, function_name));
+        6 -> merge_two_results(recurse_analyze_expr(root_body, e.inner, function_name), recurse_analyze_expr(root_body, e.right_expr, function_name));
+        9 -> merge_two_results(recurse_analyze_expr(root_body, e.inner, function_name), recurse_analyze_expr(root_body, e.right_expr, function_name));
+        10 -> merge_two_results(recurse_analyze_expr(root_body, e.inner, function_name), recurse_analyze_expr(root_body, e.right_expr, function_name));
+        11 -> merge_two_results(recurse_analyze_expr(root_body, e.inner, function_name), recurse_analyze_expr(root_body, e.right_expr, function_name));
+            13 -> merge_two_results(recurse_analyze_expr(root_body, e.inner, function_name), recurse_branch_list(root_body, e.right_expr, function_name));
+            19 -> merge_three_results(recurse_analyze_expr(root_body, e.inner, function_name), recurse_analyze_expr(root_body, e.right_expr.inner, function_name), recurse_analyze_expr(root_body, e.right_expr.right_expr, function_name));
+            20 -> merge_two_results(recurse_analyze_expr(root_body, e.inner, function_name), recurse_analyze_expr(root_body, e.right_expr, function_name));
+            _: int64 -> type_checker_core@type_check_ok()
+    }
+}
+
+// Walk body after successful type check: classify each call (Phase 1–6 metadata hooks; no new errors).
+fn recursion_analyze_body(body: Expr, function_name: string) -> TypeCheckResult {
+    case len(function_name) == 0 of {
+        true -> type_checker_core@type_check_ok();
+        false -> recurse_analyze_expr(body, body, function_name)
+    }
+}

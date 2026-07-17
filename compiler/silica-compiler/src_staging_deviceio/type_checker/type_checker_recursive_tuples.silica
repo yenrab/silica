@@ -1,0 +1,530 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Recursive tuple types: `rec`, `ref?(R, Space, T)`, `alloc_rec`, structural equality with occurs check.
+// Authority: design_documents/recursive_tuple_specification.md; Layer 1 §7.3.
+
+use parser_ast;
+use type_checker_core;
+
+export needs_recursive_compare/2;
+export recursive_types_equal/2;
+export is_ref_optional_type/1;
+export ref_optional_inner_ref_type/1;
+export ref_optional_atom_union/1;
+export atom_fits_ref_optional_slot/2;
+export ref_fits_ref_optional_slot/2;
+export type_contains_rec/1;
+export tuple_type_contains_rec/1;
+export validate_recursive_type_declaration/2;
+export validate_alloc_rec_element_type/2;
+export case_pattern_matches_ref_optional/2;
+
+fn strip_spaces(s: string) -> string {
+    strip_spaces_from(s, 0, "")
+}
+
+fn strip_spaces_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> strip_spaces_from(s, i + 1, acc);
+            false -> strip_spaces_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn trim_type(s: string) -> string {
+    trim_type_from(strip_spaces(s), 0, len(strip_spaces(s)) - 1)
+}
+
+fn trim_type_from(s: string, start: int64, last_idx: int64) -> string {
+    case start > last_idx of {
+        true -> "";
+        false -> case substring(s, start, start + 1) == " " of {
+            true -> trim_type_from(s, start + 1, last_idx);
+            false -> case substring(s, last_idx, last_idx + 1) == " " of {
+                true -> trim_type_from(s, start, last_idx - 1);
+                false -> substring(s, start, last_idx + 1)
+            }
+        }
+    }
+}
+
+fn top_level_param_count(inner: string) -> int64 {
+    top_level_param_count_from(inner, 0, 0, 0)
+}
+
+fn top_level_param_count_from(s: string, i: int64, depth: int64, count: int64) -> int64 {
+    case i >= len(s) of {
+        true -> case count == 0 of { true -> 0; false -> count + 1 };
+        false -> do
+            ch: string <- substring(s, i, i + 1);
+            case ch == "(" of {
+                true -> top_level_param_count_from(s, i + 1, depth + 1, count);
+                false -> case ch == ")" of {
+                    true -> case depth == 0 of {
+                        true -> case count == 0 of { true -> 0; false -> count + 1 };
+                        false -> top_level_param_count_from(s, i + 1, depth - 1, count)
+                    };
+                    false -> case ch == "," of {
+                        true -> case depth == 0 of {
+                            true -> top_level_param_count_from(s, i + 1, 0, count + 1);
+                            false -> top_level_param_count_from(s, i + 1, depth, count)
+                        };
+                        false -> top_level_param_count_from(s, i + 1, depth, count)
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn nth_top_level_param(inner: string, target: int64) -> string {
+    nth_top_level_param_from(inner, 0, target, 0, 0, "")
+}
+
+fn nth_top_level_param_from(s: string, i: int64, target: int64, depth: int64, idx: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> case idx == target of { true -> trim_type(acc); false -> "" };
+        false -> do
+            ch: string <- substring(s, i, i + 1);
+            case ch == "(" of {
+                true -> nth_top_level_param_from(s, i + 1, target, depth + 1, idx, concat(acc, ch));
+                false -> case ch == ")" of {
+                    true -> case depth == 0 of {
+                        true -> case idx == target of { true -> trim_type(acc); false -> "" };
+                        false -> nth_top_level_param_from(s, i + 1, target, depth - 1, idx, concat(acc, ch))
+                    };
+                    false -> case ch == "," of {
+                        true -> case depth == 0 of {
+                            true -> case idx == target of {
+                                true -> trim_type(acc);
+                                false -> nth_top_level_param_from(s, i + 1, target, 0, idx + 1, "")
+                            };
+                            false -> nth_top_level_param_from(s, i + 1, target, depth, idx, concat(acc, ch))
+                        };
+                        false -> nth_top_level_param_from(s, i + 1, target, depth, idx, concat(acc, ch))
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn parse_ref_q_type(type_str: string) -> (bool, string) {
+    t: string <- trim_type(type_str);
+    case len(t) >= 5 and substring(t, 0, 4) == "ref?" and substring(t, 4, 5) == "(" of {
+        true -> case substring(t, len(t) - 1, len(t)) == ")" of {
+            true -> (true, substring(t, 5, len(t) - 1));
+            false -> (false, "")
+        };
+        false -> (false, "")
+    }
+}
+
+fn parse_ref_type(type_str: string) -> (bool, string) {
+    t: string <- trim_type(type_str);
+    case len(t) >= 4 and substring(t, 0, 3) == "ref" and substring(t, 3, 4) == "(" of {
+        true -> case substring(t, len(t) - 1, len(t)) == ")" of {
+            true -> (true, substring(t, 4, len(t) - 1));
+            false -> (false, "")
+        };
+        false -> (false, "")
+    }
+}
+
+fn is_tuple_type(type_str: string) -> bool {
+    t: string <- trim_type(type_str);
+    len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")"
+}
+
+fn tuple_inner(type_str: string) -> string {
+    t: string <- trim_type(type_str);
+    substring(t, 1, len(t) - 1)
+}
+
+fn third_param_type(param_list: string) -> string {
+    nth_top_level_param(param_list, 2)
+}
+
+fn type_contains_rec_in_ref_params(type_str: string) -> bool {
+    (ok_q: bool, params_q: string) <- parse_ref_q_type(type_str);
+    case ok_q of {
+        true -> type_contains_rec(third_param_type(params_q));
+        false -> do
+            (ok_r: bool, params_r: string) <- parse_ref_type(type_str);
+            case ok_r of {
+                true -> type_contains_rec(third_param_type(params_r));
+                false -> false
+            }
+        end
+    }
+}
+
+fn type_contains_rec(type_str: string) -> bool {
+    t: string <- trim_type(type_str);
+    case t == "rec" of {
+        true -> true;
+        false -> case is_tuple_type(t) of {
+            true -> tuple_fields_contain_rec(tuple_inner(t));
+            false -> type_contains_rec_in_ref_params(t)
+        }
+    }
+}
+
+fn tuple_fields_contain_rec(inner: string) -> bool {
+    n: int64 <- top_level_param_count(inner);
+    tuple_fields_contain_rec_idx(inner, 0, n)
+}
+
+fn tuple_fields_contain_rec_idx(inner: string, idx: int64, n: int64) -> bool {
+    case idx >= n of {
+        true -> false;
+        false -> case type_contains_rec(nth_top_level_param(inner, idx)) of {
+            true -> true;
+            false -> tuple_fields_contain_rec_idx(inner, idx + 1, n)
+        }
+    }
+}
+
+fn tuple_type_contains_rec(type_str: string) -> bool {
+    t: string <- trim_type(type_str);
+    case is_tuple_type(t) of {
+        true -> type_contains_rec(t);
+        false -> false
+    }
+}
+
+fn needs_recursive_compare(a: string, b: string) -> bool {
+    type_contains_rec(a) or type_contains_rec(b) or is_ref_optional_type(a) or is_ref_optional_type(b) or substring(trim_type(a), 0, 4) == "ref?" or substring(trim_type(b), 0, 4) == "ref?"
+}
+
+fn is_ref_optional_type(type_str: string) -> bool {
+    (ok: bool, _inner: string) <- parse_ref_q_type(type_str);
+    ok
+}
+
+fn ref_optional_inner_ref_type(type_str: string) -> string {
+    (ok: bool, inner: string) <- parse_ref_q_type(type_str);
+    case ok of {
+        false -> "";
+        true -> do
+            r: string <- trim_type(nth_top_level_param(inner, 0));
+            space: string <- trim_type(nth_top_level_param(inner, 1));
+            elem: string <- trim_type(nth_top_level_param(inner, 2));
+            concat(concat(concat(concat("ref(", r), ", "), space), concat(", ", concat(elem, ")")))
+        end
+    }
+}
+
+fn ref_optional_atom_union(type_str: string) -> string {
+    inner_ref: string <- ref_optional_inner_ref_type(type_str);
+    case len(inner_ref) == 0 of {
+        true -> "";
+        false -> concat(":none|", inner_ref)
+    }
+}
+
+fn atom_fits_ref_optional_slot(atom_value: string, field_type: string) -> bool {
+    case is_ref_optional_type(field_type) of {
+        false -> false;
+        true -> atom_value == ":none"
+    }
+}
+
+fn ref_fits_ref_optional_slot(actual: string, expected: string) -> bool {
+    case is_ref_optional_type(expected) of {
+        false -> false;
+        true -> do
+            (ok_a: bool, params_a: string) <- parse_ref_type(actual);
+            case ok_a of {
+                false -> false;
+                true -> do
+                    (ok_e: bool, params_e: string) <- parse_ref_q_type(expected);
+                    case ok_e of {
+                        false -> false;
+                        true -> do
+                            lr: string <- trim_type(nth_top_level_param(params_a, 0));
+                            ls: string <- trim_type(nth_top_level_param(params_a, 1));
+                            er: string <- trim_type(nth_top_level_param(params_e, 0));
+                            es: string <- trim_type(nth_top_level_param(params_e, 1));
+                            elem_a: string <- trim_type(third_param_type(params_a));
+                            elem_e: string <- trim_type(third_param_type(params_e));
+                            lr == er and ls == es and elem_e == "rec" and is_tuple_type(elem_a) and type_contains_rec(elem_a)
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn expand_rec_token(type_str: string, root: string) -> string {
+    case trim_type(type_str) == "rec" of {
+        true -> root;
+        false -> type_str
+    }
+}
+
+fn recursive_root_for(type_str: string) -> string {
+    t: string <- trim_type(type_str);
+    case is_tuple_type(t) and type_contains_rec(t) of {
+        true -> t;
+        false -> t
+    }
+}
+
+fn recursive_types_equal(a: string, b: string) -> bool {
+    ta: string <- trim_type(a);
+    tb: string <- trim_type(b);
+    root_a: string <- recursive_root_for(ta);
+    root_b: string <- recursive_root_for(tb);
+    equal_core(ta, tb, root_a, root_b, 0)
+}
+
+fn equal_core(a: string, b: string, root_a: string, root_b: string, depth: int64) -> bool {
+    case depth > 32 of {
+        true -> true;
+        false -> do
+            ea: string <- expand_rec_token(trim_type(a), root_a);
+            eb: string <- expand_rec_token(trim_type(b), root_b);
+            case ea == "rec" and eb == "rec" of {
+                true -> true;
+                false -> case is_ref_optional_type(ea) or is_ref_optional_type(eb) of {
+                    true -> equal_ref_optional(ea, eb, root_a, root_b, depth);
+                    false -> equal_non_optional_types(ea, eb, root_a, root_b, depth)
+                }
+            }
+        end
+    }
+}
+
+fn equal_non_optional_types(ea: string, eb: string, root_a: string, root_b: string, depth: int64) -> bool {
+    (ok_a: bool, params_a: string) <- parse_ref_type(ea);
+    case ok_a of {
+        true -> do
+            (ok_b: bool, params_b: string) <- parse_ref_type(eb);
+            case ok_b of {
+                true -> equal_ref_params(params_a, params_b, root_a, root_b, depth);
+                false -> false
+            }
+        end;
+        false -> case is_tuple_type(ea) and is_tuple_type(eb) of {
+            true -> equal_tuple_types(ea, eb, root_a, root_b, depth);
+            false -> ea == eb
+        }
+    }
+}
+
+fn equal_ref_optional(a: string, b: string, root_a: string, root_b: string, depth: int64) -> bool {
+    case is_ref_optional_type(a) and is_ref_optional_type(b) of {
+        true -> do
+            (ok_a: bool, inner_a: string) <- parse_ref_q_type(a);
+            (ok_b: bool, inner_b: string) <- parse_ref_q_type(b);
+            case ok_a and ok_b of {
+                false -> false;
+                true -> equal_ref_params(inner_a, inner_b, root_a, root_b, depth)
+            }
+        end;
+        false -> false
+    }
+}
+
+fn equal_ref_params(inner_a: string, inner_b: string, root_a: string, root_b: string, depth: int64) -> bool {
+    case nth_top_level_param(inner_a, 0) == nth_top_level_param(inner_b, 0) of {
+        false -> false;
+        true -> case nth_top_level_param(inner_a, 1) == nth_top_level_param(inner_b, 1) of {
+            false -> false;
+            true -> equal_core(nth_top_level_param(inner_a, 2), nth_top_level_param(inner_b, 2), root_a, root_b, depth + 1)
+        }
+    }
+}
+
+fn equal_tuple_types(a: string, b: string, root_a: string, root_b: string, depth: int64) -> bool {
+    new_root_a: string <- case type_contains_rec(a) of { true -> a; false -> root_a };
+    new_root_b: string <- case type_contains_rec(b) of { true -> b; false -> root_b };
+    inner_a: string <- tuple_inner(a);
+    inner_b: string <- tuple_inner(b);
+    n_a: int64 <- top_level_param_count(inner_a);
+    n_b: int64 <- top_level_param_count(inner_b);
+    case n_a == n_b of {
+        false -> false;
+        true -> equal_tuple_fields_idx(inner_a, inner_b, 0, n_a, new_root_a, new_root_b, depth + 1)
+    }
+}
+
+fn equal_tuple_fields_idx(inner_a: string, inner_b: string, idx: int64, n: int64, root_a: string, root_b: string, depth: int64) -> bool {
+    case idx >= n of {
+        true -> true;
+        false -> case equal_core(nth_top_level_param(inner_a, idx), nth_top_level_param(inner_b, idx), root_a, root_b, depth) of {
+            false -> false;
+            true -> equal_tuple_fields_idx(inner_a, inner_b, idx + 1, n, root_a, root_b, depth)
+        }
+    }
+}
+
+fn has_non_rec_base_in_ref_params(type_str: string) -> bool {
+    (ok_q: bool, params_q: string) <- parse_ref_q_type(type_str);
+    case ok_q of {
+        true -> has_non_rec_base(third_param_type(params_q));
+        false -> do
+            (ok_r: bool, params_r: string) <- parse_ref_type(type_str);
+            case ok_r of {
+                true -> has_non_rec_base(third_param_type(params_r));
+                false -> true
+            }
+        end
+    }
+}
+
+fn has_non_rec_base(type_str: string) -> bool {
+    t: string <- trim_type(type_str);
+    case t == "rec" of {
+        true -> false;
+        false -> case is_tuple_type(t) of {
+            true -> tuple_has_non_rec_base(tuple_inner(t));
+            false -> has_non_rec_base_in_ref_params(t)
+        }
+    }
+}
+
+fn tuple_has_non_rec_base(inner: string) -> bool {
+    n: int64 <- top_level_param_count(inner);
+    tuple_has_non_rec_base_idx(inner, 0, n)
+}
+
+fn tuple_has_non_rec_base_idx(inner: string, idx: int64, n: int64) -> bool {
+    case idx >= n of {
+        true -> false;
+        false -> case has_non_rec_base(nth_top_level_param(inner, idx)) of {
+            true -> true;
+            false -> tuple_has_non_rec_base_idx(inner, idx + 1, n)
+        }
+    }
+}
+
+fn recursive_type_subject(type_str: string) -> string {
+    t: string <- trim_type(type_str);
+    (ok_ref: bool, ref_params: string) <- parse_ref_type(t);
+    case ok_ref of {
+        true -> nth_top_level_param(ref_params, 2);
+        false -> t
+    }
+}
+
+fn validate_recursive_type_declaration(type_str: string, location: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+    subject: string <- recursive_type_subject(type_str);
+    case trim_type(subject) == "rec" of {
+        true -> type_checker_core@type_check_ok();
+        false -> case type_contains_rec(subject) of {
+            false -> case is_ref_optional_type(subject) of {
+                true -> validate_ref_q_type(subject, location);
+                false -> type_checker_core@type_check_ok()
+            };
+            true -> case is_tuple_type(subject) of {
+                false -> type_checker_core@type_check_err("E2010", location, concat("rec is valid only inside tuple types, got ", type_str), "recursive_tuple§2");
+                true -> case has_non_rec_base(subject) of {
+                    false -> type_checker_core@type_check_err("E2010", location, concat("unguarded recursive tuple type lacks a non-recursive base: ", type_str), "recursive_tuple§3");
+                    true -> validate_ref_q_in_type(subject, location)
+                }
+            }
+        }
+    }
+}
+
+fn validate_ref_q_in_type(type_str: string, location: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+    t: string <- trim_type(type_str);
+    case is_ref_optional_type(t) of {
+        true -> validate_ref_q_type(t, location);
+        false -> case is_tuple_type(t) of {
+            true -> validate_ref_q_fields(tuple_inner(t), location);
+            false -> type_checker_core@type_check_ok()
+        }
+    }
+}
+
+fn validate_ref_q_fields(inner: string, location: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+    n: int64 <- top_level_param_count(inner);
+    validate_ref_q_fields_idx(inner, 0, n, location)
+}
+
+fn validate_ref_q_fields_idx(inner: string, idx: int64, n: int64, location: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+    case idx >= n of {
+        true -> type_checker_core@type_check_ok();
+        false -> do
+            r1: TypeCheckResult <- validate_ref_q_in_type(nth_top_level_param(inner, idx), location);
+            case r1.is_ok of {
+                false -> r1;
+                true -> validate_ref_q_fields_idx(inner, idx + 1, n, location)
+            }
+        end
+    }
+}
+
+fn validate_ref_q_type(type_str: string, location: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+    (ok: bool, inner: string) <- parse_ref_q_type(type_str);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2010", location, concat("invalid ref? type: ", type_str), "recursive_tuple§2");
+        true -> case len(nth_top_level_param(inner, 0)) == 0 or len(nth_top_level_param(inner, 1)) == 0 or len(nth_top_level_param(inner, 2)) == 0 of {
+            true -> type_checker_core@type_check_err("E2010", location, "ref?(R, Space, T) requires three parameters", "recursive_tuple§2");
+            false -> validate_recursive_type_declaration(nth_top_level_param(inner, 2), location)
+        }
+    }
+}
+
+fn validate_alloc_rec_element_type(elem_type: string, location: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+    case tuple_type_contains_rec(elem_type) of {
+        false -> type_checker_core@type_check_err("E2010", location, concat("alloc_rec element type must be a recursive tuple, got ", elem_type), "recursive_tuple§2.3");
+        true -> validate_recursive_type_declaration(elem_type, location)
+    }
+}
+
+fn ref_types_equal_for_case(inner_ref: string, pattern_ref: string) -> bool {
+    (ok_i: bool, params_i: string) <- parse_ref_type(inner_ref);
+    (ok_p: bool, params_p: string) <- parse_ref_type(pattern_ref);
+    case ok_i and ok_p of {
+        false -> recursive_types_equal(inner_ref, pattern_ref);
+        true -> case nth_top_level_param(params_i, 0) == nth_top_level_param(params_p, 0) of {
+            false -> false;
+            true -> case nth_top_level_param(params_i, 1) == nth_top_level_param(params_p, 1) of {
+                false -> false;
+                true -> do
+                    elem_i: string <- trim_type(nth_top_level_param(params_i, 2));
+                    elem_p: string <- trim_type(nth_top_level_param(params_p, 2));
+                    case elem_i == "rec" of {
+                        true -> is_tuple_type(elem_p) and type_contains_rec(elem_p) and has_non_rec_base(elem_p);
+                        false -> recursive_types_equal(elem_i, elem_p)
+                    }
+                end
+            }
+        }
+    }
+}
+
+fn case_pattern_matches_ref_optional(scrutinee_type: string, pattern_type: string) -> bool {
+    case is_ref_optional_type(scrutinee_type) of {
+        false -> ref_types_equal_for_case(scrutinee_type, pattern_type);
+        true -> case trim_type(pattern_type) == "atom" of {
+            true -> true;
+            false -> do
+                inner: string <- ref_optional_inner_ref_type(scrutinee_type);
+                ref_types_equal_for_case(inner, pattern_type)
+            end
+        }
+    }
+}

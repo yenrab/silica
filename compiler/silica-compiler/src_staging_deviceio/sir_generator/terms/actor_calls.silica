@@ -1,0 +1,388 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Actor / concurrency builtins → SIR prim terms (silica-specification §4.5, §15–16; sir_design_spec §7.9).
+// spawn, spawn_linked (supervisors Phase A §15.4.8.3); link, monitor, demonitor (supervisors Phase G
+// supervisors_implementation_development_plan.md — §15.4.8.4–§15.4.8.7: link + spawn_linked matrix, monitor/demonitor,
+// DOWN `(:down, monitor_ref, actor_ref, failure_reason)` to standard mailbox only; supervisor ingress ordering §15.4.9 / §16.2.7 is runtime);
+// send per §7.9; actor_call, actor_cast, self and placement/runtime helpers use the same prim(kind 6) shape as region builtins.
+//
+// Phase F (cpu_topology_implementation_plan): get_cpu_topology and get_core_capabilities return named record types.
+// They lower to a single kind-6 prim each: name = Silica builtin, type_name = structured return (cpu_topology / core_info),
+// value = "[concurrency]", dummy inner/right for nullary or inner = lowered core_id for unary. This matches
+// type_checker_expressions@actor_runtime_builtin_return_type and AArch64 emitter prims_actors (runtime returns opaque
+// pointer in X0; Phase G fills heap layout). A two-step query+fill ABI would add SIR nodes here only if the ABI
+// contract explicitly requires it.
+
+use parser_ast;
+use sir_ast;
+use types;
+use type_checker_core;
+
+export is_actor_sir_builtin/1;
+export actor_call_second_arg/1;
+export build_spawn_prim/4;
+export build_spawn_dangerous_prim/4;
+export build_spawn_registered_prim/3;
+export build_spawn_dangerous_registered_prim/3;
+export build_spawn_registered_supervisor_prim/3;
+export build_spawn_linked_prim/5;
+export build_send_prim/2;
+export build_actor_call_prim/3;
+export build_actor_call_registered_prim/3;
+export build_actor_cast_prim/2;
+export build_actor_cast_registered_prim/2;
+export build_actor_cast_dangerous_registered_prim/2;
+export build_self_prim/0;
+export build_actor_runtime_prim/4;
+export build_actor_runtime_prim_3/4;
+export actor_runtime_sir_return_type/1;
+export build_get_cpu_topology_prim/0;
+export build_get_core_capabilities_prim/1;
+export build_link_prim/1;
+export build_add_child_prim/2;
+export build_supervisor_add_child_prim/2;
+export build_supervisor_remove_child_prim/2;
+export build_supervisor_restart_child_prim/2;
+export build_supervisor_terminate_child_prim/2;
+export build_supervisor_which_children_prim/1;
+export build_supervisor_count_children_prim/1;
+export build_supervisor_get_child_prim/2;
+export build_supervisor_get_child_info_prim/2;
+export build_supervisor_get_child_id_prim/2;
+export build_supervisor_get_child_agent_type_prim/2;
+export build_supervisor_get_child_restart_prim/2;
+export build_monitor_prim/1;
+export build_demonitor_prim/1;
+export build_start_child_prim/1;
+export build_supervision_ingress_enqueue_prim/2;
+export build_supervision_wait_and_drain_one_prim/0;
+export build_child_table_first_ref_prim/0;
+export build_child_table_row_ref_prim/1;
+export build_kill_abnormal_prim/1;
+export build_register_failure_reporter_prim/1;
+export build_wait_for_exit_prim/0;
+export build_failure_reason_tag_prim/1;
+export build_failure_reason_atom_prim/1;
+export build_failure_agent_type_prim/1;
+export build_failure_release_prim/1;
+
+// Parser: second argument is inner of right_expr when right is a kind-4 arg-chain pair.
+// Postfix `impl ActorMessage {}` stores value "AM" on the pair (name may stay "" or become "[AM]" if a pass ran).
+fn actor_call_second_arg(expr: Expr) -> Expr {
+    case expr.right_expr.kind == 4 of {
+        false -> expr.right_expr;
+        true -> case expr.right_expr.name == "" or expr.right_expr.value == "AM" of {
+            true -> expr.right_expr.inner;
+            false -> expr.right_expr
+        }
+    }
+}
+
+fn is_actor_sir_builtin(name: string) -> bool {
+    base: string <- type_checker_core@user_call_base_function_name(name);
+    base == "spawn" or base == "spawn_dangerous" or base == "spawn_registered" or base == "spawn_dangerous_registered" or base == "spawn_registered_supervisor" or base == "call_supervisor" or base == "add_child" or base == "send" or base == "cast" or base == "cast_registered" or base == "cast_dangerous_registered" or base == "call" or base == "call_registered" or base == "self"
+        or base == "link" or base == "monitor" or base == "demonitor" or base == "supervision_ingress_enqueue"
+        or base == "supervision_wait_and_drain_one" or base == "child_table_first_ref" or base == "child_table_row_ref"
+        or base == "failure_reason_tag" or base == "failure_reason_atom"
+        or base == "failure_agent_type" or base == "failure_release" or base == "start_child" or base == "supervisor_add_child"
+        or base == "kill_abnormal" or base == "register_failure_reporter"
+        or base == "wait_for_exit"
+        or base == "pin_actor_to_core" or base == "pin_actor_to_efficiency_core" or base == "pin_actor_to_performance_core"
+        or base == "pin_actor_realtime" or base == "remove_actor" or base == "register_actor" or base == "get_registry_actor" or base == "get_pid_registry" or base == "pin_actor_to_numa_node"
+        or base == "unpin_actor" or base == "set_actor_priority"
+        or base == "get_cpu_topology" or base == "get_efficiency_cores" or base == "get_performance_cores"
+        or base == "get_core_capabilities"
+        or base == "get_actor_memory_usage"
+        or base == "migrate_actor" or base == "move"
+}
+
+// SIR text type field for runtime helper return (mirrors type_checker_expressions@actor_runtime_builtin_return_type).
+fn actor_runtime_sir_return_type(name: string) -> string {
+    case name of {
+        "pin_actor_to_core" -> "(int64,affinity_error)";
+        "pin_actor_to_efficiency_core" -> "(int64,affinity_error)";
+        "pin_actor_to_performance_core" -> "(int64,affinity_error)";
+        "pin_actor_realtime" -> "(int64,affinity_error)";
+        "remove_actor" -> "(int64,affinity_error)";
+        "pin_actor_to_numa_node" -> "(int64,affinity_error)";
+        "unpin_actor" -> "atom";
+        "register_actor" -> "atom";
+        "get_registry_actor" -> "actor_ref";
+        "get_pid_registry" -> "actor_ref";
+        "set_actor_priority" -> "atom";
+        "get_cpu_topology" -> "{ cores: List[{ id: int64, core_type: atom, capabilities: List[string,normal], frequency_mhz: int64 },normal], numa_nodes: List[{ id: int64, cores: List[int64,normal], memory_ranges: List[{ start_address: int64, size: int64, latency: int64 },normal] },normal], cache_hierarchy: { levels: List[{ level: int64, size_kb: int64, line_size: int64, associativity: int64, shared_cores: List[int64,normal] },normal] } }";
+        "get_efficiency_cores" -> "List[int64,normal]";
+        "get_performance_cores" -> "List[int64,normal]";
+        "get_core_capabilities" -> "{ id: int64, core_type: atom, capabilities: List[string,normal], frequency_mhz: int64 }";
+        "get_actor_memory_usage" -> "i64";
+        "migrate_actor" -> "atom";
+        "move" -> "atom";
+        "register_failure_reporter" -> "atom";
+        _: string -> "unit"
+    }
+}
+
+// spawn / spawn_dangerous: §7.9 — [concurrency]; optional third arg packed as tuple_make(behavior, placement) in the right slot.
+fn build_spawn_named_prim(init: SIRTerm, beh: SIRTerm, place: SIRTerm, three_args: bool, prim_name: string, result_type: string) -> SIRTerm {
+    right_slot: SIRTerm <- case three_args of {
+        true -> SIRTerm { kind: 6, type_name: "unit", value: "", name: "tuple_make", inner: beh, right_expr: place };
+        false -> beh
+    };
+    SIRTerm { kind: 6, type_name: result_type, value: "[concurrency]", name: prim_name, inner: init, right_expr: right_slot }
+}
+
+fn build_spawn_prim(init: SIRTerm, beh: SIRTerm, place: SIRTerm, three_args: bool) -> SIRTerm {
+    build_spawn_named_prim(init, beh, place, three_args, "spawn", "actor_ref")
+}
+
+fn build_spawn_dangerous_prim(init: SIRTerm, beh: SIRTerm, place: SIRTerm, three_args: bool) -> SIRTerm {
+    build_spawn_named_prim(init, beh, place, three_args, "spawn_dangerous", "dangerous_actor_ref")
+}
+
+// spawn_registered / spawn_dangerous_registered: init + tuple_make(behavior_fn_ptr, name_atom) in right slot.
+fn build_spawn_registered_named_prim(init: SIRTerm, beh: SIRTerm, name_term: SIRTerm, prim_name: string, result_type: string) -> SIRTerm {
+    packed: SIRTerm <- SIRTerm { kind: 6, type_name: "unit", value: "", name: "tuple_make", inner: beh, right_expr: name_term };
+    SIRTerm { kind: 6, type_name: result_type, value: "[concurrency]", name: prim_name, inner: init, right_expr: packed }
+}
+
+fn build_spawn_registered_prim(init: SIRTerm, beh: SIRTerm, name_term: SIRTerm) -> SIRTerm {
+    build_spawn_registered_named_prim(init, beh, name_term, "spawn_registered", "actor_ref")
+}
+
+fn build_spawn_dangerous_registered_prim(init: SIRTerm, beh: SIRTerm, name_term: SIRTerm) -> SIRTerm {
+    build_spawn_registered_named_prim(init, beh, name_term, "spawn_dangerous_registered", "dangerous_actor_ref")
+}
+
+// Phase C: spawn_registered_supervisor(T, initial_state, name) lowers to a runtime-managed
+// supervisor actor. The implementation type is carried in `value` so the emitter can install
+// _silica_supervisor_start_<T> as the first-schedule trampoline; `name` is kept as the right
+// operand for the registration step.
+fn build_spawn_registered_supervisor_prim(supervisor_type: string, init: SIRTerm, name_term: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "supervisor_ref", value: concat("[concurrency]|e3b:", supervisor_type), name: "spawn_registered_supervisor", inner: init, right_expr: name_term }
+}
+
+// spawn_linked: §15.4.8.3 — same [concurrency] prim shape; name distinguishes runtime (supervisors_implementation_development_plan Phase A).
+// 3-arg: right = tuple_make(behavior_fn_ptr, agent_type_term); 4-arg: tuple_make(tuple_make(behavior, agent_type), core_id).
+// link(target) -> :ok (§15.4.8.5). Phase G: idempotent link + linked exit — supervisor gets structured exit via ingress,
+// non-supervisor gets linked failure reason; value stays [concurrency] (not mailbox delivery).
+// monitor(target) -> monitor_ref; demonitor(ref) -> :ok (§15.4.8.6–§15.4.8.7). Phase G: DOWN only on standard mailbox —
+// same SIR value tag as send/cast/call so IR consumers see the mailbox channel.
+fn build_link_prim(target: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "link", inner: target, right_expr: d }
+}
+
+fn build_add_child_prim(parent: SIRTerm, child: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "add_child", inner: parent, right_expr: child }
+}
+
+fn build_supervisor_add_child_prim(supervisor: SIRTerm, spec: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "actor_ref", value: "[concurrency]", name: "supervisor_add_child", inner: supervisor, right_expr: spec }
+}
+
+fn build_supervisor_remove_child_prim(supervisor: SIRTerm, id_atom: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "supervisor_remove_child", inner: supervisor, right_expr: id_atom }
+}
+
+fn build_supervisor_restart_child_prim(supervisor: SIRTerm, id_atom: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "actor_ref", value: "[concurrency]", name: "supervisor_restart_child", inner: supervisor, right_expr: id_atom }
+}
+
+fn build_supervisor_terminate_child_prim(supervisor: SIRTerm, id_atom: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "supervisor_terminate_child", inner: supervisor, right_expr: id_atom }
+}
+
+fn build_supervisor_which_children_prim(supervisor: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "List[{ id: atom, agent_type: atom, child: actor_ref, restart: :permanent | :temporary | :transient },mem(normal)]", value: "[concurrency]", name: "supervisor_which_children", inner: supervisor, right_expr: d }
+}
+
+fn build_supervisor_count_children_prim(supervisor: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "int64", value: "[concurrency]", name: "supervisor_count_children", inner: supervisor, right_expr: d }
+}
+
+fn build_supervisor_get_child_prim(supervisor: SIRTerm, id_atom: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "actor_ref", value: "[concurrency]", name: "supervisor_get_child", inner: supervisor, right_expr: id_atom }
+}
+
+fn build_supervisor_get_child_info_prim(supervisor: SIRTerm, id_atom: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "{ id: atom, agent_type: atom, child: actor_ref, restart: :permanent | :temporary | :transient }", value: "[concurrency]", name: "supervisor_get_child_info", inner: supervisor, right_expr: id_atom }
+}
+
+fn build_supervisor_get_child_id_prim(supervisor: SIRTerm, id_atom: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "supervisor_get_child_id", inner: supervisor, right_expr: id_atom }
+}
+
+fn build_supervisor_get_child_agent_type_prim(supervisor: SIRTerm, id_atom: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "supervisor_get_child_agent_type", inner: supervisor, right_expr: id_atom }
+}
+
+fn build_supervisor_get_child_restart_prim(supervisor: SIRTerm, id_atom: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "supervisor_get_child_restart", inner: supervisor, right_expr: id_atom }
+}
+
+fn build_monitor_prim(target: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "monitor_ref", value: "[concurrency, mailbox]", name: "monitor", inner: target, right_expr: d }
+}
+
+fn build_demonitor_prim(mon_ref: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency, mailbox]", name: "demonitor", inner: mon_ref, right_expr: d }
+}
+
+// Phase B (supervisors_implementation_development_plan): enqueue synthetic supervision-shaped message (int64 payload)
+// on target actor's ingress; runtime FIFO bounded at 1024. Trial hook / precursor to Phase C exit delivery.
+fn build_supervision_ingress_enqueue_prim(target: SIRTerm, payload: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "supervision_ingress_enqueue", inner: target, right_expr: payload }
+}
+
+// Phase C (supervisors_implementation_development_plan §4 Phase C; silica-specification §15.4.10–§15.4.11):
+// behavior-only accessors over the structured exit notification delivered to the supervisor's ingress.
+fn build_supervision_wait_and_drain_one_prim() -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "int64", value: "[concurrency]", name: "supervision_wait_and_drain_one", inner: d, right_expr: d }
+}
+
+fn build_child_table_first_ref_prim() -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "int64", value: "[concurrency]", name: "child_table_first_ref", inner: d, right_expr: d }
+}
+
+fn build_child_table_row_ref_prim(row_index: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "int64", value: "[concurrency]", name: "child_table_row_ref", inner: row_index, right_expr: d }
+}
+
+// Phase E e4b: kill_abnormal(child_ref) -> atom :ok — flips ACB#336 to 1 (abnormal) on the target and tears it down.
+fn build_kill_abnormal_prim(target: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "kill_abnormal", inner: target, right_expr: d }
+}
+
+// Supervisors Phase F (§15.4.13.4): register root FailureReporter actor_ref after spawn (before other system actors).
+fn build_register_failure_reporter_prim(target: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "register_failure_reporter", inner: target, right_expr: d }
+}
+
+// Phase I — supervisors_implementation_development_plan.md §4: blocking main-loop helper; stdin "exit"
+// line or tracked root supervisor (first spawn_linked with supervisor trampoline) termination.
+fn build_wait_for_exit_prim() -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "int64", value: "[concurrency,device_io]", name: "wait_for_exit", inner: d, right_expr: d }
+}
+
+fn build_failure_reason_tag_prim(payload: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "int64", value: "[concurrency]", name: "failure_reason_tag", inner: payload, right_expr: d }
+}
+
+fn build_failure_reason_atom_prim(payload: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "failure_reason_atom", inner: payload, right_expr: d }
+}
+
+fn build_failure_agent_type_prim(payload: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "failure_agent_type", inner: payload, right_expr: d }
+}
+
+fn build_failure_release_prim(payload: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "failure_release", inner: payload, right_expr: d }
+}
+
+fn build_spawn_linked_prim(init: SIRTerm, beh: SIRTerm, agent: SIRTerm, place: SIRTerm, four_args: bool) -> SIRTerm {
+    beh_agent: SIRTerm <- SIRTerm { kind: 6, type_name: "unit", value: "", name: "tuple_make", inner: beh, right_expr: agent };
+    right_slot: SIRTerm <- case four_args of {
+        true -> SIRTerm { kind: 6, type_name: "unit", value: "", name: "tuple_make", inner: beh_agent, right_expr: place };
+        false -> beh_agent
+    };
+    SIRTerm { kind: 6, type_name: "actor_ref", value: "[concurrency]", name: "spawn_linked", inner: init, right_expr: right_slot }
+}
+
+fn build_send_prim(ref_term: SIRTerm, message: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "unit", value: "[concurrency, mailbox]", name: "send", inner: ref_term, right_expr: message }
+}
+
+// Synchronous actor request; return type from type-checked expectation.
+fn build_actor_call_prim(ref_term: SIRTerm, message: SIRTerm, return_ast_type: string) -> SIRTerm {
+    sir_t: string <- types@type_name_to_sir(return_ast_type);
+    SIRTerm { kind: 6, type_name: sir_t, value: "[concurrency, mailbox]", name: "actor_call", inner: ref_term, right_expr: message }
+}
+
+// Synchronous actor request by PID-registry atom key; runtime resolves the key before calling.
+fn build_actor_call_registered_prim(name_term: SIRTerm, message: SIRTerm, return_ast_type: string) -> SIRTerm {
+    sir_t: string <- types@type_name_to_sir(return_ast_type);
+    SIRTerm { kind: 6, type_name: sir_t, value: "[concurrency, mailbox]", name: "actor_call_registered", inner: name_term, right_expr: message }
+}
+
+// Fire-and-forget mailbox delivery; Silica surface returns boolean (§16.1.2). Distinct from sir_design_spec §7.12 repr cast.
+fn build_actor_cast_prim(ref_term: SIRTerm, message: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "bool", value: "[concurrency, mailbox]", name: "actor_cast", inner: ref_term, right_expr: message }
+}
+
+fn build_actor_cast_registered_prim(name_term: SIRTerm, message: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "bool", value: "[concurrency, mailbox]", name: "actor_cast_registered", inner: name_term, right_expr: message }
+}
+
+fn build_actor_cast_dangerous_registered_prim(name_term: SIRTerm, message: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "bool", value: "[concurrency, mailbox]", name: "actor_cast_dangerous_registered", inner: name_term, right_expr: message }
+}
+
+fn build_self_prim() -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "actor_ref", value: "[concurrency]", name: "self", inner: d, right_expr: d }
+}
+
+// Runtime helpers (CPU affinity, topology, migration): prim name = Silica builtin, arity 0–3.
+fn build_actor_runtime_prim(builtin_name: string, sir_ret: string, arg0: SIRTerm, arg1: SIRTerm, nargs: int64) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    case nargs of {
+        0 -> SIRTerm { kind: 6, type_name: sir_ret, value: "[concurrency]", name: builtin_name, inner: d, right_expr: d };
+        1 -> SIRTerm { kind: 6, type_name: sir_ret, value: "[concurrency]", name: builtin_name, inner: arg0, right_expr: d };
+        2 -> SIRTerm { kind: 6, type_name: sir_ret, value: "[concurrency]", name: builtin_name, inner: arg0, right_expr: arg1 };
+        _: int64 -> sir_ast@dummy_sir_term()
+    }
+}
+
+fn build_actor_runtime_prim_3(builtin_name: string, sir_ret: string, arg0: SIRTerm, arg1: SIRTerm, arg2: SIRTerm) -> SIRTerm {
+    packed: SIRTerm <- SIRTerm { kind: 6, type_name: "unit", value: "", name: "tuple_make", inner: arg1, right_expr: arg2 };
+    SIRTerm { kind: 6, type_name: sir_ret, value: "[concurrency]", name: builtin_name, inner: arg0, right_expr: packed }
+}
+
+// Structured topology builtins: one prim, type_name = named record per type checker (Phase F).
+fn build_get_cpu_topology_prim() -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    ret: string <- actor_runtime_sir_return_type("get_cpu_topology");
+    build_actor_runtime_prim("get_cpu_topology", ret, d, d, 0)
+}
+
+fn build_get_core_capabilities_prim(arg0: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    ret: string <- actor_runtime_sir_return_type("get_core_capabilities");
+    build_actor_runtime_prim("get_core_capabilities", ret, arg0, d, 1)
+}
+
+// Phase E e3b2: start_child(child_spec_ptr) -> actor_ref (§15.4.13.3).
+fn build_start_child_prim(spec: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "actor_ref", value: "[concurrency]", name: "start_child", inner: spec, right_expr: d }
+}

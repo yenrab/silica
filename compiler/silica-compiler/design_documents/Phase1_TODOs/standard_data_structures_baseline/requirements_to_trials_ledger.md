@@ -469,4 +469,4 @@ Source: implementation plan §6.4; designs `csr_graph_snapshot.md`, `dense_matri
 - [x] Each row uses exactly one coverage kind (`T`, `C`, `I`, or `O`)  
 - [x] Trial leaf assignment for all `T` and `C` rows  
 
-**Next step:** §10 `OrderedSet` exit gate complete (2026-07-16) — proceed to §11 on parallel `src_selfhost/` only (freeze bootstrap + current `src/`; zero aliases; emitter `bst` → WBT), then §12 additive `build-selfhost`, then §13 fixed-point / cutover / bootstrap retirement. BinaryTree requires §7.10 before §8D. §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.
+**Next step:** §12 dual-path Makefile + `silica.config.compiler` + E3009 rewrite landed (2026-07-16); full `build-selfhost` blocked on DeviceIO file intrinsics in the seed (`read_lines`/`file_exists`/`append_file`/`delete_file`). Implement those (prefer staging-overlay seed rebuild), then finish §12 exit gate → §13. BinaryTree requires §7.10 before §8D.

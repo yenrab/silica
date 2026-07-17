@@ -1,0 +1,326 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Tuple prim emission: flat tuple layout
+// sir_design_spec §7.6: tuple_make (T1, T2, ...) | (v1, v2, ...) | []
+// Flat layout: single stack allocation, elements at [SP, #0], [SP, #8], ...
+// SIR chain: tuple_make(e0, tuple_make(e1, ... tuple_make(eN-2, eN-1)))
+// Emitter flattens this chain into one contiguous allocation.
+
+use sir_ast;
+use reg_conventions;
+use atom_table;
+use string_parse;
+use prims_record;
+
+export emit_prim_op/2;
+export count_tuple_allocations/1;
+export count_flat_elements/1;
+export count_type_elements/1;
+export flat_alloc_size/1;
+export flat_alloc_size_str/1;
+export emit_flat_store/3;
+export emit_flat_mov_dest/1;
+export index_to_offset/1;
+export ldr_prefix_for_type/1;
+export tuple_field_start_byte_offset/2;
+export tuple_type_uses_boxed_float32/1;
+
+fn strip_ty_leading(s: string) -> string {
+    case len(s) == 0 of {
+        true -> "";
+        false -> case substring(s, 0, 1) == " " of {
+            true -> strip_ty_leading(substring(s, 1, len(s)));
+            false -> s
+        }
+    }
+}
+
+fn strip_ty_trailing(s: string) -> string {
+    case len(s) == 0 of {
+        true -> "";
+        false -> case substring(s, len(s) - 1, len(s)) == " " of {
+            true -> strip_ty_trailing(substring(s, 0, len(s) - 1));
+            false -> s
+        }
+    }
+}
+
+fn strip_ty(s: string) -> string {
+    strip_ty_trailing(strip_ty_leading(s))
+}
+
+fn tuple_inner_content(type_name: string) -> string {
+    substring(type_name, 1, len(type_name) - 1)
+}
+
+fn next_comma_top_level(inner: string, start: int64, paren_depth: int64, brace_depth: int64, bracket_depth: int64) -> int64 {
+    case start >= len(inner) of {
+        true -> -1;
+        false -> case substring(inner, start, start + 1) of {
+            "(" -> next_comma_top_level(inner, start + 1, paren_depth + 1, brace_depth, bracket_depth);
+            ")" -> next_comma_top_level(inner, start + 1, paren_depth - 1, brace_depth, bracket_depth);
+            "{" -> next_comma_top_level(inner, start + 1, paren_depth, brace_depth + 1, bracket_depth);
+            "}" -> next_comma_top_level(inner, start + 1, paren_depth, brace_depth - 1, bracket_depth);
+            "[" -> next_comma_top_level(inner, start + 1, paren_depth, brace_depth, bracket_depth + 1);
+            "]" -> next_comma_top_level(inner, start + 1, paren_depth, brace_depth, bracket_depth - 1);
+            "," -> case paren_depth == 0 and brace_depth == 0 and bracket_depth == 0 of {
+                true -> start;
+                false -> next_comma_top_level(inner, start + 1, paren_depth, brace_depth, bracket_depth)
+            };
+            _: string -> next_comma_top_level(inner, start + 1, paren_depth, brace_depth, bracket_depth)
+        }
+    }
+}
+
+fn tuple_type_segment_at(inner: string, idx: int64) -> string {
+    case idx == 0 of {
+        true -> do
+            c: int64 <- next_comma_top_level(inner, 0, 0, 0, 0);
+            case c < 0 of {
+                true -> inner;
+                false -> substring(inner, 0, c)
+            }
+        end;
+        false -> do
+            c: int64 <- next_comma_top_level(inner, 0, 0, 0, 0);
+            case c < 0 of {
+                true -> "";
+                false -> tuple_type_segment_at(substring(inner, c + 1, len(inner)), idx - 1)
+            }
+        end
+    }
+}
+
+fn tuple_type_nth_element(type_name: string, idx: int64) -> string {
+    tuple_type_segment_at(tuple_inner_content(type_name), idx)
+}
+
+fn nested_tuple_span_accum(tuple_ty: string, i: int64, cnt: int64) -> int64 {
+    case i >= cnt of {
+        true -> 0;
+        false -> do
+            seg_i: string <- tuple_type_nth_element(tuple_ty, i);
+            tuple_segment_stride_bytes(seg_i, cnt) + nested_tuple_span_accum(tuple_ty, i + 1, cnt)
+        end
+    }
+}
+
+fn nested_tuple_span_bytes(tuple_ty: string) -> int64 {
+    cnt: int64 <- count_type_elements(tuple_ty);
+    nested_tuple_span_accum(tuple_ty, 0, cnt)
+}
+
+// Byte span of one tuple slot's type segment (matches emit_flat_tuple_stores stepping / memcpy sizes).
+fn tuple_segment_stride_bytes(seg_raw: string, parent_tuple_elem_count: int64) -> int64 {
+    seg: string <- strip_ty(seg_raw);
+    case len(seg) == 0 of {
+        true -> 8;
+        false -> case reg_conventions@is_float32_type(seg) and parent_tuple_elem_count > 1 of {
+            true -> 16;
+            false -> case substring(seg, 0, 1) == "{" of {
+                true -> prims_record@record_type_value_flat_byte_size(seg);
+                false -> case len(seg) >= 5 and substring(seg, 0, 5) == "List[" of {
+                    true -> 8;
+                    false -> case substring(seg, 0, 1) == "(" of {
+                        // Matches emit_flat_tuple_stores non-record aggregates: nested tuple_make/record_make
+                        // are emitted as one pointer-sized slot (STR at idx*8+adjust), not a contiguous memcpy of nested_tuple_span_bytes.
+                        true -> 8;
+                        false -> 8
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn field_stride_for_tuple_elem(type_name: string, i: int64, total_elems: int64) -> int64 {
+    seg: string <- strip_ty(tuple_type_nth_element(type_name, i));
+    tuple_segment_stride_bytes(seg, total_elems)
+}
+
+fn accum_field_start_bytes(type_name: string, i: int64, target_idx: int64, total_elems: int64) -> int64 {
+    case i >= target_idx of {
+        true -> 0;
+        false -> do
+            st: int64 <- field_stride_for_tuple_elem(type_name, i, total_elems);
+            st + accum_field_start_bytes(type_name, i + 1, target_idx, total_elems)
+        end
+    }
+}
+
+// Byte offset of field `field_idx` (0-based), matching emit_flat_tuple_stores (boxed float32 uses 16 bytes).
+fn tuple_field_start_byte_offset(type_name: string, field_idx: int64) -> int64 {
+    total_elems: int64 <- count_type_elements(type_name);
+    accum_field_start_bytes(type_name, 0, field_idx, total_elems)
+}
+
+fn scan_tuple_has_f32(type_name: string, i: int64, cnt: int64) -> bool {
+    case i >= cnt of {
+        true -> false;
+        false -> do
+            seg: string <- strip_ty(tuple_type_nth_element(type_name, i));
+            case reg_conventions@is_float32_type(seg) of {
+                true -> true;
+                false -> scan_tuple_has_f32(type_name, i + 1, cnt)
+            }
+        end
+    }
+}
+
+fn tuple_type_uses_boxed_float32(type_name: string) -> bool {
+    case len(type_name) < 2 or substring(type_name, 0, 1) != "(" of {
+        true -> false;
+        false -> do
+            cnt: int64 <- count_type_elements(type_name);
+            case cnt > 1 of {
+                true -> scan_tuple_has_f32(type_name, 0, cnt);
+                false -> false
+            }
+        end
+    }
+}
+
+fn count_flat_elements(term: SIRTerm) -> int64 {
+    type_count: int64 <- count_type_elements(term.type_name);
+    case type_count < 2 and term.kind == 6 and term.name == "tuple_make" of {
+        true -> count_chain_elements(term);
+        false -> type_count
+    }
+}
+
+fn count_chain_elements(term: SIRTerm) -> int64 {
+    case term.kind == 6 and term.name == "tuple_make" of {
+        true -> 1 + count_chain_elements(term.right_expr);
+        false -> 1
+    }
+}
+
+fn count_type_elements(type_name: string) -> int64 {
+    case len(type_name) < 2 of {
+        true -> 1;
+        false -> case substring(type_name, 0, 1) == "(" of {
+            true -> 1 + count_top_level_commas(substring(type_name, 1, len(type_name) - 1), 0, 0, 0, 0);
+            false -> 1
+        }
+    }
+}
+
+// Tuple arity from surface `(a, b, ...)`: commas inside nested `(...)`, `{ ... }`, or `[ ... ]` do not separate tuple slots.
+fn count_top_level_commas(s: string, i: int64, paren_depth: int64, brace_depth: int64, bracket_depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> 0;
+        false -> case substring(s, i, i + 1) of {
+            "(" -> count_top_level_commas(s, i + 1, paren_depth + 1, brace_depth, bracket_depth);
+            ")" -> count_top_level_commas(s, i + 1, paren_depth - 1, brace_depth, bracket_depth);
+            "{" -> count_top_level_commas(s, i + 1, paren_depth, brace_depth + 1, bracket_depth);
+            "}" -> count_top_level_commas(s, i + 1, paren_depth, brace_depth - 1, bracket_depth);
+            "[" -> count_top_level_commas(s, i + 1, paren_depth, brace_depth, bracket_depth + 1);
+            "]" -> count_top_level_commas(s, i + 1, paren_depth, brace_depth, bracket_depth - 1);
+            "," -> case paren_depth == 0 and brace_depth == 0 and bracket_depth == 0 of {
+                true -> 1 + count_top_level_commas(s, i + 1, paren_depth, brace_depth, bracket_depth);
+                false -> count_top_level_commas(s, i + 1, paren_depth, brace_depth, bracket_depth)
+            };
+            _: string -> count_top_level_commas(s, i + 1, paren_depth, brace_depth, bracket_depth)
+        }
+    }
+}
+
+fn flat_alloc_size(count: int64) -> int64 {
+    (count + 1) / 2 * 16
+}
+
+fn flat_alloc_size_str(count: int64) -> string {
+    atom_table@int64_to_decimal_string(flat_alloc_size(count))
+}
+
+// Flat layout: one allocation per tuple chain
+fn count_tuple_allocations(term: SIRTerm) -> int64 {
+    case term.kind == 6 and term.name == "tuple_make" of {
+        true -> 1;
+        false -> 0
+    }
+}
+
+fn store_for_type(type_name: string, reg_num: string, offset: string) -> string {
+    prefix: string <- case reg_conventions@is_float64_type(type_name) of {
+        true -> "D";
+        false -> case reg_conventions@is_float32_type(type_name) of {
+            true -> "S";
+            false -> case reg_conventions@is_narrow_type(type_name) of {
+                true -> "W";
+                false -> "X"
+            }
+        }
+    };
+    reg: string <- concat(prefix, reg_num);
+    concat(concat(concat(concat(concat("    STR ", reg), ", [SP, "), offset), "]"), "")
+}
+
+fn emit_flat_store(type_name: string, reg_num: string, idx: int64) -> string {
+    store_for_type(type_name, reg_num, index_to_offset_int(idx))
+}
+
+fn emit_flat_mov_dest(dest: string) -> string {
+    dest_ptr: string <- case len(dest) > 0 and substring(dest, 0, 1) == "W" of {
+        true -> concat("X", substring(dest, 1, len(dest)));
+        false -> dest
+    };
+    case dest == "SP" of {
+        true -> "";
+        false -> concat(concat("    MOV ", dest_ptr), ", SP")
+    }
+}
+
+fn index_to_offset(idx_str: string) -> string {
+    concat("#", atom_table@int64_to_decimal_string(string_parse@string_to_int64(idx_str) * 8))
+}
+
+fn index_to_offset_int(idx: int64) -> string {
+    concat("#", atom_table@int64_to_decimal_string(idx * 8))
+}
+
+fn ldr_prefix_for_type(type_name: string) -> string {
+    case reg_conventions@is_float64_type(type_name) of {
+        true -> "D";
+        false -> case reg_conventions@is_float32_type(type_name) of {
+            true -> "S";
+            false -> case reg_conventions@is_narrow_type(type_name) of {
+                true -> "W";
+                false -> "X"
+            }
+        }
+    }
+}
+
+fn emit_tuple_proj(term: SIRTerm, dest: string) -> string {
+    offset_str: string <- index_to_offset(term.right_expr.value);
+    prefix: string <- ldr_prefix_for_type(term.type_name);
+    dest_num: string <- case len(dest) > 0 of {
+        true -> substring(dest, 1, len(dest));
+        false -> "0"
+    };
+    ldr_reg: string <- concat(prefix, dest_num);
+    concat(concat(concat(concat("    LDR ", ldr_reg), ", [SP, "), offset_str), "]")
+}
+
+fn emit_prim_op(term: SIRTerm, dest: string) -> string {
+    case term.name of {
+        "tuple_proj" -> emit_tuple_proj(term, dest);
+        _: string -> concat(concat("    ; unsupported tuple prim: ", term.name), "")
+    }
+}

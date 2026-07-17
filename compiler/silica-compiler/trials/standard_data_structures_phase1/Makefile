@@ -16,6 +16,7 @@ SUB_TRIALS := \
 	skew_ral_core \
 	brodal_okasaki_core \
 	ordered_collections \
+	self_host_maps \
 	live_graphs \
 	terminal_structures \
 	snapshot_graphs \

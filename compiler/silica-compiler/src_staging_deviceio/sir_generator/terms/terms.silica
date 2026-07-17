@@ -1,0 +1,2827 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Term dispatcher: Expr -> SIRTerm (Expr.kind registry)
+// Delegates to literals, identifiers per Expr.kind
+// Core+extensions: add capability = add file + one case branch here
+
+use parser_ast;
+use type_checker_core;
+use type_checker_tuple_decompose_helpers;
+use type_checker_memory_regions;
+use type_checker_lists;
+use type_checker_recursive_tuples;
+use sir_ast;
+use literals;
+use identifiers;
+use atoms;
+use string_literals;
+use boolean_terms;
+use int64_binary_ops;
+use int32_binary_ops;
+use int16_binary_ops;
+use int8_binary_ops;
+use uint64_binary_ops;
+use uint32_binary_ops;
+use uint16_binary_ops;
+use uint8_binary_ops;
+use float64_binary_ops;
+use float32_binary_ops;
+use float16_binary_ops;
+use int64_calls;
+use float32_calls;
+use int32_calls;
+use int16_calls;
+use int8_calls;
+use string_calls;
+use tuple_decompose;
+use types;
+use memory_region_calls;
+use ordering_identity_calls;
+use collection_result_calls;
+use checked_int64_calls;
+use collection_constructor_calls;
+use actor_calls;
+use type_checker_expressions_actors;
+use type_checker_expressions;
+use user_calls;
+use recursion_terms;
+use negate_builtins;
+use list_terms;
+use type_checker_record_types;
+use struct_terms;
+
+export expr_to_sir/2;
+export expr_to_sir_with_expected/3;
+export expr_to_sir_function_body/3;
+
+fn find_struct_field_expr(expr: Expr, field_name: string) -> (bool, Expr) {
+    case expr.kind == 21 of {
+        false -> (false, expr);
+        true -> case expr.name == field_name of {
+            true -> (true, expr.inner);
+            false -> find_struct_field_expr(expr.right_expr, field_name)
+        }
+    }
+}
+
+fn sir_atom_const(value: string) -> SIRTerm {
+    SIRTerm { kind: 0, type_name: "atom", value: value, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
+}
+
+fn is_float_special_const_name(name: string) -> bool {
+    name == "float16_nan" or name == "float16_inf" or name == "float16_neg_inf" or name == "float32_nan" or name == "float32_inf" or name == "float32_neg_inf" or name == "float64_nan" or name == "float64_inf" or name == "float64_neg_inf"
+}
+
+fn float_special_const_type(name: string) -> string {
+    case substring(name, 0, 7) == "float16" of {
+        true -> "float16";
+        false -> case substring(name, 0, 7) == "float32" of {
+            true -> "float32";
+            false -> "float64"
+        }
+    }
+}
+
+fn float_special_const_value(name: string) -> string {
+    case name == "float16_nan" or name == "float32_nan" or name == "float64_nan" of {
+        true -> "nan";
+        false -> case name == "float16_neg_inf" or name == "float32_neg_inf" or name == "float64_neg_inf" of {
+            true -> "-inf";
+            false -> "inf"
+        }
+    }
+}
+
+fn build_float_special_const(name: string) -> SIRTerm {
+    SIRTerm { kind: 0, type_name: float_special_const_type(name), value: float_special_const_value(name), name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
+}
+
+fn is_float_predicate_name(name: string) -> bool {
+    name == "float16_is_nan" or name == "float16_is_inf" or name == "float16_is_finite" or name == "float32_is_nan" or name == "float32_is_inf" or name == "float32_is_finite" or name == "float64_is_nan" or name == "float64_is_inf" or name == "float64_is_finite"
+}
+
+fn float_predicate_arg_type(name: string) -> string {
+    case substring(name, 0, 7) == "float16" of {
+        true -> "float16";
+        false -> case substring(name, 0, 7) == "float32" of {
+            true -> "float32";
+            false -> "float64"
+        }
+    }
+}
+
+fn float_predicate_prim_name(name: string) -> string {
+    case name == "float16_is_nan" or name == "float32_is_nan" or name == "float64_is_nan" of {
+        true -> "is_nan";
+        false -> case name == "float16_is_inf" or name == "float32_is_inf" or name == "float64_is_inf" of {
+            true -> "is_inf";
+            false -> "is_finite"
+        }
+    }
+}
+
+fn build_float_predicate_from_sir(name: string, arg: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "bool", value: "", name: float_predicate_prim_name(name), inner: arg, right_expr: sir_ast@dummy_sir_term() }
+}
+
+fn build_bnot_from_sir(arg: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "uint64", value: "", name: "bnot", inner: arg, right_expr: sir_ast@dummy_sir_term() }
+}
+
+fn is_shift_op_lexeme(op: string) -> bool {
+    op == "shl" or op == "shr"
+}
+
+fn sir_int64_const(value: string) -> SIRTerm {
+    SIRTerm { kind: 0, type_name: "int64", value: value, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
+}
+
+fn sir_actor_ref_const(value: string) -> SIRTerm {
+    SIRTerm { kind: 0, type_name: "actor_ref", value: value, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
+}
+
+fn sir_var(name: string, ty: string) -> SIRTerm {
+    SIRTerm { kind: 1, type_name: ty, value: "", name: name, inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
+}
+
+fn supervisor_child_info_type_name() -> string {
+    "{ id: atom, agent_type: atom, child: actor_ref, restart: :permanent | :temporary | :transient }"
+}
+
+fn supervisor_children_list_type_name() -> string {
+    "List[{ id: atom, agent_type: atom, child: actor_ref, restart: :permanent | :temporary | :transient },mem(normal)]"
+}
+
+fn build_supervisor_child_info_record(id_atom: SIRTerm, agent_type_atom: SIRTerm, child_ref: SIRTerm, restart_atom: SIRTerm) -> SIRTerm {
+    ci_t: string <- supervisor_child_info_type_name();
+    ci_sir_t: string <- types@type_name_to_sir(ci_t);
+    r4: SIRTerm <- struct_terms@build_record_make_layer(ci_sir_t, "restart", restart_atom, sir_ast@dummy_sir_term());
+    r3: SIRTerm <- struct_terms@build_record_make_layer(ci_sir_t, "child", child_ref, r4);
+    r2: SIRTerm <- struct_terms@build_record_make_layer(ci_sir_t, "agent_type", agent_type_atom, r3);
+    struct_terms@build_record_make_layer(ci_sir_t, "id", id_atom, r2)
+}
+
+fn build_supervisor_empty_child_info_record() -> SIRTerm {
+    build_supervisor_child_info_record(
+        sir_atom_const(":unknown"),
+        sir_atom_const(":unknown"),
+        sir_actor_ref_const("0"),
+        sir_atom_const(":temporary")
+    )
+}
+
+fn build_supervisor_empty_children_list() -> SIRTerm {
+    ci_t: string <- supervisor_child_info_type_name();
+    list_t: string <- supervisor_children_list_type_name();
+    list_terms@build_list_nil(ci_t, list_t)
+}
+
+fn build_call_supervisor_reply(tag: SIRTerm, child: SIRTerm, status: SIRTerm, children: SIRTerm, count: SIRTerm, child_info: SIRTerm, error: SIRTerm) -> SIRTerm {
+    reply_t: string <- type_checker_expressions_actors@supervisor_reply_record_type();
+    reply_sir_t: string <- types@type_name_to_sir(reply_t);
+    r7: SIRTerm <- struct_terms@build_record_make_layer(reply_sir_t, "error", error, sir_ast@dummy_sir_term());
+    r6: SIRTerm <- struct_terms@build_record_make_layer(reply_sir_t, "child_info", child_info, r7);
+    r5: SIRTerm <- struct_terms@build_record_make_layer(reply_sir_t, "count", count, r6);
+    r4: SIRTerm <- struct_terms@build_record_make_layer(reply_sir_t, "children", children, r5);
+    r3: SIRTerm <- struct_terms@build_record_make_layer(reply_sir_t, "status", status, r4);
+    r2: SIRTerm <- struct_terms@build_record_make_layer(reply_sir_t, "child", child, r3);
+    struct_terms@build_record_make_layer(reply_sir_t, "tag", tag, r2)
+}
+
+fn build_call_supervisor_child_started_reply(child_ref: SIRTerm) -> SIRTerm {
+    build_call_supervisor_reply(
+        sir_atom_const(":child_started"),
+        child_ref,
+        sir_atom_const(":ok"),
+        sir_int64_const("0"),
+        sir_int64_const("0"),
+        sir_int64_const("0"),
+        sir_atom_const(":ok")
+    )
+}
+
+fn build_call_supervisor_ok_status_reply(status_atom: string) -> SIRTerm {
+    build_call_supervisor_reply(
+        sir_atom_const(":ok"),
+        sir_actor_ref_const("0"),
+        sir_atom_const(status_atom),
+        sir_int64_const("0"),
+        sir_int64_const("0"),
+        sir_int64_const("0"),
+        sir_atom_const(":ok")
+    )
+}
+
+fn build_call_supervisor_children_reply(children: SIRTerm) -> SIRTerm {
+    build_call_supervisor_reply(
+        sir_atom_const(":children"),
+        sir_actor_ref_const("0"),
+        sir_atom_const(":ok"),
+        children,
+        sir_int64_const("0"),
+        sir_int64_const("0"),
+        sir_atom_const(":ok")
+    )
+}
+
+fn build_call_supervisor_count_reply(count: SIRTerm) -> SIRTerm {
+    build_call_supervisor_reply(
+        sir_atom_const(":count"),
+        sir_actor_ref_const("0"),
+        sir_atom_const(":ok"),
+        sir_int64_const("0"),
+        count,
+        sir_int64_const("0"),
+        sir_atom_const(":ok")
+    )
+}
+
+fn build_call_supervisor_child_info_reply(child_ref: SIRTerm, child_info: SIRTerm) -> SIRTerm {
+    build_call_supervisor_reply(
+        sir_atom_const(":child_info"),
+        child_ref,
+        sir_atom_const(":ok"),
+        sir_int64_const("0"),
+        sir_int64_const("0"),
+        child_info,
+        sir_atom_const(":ok")
+    )
+}
+
+fn build_call_supervisor_error_reply(reason: string) -> SIRTerm {
+    build_call_supervisor_reply(
+        sir_atom_const(":error"),
+        sir_actor_ref_const("0"),
+        sir_atom_const(":error"),
+        sir_int64_const("0"),
+        sir_int64_const("0"),
+        sir_int64_const("0"),
+        sir_atom_const(reason)
+    )
+}
+
+fn atom_lexeme_from_expr(expr: Expr) -> string {
+    case expr.kind == 5 of {
+        true -> expr.value;
+        false -> case expr.kind == 2 of {
+            true -> atom_lexeme_from_expr(expr.inner);
+            false -> ""
+        }
+    }
+}
+
+fn call_supervisor_op_atom(msg_expr: Expr) -> string {
+    (op_found: bool, op_expr: Expr) <- find_struct_field_expr(msg_expr, "op");
+    case op_found of {
+        true -> atom_lexeme_from_expr(op_expr);
+        false -> ""
+    }
+}
+
+fn call_supervisor_id_atom_sir(context: TypeContext, msg_expr: Expr, in_body: bool, bound_name: string, bound_type: string) -> (bool, SIRTerm) {
+    (id_found: bool, id_expr: Expr) <- find_struct_field_expr(msg_expr, "id");
+    case id_found of {
+        true -> (true, sir_subexpr_for_actor(context, id_expr, "atom", in_body, bound_name, bound_type));
+        false -> (false, sir_ast@dummy_sir_term())
+    }
+}
+
+// Lower actor / concurrency builtins (silica-spec §15–16) to SIR prims; used from kind-4 call dispatch.
+fn sir_subexpr_for_actor(context: TypeContext, e: Expr, t: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    case in_body of {
+        true -> expr_to_sir_in_let_body(context, e, bound_name, bound_type, t);
+        false -> expr_to_sir_with_expected(context, e, t)
+    }
+}
+
+// Same chain encoding as type_checker_expressions@call_third_arg_expr / call_fourth_arg_expr (not exported there).
+fn spawn_call_third_arg_expr(expr: Expr) -> Expr {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> case expr.right_expr.right_expr.kind == 4 and expr.right_expr.right_expr.name == "" of {
+            true -> expr.right_expr.right_expr.inner;
+            false -> expr.right_expr.right_expr;
+        };
+        false -> expr.right_expr;
+    }
+}
+
+fn spawn_call_fourth_arg_expr(expr: Expr) -> Expr {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> case expr.right_expr.right_expr.kind == 4 and expr.right_expr.right_expr.name == "" of {
+            true -> case expr.right_expr.right_expr.right_expr.kind == 4 and expr.right_expr.right_expr.right_expr.name == "" of {
+                true -> expr.right_expr.right_expr.right_expr.inner;
+                false -> expr.right_expr.right_expr.right_expr;
+            };
+            false -> expr.right_expr.right_expr;
+        };
+        false -> expr.right_expr;
+    }
+}
+
+// Phase E e3b: tag spawn[linked] SIR prims with value \"[concurrency]|e3b:<StateT>\" so the AArch64 emitter
+// can store _silica_supervisor_start_<T> into the child actor ACB (#280) when the behavior's state is a supervisor impl.
+// e4a fix: also tag when state_t doesn't match but the module has exactly one supervisor impl,
+// using the first supervisor type name from the CSV. This handles `spawn(0, sup_beh)` in supervisor modules.
+fn spawn_value_tag_e3b_if_supervisor_state(base: SIRTerm, state_t: string, context: TypeContext) -> SIRTerm {
+    csv: string <- type_checker_core@lookup_supervisor_csv(context);
+    case type_checker_core@type_name_in_supervisor_csv(state_t, csv) of {
+        true -> SIRTerm { kind: base.kind, type_name: base.type_name, value: concat("[concurrency]", concat("|e3b:", state_t)), name: base.name, inner: base.inner, right_expr: base.right_expr };
+        false -> case len(csv) > 0 of {
+            true -> SIRTerm { kind: base.kind, type_name: base.type_name, value: concat("[concurrency]", concat("|e3b:", csv)), name: base.name, inner: base.inner, right_expr: base.right_expr };
+            false -> base
+        }
+    }
+}
+
+fn supervisor_type_name_from_spawn_expr(context: TypeContext, expr: Expr) -> string {
+    case expr.inner.kind == 1 of {
+        true -> expr.inner.name;
+        false -> type_checker_core@lookup_supervisor_csv(context)
+    }
+}
+
+fn lower_spawn_registered_expr(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string, prim_name: string) -> SIRTerm {
+    ac_sr: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    case ac_sr == 3 of {
+        false -> sir_ast@dummy_sir_term();
+        true -> do
+            init_sr_e: Expr <- type_checker_expressions_actors@spawn_init_expr(expr);
+            beh_sr_e: Expr <- type_checker_expressions_actors@spawn_behavior_expr(expr);
+            name_sr_e: Expr <- spawn_call_third_arg_expr(expr);
+            case beh_sr_e.kind == 1 of {
+                false -> sir_ast@dummy_sir_term();
+                true -> do
+                    (beh_sr_found: bool, beh_sr_type: string) <- type_checker_core@lookup_symbol_found(context.env, beh_sr_e.name);
+                    case beh_sr_found of {
+                        false -> sir_ast@dummy_sir_term();
+                        true -> do
+                            state_sr: string <- type_checker_expressions_actors@parse_behavior_state_param_type(beh_sr_type);
+                            init_sr_sir: SIRTerm <- sir_subexpr_for_actor(context, init_sr_e, state_sr, in_body, bound_name, bound_type);
+                            beh_sr_label: string <- user_calls@qual_name(beh_sr_e.name);
+                            beh_sr_sir: SIRTerm <- SIRTerm { kind: 0, type_name: "fn_ptr", value: beh_sr_label, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                            name_sr_sir: SIRTerm <- sir_subexpr_for_actor(context, name_sr_e, "atom", in_body, bound_name, bound_type);
+                            case prim_name == "spawn_dangerous_registered" of {
+                                true -> actor_calls@build_spawn_dangerous_registered_prim(init_sr_sir, beh_sr_sir, name_sr_sir);
+                                false -> actor_calls@build_spawn_registered_prim(init_sr_sir, beh_sr_sir, name_sr_sir)
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn lower_spawn_registered_supervisor_expr(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    init_srs_e: Expr <- actor_calls@actor_call_second_arg(expr);
+    name_srs_e: Expr <- spawn_call_third_arg_expr(expr);
+    init_srs: SIRTerm <- sir_subexpr_for_actor(context, init_srs_e, "discard", in_body, bound_name, bound_type);
+    name_srs: SIRTerm <- sir_subexpr_for_actor(context, name_srs_e, "atom", in_body, bound_name, bound_type);
+    sup_name: string <- supervisor_type_name_from_spawn_expr(context, expr);
+    actor_calls@build_spawn_registered_supervisor_prim(sup_name, init_srs, name_srs)
+}
+
+fn lower_call_supervisor_expr(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    case type_checker_expressions_actors@count_chain_args(expr) == 2 of {
+        false -> sir_ast@dummy_sir_term();
+        true -> do
+            // Avoid binding `sup` to the ephemeral current X0 in deep sequence bodies.
+            sup_sir: SIRTerm <- case in_body of {
+                true -> expr_to_sir_in_let_body(context, expr.inner, "", "", "discard");
+                false -> expr_to_sir_with_expected(context, expr.inner, "discard")
+            };
+            msg_expr: Expr <- actor_calls@actor_call_second_arg(expr);
+            op_atom: string <- call_supervisor_op_atom(msg_expr);
+            case op_atom == ":add_child" of {
+                true -> do
+                    (child_found: bool, child_expr: Expr) <- find_struct_field_expr(msg_expr, "child");
+                    case child_found of {
+                        true -> do
+                            child_spec_sir: SIRTerm <- sir_subexpr_for_actor(context, child_expr, "discard", in_body, bound_name, bound_type);
+                            child_ref_sir: SIRTerm <- actor_calls@build_supervisor_add_child_prim(sup_sir, child_spec_sir);
+                            build_call_supervisor_child_started_reply(child_ref_sir)
+                        end;
+                        false -> build_call_supervisor_error_reply(":badarg")
+                    }
+                end;
+                false -> case op_atom == ":remove_child" of {
+                    true -> do
+                        (id_found_rc: bool, id_sir_rc: SIRTerm) <- call_supervisor_id_atom_sir(context, msg_expr, in_body, bound_name, bound_type);
+                        case id_found_rc of {
+                            true -> do
+                                remove_rt: SIRTerm <- actor_calls@build_supervisor_remove_child_prim(sup_sir, id_sir_rc);
+                                reply_removed: SIRTerm <- build_call_supervisor_ok_status_reply(":removed");
+                                SIRTerm { kind: 2, type_name: types@type_name_to_sir("atom"), value: "", name: "%_", inner: remove_rt, right_expr: reply_removed }
+                            end;
+                            false -> build_call_supervisor_error_reply(":badarg")
+                        }
+                    end;
+                    false -> case op_atom == ":restart_child" of {
+                        true -> do
+                            (id_found_rs: bool, id_sir_rs: SIRTerm) <- call_supervisor_id_atom_sir(context, msg_expr, in_body, bound_name, bound_type);
+                            case id_found_rs of {
+                                true -> do
+                                    restarted_rt: SIRTerm <- actor_calls@build_supervisor_restart_child_prim(sup_sir, id_sir_rs);
+                                    restarted_var: SIRTerm <- sir_var("%_supervisor_restarted_child", "actor_ref");
+                                    reply_restarted: SIRTerm <- build_call_supervisor_child_started_reply(restarted_var);
+                                    SIRTerm { kind: 2, type_name: types@type_name_to_sir("actor_ref"), value: "", name: "%_supervisor_restarted_child", inner: restarted_rt, right_expr: reply_restarted }
+                                end;
+                                false -> build_call_supervisor_error_reply(":badarg")
+                            }
+                        end;
+                        false -> case op_atom == ":terminate_child" of {
+                            true -> do
+                                (id_found_tc: bool, id_sir_tc: SIRTerm) <- call_supervisor_id_atom_sir(context, msg_expr, in_body, bound_name, bound_type);
+                                case id_found_tc of {
+                                    true -> do
+                                        terminate_rt: SIRTerm <- actor_calls@build_supervisor_terminate_child_prim(sup_sir, id_sir_tc);
+                                        reply_terminated: SIRTerm <- build_call_supervisor_ok_status_reply(":terminated");
+                                        SIRTerm { kind: 2, type_name: types@type_name_to_sir("atom"), value: "", name: "%_", inner: terminate_rt, right_expr: reply_terminated }
+                                    end;
+                                    false -> build_call_supervisor_error_reply(":badarg")
+                                }
+                            end;
+                            false -> case op_atom == ":which_children" of {
+                                true -> do
+                                    children_rt: SIRTerm <- actor_calls@build_supervisor_which_children_prim(sup_sir);
+                                    children_t: string <- supervisor_children_list_type_name();
+                                    children_var: SIRTerm <- sir_var("%_supervisor_children_ref", children_t);
+                                    reply_children: SIRTerm <- build_call_supervisor_children_reply(children_var);
+                                    SIRTerm { kind: 2, type_name: types@type_name_to_sir(children_t), value: "", name: "%_supervisor_children_ref", inner: children_rt, right_expr: reply_children }
+                                end;
+                                false -> case op_atom == ":count_children" of {
+                                    true -> do
+                                        count_rt: SIRTerm <- actor_calls@build_supervisor_count_children_prim(sup_sir);
+                                        count_var: SIRTerm <- sir_var("%_supervisor_live_count", "int64");
+                                        reply_count: SIRTerm <- build_call_supervisor_count_reply(count_var);
+                                        SIRTerm { kind: 2, type_name: types@type_name_to_sir("int64"), value: "", name: "%_supervisor_live_count", inner: count_rt, right_expr: reply_count }
+                                    end;
+                                    false -> case op_atom == ":get_child" of {
+                                        true -> do
+                                            (id_found_gc: bool, id_sir_gc: SIRTerm) <- call_supervisor_id_atom_sir(context, msg_expr, in_body, bound_name, bound_type);
+                                            case id_found_gc of {
+                                                true -> do
+                                                    get_info_rt: SIRTerm <- actor_calls@build_supervisor_get_child_info_prim(sup_sir, id_sir_gc);
+                                                    ci_t: string <- supervisor_child_info_type_name();
+                                                    ci_var: SIRTerm <- sir_var("%_supervisor_get_child_info", ci_t);
+                                                    child_rt: SIRTerm <- struct_terms@build_record_proj_prim(types@type_name_to_sir("actor_ref"), "child", ci_var);
+                                                    child_var: SIRTerm <- sir_var("%_supervisor_get_child_ref", "actor_ref");
+                                                    reply_ci: SIRTerm <- build_call_supervisor_child_info_reply(child_var, ci_var);
+                                                    bind_child: SIRTerm <- SIRTerm { kind: 2, type_name: types@type_name_to_sir("actor_ref"), value: "", name: "%_supervisor_get_child_ref", inner: child_rt, right_expr: reply_ci };
+                                                    SIRTerm { kind: 2, type_name: types@type_name_to_sir(ci_t), value: "", name: "%_supervisor_get_child_info", inner: get_info_rt, right_expr: bind_child }
+                                                end;
+                                                false -> build_call_supervisor_error_reply(":badarg")
+                                            }
+                                        end;
+                                        false -> build_call_supervisor_error_reply(":unknown_supervisor_op")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    ab: string <- type_checker_core@user_call_base_function_name(expr.name);
+    case ab == "spawn" of {
+        true -> do
+            ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+            case ac == 2 or ac == 3 of {
+                false -> sir_ast@dummy_sir_term();
+                true -> do
+                    init_e: Expr <- type_checker_expressions_actors@spawn_init_expr(expr);
+                    beh_e: Expr <- type_checker_expressions_actors@spawn_behavior_expr(expr);
+                    case beh_e.kind == 1 of {
+                        false -> sir_ast@dummy_sir_term();
+                        true -> do
+                            (beh_found: bool, beh_fn_type: string) <- type_checker_core@lookup_symbol_found(context.env, beh_e.name);
+                            case beh_found of {
+                                false -> sir_ast@dummy_sir_term();
+                                true -> do
+                                    state_t: string <- type_checker_expressions_actors@parse_behavior_state_param_type(beh_fn_type);
+                                    beh_infer: string <- type_checker_tuple_decompose_helpers@infer_expr_type(beh_e, context);
+                                    init_sir: SIRTerm <- sir_subexpr_for_actor(context, init_e, state_t, in_body, bound_name, bound_type);
+                                    beh_label: string <- user_calls@qual_name(beh_e.name);
+                                    beh_sir: SIRTerm <- SIRTerm { kind: 0, type_name: "fn_ptr", value: beh_label, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                                    case ac == 3 of {
+                                        true -> do
+                                            pl_e: Expr <- type_checker_expressions_actors@spawn_placement_expr(expr);
+                                            pl_sir: SIRTerm <- sir_subexpr_for_actor(context, pl_e, "uint64", in_body, bound_name, bound_type);
+                                            spawn_value_tag_e3b_if_supervisor_state(actor_calls@build_spawn_prim(init_sir, beh_sir, pl_sir, true), state_t, context)
+                                        end;
+                                        false -> spawn_value_tag_e3b_if_supervisor_state(actor_calls@build_spawn_prim(init_sir, beh_sir, sir_ast@dummy_sir_term(), false), state_t, context)
+                                    }
+                                end
+                            }
+                        end
+                    }
+                end
+            }
+        end;
+        false -> case ab == "spawn_dangerous" of {
+            true -> do
+                ac_sd: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+                case ac_sd == 2 or ac_sd == 3 of {
+                    false -> sir_ast@dummy_sir_term();
+                    true -> do
+                        init_sd: Expr <- type_checker_expressions_actors@spawn_init_expr(expr);
+                        beh_sd: Expr <- type_checker_expressions_actors@spawn_behavior_expr(expr);
+                        case beh_sd.kind == 1 of {
+                            false -> sir_ast@dummy_sir_term();
+                            true -> do
+                                (beh_sd_found: bool, beh_sd_type: string) <- type_checker_core@lookup_symbol_found(context.env, beh_sd.name);
+                                case beh_sd_found of {
+                                    false -> sir_ast@dummy_sir_term();
+                                    true -> do
+                                        state_sd: string <- type_checker_expressions_actors@parse_behavior_state_param_type(beh_sd_type);
+                                        init_sd_sir: SIRTerm <- sir_subexpr_for_actor(context, init_sd, state_sd, in_body, bound_name, bound_type);
+                                        beh_sd_label: string <- user_calls@qual_name(beh_sd.name);
+                                        beh_sd_sir: SIRTerm <- SIRTerm { kind: 0, type_name: "fn_ptr", value: beh_sd_label, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                                        case ac_sd == 3 of {
+                                            true -> do
+                                                pl_sd: Expr <- type_checker_expressions_actors@spawn_placement_expr(expr);
+                                                pl_sd_sir: SIRTerm <- sir_subexpr_for_actor(context, pl_sd, "uint64", in_body, bound_name, bound_type);
+                                                actor_calls@build_spawn_dangerous_prim(init_sd_sir, beh_sd_sir, pl_sd_sir, true)
+                                            end;
+                                            false -> actor_calls@build_spawn_dangerous_prim(init_sd_sir, beh_sd_sir, sir_ast@dummy_sir_term(), false)
+                                        }
+                                    end
+                                }
+                            end
+                        }
+                    end
+                }
+            end;
+            false -> case ab == "spawn_registered" of {
+            true -> lower_spawn_registered_expr(context, expr, in_body, bound_name, bound_type, "spawn_registered");
+            false -> case ab == "spawn_dangerous_registered" of {
+            true -> lower_spawn_registered_expr(context, expr, in_body, bound_name, bound_type, "spawn_dangerous_registered");
+            false -> case ab == "spawn_registered_supervisor" of {
+            true -> lower_spawn_registered_supervisor_expr(context, expr, in_body, bound_name, bound_type);
+        false -> case ab == "spawn_linked" of {
+            true -> do
+                ac_sl: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+                case ac_sl == 3 or ac_sl == 4 of {
+                    false -> sir_ast@dummy_sir_term();
+                    true -> do
+                        init_sl: Expr <- type_checker_expressions_actors@spawn_init_expr(expr);
+                        beh_sl: Expr <- type_checker_expressions_actors@spawn_behavior_expr(expr);
+                        agent_sl: Expr <- spawn_call_third_arg_expr(expr);
+                        case beh_sl.kind == 1 of {
+                            false -> sir_ast@dummy_sir_term();
+                            true -> do
+                                (beh_sl_found: bool, beh_sl_type: string) <- type_checker_core@lookup_symbol_found(context.env, beh_sl.name);
+                                case beh_sl_found of {
+                                    false -> sir_ast@dummy_sir_term();
+                                    true -> do
+                                        state_sl_t: string <- type_checker_expressions_actors@parse_behavior_state_param_type(beh_sl_type);
+                                        init_sl_sir: SIRTerm <- sir_subexpr_for_actor(context, init_sl, state_sl_t, in_body, bound_name, bound_type);
+                                        beh_sl_label: string <- user_calls@qual_name(beh_sl.name);
+                                        beh_sl_sir: SIRTerm <- SIRTerm { kind: 0, type_name: "fn_ptr", value: beh_sl_label, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                                        agent_sl_sir: SIRTerm <- sir_subexpr_for_actor(context, agent_sl, "atom", in_body, bound_name, bound_type);
+                                        case ac_sl == 4 of {
+                                            true -> do
+                                                pl_sl_e: Expr <- spawn_call_fourth_arg_expr(expr);
+                                                pl_sl_sir: SIRTerm <- sir_subexpr_for_actor(context, pl_sl_e, "uint64", in_body, bound_name, bound_type);
+                                                spawn_value_tag_e3b_if_supervisor_state(actor_calls@build_spawn_linked_prim(init_sl_sir, beh_sl_sir, agent_sl_sir, pl_sl_sir, true), state_sl_t, context)
+                                            end;
+                                            false -> spawn_value_tag_e3b_if_supervisor_state(actor_calls@build_spawn_linked_prim(init_sl_sir, beh_sl_sir, agent_sl_sir, sir_ast@dummy_sir_term(), false), state_sl_t, context)
+                                        }
+                                    end
+                                }
+                            end
+                        }
+                    end
+                }
+            end;
+            false -> case ab == "send" of {
+            true -> do
+                a0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                msg_e: Expr <- actor_calls@actor_call_second_arg(expr);
+                a1: SIRTerm <- sir_subexpr_for_actor(context, msg_e, "discard", in_body, bound_name, bound_type);
+                actor_calls@build_send_prim(a0, a1)
+            end;
+            false -> case ab == "cast" of {
+                true -> do
+                    c0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                    cmsg: Expr <- actor_calls@actor_call_second_arg(expr);
+                    c1: SIRTerm <- sir_subexpr_for_actor(context, cmsg, "discard", in_body, bound_name, bound_type);
+                    actor_calls@build_actor_cast_prim(c0, c1)
+                end;
+                false -> case ab == "cast_registered" of {
+                    true -> do
+                        cr0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "atom", in_body, bound_name, bound_type);
+                        crmsg: Expr <- actor_calls@actor_call_second_arg(expr);
+                        cr1: SIRTerm <- sir_subexpr_for_actor(context, crmsg, "discard", in_body, bound_name, bound_type);
+                        actor_calls@build_actor_cast_registered_prim(cr0, cr1)
+                    end;
+                false -> case ab == "cast_dangerous_registered" of {
+                    true -> do
+                        cdr0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "atom", in_body, bound_name, bound_type);
+                        cdrmsg: Expr <- actor_calls@actor_call_second_arg(expr);
+                        cdr1: SIRTerm <- sir_subexpr_for_actor(context, cdrmsg, "discard", in_body, bound_name, bound_type);
+                        actor_calls@build_actor_cast_dangerous_registered_prim(cdr0, cdr1)
+                    end;
+                false -> case ab == "call" of {
+                    true -> do
+                        k0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                        kmsg: Expr <- actor_calls@actor_call_second_arg(expr);
+                        k1: SIRTerm <- sir_subexpr_for_actor(context, kmsg, "discard", in_body, bound_name, bound_type);
+                        actor_calls@build_actor_call_prim(k0, k1, expected_type)
+                    end;
+                    false -> case ab == "call_registered" of {
+                        true -> do
+                            kr0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "atom", in_body, bound_name, bound_type);
+                            krmsg: Expr <- actor_calls@actor_call_second_arg(expr);
+                            kr1: SIRTerm <- sir_subexpr_for_actor(context, krmsg, "discard", in_body, bound_name, bound_type);
+                            actor_calls@build_actor_call_registered_prim(kr0, kr1, expected_type)
+                        end;
+                    false -> case ab == "self" of {
+                        true -> case type_checker_expressions_actors@count_chain_args(expr) == 0 of {
+                            true -> actor_calls@build_self_prim();
+                            false -> sir_ast@dummy_sir_term()
+                        };
+                        false -> case ab == "link" of {
+                            true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                true -> do
+                                    lk: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                    actor_calls@build_link_prim(lk)
+                                end;
+                                false -> sir_ast@dummy_sir_term()
+                            };
+                            false -> case ab == "add_child" of {
+                                true -> case type_checker_expressions_actors@count_chain_args(expr) == 2 of {
+                                    true -> do
+                                        ap: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                        ac_e: Expr <- actor_calls@actor_call_second_arg(expr);
+                                        ac: SIRTerm <- sir_subexpr_for_actor(context, ac_e, "actor_ref", in_body, bound_name, bound_type);
+                                        actor_calls@build_add_child_prim(ap, ac)
+                                    end;
+                                    false -> sir_ast@dummy_sir_term()
+                                };
+                            false -> case ab == "monitor" of {
+                                true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                    true -> do
+                                        mon_t: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                        actor_calls@build_monitor_prim(mon_t)
+                                    end;
+                                    false -> sir_ast@dummy_sir_term()
+                                };
+                                false -> case ab == "demonitor" of {
+                                    true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                        true -> do
+                                            dm: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "monitor_ref", in_body, bound_name, bound_type);
+                                            actor_calls@build_demonitor_prim(dm)
+                                        end;
+                                        false -> sir_ast@dummy_sir_term()
+                                    };
+                                    false -> case ab == "supervision_ingress_enqueue" of {
+                                        true -> case type_checker_expressions_actors@count_chain_args(expr) == 2 of {
+                                            true -> do
+                                                sie_t: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                sie_p_e: Expr <- actor_calls@actor_call_second_arg(expr);
+                                                sie_p: SIRTerm <- sir_subexpr_for_actor(context, sie_p_e, "int64", in_body, bound_name, bound_type);
+                                                actor_calls@build_supervision_ingress_enqueue_prim(sie_t, sie_p)
+                                            end;
+                                            false -> sir_ast@dummy_sir_term()
+                                        };
+                                        false -> case ab == "supervision_wait_and_drain_one" of {
+                                            true -> case type_checker_expressions_actors@count_chain_args(expr) == 0 of {
+                                                true -> actor_calls@build_supervision_wait_and_drain_one_prim();
+                                                false -> sir_ast@dummy_sir_term()
+                                            };
+                                            false -> case ab == "child_table_first_ref" of {
+                                                true -> case type_checker_expressions_actors@count_chain_args(expr) == 0 of {
+                                                    true -> actor_calls@build_child_table_first_ref_prim();
+                                                    false -> sir_ast@dummy_sir_term()
+                                                };
+                                            false -> case ab == "child_table_row_ref" of {
+                                                true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                                    true -> do
+                                                        ctr_ix: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "int64", in_body, bound_name, bound_type);
+                                                        actor_calls@build_child_table_row_ref_prim(ctr_ix)
+                                                    end;
+                                                    false -> sir_ast@dummy_sir_term()
+                                                };
+                                            false -> case ab == "register_failure_reporter" of {
+                                                true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                                    true -> do
+                                                        rfr_t: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                        actor_calls@build_register_failure_reporter_prim(rfr_t)
+                                                    end;
+                                                    false -> sir_ast@dummy_sir_term()
+                                                };
+                                            false -> case ab == "wait_for_exit" of {
+                                                true -> case type_checker_expressions_actors@count_chain_args(expr) == 0 of {
+                                                    true -> actor_calls@build_wait_for_exit_prim();
+                                                    false -> sir_ast@dummy_sir_term()
+                                                };
+                                                false -> case ab == "kill_abnormal" of {
+                                                    true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                                        true -> do
+                                                            ka_t: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                            actor_calls@build_kill_abnormal_prim(ka_t)
+                                                        end;
+                                                        false -> sir_ast@dummy_sir_term()
+                                                    };
+                                                false -> case ab == "failure_reason_tag" of {
+                                                    true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                                        true -> do
+                                                            frt_p: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "int64", in_body, bound_name, bound_type);
+                                                            actor_calls@build_failure_reason_tag_prim(frt_p)
+                                                        end;
+                                                        false -> sir_ast@dummy_sir_term()
+                                                    };
+                                                    false -> case ab == "failure_reason_atom" of {
+                                                        true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                                            true -> do
+                                                                fra_p: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "int64", in_body, bound_name, bound_type);
+                                                                actor_calls@build_failure_reason_atom_prim(fra_p)
+                                                            end;
+                                                            false -> sir_ast@dummy_sir_term()
+                                                        };
+                                                        false -> case ab == "failure_agent_type" of {
+                                                            true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                                                true -> do
+                                                                    fat_p: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "int64", in_body, bound_name, bound_type);
+                                                                    actor_calls@build_failure_agent_type_prim(fat_p)
+                                                                end;
+                                                                false -> sir_ast@dummy_sir_term()
+                                                            };
+                                                            false -> case ab == "failure_release" of {
+                                                                true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                                                    true -> do
+                                                                        fr_p: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "int64", in_body, bound_name, bound_type);
+                                                                        actor_calls@build_failure_release_prim(fr_p)
+                                                                    end;
+                                                                    false -> sir_ast@dummy_sir_term()
+                                                                };
+                                                                false -> case ab == "start_child" of {
+                                                                    true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                                                        true -> do
+                                                                            sc_p: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "discard", in_body, bound_name, bound_type);
+                                                                            actor_calls@build_start_child_prim(sc_p)
+                                                                        end;
+                                                                        false -> sir_ast@dummy_sir_term()
+                                                                    };
+                                    false -> case ab == "call_supervisor" of {
+                                        true -> lower_call_supervisor_expr(context, expr, in_body, bound_name, bound_type);
+                                        false -> lower_actor_runtime_helper_expr(context, expr, in_body, bound_name, bound_type)
+                                    }
+                            }
+                        }
+                    }
+                    }
+                }
+            }
+                                                }
+                                                }
+                                            }
+                                            }
+                                        }
+                                    }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    }
+                }
+                }
+            }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+    }
+}
+
+fn lower_actor_runtime_helper_expr(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    n: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    rb: string <- type_checker_core@user_call_base_function_name(expr.name);
+    ret: string <- actor_calls@actor_runtime_sir_return_type(rb);
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    case rb == "get_cpu_topology" of {
+        true -> case n == 0 of { true -> actor_calls@build_get_cpu_topology_prim(); false -> sir_ast@dummy_sir_term() };
+        false -> case rb == "get_registry_actor" or rb == "get_pid_registry" of {
+            true -> case n == 0 of { true -> actor_calls@build_actor_runtime_prim(rb, ret, d, d, 0); false -> sir_ast@dummy_sir_term() };
+            false -> case rb == "get_efficiency_cores" of {
+            true -> case n == 0 of { true -> actor_calls@build_actor_runtime_prim(rb, ret, d, d, 0); false -> sir_ast@dummy_sir_term() };
+            false -> case rb == "get_performance_cores" of {
+                true -> case n == 0 of { true -> actor_calls@build_actor_runtime_prim(rb, ret, d, d, 0); false -> sir_ast@dummy_sir_term() };
+                false -> case rb == "get_core_capabilities" of {
+                    true -> case n == 1 of {
+                        true -> do
+                            a0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "int64", in_body, bound_name, bound_type);
+                            actor_calls@build_get_core_capabilities_prim(a0)
+                        end;
+                        false -> sir_ast@dummy_sir_term()
+                    };
+                    false -> case rb == "pin_actor_to_core" of {
+                        true -> case n == 2 of {
+                            true -> do
+                                p0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                p1: SIRTerm <- sir_subexpr_for_actor(context, actor_calls@actor_call_second_arg(expr), "int64", in_body, bound_name, bound_type);
+                                actor_calls@build_actor_runtime_prim(rb, ret, p0, p1, 2)
+                            end;
+                            false -> sir_ast@dummy_sir_term()
+                        };
+                        false -> case rb == "pin_actor_realtime" of {
+                            true -> case n == 2 of {
+                                true -> do
+                                    r0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                    r1: SIRTerm <- sir_subexpr_for_actor(context, actor_calls@actor_call_second_arg(expr), "int64", in_body, bound_name, bound_type);
+                                    actor_calls@build_actor_runtime_prim(rb, ret, r0, r1, 2)
+                                end;
+                                false -> sir_ast@dummy_sir_term()
+                            };
+                            false -> case rb == "set_actor_priority" of {
+                                true -> case n == 2 of {
+                                    true -> do
+                                        s0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                        s1: SIRTerm <- sir_subexpr_for_actor(context, actor_calls@actor_call_second_arg(expr), "discard", in_body, bound_name, bound_type);
+                                        actor_calls@build_actor_runtime_prim(rb, ret, s0, s1, 2)
+                                    end;
+                                    false -> sir_ast@dummy_sir_term()
+                                };
+                                false -> case rb == "pin_actor_to_numa_node" of {
+                                    true -> case n == 2 of {
+                                        true -> do
+                                            u0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                            u1: SIRTerm <- sir_subexpr_for_actor(context, actor_calls@actor_call_second_arg(expr), "discard", in_body, bound_name, bound_type);
+                                            actor_calls@build_actor_runtime_prim(rb, ret, u0, u1, 2)
+                                        end;
+                                        false -> sir_ast@dummy_sir_term()
+                                    };
+                                    false -> case rb == "pin_actor_to_efficiency_core" of {
+                                        true -> case n == 1 of {
+                                            true -> do
+                                                e0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                actor_calls@build_actor_runtime_prim(rb, ret, e0, d, 1)
+                                            end;
+                                            false -> sir_ast@dummy_sir_term()
+                                        };
+                                        false -> case rb == "pin_actor_to_performance_core" of {
+                                            true -> case n == 1 of {
+                                                true -> do
+                                                    f0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                    actor_calls@build_actor_runtime_prim(rb, ret, f0, d, 1)
+                                                end;
+                                                false -> sir_ast@dummy_sir_term()
+                                            };
+                                            false -> case rb == "unpin_actor" of {
+                                                true -> case n == 1 of {
+                                                    true -> do
+                                                        v0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                        actor_calls@build_actor_runtime_prim(rb, ret, v0, d, 1)
+                                                    end;
+                                                    false -> sir_ast@dummy_sir_term()
+                                                };
+                                                false -> case rb == "remove_actor" of {
+                                                    true -> case n == 1 of {
+                                                        true -> do
+                                                            w0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                            actor_calls@build_actor_runtime_prim(rb, ret, w0, d, 1)
+                                                        end;
+                                                        false -> sir_ast@dummy_sir_term()
+                                                    };
+                                                    false -> case rb == "register_actor" of {
+                                                        true -> case n == 1 of {
+                                                            true -> do
+                                                                ra0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                                actor_calls@build_actor_runtime_prim(rb, ret, ra0, d, 1)
+                                                            end;
+                                                            false -> sir_ast@dummy_sir_term()
+                                                        };
+                                                        false -> case rb == "get_actor_memory_usage" of {
+                                                        true -> case n == 1 of {
+                                                            true -> do
+                                                                mu0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                                actor_calls@build_actor_runtime_prim(rb, ret, mu0, d, 1)
+                                                            end;
+                                                            false -> sir_ast@dummy_sir_term()
+                                                        };
+                                                        false -> case rb == "migrate_actor" of {
+                                                            true -> case n == 2 of {
+                                                                true -> do
+                                                                    ma0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                                    ma1: SIRTerm <- sir_subexpr_for_actor(context, actor_calls@actor_call_second_arg(expr), "int64", in_body, bound_name, bound_type);
+                                                                    actor_calls@build_actor_runtime_prim(rb, ret, ma0, ma1, 2)
+                                                                end;
+                                                                false -> sir_ast@dummy_sir_term()
+                                                            };
+                                                            false -> case rb == "move" of {
+                                                                true -> case n == 3 of {
+                                                                    true -> do
+                                                                        mv0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                                        mv1: SIRTerm <- sir_subexpr_for_actor(context, actor_calls@actor_call_second_arg(expr), "int64", in_body, bound_name, bound_type);
+                                                                        mv2: SIRTerm <- sir_subexpr_for_actor(context, type_checker_expressions_actors@spawn_placement_expr(expr), "int64", in_body, bound_name, bound_type);
+                                                                        actor_calls@build_actor_runtime_prim_3(rb, ret, mv0, mv1, mv2)
+                                                                    end;
+                                                                    false -> sir_ast@dummy_sir_term()
+                                                                };
+                                                                false -> sir_ast@dummy_sir_term()
+                                                            }
+                                                        }
+                                                    }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        }
+    }
+}
+
+// Tuple decomposition RHS type: mirror check_tuple_decompose (infer_expr_type + sequence-body context).
+fn sir_tuple_decompose_rhs_type(expr: Expr, context: TypeContext) -> string {
+    case expr.inner.kind == 11 of {
+        true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner.right_expr, type_checker_expressions@context_after_sequence_body(expr.inner.inner, context));
+        false -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context)
+    }
+}
+
+fn expr_to_sir_tuple_decompose(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    rhs_type_infer: string <- sir_tuple_decompose_rhs_type(expr, context);
+    rhs_type: string <- case len(rhs_type_infer) < 2 or substring(rhs_type_infer, 0, 1) != "(" of {
+        true -> type_checker_tuple_decompose_helpers@build_pattern_type_from_bindings(expr.pattern_bindings);
+        false -> rhs_type_infer
+    };
+    case len(rhs_type) < 2 or substring(rhs_type, 0, 1) != "(" of {
+        true -> sir_ast@dummy_sir_term();
+        false -> do
+            filled_bindings: ListTupleDecomposeBinding <- tuple_decompose@tuple_decompose_filled_bindings(expr, rhs_type);
+            rhs_term: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, rhs_type);
+            extended_context: TypeContext <- add_bindings_to_context(context, filled_bindings);
+            body: SIRTerm <- expr_to_sir_in_let_body(extended_context, expr.right_expr, "", "", expected_type);
+            tuple_decompose@build_decompose_lets(rhs_term, filled_bindings, body, context, rhs_type)
+        end
+    }
+}
+
+fn expr_to_sir_tuple_decompose_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    rhs_type_infer: string <- sir_tuple_decompose_rhs_type(expr, context);
+    rhs_type: string <- case len(rhs_type_infer) < 2 or substring(rhs_type_infer, 0, 1) != "(" of {
+        true -> type_checker_tuple_decompose_helpers@build_pattern_type_from_bindings(expr.pattern_bindings);
+        false -> rhs_type_infer
+    };
+    case len(rhs_type) < 2 or substring(rhs_type, 0, 1) != "(" of {
+        true -> sir_ast@dummy_sir_term();
+        false -> do
+            filled_bindings: ListTupleDecomposeBinding <- tuple_decompose@tuple_decompose_filled_bindings(expr, rhs_type);
+            rhs_term: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, rhs_type);
+            extended_context: TypeContext <- add_bindings_to_context(context, filled_bindings);
+            body: SIRTerm <- expr_to_sir_in_let_body(extended_context, expr.right_expr, "", "", expected_type);
+            tuple_decompose@build_decompose_lets(rhs_term, filled_bindings, body, context, rhs_type)
+        end
+    }
+}
+
+fn add_bindings_to_context(context: TypeContext, bindings: ListTupleDecomposeBinding) -> TypeContext {
+    case bindings.is_nil of {
+        true -> context;
+        false -> do
+            b: TupleDecomposeBinding <- bindings.head;
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, b.name, b.type_str, parser_ast@empty_effect_name_list(), "");
+            new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
+            add_bindings_to_context(new_context, bindings.tail)
+        end
+    }
+}
+
+fn expr_to_sir_tuple_inline(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    first_type: string <- tuple_first_element_type(expected_type);
+    rest_type: string <- tuple_rest_element_type(expected_type);
+    first: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, first_type);
+    second: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, rest_type);
+    sir_type: string <- types@type_name_to_sir(expected_type);
+    SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: first, right_expr: second }
+}
+
+fn tuple_first_element_type(tuple_type: string) -> string {
+    elements: string <- tuple_inner_str(tuple_type);
+    (first: string, _: string) <- tuple_split_first(elements);
+    tuple_trim_ws(first)
+}
+
+fn tuple_rest_element_type(tuple_type: string) -> string {
+    elements: string <- tuple_inner_str(tuple_type);
+    (first: string, rest: string) <- tuple_split_first(elements);
+    trimmed: string <- tuple_trim_ws(rest);
+    case len(trimmed) == 0 of {
+        true -> "";
+        false -> case tuple_contains_comma(trimmed) of {
+            true -> concat("(", concat(trimmed, ")"));
+            false -> trimmed
+        }
+    }
+}
+
+fn tuple_inner_str(type_str: string) -> string {
+    len_ts: int64 <- len(type_str);
+    case len_ts < 2 of {
+        true -> "";
+        false -> case substring(type_str, 0, 1) == "(" of {
+            true -> case substring(type_str, len_ts - 1, len_ts) == ")" of {
+                true -> substring(type_str, 1, len_ts - 1);
+                false -> ""
+            };
+            false -> ""
+        }
+    }
+}
+
+fn tuple_split_first(s: string) -> (string, string) {
+    idx: int64 <- tuple_find_comma(s, 0);
+    first: string <- substring(s, 0, idx);
+    rest: string <- case idx < len(s) of {
+        true -> substring(s, idx + 1, len(s));
+        false -> ""
+    };
+    (first, rest)
+}
+
+fn tuple_find_comma(s: string, i: int64) -> int64 {
+    tuple_find_comma_at_depth(s, i, 0)
+}
+
+// Top-level comma for tuple type splitting: count (), {}, [] so commas inside `{ a: T, b: U }` or `List[..., normal]` do not split `(flags, list)`.
+fn tuple_find_comma_at_depth(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) of {
+            "(" -> tuple_find_comma_at_depth(s, i + 1, depth + 1);
+            ")" -> tuple_find_comma_at_depth(s, i + 1, depth - 1);
+            "{" -> tuple_find_comma_at_depth(s, i + 1, depth + 1);
+            "}" -> tuple_find_comma_at_depth(s, i + 1, depth - 1);
+            "[" -> tuple_find_comma_at_depth(s, i + 1, depth + 1);
+            "]" -> tuple_find_comma_at_depth(s, i + 1, depth - 1);
+            "," -> case depth == 0 of {
+                true -> i;
+                false -> tuple_find_comma_at_depth(s, i + 1, depth)
+            };
+            _: string -> tuple_find_comma_at_depth(s, i + 1, depth)
+        }
+    }
+}
+
+fn tuple_contains_comma(s: string) -> bool {
+    tuple_contains_comma_at_depth(s, 0, 0)
+}
+
+// True iff a comma appears at nesting depth 0; ignores commas inside (), {}, [] (aligned with tuple_find_comma_at_depth).
+fn tuple_contains_comma_at_depth(s: string, i: int64, depth: int64) -> bool {
+    case i >= len(s) of {
+        true -> false;
+        false -> case substring(s, i, i + 1) of {
+            "(" -> tuple_contains_comma_at_depth(s, i + 1, depth + 1);
+            ")" -> tuple_contains_comma_at_depth(s, i + 1, depth - 1);
+            "{" -> tuple_contains_comma_at_depth(s, i + 1, depth + 1);
+            "}" -> tuple_contains_comma_at_depth(s, i + 1, depth - 1);
+            "[" -> tuple_contains_comma_at_depth(s, i + 1, depth + 1);
+            "]" -> tuple_contains_comma_at_depth(s, i + 1, depth - 1);
+            "," -> case depth == 0 of {
+                true -> true;
+                false -> tuple_contains_comma_at_depth(s, i + 1, depth)
+            };
+            _: string -> tuple_contains_comma_at_depth(s, i + 1, depth)
+        }
+    }
+}
+
+fn tuple_trim_ws(s: string) -> string {
+    start: int64 <- tuple_trim_start(s, 0);
+    len_s: int64 <- len(s);
+    one_less: int64 <- len_s - 1;
+    end_idx: int64 <- tuple_trim_end(s, one_less);
+    case start <= end_idx of {
+        true -> substring(s, start, end_idx + 1);
+        false -> ""
+    }
+}
+
+fn tuple_trim_start(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> tuple_trim_start(s, i + 1);
+            false -> i
+        }
+    }
+}
+
+fn tuple_trim_end(s: string, i: int64) -> int64 {
+    case i < 0 of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> tuple_trim_end(s, i - 1);
+            false -> i
+        }
+    }
+}
+
+fn sir_find_top_arrow_from(s: string, i: int64, depth: int64) -> int64 {
+    case i + 1 >= len(s) of {
+        true -> -1;
+        false -> case depth == 0 and substring(s, i, i + 2) == "->" of {
+            true -> i;
+            false -> do
+                c: string <- substring(s, i, i + 1);
+                d2: int64 <- case c == "(" or c == "[" or c == "{" of {
+                    true -> depth + 1;
+                    false -> case c == ")" or c == "]" or c == "}" of {
+                        true -> depth - 1;
+                        false -> depth
+                    }
+                };
+                sir_find_top_arrow_from(s, i + 1, d2)
+            end
+        }
+    }
+}
+
+fn sir_find_arrow_pos(s: string, i: int64) -> int64 {
+    case i + 4 > len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 4) == " -> " of {
+            true -> i;
+            false -> sir_find_arrow_pos(s, i + 1)
+        }
+    }
+}
+
+fn sir_params_inner_from_func_type(func_type: string) -> string {
+    arrow_pos: int64 <- sir_find_arrow_pos(func_type, 0);
+    case arrow_pos < 0 of {
+        true -> "";
+        false -> do
+            params_part: string <- substring(func_type, 0, arrow_pos);
+            case len(params_part) < 2 of {
+                true -> "";
+                false -> substring(params_part, 1, len(params_part) - 1)
+            }
+        end
+    }
+}
+
+// First formal parameter type from "(T1,T2,...) -> R" so call sites lower literals with the callee's type
+// (e.g. float64 param + `2.718` inferring as float32 would load the wrong pool / reg class).
+fn first_formal_param_type_from_scheme(func_type: string) -> string {
+    inner: string <- sir_params_inner_from_func_type(func_type);
+    case len(inner) == 0 of {
+        true -> "";
+        false -> case tuple_contains_comma(inner) of {
+            true -> tuple_first_element_type(concat(concat("(", inner), ")"));
+            false -> inner
+        }
+    }
+}
+
+// In-unit copy: cross-.ll return of string from type_checker_core lookup segfaults for module@fn (bootstrap macOS).
+fn first_at_sir_call_name(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "@" of {
+            true -> i;
+            false -> first_at_sir_call_name(s, i + 1)
+        }
+    }
+}
+
+fn lookup_fn_type_by_name_and_module_sir(env: ListSymbolEntry, fn_name: string, required_module: string) -> string {
+    case env.is_nil of {
+        true -> "";
+        false -> case env.head.name == fn_name and env.head.is_effect_alias == false of {
+            true -> case len(required_module) == 0 of {
+                true -> case env.head.source_module == "" of {
+                    true -> env.head.type_name;
+                    false -> lookup_fn_type_by_name_and_module_sir(env.tail, fn_name, required_module)
+                };
+                false -> case env.head.source_module == required_module of {
+                    true -> env.head.type_name;
+                    false -> lookup_fn_type_by_name_and_module_sir(env.tail, fn_name, required_module)
+                }
+            };
+            false -> lookup_fn_type_by_name_and_module_sir(env.tail, fn_name, required_module)
+        }
+    }
+}
+
+fn lookup_function_type_for_call_sir(env: ListSymbolEntry, composite_name: string) -> string {
+    at: int64 <- first_at_sir_call_name(composite_name, 0);
+    case at < 0 of {
+        true -> lookup_fn_type_by_name_and_module_sir(env, composite_name, "");
+        false -> lookup_fn_type_by_name_and_module_sir(env, substring(composite_name, at + 1, len(composite_name)), substring(composite_name, 0, at))
+    }
+}
+
+fn sir_type_text_is_function(type_text: string) -> bool {
+    case len(type_text) >= 3 and substring(type_text, 0, 3) == "fn(" of {
+        true -> true;
+        false -> case len(type_text) >= 2 and substring(type_text, 0, 1) == "(" of {
+            // Top-level `->` only: tuple types like `(atom, fn(...) -> ...)` must not match.
+            true -> sir_find_top_arrow_from(type_text, 1, 1) >= 0;
+            false -> false
+        }
+    }
+}
+
+fn sir_identifier_is_function(context: TypeContext, name: string) -> bool {
+    sir_type_text_is_function(lookup_function_type_for_call_sir(context.env, name))
+}
+
+fn user_call_first_arg_expected_type(context: TypeContext, callee_name: string, inferred: string) -> string {
+    case len(inferred) > 0 and type_checker_record_types@record_type_starts(inferred) of {
+        true -> inferred;
+        false -> do
+            func_type: string <- lookup_function_type_for_call_sir(context.env, callee_name);
+            case len(func_type) == 0 of {
+                true -> inferred;
+                false -> do
+                    first_ty: string <- first_formal_param_type_from_scheme(func_type);
+                    case len(first_ty) > 0 of {
+                        true -> first_ty;
+                        false -> inferred
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn user_call_expects_single_tuple_param(context: TypeContext, name: string) -> bool {
+    func_type: string <- lookup_function_type_for_call_sir(context.env, name);
+    case len(func_type) == 0 of {
+        true -> false;
+        false -> do
+            params_inner: string <- sir_params_inner_from_func_type(func_type);
+            case len(params_inner) < 2 of {
+                true -> false;
+                false -> case substring(params_inner, 0, 1) == "(" and substring(params_inner, len(params_inner) - 1, len(params_inner)) == ")" of {
+                    true -> tuple_contains_comma(substring(params_inner, 1, len(params_inner) - 1));
+                    false -> false
+                }
+            }
+        end
+    }
+}
+
+fn literal_type_for_expected(expected_type: string) -> string {
+    case expected_type of {
+        "" -> "int64";
+        "int32" -> "int32";
+        "int16" -> "int16";
+        "int8" -> "int8";
+        "uint64" -> "uint64";
+        "uint32" -> "uint32";
+        "uint16" -> "uint16";
+        "uint8" -> "uint8";
+        "float64" -> "float64";
+        "float32" -> "float32";
+        "float16" -> "float16";
+        "char" -> "char";
+        _: string -> case len(expected_type) >= 2 and substring(expected_type, 0, 1) == "(" of {
+            true -> literal_type_for_expected(tuple_first_element_type(expected_type));
+            false -> "int64"
+        }
+    }
+}
+
+fn build_collection_result_call_from_args(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    arg1: SIRTerm <- case in_body of {
+        true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "atom");
+        false -> expr_to_sir_with_expected(context, expr.inner, "atom")
+    };
+    collection_result_calls@build_collection_result_prim_from_sir(expr.name, arg1, expected_type)
+}
+
+fn build_collection_result_call(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    build_collection_result_call_from_args(context, expr, expected_type, false, "", "")
+}
+
+fn build_collection_result_call_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    build_collection_result_call_from_args(context, expr, expected_type, true, bound_name, bound_type)
+}
+
+fn build_checked_int64_call_from_args(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    arg1: SIRTerm <- case in_body of {
+        true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "int64");
+        false -> expr_to_sir_with_expected(context, expr.inner, "int64")
+    };
+    dummy: SIRTerm <- sir_ast@dummy_sir_term();
+    case checked_int64_calls@is_checked_int64_unary_builtin(expr.name) of {
+        true -> checked_int64_calls@build_checked_int64_prim_from_sir(expr.name, arg1, dummy, expected_type);
+        false -> do
+            arg2: SIRTerm <- case in_body of {
+                true -> expr_to_sir_in_let_body(context, region_call_second_arg(expr), bound_name, bound_type, "int64");
+                false -> expr_to_sir_with_expected(context, region_call_second_arg(expr), "int64")
+            };
+            checked_int64_calls@build_checked_int64_prim_from_sir(expr.name, arg1, arg2, expected_type)
+        end
+    }
+}
+
+fn build_checked_int64_call(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    build_checked_int64_call_from_args(context, expr, expected_type, false, "", "")
+}
+
+fn build_checked_int64_call_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    build_checked_int64_call_from_args(context, expr, expected_type, true, bound_name, bound_type)
+}
+
+fn buf_type_for_bounds(context: TypeContext, expr: Expr, call_name: string) -> string {
+    case call_name == "buf_load" or call_name == "read_buf" or call_name == "buf_store" or call_name == "write_buf" of {
+        true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+        false -> ""
+    }
+}
+
+fn build_ordering_identity_materialize(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    fn_expr: Expr <- expr.inner;
+    fn_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(fn_expr, context);
+    fn_sir: SIRTerm <- expr_to_sir_with_expected(context, fn_expr, fn_type);
+    env_sir: SIRTerm <- ordering_identity_calls@build_ordering_env_for_fn_operand(context, fn_expr);
+    ordering_identity_calls@build_ordering_identity_prim_from_sir("ordering_identity_materialize", fn_sir, env_sir, expected_type)
+}
+
+fn build_ordering_identity_materialize_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    fn_expr: Expr <- expr.inner;
+    fn_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(fn_expr, context);
+    fn_sir: SIRTerm <- expr_to_sir_in_let_body(context, fn_expr, bound_name, bound_type, fn_type);
+    env_sir: SIRTerm <- ordering_identity_calls@build_ordering_env_for_fn_operand(context, fn_expr);
+    ordering_identity_calls@build_ordering_identity_prim_from_sir("ordering_identity_materialize", fn_sir, env_sir, expected_type)
+}
+
+fn build_ordering_identity_same_from_args(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    arg1: SIRTerm <- case in_body of {
+        true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "int64");
+        false -> expr_to_sir_with_expected(context, expr.inner, "int64")
+    };
+    arg2: SIRTerm <- case in_body of {
+        true -> expr_to_sir_in_let_body(context, region_call_second_arg(expr), bound_name, bound_type, "int64");
+        false -> expr_to_sir_with_expected(context, region_call_second_arg(expr), "int64")
+    };
+    ordering_identity_calls@build_ordering_identity_prim_from_sir("ordering_identity_same", arg1, arg2, expected_type)
+}
+
+fn build_ordering_identity_bundle_make_from_args(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    arg1: SIRTerm <- case in_body of {
+        true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "int64");
+        false -> expr_to_sir_with_expected(context, expr.inner, "int64")
+    };
+    arg2: SIRTerm <- case in_body of {
+        true -> expr_to_sir_in_let_body(context, region_call_second_arg(expr), bound_name, bound_type, "atom");
+        false -> expr_to_sir_with_expected(context, region_call_second_arg(expr), "atom")
+    };
+    ordering_identity_calls@build_ordering_identity_prim_from_sir("ordering_identity_bundle_make", arg1, arg2, expected_type)
+}
+
+fn build_ordering_identity_call(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    case expr.name of {
+        "ordering_identity_fresh_env" -> ordering_identity_calls@build_ordering_identity_prim_from_sir("ordering_identity_fresh_env", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term(), expected_type);
+        "ordering_identity_materialize" -> build_ordering_identity_materialize(context, expr, expected_type);
+        "ordering_identity_same" -> build_ordering_identity_same_from_args(context, expr, expected_type, false, "", "");
+        "ordering_identity_bundle_make" -> build_ordering_identity_bundle_make_from_args(context, expr, expected_type, false, "", "");
+        _: string -> sir_ast@dummy_sir_term()
+    }
+}
+
+fn build_ordering_identity_call_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    case expr.name of {
+        "ordering_identity_fresh_env" -> ordering_identity_calls@build_ordering_identity_prim_from_sir("ordering_identity_fresh_env", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term(), expected_type);
+        "ordering_identity_materialize" -> build_ordering_identity_materialize_in_body(context, expr, bound_name, bound_type, expected_type);
+        "ordering_identity_same" -> build_ordering_identity_same_from_args(context, expr, expected_type, true, bound_name, bound_type);
+        "ordering_identity_bundle_make" -> build_ordering_identity_bundle_make_from_args(context, expr, expected_type, true, bound_name, bound_type);
+        _: string -> sir_ast@dummy_sir_term()
+    }
+}
+
+// Sequence block (kind 11): lower sequence ... produces pure expr end to SIR let chain.
+// Body (inner) = chain of let/tuple_decompose or dummy if empty. One let per step, pure expr as innermost.
+// Emits only standard SIR terms (let, var, const, call, prim, case); no sequence/produces/pure in SIR.
+fn lower_sequence_block_with_expected(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    lower_sequence_body_to_lets(context, expr.inner, expr.right_expr, expected_type, false, "", "")
+}
+
+fn lower_sequence_block_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    lower_sequence_body_to_lets(context, expr.inner, expr.right_expr, expected_type, true, bound_name, bound_type)
+}
+
+fn lower_sequence_body_to_lets(context: TypeContext, body_expr: Expr, result_expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    case body_expr.kind == -1 of {
+        true -> case in_body of {
+            true -> expr_to_sir_in_let_body(context, result_expr, bound_name, bound_type, expected_type);
+            false -> expr_to_sir_with_expected(context, result_expr, expected_type)
+        };
+        false -> case body_expr.kind == 6 of {
+            true -> do
+                rhs: SIRTerm <- case in_body of {
+                    true -> expr_to_sir_in_let_body(context, body_expr.inner, bound_name, bound_type, body_expr.value);
+                    false -> expr_to_sir_with_expected(context, body_expr.inner, body_expr.value)
+                };
+                case collection_constructor_calls@is_collection_constructor_let(body_expr.value, body_expr.inner) of {
+                    true -> do
+                        bind_context: TypeContext <- type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, body_expr.name, body_expr.value, parser_ast@empty_effect_name_list(), ""));
+                        inner_body: SIRTerm <- lower_sequence_body_to_lets(bind_context, body_expr.right_expr, result_expr, expected_type, true, body_expr.name, body_expr.value);
+                        collection_constructor_calls@build_collection_constructor_lets(bind_context, body_expr.name, body_expr.value, body_expr.inner, rhs, inner_body)
+                    end;
+                    false -> do
+                        bind_context: TypeContext <- ordering_identity_calls@prepare_fn_binding_context(context, body_expr.name, body_expr.value, body_expr.inner);
+                        inner_body: SIRTerm <- lower_sequence_body_to_lets(bind_context, body_expr.right_expr, result_expr, expected_type, true, body_expr.name, body_expr.value);
+                        ordering_identity_calls@build_fn_binding_lets(body_expr.name, body_expr.value, body_expr.inner, rhs, inner_body)
+                    end
+                }
+            end;
+            false -> case body_expr.kind == 10 of {
+                true -> do
+                    rhs_type_infer: string <- sir_tuple_decompose_rhs_type(body_expr, context);
+                    rhs_type: string <- case len(rhs_type_infer) < 2 or substring(rhs_type_infer, 0, 1) != "(" of {
+                        true -> type_checker_tuple_decompose_helpers@build_pattern_type_from_bindings(body_expr.pattern_bindings);
+                        false -> rhs_type_infer
+                    };
+                    case len(rhs_type) < 2 or substring(rhs_type, 0, 1) != "(" of {
+                        true -> sir_ast@dummy_sir_term();
+                        false -> do
+                            filled_bindings: ListTupleDecomposeBinding <- tuple_decompose@tuple_decompose_filled_bindings(body_expr, rhs_type);
+                            rhs_term: SIRTerm <- case in_body of {
+                                true -> expr_to_sir_in_let_body(context, body_expr.inner, bound_name, bound_type, rhs_type);
+                                false -> expr_to_sir_with_expected(context, body_expr.inner, rhs_type)
+                            };
+                            extended_context: TypeContext <- add_bindings_to_context(context, filled_bindings);
+                            body: SIRTerm <- lower_sequence_body_to_lets(extended_context, body_expr.right_expr, result_expr, expected_type, true, "", "");
+                            decompose_lets: SIRTerm <- tuple_decompose@build_decompose_lets(rhs_term, filled_bindings, body, context, rhs_type);
+                            decompose_lets
+                        end
+                    }
+                end;
+                false -> do
+                    rhs: SIRTerm <- case in_body of {
+                        true -> expr_to_sir_in_let_body(context, body_expr, bound_name, bound_type, expected_type);
+                        false -> expr_to_sir_with_expected(context, body_expr, expected_type)
+                    };
+                    result: SIRTerm <- case in_body of {
+                        true -> expr_to_sir_in_let_body(context, result_expr, bound_name, bound_type, expected_type);
+                        false -> expr_to_sir_with_expected(context, result_expr, expected_type)
+                    };
+                    SIRTerm { kind: 2, type_name: types@type_name_to_sir(expected_type), value: "", name: "%_", inner: rhs, right_expr: result }
+                end
+            }
+        }
+    }
+}
+
+// Convert Expr to SIRTerm when inside a let body. Uses bound_name/bound_type for identifiers.
+// expected_type: function return type for body expressions.
+fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    do
+    ek_rel: int64 <- expr.kind - 13;
+    case ek_rel == 0 of {
+        true -> case_expr_to_sir(context, expr, expected_type, bound_name, bound_type, true);
+        false -> case expr.kind of {
+        0 -> literals@expr_to_sir_with_type(context, expr, literal_type_for_expected(expected_type));
+        1 -> case (len(expected_type) >= 2 and substring(expected_type, 0, 2) == "fn")
+            or sir_identifier_is_function(context, expr.name) of {
+            true -> SIRTerm {
+                kind: 0,
+                type_name: "fn_ptr",
+                value: expr.name,
+                name: "",
+                inner: sir_ast@dummy_sir_term(),
+                right_expr: sir_ast@dummy_sir_term()
+            };
+            false -> identifiers@expr_to_sir_with_bound(context, expr, bound_name, bound_type)
+        };
+        2 -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expected_type);
+        5 -> case expr.value == ":none" and type_checker_recursive_tuples@is_ref_optional_type(expected_type) of {
+            true -> SIRTerm {
+                kind: 0,
+                type_name: "ref_none",
+                value: "0",
+                name: "",
+                inner: sir_ast@dummy_sir_term(),
+                right_expr: sir_ast@dummy_sir_term()
+            };
+            false -> atoms@expr_to_sir(context, expr)
+        };
+        7 -> boolean_terms@expr_to_sir(context, expr);
+        8 -> string_literals@expr_to_sir(context, expr);
+        9 -> expr_to_sir_tuple_inline(context, expr, expected_type);
+        10 -> expr_to_sir_tuple_decompose_in_body(context, expr, bound_name, bound_type, expected_type);
+        11 -> lower_sequence_block_in_body(context, expr, bound_name, bound_type, expected_type);
+        20 -> case len(expr.value) > 0 of {
+            true -> expr_list_literal_from_root(context, expr, true, bound_name, bound_type);
+            false -> expr_list_literal_from_expected_type(context, expr, expected_type, true, bound_name, bound_type)
+        };
+        21 -> lower_struct_literal_expr(context, expr, expected_type, true, bound_name, bound_type);
+        22 -> lower_field_access_expr(context, expr, true, bound_name, bound_type);
+        6 -> do
+            case collection_constructor_calls@is_collection_constructor_let(expr.value, expr.inner) of {
+                true -> do
+                    rhs: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expr.value);
+                    bind_type: string <- types@type_name_to_sir(expr.value);
+                    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, expr.value, parser_ast@empty_effect_name_list(), "");
+                    new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
+                    body: SIRTerm <- expr_to_sir_in_let_body(new_context, expr.right_expr, expr.name, expr.value, expected_type);
+                    collection_constructor_calls@build_collection_constructor_lets(new_context, expr.name, expr.value, expr.inner, rhs, body)
+                end;
+                false -> do
+                    rhs: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expr.value);
+                    bind_type: string <- types@type_name_to_sir(expr.value);
+                    prefixed: string <- concat("%", expr.name);
+                    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, expr.value, parser_ast@empty_effect_name_list(), "");
+                    new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
+                    body: SIRTerm <- expr_to_sir_in_let_body(new_context, expr.right_expr, expr.name, expr.value, expected_type);
+                    SIRTerm { kind: 2, type_name: bind_type, value: "", name: prefixed, inner: rhs, right_expr: body }
+                end
+            }
+        end;
+        3 -> do
+            operand_type: string <- type_checker_tuple_decompose_helpers@infer_binop_operand_type_for_sir(expr, context, expected_type);
+            right_operand_type: string <- case is_shift_op_lexeme(expr.value) of { true -> "int64"; false -> operand_type };
+            left: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, operand_type);
+            right: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, right_operand_type);
+            build_prim_for_type(expr.value, left, right, operand_type)
+        end;
+        4 -> do
+            call_base: string <- type_checker_core@user_call_base_function_name(expr.name);
+            case is_float_special_const_name(call_base) of {
+                true -> build_float_special_const(call_base);
+                false -> case is_float_predicate_name(call_base) of {
+                    true -> do
+                        arg_fp: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, float_predicate_arg_type(call_base));
+                        build_float_predicate_from_sir(call_base, arg_fp)
+                    end;
+                    false -> case call_base == "spawn_registered_supervisor" of {
+                true -> lower_spawn_registered_supervisor_expr(context, expr, true, bound_name, bound_type);
+                false -> case call_base == "call_supervisor" of {
+                    true -> lower_call_supervisor_expr(context, expr, true, bound_name, bound_type);
+                    false -> case checked_int64_calls@is_checked_int64_builtin(expr.name) of {
+                true -> build_checked_int64_call_in_body(context, expr, bound_name, bound_type, expected_type);
+                false -> case collection_result_calls@is_collection_result_builtin(expr.name) of {
+                true -> build_collection_result_call_in_body(context, expr, bound_name, bound_type, expected_type);
+                false -> case ordering_identity_calls@is_ordering_identity_builtin(expr.name) of {
+                true -> build_ordering_identity_call_in_body(context, expr, bound_name, bound_type, expected_type);
+                false -> case memory_region_calls@is_region_builtin(expr.name) of {
+                true -> build_region_prim_in_body(context, expr, bound_name, bound_type, expected_type);
+                false -> case actor_calls@is_actor_sir_builtin(expr.name) of {
+                    true -> lower_actor_builtin_expr(context, expr, expected_type, true, bound_name, bound_type);
+                    false -> case list_terms@is_list_primitive_name(expr.name) of {
+                    true -> build_list_primitive_from_expr(context, expr, expected_type, true, bound_name, bound_type);
+                    false -> case expr.name == "append_file" of {
+                    true -> do
+                        arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "string");
+                        arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "string");
+                        string_calls@build_append_file_from_sir(arg1, arg2)
+                    end;
+                    false -> case expr.name == "concatenate" of {
+                    true -> do
+                        arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "string");
+                        arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "string");
+                        string_calls@build_concatenate_from_sir(arg1, arg2)
+                    end;
+                    false -> case expr.name == "substring" of {
+                        true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                        true -> do
+                            arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "string");
+                            arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "int64");
+                            arg3: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.right_expr.inner, bound_name, bound_type, "int64");
+                            string_calls@build_substring_from_sir(arg1, arg2, arg3)
+                        end;
+                            false -> sir_ast@dummy_sir_term();
+                        };
+                        false -> case expr.name == "substring_until_char" of {
+                            true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                                true -> do
+                                    arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "string");
+                                    arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "int64");
+                                    arg3: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.right_expr.inner, bound_name, bound_type, "char");
+                                    string_calls@build_substring_until_char_from_sir(arg1, arg2, arg3)
+                                end;
+                                false -> sir_ast@dummy_sir_term();
+                            };
+                            false -> case call_base == "bnot" of {
+                                true -> do
+                                    arg: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "uint64");
+                                    build_bnot_from_sir(arg)
+                                end;
+                                false -> case negate_builtins@is_negate_builtin(expr.name) of {
+                                true -> do
+                                    arg_t: string <- negate_builtins@negate_arg_type(expr.name);
+                                    arg: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_t);
+                                    negate_builtins@build_negate_from_sir(expr.name, arg)
+                                end;
+                                false -> case is_single_arg_builtin(expr.name) of {
+                                    true -> do
+                                        arg: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_expected_type(expr.name, expected_type));
+                                        build_single_arg_call(context, expr, arg);
+                                    end;
+                                    false -> build_user_call_from_expr_in_body(context, expr, bound_name, bound_type, expected_type)
+                                };
+                            }
+                            }
+                        }
+                    }
+                }
+                }
+                }
+                    }
+                }
+                }
+                }
+                }
+            }
+                }
+            }
+                }
+        end;
+        19 -> if_expr_to_sir(context, expr, expected_type, bound_name, bound_type, true);
+        _: int64 -> sir_ast@dummy_sir_term();
+        }
+    }
+    end
+}
+
+fn build_single_arg_call(context: TypeContext, expr: Expr, arg: SIRTerm) -> SIRTerm {
+    case expr.name == "atom_bits" of {
+        true -> atoms@build_atom_bits_from_sir(expr.name, arg);
+        false -> case expr.name == "actor_ref_bits" of {
+            true -> atoms@build_actor_ref_bits_from_sir(expr.name, arg);
+            false -> case expr.name == "actor_ref_of_word" of {
+                true -> atoms@build_actor_ref_of_word_from_sir(expr.name, arg);
+                false -> case expr.name == "print_atom" of {
+                    true -> atoms@build_print_atom_from_sir(expr.name, arg);
+                    false -> case expr.name == "print_int32" of {
+                        true -> int32_calls@build_print_int32_from_sir(expr.name, arg);
+                        false -> case expr.name == "print_uint32" of {
+                            true -> int32_calls@build_print_int32_from_sir(expr.name, arg);
+                            false -> case expr.name == "print_int16" of {
+                                true -> int16_calls@build_print_int16_from_sir(expr.name, arg);
+                                false -> case expr.name == "print_uint16" of {
+                                    true -> int16_calls@build_print_int16_from_sir(expr.name, arg);
+                                    false -> case expr.name == "print_int8" of {
+                                        true -> int8_calls@build_print_int8_from_sir(expr.name, arg);
+                                        false -> case expr.name == "print_uint8" of {
+                                            true -> int8_calls@build_print_int8_from_sir(expr.name, arg);
+                                            false -> case expr.name == "print_float32" or expr.name == "print_float16" of {
+                                                true -> float32_calls@build_print_float32_from_sir(expr.name, arg);
+                                                false -> case expr.name == "print_string" of {
+                                                    true -> string_calls@build_print_string_from_sir(expr.name, arg);
+                                                    false -> case expr.name == "println" of {
+                                                        true -> string_calls@build_println_from_sir(expr.name, arg);
+                                                        false -> case expr.name == "print_string_stderr" of {
+                                                            true -> string_calls@build_print_string_stderr_from_sir(expr.name, arg);
+                                                            false -> case expr.name == "println_stderr" of {
+                                                                true -> string_calls@build_println_stderr_from_sir(expr.name, arg);
+                                                                false -> case expr.name == "length_bytes" of {
+                                                                    true -> string_calls@build_length_bytes_from_sir(arg);
+                                                                    false -> case expr.name == "length_chars" of {
+                                                                        true -> string_calls@build_length_chars_from_sir(arg);
+                                                                        false -> case expr.name == "len" of {
+                                                                            true -> string_calls@build_length_bytes_from_sir(arg);
+                                                                            false -> case expr.name == "read_lines" of {
+                                                                            true -> string_calls@build_read_lines_from_sir(expr.name, arg);
+                                                                            false -> case expr.name == "file_exists" of {
+                                                                                true -> string_calls@build_file_exists_from_sir(expr.name, arg);
+                                                                                false -> case expr.name == "delete_file" of {
+                                                                                    true -> string_calls@build_delete_file_from_sir(expr.name, arg);
+                                                                                    false -> int64_calls@build_call_from_sir(expr.name, arg)
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+}
+
+fn build_region_prim_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    case expr.name == "fresh_lifetime" of {
+        true -> build_region_prim_fresh_lifetime(expr.name, expected_type);
+        false -> case expr.name == "alloc_region" or expr.name == "read_ref" or expr.name == "canonical_arena_lookup" of {
+            true -> build_region_prim_in_body_1arg(context, expr, bound_name, bound_type, expected_type);
+            false -> case expr.name == "alloc_ref" or expr.name == "alloc_rec" or expr.name == "alloc_buf" or expr.name == "buf_load" or expr.name == "read_buf" or expr.name == "write_ref" or expr.name == "canonical_arena_same" or expr.name == "ref_eq" or expr.name == "ref_in_region" of {
+                true -> build_region_prim_in_body_2arg(context, expr, bound_name, bound_type, expected_type);
+                false -> case expr.name == "buf_store" or expr.name == "write_buf" of {
+                    true -> build_region_prim_in_body_buf_store(context, expr, bound_name, bound_type, expected_type);
+                    false -> sir_ast@dummy_sir_term()
+                }
+            }
+        }
+    }
+}
+
+fn build_region_prim_fresh_lifetime(call_name: string, expected_type: string) -> SIRTerm {
+    memory_region_calls@build_region_prim_from_sir(call_name, sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term(), expected_type, "")
+}
+
+fn build_region_prim_in_body_1arg(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_type_for_region_prim(expr.name, 0, expected_type));
+    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, sir_ast@dummy_sir_term(), expected_type, "")
+}
+
+// Parser represents f(a,b) as call(inner=a, right=pair("", inner=b, right=...)); see extract_call_rest.
+fn region_call_second_arg(expr: Expr) -> Expr {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> expr.right_expr.inner;
+        false -> expr.right_expr
+    }
+}
+
+fn build_region_prim_in_body_2arg(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_type_for_region_prim_inferred(expr.name, 0, expected_type, expr, context));
+    arg2: SIRTerm <- expr_to_sir_in_let_body(context, region_call_second_arg(expr), bound_name, bound_type, arg_type_for_region_prim_inferred(expr.name, 1, expected_type, expr, context));
+    bounds: string <- buf_type_for_bounds(context, expr, expr.name);
+    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type, bounds)
+}
+
+// write_buf(buf, idx, val): after first arg, parser builds pair(idx, pair(val, dummy)).
+fn buf_store_value_expr(expr: Expr) -> Expr {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> case expr.right_expr.right_expr.kind == 4 and expr.right_expr.right_expr.name == "" of {
+            true -> expr.right_expr.right_expr.inner;
+            false -> expr.right_expr.right_expr
+        };
+        false -> expr.right_expr
+    }
+}
+
+fn build_region_prim_in_body_buf_store(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_type_for_region_prim_inferred(expr.name, 0, expected_type, expr, context));
+    arg2: SIRTerm <- build_buf_store_arg2_in_body(context, expr, bound_name, bound_type, expected_type);
+    bounds: string <- buf_type_for_bounds(context, expr, expr.name);
+    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type, bounds)
+}
+
+fn build_buf_store_arg2_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> do
+            idx: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "int64");
+            val_type: string <- arg_type_for_region_prim_inferred(expr.name, 2, expected_type, expr, context);
+            val: SIRTerm <- expr_to_sir_in_let_body(context, buf_store_value_expr(expr), bound_name, bound_type, val_type);
+            sir_type: string <- types@type_name_to_sir(val_type);
+            SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: idx, right_expr: val }
+        end;
+        false -> sir_ast@dummy_sir_term()
+    }
+}
+
+fn build_region_prim(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    case expr.name == "fresh_lifetime" of {
+        true -> build_region_prim_fresh_lifetime(expr.name, expected_type);
+        false -> case expr.name == "alloc_region" or expr.name == "read_ref" or expr.name == "canonical_arena_lookup" of {
+            true -> build_region_prim_1arg(context, expr, expected_type);
+            false -> case expr.name == "alloc_ref" or expr.name == "alloc_rec" or expr.name == "alloc_buf" or expr.name == "buf_load" or expr.name == "read_buf" or expr.name == "write_ref" or expr.name == "canonical_arena_same" or expr.name == "ref_eq" or expr.name == "ref_in_region" of {
+                true -> build_region_prim_2arg(context, expr, expected_type);
+                false -> case expr.name == "buf_store" or expr.name == "write_buf" of {
+                    true -> build_region_prim_buf_store(context, expr, expected_type);
+                    false -> sir_ast@dummy_sir_term()
+                }
+            }
+        }
+    }
+}
+
+fn build_region_prim_1arg(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type_for_region_prim(expr.name, 0, expected_type));
+    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, sir_ast@dummy_sir_term(), expected_type, "")
+}
+
+fn build_region_prim_2arg(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type_for_region_prim_inferred(expr.name, 0, expected_type, expr, context));
+    arg2: SIRTerm <- expr_to_sir_with_expected(context, region_call_second_arg(expr), arg_type_for_region_prim_inferred(expr.name, 1, expected_type, expr, context));
+    bounds: string <- buf_type_for_bounds(context, expr, expr.name);
+    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type, bounds)
+}
+
+fn build_region_prim_buf_store(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type_for_region_prim_inferred(expr.name, 0, expected_type, expr, context));
+    arg2: SIRTerm <- build_buf_store_arg2(context, expr, expected_type);
+    bounds: string <- buf_type_for_bounds(context, expr, expr.name);
+    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type, bounds)
+}
+
+fn build_buf_store_arg2(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> do
+            idx: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "int64");
+            val_type: string <- arg_type_for_region_prim_inferred(expr.name, 2, expected_type, expr, context);
+            val: SIRTerm <- expr_to_sir_with_expected(context, buf_store_value_expr(expr), val_type);
+            sir_type: string <- types@type_name_to_sir(val_type);
+            SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: idx, right_expr: val }
+        end;
+        false -> sir_ast@dummy_sir_term()
+    }
+}
+
+fn arg_type_for_region_prim(call_name: string, arg_idx: int64, expected_type: string) -> string {
+    case call_name of {
+        "alloc_region" -> "space";
+        "alloc_ref" -> case arg_idx of { 0 -> type_checker_memory_regions@ref_type_to_region_type(expected_type); 1 -> type_checker_memory_regions@extract_element_type_from_ref(expected_type); _: int64 -> expected_type };
+        "alloc_rec" -> case arg_idx of { 0 -> type_checker_memory_regions@ref_type_to_region_type(expected_type); 1 -> type_checker_memory_regions@extract_element_type_from_ref(expected_type); _: int64 -> expected_type };
+        "read_ref" -> expected_type;
+        "write_ref" -> case arg_idx of { 0 -> "ref(R, normal, int64)"; 1 -> expected_type; _: int64 -> "int64" };
+        "alloc_buf" -> case arg_idx of { 0 -> type_checker_memory_regions@buf_type_to_region_type(expected_type); 1 -> "int64"; _: int64 -> "int64" };
+        "buf_load" -> case arg_idx of { 0 -> expected_type; 1 -> "int64"; _: int64 -> "int64" };
+        "read_buf" -> case arg_idx of { 0 -> expected_type; 1 -> "int64"; _: int64 -> "int64" };
+        "buf_store" -> case arg_idx of { 0 -> expected_type; 1 -> "int64"; 2 -> expected_type; _: int64 -> "int64" };
+        "write_buf" -> case arg_idx of { 0 -> expected_type; 1 -> "int64"; 2 -> expected_type; _: int64 -> "int64" };
+        "fresh_lifetime" -> "lifetime";
+        "canonical_arena_lookup" -> "int64";
+        "canonical_arena_same" -> "region(R, normal)";
+        "ref_eq" -> "ref(R, normal, int64)";
+        "ref_in_region" -> case arg_idx of { 0 -> "ref(R, normal, int64)"; 1 -> "region(R, normal)"; _: int64 -> expected_type };
+        _: string -> expected_type
+    }
+}
+
+// Arg type when inference from expr is needed (buf_load, read_buf, buf_store, write_buf)
+fn arg_type_for_region_prim_inferred(call_name: string, arg_idx: int64, expected_type: string, expr: Expr, context: TypeContext) -> string {
+    case call_name == "canonical_arena_same" of {
+        true -> case arg_idx of {
+            0 -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+            1 -> type_checker_tuple_decompose_helpers@infer_expr_type(region_call_second_arg(expr), context);
+            _: int64 -> "region(R, normal)"
+        };
+        false -> case call_name == "ref_eq" or call_name == "ref_in_region" of {
+            true -> case arg_idx of {
+                0 -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                1 -> type_checker_tuple_decompose_helpers@infer_expr_type(region_call_second_arg(expr), context);
+                _: int64 -> expected_type
+            };
+            false -> case call_name == "buf_load" or call_name == "read_buf" of {
+                true -> case arg_idx of { 0 -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context); 1 -> "int64"; _: int64 -> expected_type };
+                false -> case call_name == "buf_store" or call_name == "write_buf" of {
+                    true -> case arg_idx of {
+                        0 -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                        1 -> "int64";
+                        2 -> type_checker_memory_regions@extract_element_type_from_buf(type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context));
+                        _: int64 -> expected_type
+                    };
+                    false -> arg_type_for_region_prim(call_name, arg_idx, expected_type)
+                }
+            }
+        }
+    }
+}
+
+fn build_rest_chain_in_body(context: TypeContext, curried: Expr, bound_name: string, bound_type: string) -> SIRTerm {
+    case curried.kind == 4 and curried.name == "" of {
+        true -> do
+            arg_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(curried.inner, context);
+            arg: SIRTerm <- expr_to_sir_in_let_body(context, curried.inner, bound_name, bound_type, arg_type);
+            rest: SIRTerm <- build_rest_chain_in_body(context, curried.right_expr, bound_name, bound_type);
+            SIRTerm { kind: 6, type_name: "unit", value: "", name: "user_call_rest", inner: arg, right_expr: rest }
+        end;
+        false -> do
+            arg_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(curried, context);
+            expr_to_sir_in_let_body(context, curried, bound_name, bound_type, arg_type)
+        end
+    }
+}
+
+// Cross-module (spec §19, §3.3.2): module@function for imported calls, bare name for local.
+// If expr.name is already mangled by the qualified_call_mangler pass (e.g. "Shape@area__int32"),
+// that form is emitted verbatim so link-time resolution matches overload_mangle@sir_fn_link_name.
+fn user_call_callee_sir_name(context: TypeContext, composite: string) -> string {
+    (mod_part: string, fn_part: string) <- type_checker_core@split_module_qualified_call_name(composite);
+    case len(mod_part) > 0 of {
+        true -> concat(mod_part, concat("@", fn_part));
+        false -> do
+            src: string <- type_checker_core@lookup_symbol_source_module(context.env, fn_part);
+            case len(src) > 0 of {
+                true -> concat(src, concat("@", fn_part));
+                false -> user_calls@qual_name(fn_part)
+            }
+        end
+    }
+}
+
+fn call_params_tuple_for_sir(context: TypeContext, call_name: string) -> string {
+    func_type: string <- lookup_function_type_for_call_sir(context.env, call_name);
+    params: string <- sir_params_inner_from_func_type(func_type);
+    case len(params) == 0 of {
+        true -> "";
+        false -> concat("(", concat(params, ")"))
+    }
+}
+
+fn expected_or_inferred_call_arg_type(context: TypeContext, expr: Expr, formal_type: string) -> string {
+    inferred: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr, context);
+    case len(inferred) > 0 of {
+        true -> inferred;
+        // Bare function identifiers are the important non-inferable case:
+        // retain the signature formal so they lower as function addresses.
+        false -> formal_type
+    }
+}
+
+fn build_rest_chain_in_body_with_formals(
+    context: TypeContext,
+    curried: Expr,
+    formal_types: string,
+    bound_name: string,
+    bound_type: string
+) -> SIRTerm {
+    formal_tuple: string <- case len(formal_types) > 0 and substring(formal_types, 0, 1) == "(" of {
+        true -> formal_types;
+        false -> case len(formal_types) > 0 of {
+            true -> concat("(", concat(formal_types, ")"));
+            false -> ""
+        }
+    };
+    formal_first: string <- tuple_first_element_type(formal_tuple);
+    formal_rest: string <- tuple_rest_element_type(formal_tuple);
+    case curried.kind == 4 and curried.name == "" of {
+        true -> do
+            arg_type: string <- expected_or_inferred_call_arg_type(context, curried.inner, formal_first);
+            arg: SIRTerm <- expr_to_sir_in_let_body(context, curried.inner, bound_name, bound_type, arg_type);
+            rest: SIRTerm <- build_rest_chain_in_body_with_formals(context, curried.right_expr, formal_rest, bound_name, bound_type);
+            SIRTerm { kind: 6, type_name: "unit", value: "", name: "user_call_rest", inner: arg, right_expr: rest }
+        end;
+        false -> do
+            arg_type: string <- expected_or_inferred_call_arg_type(context, curried, formal_first);
+            expr_to_sir_in_let_body(context, curried, bound_name, bound_type, arg_type)
+        end
+    }
+}
+
+fn build_user_call_from_expr_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    callee: string <- user_call_callee_sir_name(context, expr.name);
+    case expr.inner.kind < 0 of {
+        true -> user_calls@build_user_call_0(callee, expected_type, recursion_terms@user_call_effect_value_fn(expr));
+        false -> case expr.right_expr.kind < 0 of {
+            true -> do
+                inferred1: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                arg1_type: string <- user_call_first_arg_expected_type(context, expr.name, inferred1);
+                arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg1_type);
+                user_calls@build_user_call_1(callee, arg1, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+            end;
+            false -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                true -> do
+                    formal_tuple: string <- call_params_tuple_for_sir(context, expr.name);
+                    formal_first: string <- tuple_first_element_type(formal_tuple);
+                    formal_rest: string <- tuple_rest_element_type(formal_tuple);
+                    arg1_type: string <- expected_or_inferred_call_arg_type(context, expr.inner, formal_first);
+                    arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg1_type);
+                    rest: SIRTerm <- build_rest_chain_in_body_with_formals(context, expr.right_expr, formal_rest, bound_name, bound_type);
+                    user_calls@build_user_call_with_rest(callee, arg1, rest, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                end;
+                false -> case user_call_expects_single_tuple_param(context, expr.name) of {
+                    true -> do
+                        func_type: string <- lookup_function_type_for_call_sir(context.env, expr.name);
+                        tuple_param: string <- sir_params_inner_from_func_type(func_type);
+                        first_type: string <- tuple_first_element_type(tuple_param);
+                        second_type: string <- tuple_rest_element_type(tuple_param);
+                        arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, first_type);
+                        arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, second_type);
+                        sir_type: string <- types@type_name_to_sir(tuple_param);
+                        tuple_arg: SIRTerm <- SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: arg1, right_expr: arg2 };
+                        user_calls@build_user_call_1(callee, tuple_arg, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                    end;
+                    false -> do
+                        arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                        arg2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr, context);
+                        arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg1_type);
+                        arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, arg2_type);
+                        user_calls@build_user_call_2(callee, arg1, arg2, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                    end
+                }
+            }
+        }
+    }
+}
+
+fn build_rest_chain(context: TypeContext, curried: Expr) -> SIRTerm {
+    case curried.kind == 4 and curried.name == "" of {
+        true -> do
+            arg_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(curried.inner, context);
+            arg: SIRTerm <- expr_to_sir_with_expected(context, curried.inner, arg_type);
+            rest: SIRTerm <- build_rest_chain(context, curried.right_expr);
+            SIRTerm { kind: 6, type_name: "unit", value: "", name: "user_call_rest", inner: arg, right_expr: rest }
+        end;
+        false -> do
+            arg_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(curried, context);
+            expr_to_sir_with_expected(context, curried, arg_type)
+        end
+    }
+}
+
+fn build_user_call_from_expr(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    callee: string <- user_call_callee_sir_name(context, expr.name);
+    case expr.inner.kind < 0 of {
+        true -> user_calls@build_user_call_0(callee, expected_type, recursion_terms@user_call_effect_value_fn(expr));
+        false -> case expr.right_expr.kind < 0 of {
+            true -> do
+                inferred1: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                arg1_type: string <- user_call_first_arg_expected_type(context, expr.name, inferred1);
+                arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
+                user_calls@build_user_call_1(callee, arg1, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+            end;
+            false -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                true -> do
+                    arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                    arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
+                    rest: SIRTerm <- build_rest_chain(context, expr.right_expr);
+                    user_calls@build_user_call_with_rest(callee, arg1, rest, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                end;
+                false -> case user_call_expects_single_tuple_param(context, expr.name) of {
+                    true -> do
+                        func_type: string <- lookup_function_type_for_call_sir(context.env, expr.name);
+                        tuple_param: string <- sir_params_inner_from_func_type(func_type);
+                        first_type: string <- tuple_first_element_type(tuple_param);
+                        second_type: string <- tuple_rest_element_type(tuple_param);
+                        arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, first_type);
+                        arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, second_type);
+                        sir_type: string <- types@type_name_to_sir(tuple_param);
+                        tuple_arg: SIRTerm <- SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: arg1, right_expr: arg2 };
+                        user_calls@build_user_call_1(callee, tuple_arg, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                    end;
+                    false -> do
+                        arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                        arg2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr, context);
+                        arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
+                        arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, arg2_type);
+                        user_calls@build_user_call_2(callee, arg1, arg2, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                    end
+                }
+            }
+        }
+    }
+}
+
+// True when the function body is a single Expr (kind 4) that lowers to a user call (not builtin).
+// Used to emit tail_call (kind 5) for phase 5 / p3 back-edge metadata on the root body only.
+fn root_body_is_tail_user_call(expr: Expr) -> bool {
+    case expr.kind == 4 of {
+        false -> false;
+        true -> case list_terms@is_list_primitive_name(expr.name) of {
+            true -> false;
+            false -> case memory_region_calls@is_region_builtin(expr.name) of {
+            true -> false;
+            false -> case actor_calls@is_actor_sir_builtin(expr.name) of {
+                true -> false;
+                false -> case expr.name == "append_file" of {
+                true -> false;
+                false -> case expr.name == "concatenate" of {
+                true -> false;
+                false -> case expr.name == "substring" of {
+                    true -> false;
+                    false -> case expr.name == "substring_until_char" of {
+                        true -> false;
+                        false -> case negate_builtins@is_negate_builtin(expr.name) of {
+                            true -> false;
+                            false -> case is_single_arg_builtin(expr.name) of {
+                                true -> false;
+                                false -> true
+                            }
+                        }
+                    }
+                }
+                }
+                }
+            }
+        }
+        }
+    }
+}
+
+fn build_user_call_from_expr_tail(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    callee: string <- user_call_callee_sir_name(context, expr.name);
+    case expr.inner.kind < 0 of {
+        true -> user_calls@build_tail_call_0(callee, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr));
+        false -> case expr.right_expr.kind < 0 of {
+            true -> do
+                inferred1: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                arg1_type: string <- user_call_first_arg_expected_type(context, expr.name, inferred1);
+                arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
+                user_calls@build_tail_call_1(callee, arg1, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
+            end;
+            false -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                true -> do
+                    inferred1: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                    arg1_type: string <- user_call_first_arg_expected_type(context, expr.name, inferred1);
+                    arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
+                    rest: SIRTerm <- build_rest_chain(context, expr.right_expr);
+                    user_calls@build_tail_call_with_rest(callee, arg1, rest, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
+                end;
+                false -> case user_call_expects_single_tuple_param(context, expr.name) of {
+                    true -> do
+                        func_type: string <- lookup_function_type_for_call_sir(context.env, expr.name);
+                        tuple_param: string <- sir_params_inner_from_func_type(func_type);
+                        first_type: string <- tuple_first_element_type(tuple_param);
+                        second_type: string <- tuple_rest_element_type(tuple_param);
+                        arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, first_type);
+                        arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, second_type);
+                        sir_type: string <- types@type_name_to_sir(tuple_param);
+                        tuple_arg: SIRTerm <- SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: arg1, right_expr: arg2 };
+                        user_calls@build_tail_call_1(callee, tuple_arg, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
+                    end;
+                    false -> do
+                        arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                        arg2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr, context);
+                        arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
+                        arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, arg2_type);
+                        user_calls@build_tail_call_2(callee, arg1, arg2, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
+                    end
+                }
+            }
+        }
+    }
+}
+
+fn expr_to_sir_function_body(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    case root_body_is_tail_user_call(expr) of {
+        true -> build_user_call_from_expr_tail(context, expr, expected_type);
+        false -> expr_to_sir_with_expected(context, expr, expected_type)
+    }
+}
+
+fn is_single_arg_builtin(call_name: string) -> bool {
+    call_name == "atom_bits" or call_name == "actor_ref_bits" or call_name == "actor_ref_of_word" or call_name == "print_atom" or call_name == "print_int32" or call_name == "print_uint32" or call_name == "print_int16" or call_name == "print_uint16" or call_name == "print_int8" or call_name == "print_uint8" or call_name == "print_float16" or call_name == "print_float32" or call_name == "print_string" or call_name == "println" or call_name == "print_string_stderr" or call_name == "println_stderr" or call_name == "length_bytes" or call_name == "length_chars" or call_name == "len" or call_name == "print_int64" or call_name == "print_uint64" or call_name == "print_bool" or call_name == "print_float64" or call_name == "read_lines" or call_name == "file_exists" or call_name == "delete_file"
+}
+
+fn arg_expected_type(call_name: string, expected_type: string) -> string {
+    case call_name of {
+        "atom_bits" -> "atom";
+        "actor_ref_bits" -> "actor_ref";
+        "actor_ref_of_word" -> "int64";
+        "concatenate" -> "string";
+        "substring" -> "string";
+        "substring_until_char" -> "string";
+        "print_string" -> "string";
+        "println" -> "string";
+        "print_string_stderr" -> "string";
+        "println_stderr" -> "string";
+        "length_bytes" -> "string";
+        "length_chars" -> "string";
+        "len" -> "string";
+        "read_lines" -> "string";
+        "file_exists" -> "string";
+        "delete_file" -> "string";
+        "append_file" -> "string";
+        "print_int32" -> "int32";
+        "print_uint32" -> "uint32";
+        "print_int16" -> "int16";
+        "print_uint16" -> "uint16";
+        "print_int8" -> "int8";
+        "print_uint8" -> "uint8";
+        "print_uint64" -> "uint64";
+        "print_float64" -> "float64";
+        "print_float16" -> "float16";
+        "print_float32" -> "float32";
+        _: string -> expected_type
+    }
+}
+
+fn build_prim_for_type(op_lexeme: string, left: SIRTerm, right: SIRTerm, expected_type: string) -> SIRTerm {
+    case expected_type of {
+        "int32" -> int32_binary_ops@build_prim_from_sir(op_lexeme, left, right);
+        "int16" -> int16_binary_ops@build_prim_from_sir(op_lexeme, left, right);
+        "int8" -> int8_binary_ops@build_prim_from_sir(op_lexeme, left, right);
+        "uint64" -> uint64_binary_ops@build_prim_from_sir(op_lexeme, left, right);
+        "uint32" -> uint32_binary_ops@build_prim_from_sir(op_lexeme, left, right);
+        "uint16" -> uint16_binary_ops@build_prim_from_sir(op_lexeme, left, right);
+        "uint8" -> uint8_binary_ops@build_prim_from_sir(op_lexeme, left, right);
+        "float64" -> float64_binary_ops@build_prim_from_sir(op_lexeme, left, right);
+        "float32" -> float32_binary_ops@build_prim_from_sir(op_lexeme, left, right);
+        "float16" -> float16_binary_ops@build_prim_from_sir(op_lexeme, left, right);
+        _: string -> int64_binary_ops@build_prim_from_sir(op_lexeme, left, right)
+    }
+}
+
+fn lower_list_literal_elems(context: TypeContext, expr: Expr, elem_t: string, list_t: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    case expr.kind == 20 of {
+        true -> case expr.inner.kind == -1 of {
+            true -> list_terms@build_list_nil(elem_t, list_t);
+            false -> do
+                head: SIRTerm <- case in_body of {
+                    true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, elem_t);
+                    false -> expr_to_sir_with_expected(context, expr.inner, elem_t)
+                };
+                tail: SIRTerm <- case expr.right_expr.kind == -1 of {
+                    true -> list_terms@build_list_nil(elem_t, list_t);
+                    false -> lower_list_literal_elems(context, expr.right_expr, elem_t, list_t, in_body, bound_name, bound_type)
+                };
+                list_terms@build_list_cons(head, tail, list_t)
+            end
+        };
+        false -> do
+            leaf_head: SIRTerm <- case in_body of {
+                true -> expr_to_sir_in_let_body(context, expr, bound_name, bound_type, elem_t);
+                false -> expr_to_sir_with_expected(context, expr, elem_t)
+            };
+            list_terms@build_list_cons(leaf_head, list_terms@build_list_nil(elem_t, list_t), list_t)
+        end
+    }
+}
+
+fn expr_list_literal_from_root(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    (ok: bool, elem: string, space: string) <- type_checker_lists@parse_list_type_params(expr.value);
+    case ok of {
+        false -> sir_ast@dummy_sir_term();
+        true -> do
+            lt: string <- type_checker_lists@format_list_type_from_parts(elem, space);
+            lower_list_literal_elems(context, expr, elem, lt, in_body, bound_name, bound_type)
+        end
+    }
+}
+
+fn expr_list_literal_from_expected_type(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    (ok: bool, elem: string, space: string) <- type_checker_lists@parse_list_type_params(expected_type);
+    case ok of {
+        false -> sir_ast@dummy_sir_term();
+        true -> do
+            lt: string <- type_checker_lists@format_list_type_from_parts(elem, space);
+            lower_list_literal_elems(context, expr, elem, lt, in_body, bound_name, bound_type)
+        end
+    }
+}
+
+// Kind 21: struct literal `{ f: e, ... }` -> nested prim record_make (sir_design_spec §7.6).
+fn lower_struct_literal_chain(context: TypeContext, expr: Expr, rt: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    case expr.kind != 21 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> do
+            ft: string <- type_checker_record_types@find_field_type_in_record(rt, expr.name);
+            case len(ft) == 0 of {
+                true -> sir_ast@dummy_sir_term();
+                false -> do
+                    val: SIRTerm <- case in_body of {
+                        true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, ft);
+                        false -> expr_to_sir_with_expected(context, expr.inner, ft)
+                    };
+                    sir_rt: string <- types@type_name_to_sir(rt);
+                    case struct_terms@is_last_struct_literal_node(expr) of {
+                        true -> struct_terms@build_record_make_layer(sir_rt, expr.name, val, sir_ast@dummy_sir_term());
+                        false -> do
+                            rest: SIRTerm <- lower_struct_literal_chain(context, expr.right_expr, rt, in_body, bound_name, bound_type);
+                            struct_terms@build_record_make_layer(sir_rt, expr.name, val, rest)
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn lower_struct_literal_expr(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    rt: string <- struct_terms@record_type_for_struct_literal(context, expr, expected_type);
+    case len(rt) == 0 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> case type_checker_record_types@record_type_starts(rt) of {
+            false -> sir_ast@dummy_sir_term();
+            true -> lower_struct_literal_chain(context, expr, rt, in_body, bound_name, bound_type)
+        }
+    }
+}
+
+// Kind 22: field access `base.field` -> prim record_proj.
+fn lower_field_access_expr(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    base_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+    ft: string <- type_checker_record_types@find_field_type_in_record(base_t, expr.name);
+    case len(ft) == 0 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> do
+            base_s: SIRTerm <- case in_body of {
+                true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, base_t);
+                false -> expr_to_sir_with_expected(context, expr.inner, base_t)
+            };
+            ft_sir: string <- types@type_name_to_sir(ft);
+            struct_terms@build_record_proj_prim(ft_sir, expr.name, base_s)
+        end
+    }
+}
+
+fn build_list_primitive_from_expr(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    (elem: string, space: string) <- type_checker_lists@parse_generic_ts(expr.value);
+    list_t: string <- type_checker_lists@format_list_type_from_parts(elem, space);
+    case expr.name == "empty" of {
+        true -> list_terms@build_list_nil(elem, list_t);
+        false -> case expr.name == "prepend" of {
+            true -> do
+                h: SIRTerm <- case in_body of {
+                    true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, elem);
+                    false -> expr_to_sir_with_expected(context, expr.inner, elem)
+                };
+                t: SIRTerm <- case in_body of {
+                    true -> expr_to_sir_in_let_body(context, region_call_second_arg(expr), bound_name, bound_type, list_t);
+                    false -> expr_to_sir_with_expected(context, region_call_second_arg(expr), list_t)
+                };
+                list_terms@build_list_cons(h, t, list_t)
+            end;
+            false -> case expr.name == "length" of {
+                true -> do
+                    a: SIRTerm <- case in_body of {
+                        true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, list_t);
+                        false -> expr_to_sir_with_expected(context, expr.inner, list_t)
+                    };
+                    list_terms@build_list_length_prim(a)
+                end;
+                false -> case expr.name == "remove_head" of {
+                    true -> do
+                        a: SIRTerm <- case in_body of {
+                            true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, list_t);
+                            false -> expr_to_sir_with_expected(context, expr.inner, list_t)
+                        };
+                        list_terms@build_list_remove_head_prim(a, list_t)
+                    end;
+                    false -> case expr.name == "head" of {
+                        true -> do
+                            a: SIRTerm <- case in_body of {
+                                true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, list_t);
+                                false -> expr_to_sir_with_expected(context, expr.inner, list_t)
+                            };
+                            list_terms@build_list_head_prim(a, elem)
+                        end;
+                        false -> sir_ast@dummy_sir_term()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Convert Expr to SIRTerm with expected type (for function body). Dispatches on kind.
+fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    do
+    ek_rel: int64 <- expr.kind - 13;
+    case ek_rel == 0 of {
+        true -> case_expr_to_sir(context, expr, expected_type, "", "", false);
+        false -> case expr.kind of {
+        0 -> literals@expr_to_sir_with_type(context, expr, literal_type_for_expected(expected_type));
+        1 -> case (len(expected_type) >= 2 and substring(expected_type, 0, 2) == "fn")
+            or sir_identifier_is_function(context, expr.name) of {
+            true -> SIRTerm { kind: 0, type_name: "fn_ptr", value: expr.name, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+            false -> identifiers@expr_to_sir(context, expr)
+        };
+        2 -> expr_to_sir_with_expected(context, expr.inner, expected_type);
+        5 -> case expr.value == ":none" and type_checker_recursive_tuples@is_ref_optional_type(expected_type) of {
+            true -> SIRTerm {
+                kind: 0,
+                type_name: "ref_none",
+                value: "0",
+                name: "",
+                inner: sir_ast@dummy_sir_term(),
+                right_expr: sir_ast@dummy_sir_term()
+            };
+            false -> atoms@expr_to_sir(context, expr)
+        };
+        7 -> boolean_terms@expr_to_sir(context, expr);
+        8 -> string_literals@expr_to_sir(context, expr);
+        9 -> expr_to_sir_tuple_inline(context, expr, expected_type);
+        10 -> expr_to_sir_tuple_decompose(context, expr, expected_type);
+        11 -> lower_sequence_block_with_expected(context, expr, expected_type);
+        20 -> case len(expr.value) > 0 of {
+            true -> expr_list_literal_from_root(context, expr, false, "", "");
+            false -> expr_list_literal_from_expected_type(context, expr, expected_type, false, "", "")
+        };
+        21 -> lower_struct_literal_expr(context, expr, expected_type, false, "", "");
+        22 -> lower_field_access_expr(context, expr, false, "", "");
+        6 -> do
+            case collection_constructor_calls@is_collection_constructor_let(expr.value, expr.inner) of {
+                true -> do
+                    rhs: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, expr.value);
+                    bind_context: TypeContext <- type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, expr.name, expr.value, parser_ast@empty_effect_name_list(), ""));
+                    body: SIRTerm <- expr_to_sir_in_let_body(bind_context, expr.right_expr, expr.name, expr.value, expected_type);
+                    collection_constructor_calls@build_collection_constructor_lets(bind_context, expr.name, expr.value, expr.inner, rhs, body)
+                end;
+                false -> do
+                    rhs: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, expr.value);
+                    bind_context: TypeContext <- ordering_identity_calls@prepare_fn_binding_context(context, expr.name, expr.value, expr.inner);
+                    body: SIRTerm <- expr_to_sir_in_let_body(bind_context, expr.right_expr, expr.name, expr.value, expected_type);
+                    ordering_identity_calls@build_fn_binding_lets(expr.name, expr.value, expr.inner, rhs, body)
+                end
+            }
+        end;
+        3 -> do
+            operand_type: string <- type_checker_tuple_decompose_helpers@infer_binop_operand_type_for_sir(expr, context, expected_type);
+            right_operand_type: string <- case is_shift_op_lexeme(expr.value) of { true -> "int64"; false -> operand_type };
+            left: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, operand_type);
+            right: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, right_operand_type);
+            build_prim_for_type(expr.value, left, right, operand_type)
+        end;
+        4 -> do
+            call_base: string <- type_checker_core@user_call_base_function_name(expr.name);
+            case is_float_special_const_name(call_base) of {
+                true -> build_float_special_const(call_base);
+                false -> case is_float_predicate_name(call_base) of {
+                    true -> do
+                        arg_fp: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, float_predicate_arg_type(call_base));
+                        build_float_predicate_from_sir(call_base, arg_fp)
+                    end;
+                    false -> case call_base == "spawn_registered_supervisor" of {
+                true -> lower_spawn_registered_supervisor_expr(context, expr, false, "", "");
+                false -> case call_base == "call_supervisor" of {
+                true -> lower_call_supervisor_expr(context, expr, false, "", "");
+                false -> case checked_int64_calls@is_checked_int64_builtin(expr.name) of {
+                true -> build_checked_int64_call(context, expr, expected_type);
+                false -> case collection_result_calls@is_collection_result_builtin(expr.name) of {
+                true -> build_collection_result_call(context, expr, expected_type);
+                false -> case ordering_identity_calls@is_ordering_identity_builtin(expr.name) of {
+                true -> build_ordering_identity_call(context, expr, expected_type);
+                false -> case memory_region_calls@is_region_builtin(expr.name) of {
+                true -> build_region_prim(context, expr, expected_type);
+                false -> case actor_calls@is_actor_sir_builtin(expr.name) of {
+                    true -> lower_actor_builtin_expr(context, expr, expected_type, false, "", "");
+                    false -> case list_terms@is_list_primitive_name(expr.name) of {
+                    true -> build_list_primitive_from_expr(context, expr, expected_type, false, "", "");
+                    false -> case expr.name == "append_file" of {
+                    true -> do
+                        arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
+                        arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "string");
+                        string_calls@build_append_file_from_sir(arg1, arg2)
+                    end;
+                    false -> case expr.name == "concatenate" of {
+                    true -> do
+                        arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
+                        arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "string");
+                        string_calls@build_concatenate_from_sir(arg1, arg2)
+                    end;
+                    false -> case expr.name == "substring" of {
+                        true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                        true -> do
+                            arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
+                            arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "int64");
+                            arg3: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr.inner, "int64");
+                            string_calls@build_substring_from_sir(arg1, arg2, arg3)
+                        end;
+                            false -> sir_ast@dummy_sir_term();
+                        };
+                        false -> case expr.name == "substring_until_char" of {
+                            true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                                true -> do
+                                    arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
+                                    arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "int64");
+                                    arg3: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr.inner, "char");
+                                    string_calls@build_substring_until_char_from_sir(arg1, arg2, arg3)
+                                end;
+                                false -> sir_ast@dummy_sir_term();
+                            };
+                            false -> case call_base == "bnot" of {
+                                true -> do
+                                    arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "uint64");
+                                    build_bnot_from_sir(arg)
+                                end;
+                                false -> case negate_builtins@is_negate_builtin(expr.name) of {
+                                true -> do
+                                    arg_t: string <- negate_builtins@negate_arg_type(expr.name);
+                                    arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_t);
+                                    negate_builtins@build_negate_from_sir(expr.name, arg)
+                                end;
+                                false -> case is_single_arg_builtin(expr.name) of {
+                                    true -> do
+                                        arg_type: string <- arg_expected_type(expr.name, expected_type);
+                                        arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type);
+                                        build_single_arg_call(context, expr, arg);
+                                    end;
+                                    false -> build_user_call_from_expr(context, expr, expected_type)
+                                };
+                            }
+                            }
+                        }
+                    }
+                }
+                }
+                }
+                    }
+                }
+                }
+                }
+                }
+            }
+                }
+            }
+                }
+        end;
+        19 -> if_expr_to_sir(context, expr, expected_type, "", "", false);
+        _: int64 -> sir_ast@dummy_sir_term();
+        }
+    }
+    end
+}
+
+// Convert Expr to SIRTerm. Dispatches on kind. Uses int64 as default for literals/binary ops.
+// Kind 0: integer literal -> const(type, value)
+// Kind 1: identifier -> var(%name)
+// Kind 2: parenthesized -> recurse on inner
+// Kind 3: binary op -> prim(add/sub/etc)
+// Kind 4: call -> call(callee, arg)
+// Kind 5: atom literal -> const(atom, value)
+// Kind 6: let binding -> let(name, type, rhs, body)
+fn expr_to_sir(context: TypeContext, expr: Expr) -> SIRTerm {
+    expr_to_sir_with_expected(context, expr, "int64")
+}
+
+// --- case expression (Expr kind 13) -> SIR kind 3; branch list kind 7; branch kind 8 ---
+
+fn extend_context_for_bind(ctx: TypeContext, name: string, ast_type: string) -> TypeContext {
+    new_env: ListSymbolEntry <- type_checker_core@add_symbol(ctx.env, name, ast_type, parser_ast@empty_effect_name_list(), "");
+    type_checker_core@type_context_with_env(ctx, new_env)
+}
+
+fn trim_leading_ws(s: string) -> string {
+    case len(s) == 0 of {
+        true -> "";
+        false -> case substring(s, 0, 1) == " " of {
+            true -> trim_leading_ws(substring(s, 1, len(s)));
+            false -> s
+        }
+    }
+}
+
+fn trim_trailing_ws(s: string) -> string {
+    case len(s) == 0 of {
+        true -> "";
+        false -> case substring(s, len(s) - 1, len(s)) == " " of {
+            true -> trim_trailing_ws(substring(s, 0, len(s) - 1));
+            false -> s
+        }
+    }
+}
+
+fn trim_pat(s: string) -> string {
+    trim_trailing_ws(trim_leading_ws(s))
+}
+
+fn find_colon_from(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == ":" of {
+            true -> i;
+            false -> find_colon_from(s, i + 1)
+        }
+    }
+}
+
+// Atom literal pattern :name (no ':' inside suffix); aligns with type_checker case_try_atom_literal_pattern.
+fn is_atom_literal_pat(raw: string) -> bool {
+    case substring(raw, 0, 1) == ":" of {
+        false -> false;
+        true -> do
+            atom_rest: string <- substring(raw, 1, len(raw));
+            case len(atom_rest) == 0 of {
+                true -> false;
+                false -> find_colon_from(atom_rest, 0) < 0
+            }
+        end
+    }
+}
+
+fn is_digit_char(c: string) -> bool {
+    c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9"
+}
+
+fn all_digits_from(s: string, i: int64) -> bool {
+    case i >= len(s) of {
+        true -> len(s) > 0;
+        false -> case is_digit_char(substring(s, i, i + 1)) of {
+            true -> all_digits_from(s, i + 1);
+            false -> false
+        }
+    }
+}
+
+fn is_int_literal_pat(t: string) -> bool {
+    case len(t) == 0 of {
+        true -> false;
+        false -> case substring(t, 0, 1) == "-" of {
+            true -> case len(t) > 1 of { true -> all_digits_from(t, 1); false -> false };
+            false -> all_digits_from(t, 0)
+        }
+    }
+}
+
+fn make_case_branch(pkind: string, ptype: string, pname: string, ctx_use: TypeContext, branch: Expr, expected_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    guard_sir: SIRTerm <- case branch.inner.kind < 0 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> case in_body of {
+            true -> expr_to_sir_in_let_body(ctx_use, branch.inner, bound_name, bound_type, "boolean");
+            false -> expr_to_sir_with_expected(ctx_use, branch.inner, "boolean")
+        }
+    };
+    body_sir: SIRTerm <- case in_body of {
+        true -> expr_to_sir_in_let_body(ctx_use, branch.right_expr, bound_name, bound_type, expected_type);
+        false -> expr_to_sir_with_expected(ctx_use, branch.right_expr, expected_type)
+    };
+    SIRTerm { kind: 8, type_name: ptype, value: pkind, name: pname, inner: guard_sir, right_expr: body_sir }
+}
+
+// Pattern text like "hello" (string literal) — no colon; must not fall through to branch_from_bind_or_wild (dummy).
+fn case_close_quote_index(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "\"" of {
+            true -> i;
+            false -> case_close_quote_index(s, i + 1)
+        }
+    }
+}
+
+fn extract_string_pat_content(s: string) -> string {
+    case len(s) < 2 of {
+        true -> "";
+        false -> case substring(s, 0, 1) == "\"" of {
+            true -> do
+                cq: int64 <- case_close_quote_index(s, 1);
+                case cq < 0 of {
+                    true -> "";
+                    false -> substring(s, 1, cq)
+                }
+            end;
+            false -> ""
+        }
+    }
+}
+
+fn list_cons_bind_payload(hn: string, tn: string) -> string {
+    concat(list_one_bind_list(hn), concat("|", list_one_bind_list(tn)))
+}
+
+fn list_one_bind_list(n: string) -> string {
+    case n == "_" of { true -> "_"; false -> concat("%", n) }
+}
+
+fn make_case_branch_list_cons(head_name: string, head_type: string, tail_name: string, tail_list_type: string, ctx: TypeContext, branch: Expr, expected_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    ctx_h: TypeContext <- case len(head_name) > 0 and head_name != "_" of {
+        true -> extend_context_for_bind(ctx, head_name, head_type);
+        false -> ctx
+    };
+    ctx_ht: TypeContext <- case len(tail_name) > 0 and tail_name != "_" of {
+        true -> extend_context_for_bind(ctx_h, tail_name, tail_list_type);
+        false -> ctx_h
+    };
+    guard_sir: SIRTerm <- case branch.inner.kind < 0 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> case in_body of {
+            true -> expr_to_sir_in_let_body(ctx_ht, branch.inner, bound_name, bound_type, "boolean");
+            false -> expr_to_sir_with_expected(ctx_ht, branch.inner, "boolean")
+        }
+    };
+    body_sir: SIRTerm <- case in_body of {
+        true -> expr_to_sir_in_let_body(ctx_ht, branch.right_expr, bound_name, bound_type, expected_type);
+        false -> expr_to_sir_with_expected(ctx_ht, branch.right_expr, expected_type)
+    };
+    ht_sir: string <- concat(types@type_name_to_sir(head_type), concat("|", types@type_name_to_sir(tail_list_type)));
+    bind_s: string <- list_cons_bind_payload(head_name, tail_name);
+    SIRTerm { kind: 8, type_name: ht_sir, value: "list_cons", name: bind_s, inner: guard_sir, right_expr: body_sir }
+}
+
+fn branch_from_bind_or_wild(raw: string, scrutinee_ast_type: string, branch: Expr, ctx: TypeContext, expected_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    case raw == "_" of {
+        true -> make_case_branch("wild", types@type_name_to_sir(scrutinee_ast_type), "_", ctx, branch, expected_type, bound_name, bound_type, in_body);
+        false -> do
+            cp: int64 <- find_colon_from(raw, 0);
+            case cp < 1 of {
+                true -> sir_ast@dummy_sir_term();
+                false -> do
+                    left: string <- trim_pat(substring(raw, 0, cp));
+                    right: string <- trim_pat(substring(raw, cp + 1, len(raw)));
+                    case left == "_" of {
+                        true -> make_case_branch("wild", types@type_name_to_sir(right), "_", ctx, branch, expected_type, bound_name, bound_type, in_body);
+                        false -> do
+                            ctx_b: TypeContext <- extend_context_for_bind(ctx, left, right);
+                            make_case_branch("bind", types@type_name_to_sir(right), concat("%", left), ctx_b, branch, expected_type, bound_name, bound_type, in_body)
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn branch_ast_to_sir(branch: Expr, ctx: TypeContext, expected_type: string, scrutinee_ast_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    raw: string <- trim_pat(branch.value);
+    case raw == ":none" of {
+        true -> make_case_branch("atom", "atom", raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
+        false -> case is_atom_literal_pat(raw) and (type_checker_recursive_tuples@is_ref_optional_type(scrutinee_ast_type) or (len(scrutinee_ast_type) >= 6 and substring(scrutinee_ast_type, 0, 6) == ":none|")) of {
+            true -> make_case_branch("atom", "atom", raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
+            false -> branch_ast_to_sir_after_atom(raw, branch, ctx, expected_type, scrutinee_ast_type, bound_name, bound_type, in_body)
+        }
+    }
+}
+
+fn branch_ast_to_sir_after_atom(raw: string, branch: Expr, ctx: TypeContext, expected_type: string, scrutinee_ast_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    lep: ListEmptyPat <- type_checker_lists@parse_list_empty_case_pattern(raw);
+    case lep.ok of {
+        true -> make_case_branch("list_nil", types@type_name_to_sir(lep.list_type), "", ctx, branch, expected_type, bound_name, bound_type, in_body);
+        false -> do
+            lcp: ListConsPat <- type_checker_lists@parse_list_cons_case_pattern(raw);
+            case lcp.ok of {
+                true -> make_case_branch_list_cons(lcp.head_name, lcp.head_type, lcp.tail_name, lcp.tail_list_type, ctx, branch, expected_type, bound_name, bound_type, in_body);
+                false -> case raw == "true" of {
+                    true -> make_case_branch("bool", "bool", "true", ctx, branch, expected_type, bound_name, bound_type, in_body);
+                    false -> case raw == "false" of {
+                        true -> make_case_branch("bool", "bool", "false", ctx, branch, expected_type, bound_name, bound_type, in_body);
+                        false -> case substring(raw, 0, 1) == "\"" of {
+                            true -> do
+                                str_content: string <- extract_string_pat_content(raw);
+                                make_case_branch("string", "string", str_content, ctx, branch, expected_type, bound_name, bound_type, in_body)
+                            end;
+                                false -> case is_int_literal_pat(raw) of {
+                                true -> make_case_branch("int", types@type_name_to_sir(scrutinee_ast_type), raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
+                                false -> case is_atom_literal_pat(raw) of {
+                                    true -> case scrutinee_ast_type == "failure_reason" of {
+                                        // Phase C: §15.4.11 failure_reason variants; branch pattern type carries scrutinee (emitter still matches via kind atom).
+                                        true -> make_case_branch("atom", "failure_reason", raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
+                                        false -> make_case_branch("atom", "atom", raw, ctx, branch, expected_type, bound_name, bound_type, in_body)
+                                    };
+                                    false -> case type_checker_record_types@record_type_starts(raw) of {
+                                        true -> case type_checker_record_types@record_type_braces_balanced(raw) of {
+                                            true -> do
+                                                ctx_re: TypeContext <- type_checker_tuple_decompose_helpers@case_extend_context_for_pattern(ctx, scrutinee_ast_type, raw);
+                                                make_case_branch("record", types@type_name_to_sir(scrutinee_ast_type), raw, ctx_re, branch, expected_type, bound_name, bound_type, in_body)
+                                            end;
+                                            false -> branch_from_bind_or_wild(raw, scrutinee_ast_type, branch, ctx, expected_type, bound_name, bound_type, in_body)
+                                        };
+                                        false -> branch_from_bind_or_wild(raw, scrutinee_ast_type, branch, ctx, expected_type, bound_name, bound_type, in_body)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn case_branches_to_sir_list(e: Expr, ctx: TypeContext, expected_type: string, scrutinee_ast_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    case e.kind < 0 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> case e.kind - 17 == 0 of {
+            true -> do
+                one: SIRTerm <- branch_ast_to_sir(e.inner, ctx, expected_type, scrutinee_ast_type, bound_name, bound_type, in_body);
+                rest: SIRTerm <- case_branches_to_sir_list(e.right_expr, ctx, expected_type, scrutinee_ast_type, bound_name, bound_type, in_body);
+                SIRTerm { kind: 7, type_name: "", value: "", name: "", inner: one, right_expr: rest }
+            end;
+            false -> sir_ast@dummy_sir_term()
+        }
+    }
+}
+
+fn case_expr_to_sir(context: TypeContext, expr: Expr, expected_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    scrut_ast_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+    scrut_sir_t: string <- types@type_name_to_sir(scrut_ast_t);
+    scrut: SIRTerm <- case in_body of {
+        true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, scrut_ast_t);
+        false -> expr_to_sir_with_expected(context, expr.inner, scrut_ast_t);
+    };
+    branches: SIRTerm <- case_branches_to_sir_list(expr.right_expr, context, expected_type, scrut_ast_t, bound_name, bound_type, in_body);
+    case_emit_suffix: string <- concat("o", literals@int64_to_decimal_string(expr.location.offset));
+    SIRTerm { kind: 3, type_name: types@type_name_to_sir(expected_type), value: scrut_sir_t, name: case_emit_suffix, inner: scrut, right_expr: branches }
+}
+
+// Lower `if` / `else` (AST kind 19) to a boolean `case` on the condition. Placed after `case_expr_to_sir`; callers use forward reference.
+fn if_expr_to_sir(context: TypeContext, expr: Expr, expected_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    dummy_g: Expr <- parser_ast@dummy_expr();
+    true_br: Expr <- Expr { kind: 18, value: "true", name: "", location: expr.location, inner: dummy_g, right_expr: expr.right_expr.inner, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+    false_br: Expr <- Expr { kind: 18, value: "false", name: "", location: expr.location, inner: dummy_g, right_expr: expr.right_expr.right_expr, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+    rest_dummy: Expr <- parser_ast@dummy_expr();
+    list_inner: Expr <- Expr { kind: 17, value: "", name: "", location: expr.location, inner: false_br, right_expr: rest_dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+    list_head: Expr <- Expr { kind: 17, value: "", name: "", location: expr.location, inner: true_br, right_expr: list_inner, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+    case_e: Expr <- Expr { kind: 13, value: "", name: "", location: expr.location, inner: expr.inner, right_expr: list_head, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+    case_expr_to_sir(context, case_e, expected_type, bound_name, bound_type, in_body)
+}

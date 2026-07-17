@@ -1,0 +1,79 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Default const emission (int32, int16, int8, uint32, uint16, uint8, etc.)
+// AArch64: MOV only for immediates encodable in one instruction; else LDR from int64 literal pool.
+// W* destinations cannot use ADRP on the same reg — use X9 scratch for ADRP+LDR Wn.
+
+use sir_ast;
+use atom_table;
+use constraints;
+use int64_literal_pool;
+use float64_literal_pool;
+use float32_literal_pool;
+use string_parse;
+
+export emit_const/7;
+
+fn const_value(t: SIRTerm) -> string {
+    t.value
+}
+
+fn mov_imm_decimal(parsed: int64) -> string {
+    case parsed < 0 of {
+        true -> concat("-", atom_table@int64_to_decimal_string(0 - parsed));
+        false -> atom_table@int64_to_decimal_string(parsed)
+    }
+}
+
+fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, outer_reg: string) -> string {
+    _fpool_ctx: int64 <- len(outer_reg);
+    val: string <- const_value(term);
+    parsed: int64 <- string_parse@string_to_int64(val);
+    case constraints@fits_mov_imm(parsed) of {
+        true -> do
+            prefix: string <- concat(concat("    MOV ", dest), ", ");
+            imm_part: string <- concat("#", mov_imm_decimal(parsed));
+            case _fpool_ctx >= 0 of {
+                true -> concat(prefix, imm_part);
+                false -> concat(prefix, imm_part)
+            }
+        end;
+        false -> do
+            idx: int64 <- int64_literal_pool@int64_literal_value_to_index(literal_table, val);
+            label: string <- concat("L_i64_", atom_table@int64_to_decimal_string(idx));
+            case substring(dest, 0, 1) == "W" of {
+                true -> do
+                    adrp: string <- concat(concat(concat("    ADRP X9, ", label), "@PAGE"), "\n");
+                    ldr: string <- concat(concat(concat(concat(concat("    LDR ", dest), ", [X9, "), label), "@PAGEOFF"), "]\n");
+                    case _fpool_ctx >= 0 of {
+                        true -> concat(adrp, ldr);
+                        false -> concat(adrp, ldr)
+                    }
+                end;
+                false -> do
+                    adrp: string <- concat(concat(concat(concat("    ADRP ", dest), ", "), concat(label, "@PAGE")), "\n");
+                    ldr: string <- concat(concat(concat(concat(concat("    LDR ", dest), ", ["), concat(dest, ", ")), concat(label, "@PAGEOFF")), "]");
+                    case _fpool_ctx >= 0 of {
+                        true -> concat(adrp, ldr);
+                        false -> concat(adrp, ldr)
+                    }
+                end
+            }
+        end
+    }
+}

@@ -1,0 +1,407 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Tuple decomposition (Expr kind 10): (a: T, b: U) <- expr; body
+// Uses structured pattern_bindings from AST. Emits nested lets with tuple_proj primitives.
+
+use parser_ast;
+use type_checker_core;
+use type_checker_tuple_decompose_helpers;
+use sir_ast;
+use types;
+
+export expr_type_of/2;
+export build_decompose_lets/5;
+export tuple_decompose_filled_bindings/2;
+
+// Align with check_tuple_decompose: fill bare tuple-pattern element types from the RHS tuple text.
+fn tuple_decompose_filled_bindings(expr: Expr, rhs_type: string) -> ListTupleDecomposeBinding {
+    rhs_trimmed: string <- type_checker_tuple_decompose_helpers@tuple_trim(rhs_type);
+    tuple_for_fill: string <- case len(expr.value) > 0 of {
+        true -> type_checker_tuple_decompose_helpers@tuple_trim(expr.value);
+        false -> rhs_trimmed
+    };
+    type_checker_tuple_decompose_helpers@fill_empty_binding_types_from_rhs(expr.pattern_bindings, tuple_for_fill)
+}
+
+// Get type of expression. For identifier: lookup. For paren: recurse. For tuple literal: build from structure.
+fn expr_type_of(expr: Expr, context: TypeContext) -> string {
+    case expr.kind of {
+        1 -> do
+            (found: bool, resolved: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
+            case found of { true -> resolved; false -> "" }
+        end;
+        2 -> expr_type_of(expr.inner, context);
+        9 -> do
+            first_type: string <- expr_type_of(expr.inner, context);
+            rest_type: string <- expr_type_of(expr.right_expr, context);
+            first_wrapped: string <- case tuple_needs_parens(first_type) of {
+                true -> concat("(", concat(first_type, ")"));
+                false -> first_type
+            };
+            rest_wrapped: string <- case tuple_needs_parens(rest_type) of {
+                true -> concat("(", concat(rest_type, ")"));
+                false -> rest_type
+            };
+            concat("(", concat(concat(first_wrapped, ","), concat(rest_wrapped, ")")))
+        end;
+        _: int64 -> ""
+    }
+}
+
+fn tuple_needs_parens(type_str: string) -> bool {
+    len(type_str) >= 2 and substring(type_str, 0, 1) == "("
+}
+
+fn tuple_trim(s: string) -> string {
+    start: int64 <- trim_start(s, 0);
+    end_pos: int64 <- trim_end(s, len(s) - 1);
+    case start <= end_pos of {
+        true -> substring(s, start, end_pos + 1);
+        false -> ""
+    }
+}
+
+fn trim_start(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> trim_start(s, i + 1);
+            false -> i
+        }
+    }
+}
+
+fn trim_end(s: string, i: int64) -> int64 {
+    case i < 0 of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> trim_end(s, i - 1);
+            false -> i
+        }
+    }
+}
+
+fn int64_to_str(n: int64) -> string {
+    case n < 0 of {
+        true -> "0";
+        false -> case n < 10 of {
+            true -> digit_char(n);
+            false -> concat(int64_to_str(n / 10), digit_char(n % 10))
+        }
+    }
+}
+
+fn digit_char(d: int64) -> string {
+    case d of {
+        0 -> "0"; 1 -> "1"; 2 -> "2"; 3 -> "3"; 4 -> "4";
+        5 -> "5"; 6 -> "6"; 7 -> "7"; 8 -> "8"; 9 -> "9";
+        _: int64 -> "0"
+    }
+}
+
+// Build nested lets for tuple decomposition. rhs_term is the tuple, bindings from parse, body is continuation.
+// rhs_type_str is the full tuple type (e.g. "(atom,uint64)") for correct SIR types.
+fn build_decompose_lets(rhs_term: SIRTerm, bindings: ListTupleDecomposeBinding, body: SIRTerm, context: TypeContext, rhs_type_str: string) -> SIRTerm {
+    case bindings.is_nil of {
+        true -> body;
+        false -> do
+            root_var: string <- "%_td_0";
+            inner: SIRTerm <- build_lets_from_bindings(root_var, bindings, body, context, rhs_type_str);
+            SIRTerm { kind: 2, type_name: types@type_name_to_sir(rhs_type_str), value: "", name: root_var, inner: rhs_term, right_expr: inner }
+        end
+    }
+}
+
+fn build_lets_from_bindings(root_var: string, bindings: ListTupleDecomposeBinding, body: SIRTerm, context: TypeContext, rhs_type_str: string) -> SIRTerm {
+    case bindings.is_nil of {
+        true -> body;
+        false -> do
+            b: TupleDecomposeBinding <- bindings.head;
+            proj_term: SIRTerm <- build_proj_chain(root_var, b.path, b.type_str, rhs_type_str);
+            prefixed: string <- concat("%", b.name);
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, b.name, b.type_str, parser_ast@empty_effect_name_list(), "");
+            new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
+            inner_body: SIRTerm <- build_lets_from_bindings(root_var, bindings.tail, body, new_context, rhs_type_str);
+            bind_type: string <- types@type_name_to_sir(b.type_str);
+            SIRTerm { kind: 2, type_name: bind_type, value: "", name: prefixed, inner: proj_term, right_expr: inner_body }
+        end
+    }
+}
+
+fn count_bindings(bindings: ListTupleDecomposeBinding) -> int64 {
+    case bindings.is_nil of {
+        true -> 0;
+        false -> 1 + count_bindings(bindings.tail)
+    }
+}
+
+// For 3+ element tuples stored as right-nested binary pairs (e.g. (1,(2,3))),
+// peel the first element and recurse on the rest via an intermediate variable.
+fn build_lets_binary_peel(root_var: string, bindings: ListTupleDecomposeBinding, body: SIRTerm, context: TypeContext, rhs_type_str: string, depth: int64) -> SIRTerm {
+    n: int64 <- count_bindings(bindings);
+    case n <= 0 of {
+        true -> body;
+        false -> case n <= 2 of {
+            true -> do
+                // Base case: 1 or 2 remaining bindings — use indices 0 and 1 directly
+                b0: TupleDecomposeBinding <- bindings.head;
+                proj0: SIRTerm <- make_simple_tuple_proj(root_var, 0, b0.type_str, rhs_type_str);
+                prefixed0: string <- concat("%", b0.name);
+                new_env0: ListSymbolEntry <- type_checker_core@add_symbol(context.env, b0.name, b0.type_str, parser_ast@empty_effect_name_list(), "");
+                new_context0: TypeContext <- type_checker_core@type_context_with_env(context, new_env0);
+                case n == 1 of {
+                    true -> SIRTerm { kind: 2, type_name: types@type_name_to_sir(b0.type_str), value: "", name: prefixed0, inner: proj0, right_expr: body };
+                    false -> do
+                        b1: TupleDecomposeBinding <- bindings.tail.head;
+                        proj1: SIRTerm <- make_simple_tuple_proj(root_var, 1, b1.type_str, rhs_type_str);
+                        prefixed1: string <- concat("%", b1.name);
+                        inner_let: SIRTerm <- SIRTerm { kind: 2, type_name: types@type_name_to_sir(b1.type_str), value: "", name: prefixed1, inner: proj1, right_expr: body };
+                        SIRTerm { kind: 2, type_name: types@type_name_to_sir(b0.type_str), value: "", name: prefixed0, inner: proj0, right_expr: inner_let }
+                    end
+                }
+            end;
+            false -> do
+                // 3+ elements: peel first, create intermediate for the rest tuple
+                b0: TupleDecomposeBinding <- bindings.head;
+                first_type: string <- b0.type_str;
+                rest_type: string <- tuple_rest_type(rhs_type_str);
+                proj0: SIRTerm <- make_simple_tuple_proj(root_var, 0, first_type, rhs_type_str);
+                proj_rest: SIRTerm <- make_simple_tuple_proj(root_var, 1, rest_type, rhs_type_str);
+                inner_var: string <- concat("%_td_", int64_to_str(depth));
+                prefixed0: string <- concat("%", b0.name);
+                new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, b0.name, b0.type_str, parser_ast@empty_effect_name_list(), "");
+                new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
+                inner_body: SIRTerm <- build_lets_binary_peel(inner_var, bindings.tail, body, new_context, rest_type, depth + 1);
+                let_rest: SIRTerm <- SIRTerm { kind: 2, type_name: types@type_name_to_sir(rest_type), value: "", name: inner_var, inner: proj_rest, right_expr: inner_body };
+                SIRTerm { kind: 2, type_name: types@type_name_to_sir(first_type), value: "", name: prefixed0, inner: proj0, right_expr: let_rest }
+            end
+        }
+    }
+}
+
+// Create a simple tuple_proj(var, index) SIR term (full_tuple_type on the var for emitter layout / boxed float32).
+fn make_simple_tuple_proj(tuple_var: string, index: int64, result_type: string, full_tuple_type: string) -> SIRTerm {
+    tuple_term: SIRTerm <- SIRTerm { kind: 1, type_name: types@type_name_to_sir(full_tuple_type), value: "", name: tuple_var, inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+    index_const: SIRTerm <- SIRTerm { kind: 0, type_name: "int64", value: int64_to_str(index), name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+    SIRTerm { kind: 6, type_name: types@type_name_to_sir(result_type), value: "", name: "tuple_proj", inner: tuple_term, right_expr: index_const }
+}
+
+// Get the "rest" type from a tuple type: everything after the first element.
+// "(int64,int64,int64)" -> "(int64,int64)"
+// "(int64,int64)" -> "int64"
+fn tuple_rest_type(tuple_type: string) -> string {
+    case len(tuple_type) < 2 or substring(tuple_type, 0, 1) != "(" of {
+        true -> tuple_type;
+        false -> do
+            inner: string <- substring(tuple_type, 1, len(tuple_type) - 1);
+            comma_pos: int64 <- find_top_level_comma(inner, 0);
+            rest: string <- tuple_trim(substring(inner, comma_pos + 1, len(inner)));
+            rest_has_comma: int64 <- find_top_level_comma(rest, 0);
+            case rest_has_comma < len(rest) of {
+                true -> concat("(", concat(rest, ")"));
+                false -> rest
+            }
+        end
+    }
+}
+
+// Count elements in a tuple type string, e.g. "(int64,int64,int64)" -> 3
+fn count_tuple_elems(type_str: string) -> int64 {
+    case len(type_str) < 2 or substring(type_str, 0, 1) != "(" of {
+        true -> 1;
+        false -> do
+            inner: string <- substring(type_str, 1, len(type_str) - 1);
+            1 + count_top_commas(inner, 0, 0)
+        end
+    }
+}
+
+fn count_top_commas(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> 0;
+        false -> case substring(s, i, i + 1) of {
+            "(" -> count_top_commas(s, i + 1, depth + 1);
+            ")" -> count_top_commas(s, i + 1, depth - 1);
+            "," -> case depth == 0 of {
+                true -> 1 + count_top_commas(s, i + 1, depth);
+                false -> count_top_commas(s, i + 1, depth)
+            };
+            _: string -> count_top_commas(s, i + 1, depth)
+        }
+    }
+}
+
+// Build tuple_proj(tuple_var, index) or nested proj for path "1,0".
+// rhs_type_str used for intermediate proj types when path has multiple segments.
+// The tuple element count is stored in the tuple_proj's value field so the emitter
+// can generate pointer-chasing code for right-nested binary pair layout.
+fn build_proj_chain(tuple_var: string, path_str: string, elem_type: string, rhs_type_str: string) -> SIRTerm {
+    first_idx: int64 <- path_str_to_first_index(path_str);
+    elem_count: int64 <- count_tuple_elems(rhs_type_str);
+    tuple_term: SIRTerm <- SIRTerm { kind: 1, type_name: types@type_name_to_sir(rhs_type_str), value: "", name: tuple_var, inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+    index_const: SIRTerm <- SIRTerm { kind: 0, type_name: "int64", value: int64_to_str(first_idx), name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+    rest_path: string <- path_str_rest(path_str);
+    proj_result_type: string <- case len(rest_path) == 0 of {
+        true -> elem_type;
+        false -> type_at_path(rhs_type_str, int64_to_str(first_idx))
+    };
+    first_proj: SIRTerm <- SIRTerm { kind: 6, type_name: types@type_name_to_sir(proj_result_type), value: int64_to_str(elem_count), name: "tuple_proj", inner: tuple_term, right_expr: index_const };
+    case len(rest_path) == 0 of {
+        true -> first_proj;
+        false -> build_proj_chain_rec(first_proj, rest_path, elem_type, rhs_type_str, int64_to_str(first_idx))
+    }
+}
+
+fn build_proj_chain_rec(inner_term: SIRTerm, path_str: string, elem_type: string, rhs_type_str: string, path_prefix: string) -> SIRTerm {
+    first_idx: int64 <- path_str_to_first_index(path_str);
+    index_const: SIRTerm <- SIRTerm { kind: 0, type_name: "int64", value: int64_to_str(first_idx), name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+    rest_path: string <- path_str_rest(path_str);
+    full_path: string <- case len(path_prefix) == 0 of {
+        true -> int64_to_str(first_idx);
+        false -> concat(path_prefix, concat(",", int64_to_str(first_idx)))
+    };
+    proj_result_type: string <- case len(rest_path) == 0 of {
+        true -> elem_type;
+        false -> type_at_path(rhs_type_str, full_path)
+    };
+    proj: SIRTerm <- SIRTerm { kind: 6, type_name: types@type_name_to_sir(proj_result_type), value: "", name: "tuple_proj", inner: inner_term, right_expr: index_const };
+    case len(rest_path) == 0 of {
+        true -> proj;
+        false -> build_proj_chain_rec(proj, rest_path, elem_type, rhs_type_str, full_path)
+    }
+}
+
+// Extract type at path from tuple type. path "1" for index 1, "1,0" for nested.
+fn type_at_path(tuple_type: string, path: string) -> string {
+    case len(path) == 0 of {
+        true -> tuple_type;
+        false -> do
+            first_idx: int64 <- path_str_to_first_index(path);
+            rest_path: string <- path_str_rest(path);
+            elem: string <- tuple_element_at_index(tuple_type, first_idx);
+            case len(rest_path) == 0 of {
+                true -> elem;
+                false -> type_at_path(elem, rest_path)
+            }
+        end
+    }
+}
+
+fn tuple_element_at_index(tuple_type: string, idx: int64) -> string {
+    case len(tuple_type) < 2 of {
+        true -> "int64";
+        false -> case substring(tuple_type, 0, 1) == "(" of {
+            true -> tuple_element_at_index_inner(substring(tuple_type, 1, len(tuple_type) - 1), idx);
+            false -> "int64"
+        }
+    }
+}
+
+fn find_top_level_comma(s: string, i: int64) -> int64 {
+    find_top_level_comma_at(s, i, 0, 0, 0)
+}
+
+fn find_top_level_comma_at(s: string, i: int64, pdepth: int64, sqdepth: int64, brdepth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) of {
+            "(" -> find_top_level_comma_at(s, i + 1, pdepth + 1, sqdepth, brdepth);
+            ")" -> find_top_level_comma_at(s, i + 1, case pdepth > 0 of { true -> pdepth - 1; false -> 0 }, sqdepth, brdepth);
+            "[" -> find_top_level_comma_at(s, i + 1, pdepth, sqdepth + 1, brdepth);
+            "]" -> find_top_level_comma_at(s, i + 1, pdepth, case sqdepth > 0 of { true -> sqdepth - 1; false -> 0 }, brdepth);
+            "{" -> find_top_level_comma_at(s, i + 1, pdepth, sqdepth, brdepth + 1);
+            "}" -> find_top_level_comma_at(s, i + 1, pdepth, sqdepth, case brdepth > 0 of { true -> brdepth - 1; false -> 0 });
+            "," -> case pdepth == 0 and sqdepth == 0 and brdepth == 0 of {
+                true -> i;
+                false -> find_top_level_comma_at(s, i + 1, pdepth, sqdepth, brdepth)
+            };
+            _: string -> find_top_level_comma_at(s, i + 1, pdepth, sqdepth, brdepth)
+        }
+    }
+}
+
+fn tuple_element_at_index_inner(inner: string, target_idx: int64) -> string {
+    case target_idx == 0 of {
+        true -> do
+            idx: int64 <- find_top_level_comma(inner, 0);
+            first: string <- tuple_trim(substring(inner, 0, idx));
+            case len(first) >= 2 and substring(first, 0, 1) == "(" of {
+                true -> concat("(", concat(first, ")"));
+                false -> first
+            }
+        end;
+        false -> do
+            idx: int64 <- find_top_level_comma(inner, 0);
+            rest: string <- case idx < len(inner) of {
+                true -> tuple_trim(substring(inner, idx + 1, len(inner)));
+                false -> ""
+            };
+            tuple_element_at_index_inner(rest, target_idx - 1)
+        end
+    }
+}
+
+fn path_str_to_first_index(path_str: string) -> int64 {
+    comma_pos: int64 <- find_comma(path_str, 0);
+    first_part: string <- case comma_pos >= 0 of {
+        true -> substring(path_str, 0, comma_pos);
+        false -> path_str
+    };
+    str_to_int64(first_part)
+}
+
+fn path_str_rest(path_str: string) -> string {
+    comma_pos: int64 <- find_comma(path_str, 0);
+    case comma_pos >= 0 and comma_pos + 1 < len(path_str) of {
+        true -> substring(path_str, comma_pos + 1, len(path_str));
+        false -> ""
+    }
+}
+
+fn find_comma(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "," of {
+            true -> i;
+            false -> find_comma(s, i + 1)
+        }
+    }
+}
+
+fn str_to_int64(s: string) -> int64 {
+    str_to_int64_acc(s, 0, 0)
+}
+
+fn str_to_int64_acc(s: string, i: int64, acc: int64) -> int64 {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) of {
+            "0" -> str_to_int64_acc(s, i + 1, acc * 10 + 0);
+            "1" -> str_to_int64_acc(s, i + 1, acc * 10 + 1);
+            "2" -> str_to_int64_acc(s, i + 1, acc * 10 + 2);
+            "3" -> str_to_int64_acc(s, i + 1, acc * 10 + 3);
+            "4" -> str_to_int64_acc(s, i + 1, acc * 10 + 4);
+            "5" -> str_to_int64_acc(s, i + 1, acc * 10 + 5);
+            "6" -> str_to_int64_acc(s, i + 1, acc * 10 + 6);
+            "7" -> str_to_int64_acc(s, i + 1, acc * 10 + 7);
+            "8" -> str_to_int64_acc(s, i + 1, acc * 10 + 8);
+            "9" -> str_to_int64_acc(s, i + 1, acc * 10 + 9);
+            _: string -> acc
+        }
+    }
+}

@@ -1,0 +1,2121 @@
+// Collection trait type strings and constructor-record type witnesses (Phase 0.4).
+// OrderedSet[Item, mem(Space)], OrderedMap[Key, Value, mem(Space)], Heap[Item, mem(Space)].
+
+use parser_ast;
+use type_checker_core;
+use type_checker_lists;
+use type_checker_record_types;
+use type_checker_memory_regions;
+
+export parse_ordered_set_type/1;
+export parse_ordered_map_type/1;
+export parse_heap_type/1;
+export parse_directed_graph_type/1;
+export is_ordered_set_type/1;
+export is_ordered_map_type/1;
+export is_heap_type/1;
+export is_directed_graph_type/1;
+export is_collection_trait_type/1;
+export validate_collection_type_declaration/2;
+export validate_collection_result_type_declaration/2;
+export collection_return_accepts_constructor/3;
+export collection_type_fits_concrete_record/3;
+export collection_type_fits_impl_parameter/3;
+export collection_param_type_for_trait_arg/2;
+export is_assoc_type_placeholder/1;
+export resolve_assoc_type_placeholder/3;
+export collection_space_from_type/1;
+export infer_collection_decl_from_receiver/3;
+export resolve_trait_formal_type/3;
+export resolve_trait_formal_with_contexts/4;
+export resolve_constructor_call_formal/2;
+export resolve_accumulator_call_formal/2;
+export witness_matches_ordered_set_declaration/3;
+export witness_matches_ordered_map_declaration/4;
+export witness_matches_heap_declaration/3;
+export witness_matches_directed_graph_declaration/5;
+export parse_fn_binary_param_types/1;
+export parse_fn_unary_param_type/1;
+export expected_compare_item_fn_type/1;
+export expected_compare_key_fn_type/1;
+export expected_compare_value_fn_type/1;
+export expected_compare_priority_fn_type/1;
+export expected_edge_target_fn_type/2;
+export parse_search_tree_type/1;
+export parse_undirected_graph_type/1;
+export parse_weighted_graph_type/1;
+export parse_priority_queue_type/1;
+export parse_tree_type/1;
+export is_search_tree_type/1;
+export is_undirected_graph_type/1;
+export is_weighted_graph_type/1;
+export is_priority_queue_type/1;
+export is_tree_type/1;
+export witness_matches_search_tree_declaration/3;
+export witness_matches_undirected_graph_declaration/4;
+export witness_matches_weighted_graph_declaration/6;
+export witness_matches_priority_queue_declaration/4;
+export witness_matches_tree_declaration/3;
+export validate_constructor_record_field_names/3;
+export collection_specialization_key/2;
+export collection_trait_accepts_module/2;
+export module_name_from_qualified_call/1;
+export is_collection_constructor_base_name/1;
+export bind_type_has_collection_runtime_fields/1;
+export runtime_record_accepts_constructor_return/3;
+export is_registered_construction_module/1;
+export public_trait_family_tag/1;
+export representation_id_from_module/1;
+export required_constructor_fields/1;
+export constructor_orientation_atom_lexeme/1;
+export constructor_ordering_field_count_for_module/1;
+export constructor_ordering_field_at_for_module/2;
+
+fn strip_all_spaces_col(s: string) -> string {
+    strip_all_spaces_col_from(s, 0, "")
+}
+
+fn strip_all_spaces_col_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> strip_all_spaces_col_from(s, i + 1, acc);
+            false -> strip_all_spaces_col_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn strip_spaces_col(s: string) -> string {
+    strip_spaces_col_from(s, 0, len(s) - 1)
+}
+
+fn strip_spaces_col_from(s: string, start: int64, end_inclusive: int64) -> string {
+    case start > end_inclusive of {
+        true -> "";
+        false -> case substring(s, start, start + 1) == " " of {
+            true -> strip_spaces_col_from(s, start + 1, end_inclusive);
+            false -> case substring(s, end_inclusive, end_inclusive + 1) == " " of {
+                true -> strip_spaces_col_from(s, start, end_inclusive - 1);
+                false -> substring(s, start, end_inclusive + 1)
+            }
+        }
+    }
+}
+
+fn starts_with_col(s: string, prefix: string) -> bool {
+    case len(s) < len(prefix) of {
+        true -> false;
+        false -> substring(s, 0, len(prefix)) == prefix
+    }
+}
+
+fn skip_spaces_index_col(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> i;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> skip_spaces_index_col(s, i + 1);
+            false -> i
+        }
+    }
+}
+
+fn find_first_comma_depth0_col(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "[" or c == "{" of {
+                true -> find_first_comma_depth0_col(s, i + 1, depth + 1);
+                false -> case c == ")" or c == "]" or c == "}" of {
+                    true -> find_first_comma_depth0_col(s, i + 1, depth - 1);
+                    false -> case c == "," of {
+                        true -> case depth == 0 of {
+                            true -> i;
+                            false -> find_first_comma_depth0_col(s, i + 1, depth)
+                        };
+                        false -> find_first_comma_depth0_col(s, i + 1, depth)
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn normalize_collection_bracket(prefix: string, s: string) -> string {
+    plen: int64 <- len(prefix);
+    case len(s) < plen of {
+        true -> s;
+        false -> case substring(s, 0, plen) == prefix of {
+            false -> s;
+            true -> do
+                j: int64 <- skip_spaces_index_col(s, plen);
+                case j >= len(s) of {
+                    true -> s;
+                    false -> case substring(s, j, j + 1) == "[" of {
+                        true -> concat(prefix, concat("[", substring(s, j + 1, len(s))));
+                        false -> s
+                    }
+                }
+            end
+        }
+    }
+}
+
+fn collection_space_has_mem_form(space: string) -> bool {
+    t: string <- strip_all_spaces_col(space);
+    len(t) >= 6 and substring(t, 0, 4) == "mem(" and substring(t, len(t) - 1, len(t)) == ")"
+}
+
+fn parse_bracketed_collection_two(full: string, prefix: string) -> (bool, string, string, string, string) {
+    t: string <- normalize_collection_bracket(prefix, strip_all_spaces_col(full));
+    plen: int64 <- len(prefix);
+    case len(t) < plen + 2 of {
+        true -> (false, "", "", "", "");
+        false -> case starts_with_col(t, concat(prefix, "[")) of {
+            false -> (false, "", "", "", "");
+            true -> case substring(t, len(t) - 1, len(t)) == "]" of {
+                false -> (false, "", "", "", "");
+                true -> do
+                    inner: string <- substring(t, plen + 1, len(t) - 1);
+                    inner_trim: string <- strip_spaces_col(inner);
+                    comma_pos: int64 <- find_first_comma_depth0_col(inner_trim, 0, 0);
+                    case comma_pos >= len(inner_trim) of {
+                        true -> (false, "", "", "", "");
+                        false -> do
+                            p1: string <- strip_spaces_col(substring(inner_trim, 0, comma_pos));
+                            p2: string <- strip_spaces_col(substring(inner_trim, comma_pos + 1, len(inner_trim)));
+                            (true, p1, p2, "", "")
+                        end
+                    }
+                end
+            }
+        }
+    }
+}
+
+fn parse_bracketed_collection_three(full: string, prefix: string) -> (bool, string, string, string, string) {
+    t: string <- normalize_collection_bracket(prefix, strip_all_spaces_col(full));
+    plen: int64 <- len(prefix);
+    case len(t) < plen + 2 of {
+        true -> (false, "", "", "", "");
+        false -> case starts_with_col(t, concat(prefix, "[")) of {
+            false -> (false, "", "", "", "");
+            true -> case substring(t, len(t) - 1, len(t)) == "]" of {
+                false -> (false, "", "", "", "");
+                true -> do
+                    inner: string <- substring(t, plen + 1, len(t) - 1);
+                    inner_trim: string <- strip_spaces_col(inner);
+                    c1: int64 <- find_first_comma_depth0_col(inner_trim, 0, 0);
+                    case c1 >= len(inner_trim) of {
+                        true -> (false, "", "", "", "");
+                        false -> do
+                            rest1: string <- substring(inner_trim, c1 + 1, len(inner_trim));
+                            c2: int64 <- find_first_comma_depth0_col(rest1, 0, 0);
+                            case c2 >= len(rest1) of {
+                                true -> (false, "", "", "", "");
+                                false -> do
+                                    p1: string <- strip_spaces_col(substring(inner_trim, 0, c1));
+                                    p2: string <- strip_spaces_col(substring(rest1, 0, c2));
+                                    p3: string <- strip_spaces_col(substring(rest1, c2 + 1, len(rest1)));
+                                    (true, p1, p2, p3, "")
+                                end
+                            }
+                        end
+                    }
+                end
+            }
+        }
+    }
+}
+
+fn parse_bracketed_collection_four(full: string, prefix: string) -> (bool, string, string, string, string) {
+    t: string <- normalize_collection_bracket(prefix, strip_all_spaces_col(full));
+    plen: int64 <- len(prefix);
+    case len(t) < plen + 2 of {
+        true -> (false, "", "", "", "");
+        false -> case starts_with_col(t, concat(prefix, "[")) of {
+            false -> (false, "", "", "", "");
+            true -> case substring(t, len(t) - 1, len(t)) == "]" of {
+                false -> (false, "", "", "", "");
+                true -> do
+                    inner: string <- substring(t, plen + 1, len(t) - 1);
+                    inner_trim: string <- strip_spaces_col(inner);
+                    c1: int64 <- find_first_comma_depth0_col(inner_trim, 0, 0);
+                    case c1 >= len(inner_trim) of {
+                        true -> (false, "", "", "", "");
+                        false -> do
+                            rest1: string <- substring(inner_trim, c1 + 1, len(inner_trim));
+                            c2: int64 <- find_first_comma_depth0_col(rest1, 0, 0);
+                            case c2 >= len(rest1) of {
+                                true -> (false, "", "", "", "");
+                                false -> do
+                                    rest2: string <- substring(rest1, c2 + 1, len(rest1));
+                                    c3: int64 <- find_first_comma_depth0_col(rest2, 0, 0);
+                                    case c3 >= len(rest2) of {
+                                        true -> (false, "", "", "", "");
+                                        false -> do
+                                            p1: string <- strip_spaces_col(substring(inner_trim, 0, c1));
+                                            p2: string <- strip_spaces_col(substring(rest1, 0, c2));
+                                            p3: string <- strip_spaces_col(substring(rest2, 0, c3));
+                                            p4: string <- strip_spaces_col(substring(rest2, c3 + 1, len(rest2)));
+                                            (true, p1, p2, p3, p4)
+                                        end
+                                    }
+                                end
+                            }
+                        end
+                    }
+                end
+            }
+        }
+    }
+}
+
+fn parse_bracketed_collection(full: string, prefix: string, n_params: int64) -> (bool, string, string, string, string) {
+    case n_params == 2 of {
+        true -> parse_bracketed_collection_two(full, prefix);
+        false -> case n_params == 3 of {
+            true -> parse_bracketed_collection_three(full, prefix);
+            false -> case n_params == 4 of {
+                true -> parse_bracketed_collection_four(full, prefix);
+                false -> (false, "", "", "", "")
+            }
+        }
+    }
+}
+
+fn parse_ordered_set_type(full: string) -> (bool, string, string) {
+    (ok: bool, item: string, space: string, _: string, _: string) <- parse_bracketed_collection(full, "OrderedSet", 2);
+    case ok of { true -> (true, item, space); false -> (false, "", "") }
+}
+
+fn parse_ordered_map_type(full: string) -> (bool, string, string, string) {
+    (ok: bool, key: string, value: string, space: string, _: string) <- parse_bracketed_collection(full, "OrderedMap", 3);
+    case ok of { true -> (true, key, value, space); false -> (false, "", "", "") }
+}
+
+fn parse_heap_type(full: string) -> (bool, string, string) {
+    (ok: bool, item: string, space: string, _: string, _: string) <- parse_bracketed_collection(full, "Heap", 2);
+    case ok of { true -> (true, item, space); false -> (false, "", "") }
+}
+
+fn parse_directed_graph_type(full: string) -> (bool, string, string, string) {
+    (ok: bool, node: string, edge: string, space: string, _: string) <- parse_bracketed_collection(full, "DirectedGraph", 3);
+    case ok of { true -> (true, node, edge, space); false -> (false, "", "", "") }
+}
+
+fn parse_search_tree_type(full: string) -> (bool, string, string) {
+    (ok: bool, item: string, space: string, _: string, _: string) <- parse_bracketed_collection(full, "SearchTree", 2);
+    case ok of { true -> (true, item, space); false -> (false, "", "") }
+}
+
+fn parse_undirected_graph_type(full: string) -> (bool, string, string, string) {
+    (ok: bool, node: string, edge_data: string, space: string, _: string) <- parse_bracketed_collection(full, "UndirectedGraph", 3);
+    case ok of { true -> (true, node, edge_data, space); false -> (false, "", "", "") }
+}
+
+fn parse_weighted_graph_type(full: string) -> (bool, string, string, string, string) {
+    (ok: bool, node: string, edge_data: string, weight: string, space: string) <- parse_bracketed_collection_four(full, "WeightedGraph");
+    case ok of { true -> (true, node, edge_data, weight, space); false -> (false, "", "", "", "") }
+}
+
+fn parse_priority_queue_type(full: string) -> (bool, string, string, string) {
+    (ok: bool, priority: string, item: string, space: string, _: string) <- parse_bracketed_collection(full, "PriorityQueue", 3);
+    case ok of { true -> (true, priority, item, space); false -> (false, "", "", "") }
+}
+
+fn parse_tree_type(full: string) -> (bool, string, string) {
+    (ok: bool, item: string, space: string, _: string, _: string) <- parse_bracketed_collection(full, "Tree", 2);
+    case ok of { true -> (true, item, space); false -> (false, "", "") }
+}
+
+fn is_ordered_set_type(s: string) -> bool {
+    (ok: bool, _: string, _: string) <- parse_ordered_set_type(s);
+    ok
+}
+
+fn is_ordered_map_type(s: string) -> bool {
+    (ok: bool, _: string, _: string, _: string) <- parse_ordered_map_type(s);
+    ok
+}
+
+fn is_heap_type(s: string) -> bool {
+    (ok: bool, _: string, _: string) <- parse_heap_type(s);
+    ok
+}
+
+fn is_directed_graph_type(s: string) -> bool {
+    (ok: bool, _: string, _: string, _: string) <- parse_directed_graph_type(s);
+    ok
+}
+
+fn is_search_tree_type(s: string) -> bool {
+    (ok: bool, _: string, _: string) <- parse_search_tree_type(s);
+    ok
+}
+
+fn is_undirected_graph_type(s: string) -> bool {
+    (ok: bool, _: string, _: string, _: string) <- parse_undirected_graph_type(s);
+    ok
+}
+
+fn is_weighted_graph_type(s: string) -> bool {
+    (ok: bool, _: string, _: string, _: string, _: string) <- parse_weighted_graph_type(s);
+    ok
+}
+
+fn is_priority_queue_type(s: string) -> bool {
+    (ok: bool, _: string, _: string, _: string) <- parse_priority_queue_type(s);
+    ok
+}
+
+fn is_tree_type(s: string) -> bool {
+    (ok: bool, _: string, _: string) <- parse_tree_type(s);
+    ok
+}
+
+fn is_collection_trait_type(s: string) -> bool {
+    is_ordered_set_type(s) or is_ordered_map_type(s) or is_heap_type(s) or is_directed_graph_type(s)
+        or is_search_tree_type(s) or is_undirected_graph_type(s) or is_weighted_graph_type(s)
+        or is_priority_queue_type(s) or is_tree_type(s)
+}
+
+fn comparator_return_type_ok(ret: string) -> bool {
+    r: string <- strip_spaces_col(ret);
+    contains_less_equal_greater(r)
+}
+
+fn contains_atom_token(s: string, token: string) -> bool {
+    case len(token) == 0 of {
+        true -> true;
+        false -> case len(s) < len(token) of {
+            true -> false;
+            false -> case substring(s, 0, len(token)) == token of {
+                true -> true;
+                false -> contains_atom_token(substring(s, 1, len(s)), token)
+            }
+        }
+    }
+}
+
+fn contains_less_equal_greater(s: string) -> bool {
+    contains_atom_token(s, ":less") and contains_atom_token(s, ":equal") and contains_atom_token(s, ":greater")
+}
+
+fn expected_compare_item_fn_type(item_type: string) -> string {
+    item: string <- strip_spaces_col(item_type);
+    concat(concat(concat("fn(", item), ", "), concat(item, ") -> :less | :equal | :greater"))
+}
+
+fn expected_compare_key_fn_type(key_type: string) -> string {
+    expected_compare_item_fn_type(key_type)
+}
+
+fn expected_compare_value_fn_type(value_type: string) -> string {
+    expected_compare_item_fn_type(value_type)
+}
+
+fn expected_compare_priority_fn_type(item_type: string) -> string {
+    expected_compare_item_fn_type(item_type)
+}
+
+fn expected_edge_target_fn_type(edge_type: string, node_type: string) -> string {
+    edge: string <- strip_spaces_col(edge_type);
+    node: string <- strip_spaces_col(node_type);
+    concat(concat(concat("fn(", edge), ") -> "), node)
+}
+
+fn find_arrow_col_depth(s: string, i: int64, depth: int64) -> int64 {
+    case i + 2 > len(s) of {
+        true -> -1;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "{" or c == "[" of {
+                true -> find_arrow_col_depth(s, i + 1, depth + 1);
+                false -> case c == ")" or c == "}" or c == "]" of {
+                    true -> find_arrow_col_depth(s, i + 1, depth - 1);
+                    false -> case depth == 0 and substring(s, i, i + 2) == "->" of {
+                        true -> i;
+                        false -> find_arrow_col_depth(s, i + 1, depth)
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn params_inner_before_arrow_col(t: string, arrow: int64) -> string {
+    prefix: string <- substring(t, 0, arrow);
+    case len(prefix) < 5 of {
+        true -> "";
+        false -> case substring(prefix, 0, 3) == "fn(" and substring(prefix, len(prefix) - 1, len(prefix)) == ")" of {
+            true -> substring(prefix, 3, len(prefix) - 1);
+            false -> ""
+        }
+    }
+}
+
+fn fn_return_after_arrow_col(fn_type: string) -> string {
+    t: string <- strip_all_spaces_col(fn_type);
+    arrow: int64 <- find_arrow_col_depth(t, 0, 0);
+    case arrow < 0 of {
+        true -> "";
+        false -> strip_spaces_col(substring(t, arrow + 2, len(t)))
+    }
+}
+
+fn params_inner_paren_before_arrow(t: string, arrow: int64) -> string {
+    prefix: string <- substring(t, 0, arrow);
+    case len(prefix) < 2 of {
+        true -> "";
+        false -> case substring(prefix, 0, 1) == "(" and substring(prefix, len(prefix) - 1, len(prefix)) == ")" of {
+            true -> substring(prefix, 1, len(prefix) - 1);
+            false -> ""
+        }
+    }
+}
+
+fn binary_params_from_inner(inner: string) -> (bool, string, string) {
+    comma: int64 <- find_first_comma_depth0_col(inner, 0, 0);
+    case comma >= len(inner) of {
+        true -> (false, "", "");
+        false -> do
+            left: string <- strip_spaces_col(substring(inner, 0, comma));
+            right: string <- strip_spaces_col(substring(inner, comma + 1, len(inner)));
+            (true, left, right)
+        end
+    }
+}
+
+fn parse_fn_binary_param_types(fn_type: string) -> (bool, string, string) {
+    t: string <- strip_all_spaces_col(fn_type);
+    case len(t) < 5 of {
+        true -> (false, "", "");
+        false -> do
+            arrow: int64 <- find_arrow_col_depth(t, 0, 0);
+            case arrow < 0 of {
+                true -> (false, "", "");
+                false -> do
+                    inner: string <- case substring(t, 0, 3) == "fn(" of {
+                        true -> params_inner_before_arrow_col(t, arrow);
+                        false -> params_inner_paren_before_arrow(t, arrow)
+                    };
+                    case len(inner) == 0 of {
+                        true -> (false, "", "");
+                        false -> binary_params_from_inner(inner)
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn parse_fn_unary_param_type(fn_type: string) -> (bool, string) {
+    t: string <- strip_all_spaces_col(fn_type);
+    case len(t) < 5 of {
+        true -> (false, "");
+        false -> do
+            arrow: int64 <- find_arrow_col_depth(t, 0, 0);
+            case arrow < 0 of {
+                true -> (false, "");
+                false -> do
+                    inner: string <- case substring(t, 0, 3) == "fn(" of {
+                        true -> params_inner_before_arrow_col(t, arrow);
+                        false -> params_inner_paren_before_arrow(t, arrow)
+                    };
+                    case len(inner) == 0 of {
+                        true -> (false, "");
+                        false -> do
+                            comma: int64 <- find_first_comma_depth0_col(inner, 0, 0);
+                            case comma >= len(inner) of {
+                                true -> (true, strip_spaces_col(inner));
+                                false -> (false, "")
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn fn_type_witnesses_item_with_world(fn_type: string, item_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, left: string, right: string) <- parse_fn_binary_param_types(fn_type);
+    case ok of {
+        false -> false;
+        true -> do
+            item: string <- strip_spaces_col(item_type);
+            params_ok: bool <- type_checker_lists@types_equal_strip(left, item) and type_checker_lists@types_equal_strip(right, item);
+            case params_ok of {
+                false -> false;
+                true -> do
+                    expected: string <- expected_compare_item_fn_type(item);
+                    type_checker_lists@formal_type_accepts_actual(expected, fn_type, world) or type_checker_lists@formal_type_accepts_actual(fn_type, expected, world)
+                end
+            }
+        end
+    }
+}
+
+fn record_field_fn_witnesses_item_with_world(record_type: string, field: string, item_type: string, world: ListNamedProgram) -> bool {
+    ft: string <- type_checker_record_types@find_field_type_in_record(record_type, field);
+    case len(ft) == 0 of {
+        true -> false;
+        false -> fn_type_witnesses_item_with_world(ft, item_type, world)
+    }
+}
+
+fn fn_type_witnesses_item(fn_type: string, item_type: string) -> bool {
+    (ok: bool, left: string, right: string) <- parse_fn_binary_param_types(fn_type);
+    case ok of {
+        false -> false;
+        true -> do
+            item: string <- strip_spaces_col(item_type);
+            params_ok: bool <- type_checker_lists@types_equal_strip(left, item) and type_checker_lists@types_equal_strip(right, item);
+            case params_ok of {
+                false -> false;
+                true -> do
+                    ret: string <- fn_return_after_arrow_col(fn_type);
+                    comparator_return_type_ok(ret)
+                end
+            }
+        end
+    }
+}
+
+fn record_field_fn_witnesses_item(record_type: string, field: string, item_type: string) -> bool {
+    ft: string <- type_checker_record_types@find_field_type_in_record(record_type, field);
+    case len(ft) == 0 of {
+        true -> false;
+        false -> fn_type_witnesses_item(ft, item_type)
+    }
+}
+
+fn witness_matches_ordered_set_declaration(decl_type: string, witness_fn_type: string, location: SourceLocation) -> TypeCheckResult {
+    (ok: bool, item: string, space: string) <- parse_ordered_set_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid OrderedSet type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("OrderedSet requires mem(Space): ", decl_type), ""), "sect4");
+            true -> case fn_type_witnesses_item(witness_fn_type, item) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_item type ", witness_fn_type), " does not witness OrderedSet item type "), item), ""), "sect4");
+                true -> type_checker_core@type_check_ok()
+            }
+        }
+    }
+}
+
+fn witness_matches_ordered_map_declaration(decl_type: string, key_fn_type: string, value_fn_type: string, location: SourceLocation) -> TypeCheckResult {
+    (ok: bool, key: string, value: string, space: string) <- parse_ordered_map_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid OrderedMap type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("OrderedMap requires mem(Space): ", decl_type), ""), "sect4");
+            true -> case fn_type_witnesses_item(key_fn_type, key) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_key type ", key_fn_type), " does not witness OrderedMap key type "), key), ""), "sect4");
+                true -> case fn_type_witnesses_item(value_fn_type, value) of {
+                    false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_value type ", value_fn_type), " does not witness OrderedMap value type "), value), ""), "sect4");
+                    true -> type_checker_core@type_check_ok()
+                }
+            }
+        }
+    }
+}
+
+fn witness_matches_heap_declaration(decl_type: string, witness_fn_type: string, location: SourceLocation) -> TypeCheckResult {
+    (ok: bool, item: string, space: string) <- parse_heap_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid Heap type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("Heap requires mem(Space): ", decl_type), ""), "sect4");
+            true -> case fn_type_witnesses_item(witness_fn_type, item) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_item type ", witness_fn_type), " does not witness Heap item type "), item), ""), "sect4");
+                true -> type_checker_core@type_check_ok()
+            }
+        }
+    }
+}
+
+fn fn_type_witnesses_edge_target(fn_type: string, edge_type: string, node_type: string) -> bool {
+    (ok: bool, param: string) <- parse_fn_unary_param_type(fn_type);
+    case ok of {
+        false -> false;
+        true -> do
+            edge: string <- strip_spaces_col(edge_type);
+            node: string <- strip_spaces_col(node_type);
+            param_ok: bool <- type_checker_lists@types_equal_strip(param, edge);
+            case param_ok of {
+                false -> false;
+                true -> do
+                    ret: string <- fn_return_after_arrow_col(fn_type);
+                    type_checker_lists@types_equal_strip(ret, node)
+                end
+            }
+        end
+    }
+}
+
+fn witness_matches_search_tree_declaration(decl_type: string, witness_fn_type: string, location: SourceLocation) -> TypeCheckResult {
+    (ok: bool, item: string, space: string) <- parse_search_tree_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid SearchTree type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("SearchTree requires mem(Space): ", decl_type), ""), "sect4");
+            true -> witness_matches_ordered_set_declaration(concat(concat(concat("OrderedSet[", item), ", "), concat(space, "]")), witness_fn_type, location)
+        }
+    }
+}
+
+fn witness_matches_tree_declaration(decl_type: string, witness_fn_type: string, location: SourceLocation) -> TypeCheckResult {
+    (ok: bool, item: string, space: string) <- parse_tree_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid Tree type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("Tree requires mem(Space): ", decl_type), ""), "sect4");
+            true -> witness_matches_ordered_set_declaration(concat(concat(concat("OrderedSet[", item), ", "), concat(space, "]")), witness_fn_type, location)
+        }
+    }
+}
+
+fn witness_matches_undirected_graph_declaration(decl_type: string, node_fn_type: string, edge_data_fn_type: string, location: SourceLocation) -> TypeCheckResult {
+    (ok: bool, node: string, edge_data: string, space: string) <- parse_undirected_graph_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid UndirectedGraph type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("UndirectedGraph requires mem(Space): ", decl_type), ""), "sect4");
+            true -> case fn_type_witnesses_item(node_fn_type, node) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_node type ", node_fn_type), " does not witness UndirectedGraph node type "), node), ""), "sect4");
+                true -> case fn_type_witnesses_item(edge_data_fn_type, edge_data) of {
+                    false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_edge_data type ", edge_data_fn_type), " does not witness UndirectedGraph EdgeDataType "), edge_data), ""), "sect4");
+                    true -> type_checker_core@type_check_ok()
+                }
+            }
+        }
+    }
+}
+
+fn witness_matches_weighted_graph_declaration(
+    decl_type: string,
+    node_fn_type: string,
+    edge_data_fn_type: string,
+    weight_fn_type: string,
+    compare_weight_fn_type: string,
+    location: SourceLocation
+) -> TypeCheckResult {
+    (ok: bool, node: string, edge_data: string, weight: string, space: string) <- parse_weighted_graph_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid WeightedGraph type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("WeightedGraph requires mem(Space): ", decl_type), ""), "sect4");
+            true -> case fn_type_witnesses_item(node_fn_type, node) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_node type ", node_fn_type), " does not witness WeightedGraph node type "), node), ""), "sect4");
+                true -> case fn_type_witnesses_item(edge_data_fn_type, edge_data) of {
+                    false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_edge_data type ", edge_data_fn_type), " does not witness WeightedGraph EdgeDataType "), edge_data), ""), "sect4");
+                    true -> case fn_type_witnesses_edge_target(weight_fn_type, edge_data, weight) of {
+                        false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor edge_weight type ", weight_fn_type), " does not witness WeightedGraph weight type "), weight), ""), "sect4");
+                        true -> case fn_type_witnesses_item(compare_weight_fn_type, weight) of {
+                            false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_weight type ", compare_weight_fn_type), " does not witness WeightedGraph weight type "), weight), ""), "sect4");
+                            true -> type_checker_core@type_check_ok()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn witness_matches_priority_queue_declaration(decl_type: string, priority_fn_type: string, item_fn_type: string, location: SourceLocation) -> TypeCheckResult {
+    (ok: bool, priority: string, item: string, space: string) <- parse_priority_queue_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid PriorityQueue type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("PriorityQueue requires mem(Space): ", decl_type), ""), "sect4");
+            true -> case fn_type_witnesses_item(priority_fn_type, priority) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_priority type ", priority_fn_type), " does not witness PriorityQueue priority type "), priority), ""), "sect4");
+                true -> case fn_type_witnesses_item(item_fn_type, item) of {
+                    false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_item type ", item_fn_type), " does not witness PriorityQueue item type "), item), ""), "sect4");
+                    true -> type_checker_core@type_check_ok()
+                }
+            }
+        }
+    }
+}
+
+fn witness_matches_directed_graph_declaration(
+    decl_type: string,
+    node_fn_type: string,
+    edge_fn_type: string,
+    target_fn_type: string,
+    location: SourceLocation
+) -> TypeCheckResult {
+    (ok: bool, node: string, edge: string, space: string) <- parse_directed_graph_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid DirectedGraph type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("DirectedGraph requires mem(Space): ", decl_type), ""), "sect4");
+            true -> case fn_type_witnesses_item(node_fn_type, node) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_node type ", node_fn_type), " does not witness DirectedGraph node type "), node), ""), "sect4");
+                true -> case fn_type_witnesses_item(edge_fn_type, edge) of {
+                    false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_edge type ", edge_fn_type), " does not witness DirectedGraph edge type "), edge), ""), "sect4");
+                    true -> case fn_type_witnesses_edge_target(target_fn_type, edge, node) of {
+                        false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor edge_target type ", target_fn_type), " does not witness DirectedGraph edge/node types "), edge), ""), "sect4");
+                        true -> type_checker_core@type_check_ok()
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collection_return_accepts_ordered_set(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, item: string, _: string) <- parse_ordered_set_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_item", item, world)
+    }
+}
+
+fn collection_return_accepts_ordered_map(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, key: string, value: string, _: string) <- parse_ordered_map_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_key", key, world) and record_field_fn_witnesses_item_with_world(return_type, "compare_value", value, world)
+    }
+}
+
+fn collection_return_accepts_heap(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, item: string, _: string) <- parse_heap_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_item", item, world)
+    }
+}
+
+fn collection_return_accepts_search_tree(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, item: string, _: string) <- parse_search_tree_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_item", item, world)
+    }
+}
+
+fn collection_return_accepts_tree(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, item: string, _: string) <- parse_tree_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_item", item, world)
+    }
+}
+
+fn collection_return_accepts_undirected_graph(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, node: string, edge_data: string, _: string) <- parse_undirected_graph_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_node", node, world)
+            and record_field_fn_witnesses_item_with_world(return_type, "compare_edge_data", edge_data, world)
+    }
+}
+
+fn collection_return_accepts_weighted_graph(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, node: string, edge_data: string, weight: string, _: string) <- parse_weighted_graph_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_node", node, world)
+            and record_field_fn_witnesses_item_with_world(return_type, "compare_edge_data", edge_data, world)
+            and record_field_fn_witnesses_edge_target_with_world(return_type, "edge_weight", edge_data, weight, world)
+            and record_field_fn_witnesses_item_with_world(return_type, "compare_weight", weight, world)
+    }
+}
+
+fn collection_return_accepts_priority_queue(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, priority: string, item: string, _: string) <- parse_priority_queue_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_priority", priority, world)
+            and record_field_fn_witnesses_item_with_world(return_type, "compare_item", item, world)
+    }
+}
+
+fn collection_return_accepts_directed_graph(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, node: string, edge: string, _: string) <- parse_directed_graph_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_node", node, world)
+            and record_field_fn_witnesses_item_with_world(return_type, "compare_edge", edge, world)
+            and record_field_fn_witnesses_edge_target_with_world(return_type, "edge_target", edge, node, world)
+    }
+}
+
+fn record_field_fn_witnesses_edge_target_with_world(record_type: string, field: string, edge_type: string, node_type: string, world: ListNamedProgram) -> bool {
+    ft: string <- type_checker_record_types@find_field_type_in_record(record_type, field);
+    case len(ft) == 0 of {
+        true -> false;
+        false -> do
+            expected: string <- expected_edge_target_fn_type(edge_type, node_type);
+            fn_type_witnesses_edge_target(ft, edge_type, node_type)
+                or type_checker_lists@formal_type_accepts_actual(expected, ft, world)
+                or type_checker_lists@formal_type_accepts_actual(ft, expected, world)
+        end
+    }
+}
+
+fn collection_return_accepts_constructor(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    case is_ordered_set_type(decl_type) of {
+        true -> collection_return_accepts_ordered_set(decl_type, return_type, world);
+        false -> case is_ordered_map_type(decl_type) of {
+            true -> collection_return_accepts_ordered_map(decl_type, return_type, world);
+            false -> case is_heap_type(decl_type) of {
+                true -> collection_return_accepts_heap(decl_type, return_type, world);
+                false -> case is_search_tree_type(decl_type) of {
+                    true -> collection_return_accepts_search_tree(decl_type, return_type, world);
+                    false -> case is_tree_type(decl_type) of {
+                        true -> collection_return_accepts_tree(decl_type, return_type, world);
+                        false -> case is_priority_queue_type(decl_type) of {
+                            true -> collection_return_accepts_priority_queue(decl_type, return_type, world);
+                            false -> case is_directed_graph_type(decl_type) of {
+                                true -> collection_return_accepts_directed_graph(decl_type, return_type, world);
+                                false -> case is_undirected_graph_type(decl_type) of {
+                                    true -> collection_return_accepts_undirected_graph(decl_type, return_type, world);
+                                    false -> case is_weighted_graph_type(decl_type) of {
+                                        true -> collection_return_accepts_weighted_graph(decl_type, return_type, world);
+                                        false -> false
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collection_type_fits_concrete_record(collection_type: string, record_type: string, world: ListNamedProgram) -> bool {
+    collection_return_accepts_constructor(collection_type, record_type, world)
+}
+
+fn collection_type_fits_impl_parameter(collection_type: string, impl_param: string, world: ListNamedProgram) -> bool {
+    case collection_type_fits_concrete_record(collection_type, impl_param, world) of {
+        true -> true;
+        false -> type_checker_lists@formal_type_accepts_actual(impl_param, collection_type, world)
+    }
+}
+
+fn collection_param_type_for_trait_arg(collection_type: string, arg_index: int64) -> string {
+    case is_ordered_set_type(collection_type) of {
+        true -> do
+            (ok: bool, item: string, _: string) <- parse_ordered_set_type(collection_type);
+            case ok of { true -> item; false -> "" }
+        end;
+        false -> case is_ordered_map_type(collection_type) of {
+            true -> case arg_index of {
+                1 -> do
+                    (ok: bool, key: string, _: string, _: string) <- parse_ordered_map_type(collection_type);
+                    case ok of { true -> key; false -> "" }
+                end;
+                2 -> do
+                    (ok: bool, _: string, value: string, _: string) <- parse_ordered_map_type(collection_type);
+                    case ok of { true -> value; false -> "" }
+                end;
+                _: int64 -> ""
+            };
+            false -> case is_heap_type(collection_type) of {
+                true -> do
+                    (ok: bool, item: string, _: string) <- parse_heap_type(collection_type);
+                    case ok of { true -> item; false -> "" }
+                end;
+                false -> case is_directed_graph_type(collection_type) of {
+                    true -> case arg_index of {
+                        1 -> do
+                            (ok: bool, node: string, _: string, _: string) <- parse_directed_graph_type(collection_type);
+                            case ok of { true -> node; false -> "" }
+                        end;
+                        2 -> do
+                            (ok: bool, _: string, edge: string, _: string) <- parse_directed_graph_type(collection_type);
+                            case ok of { true -> edge; false -> "" }
+                        end;
+                        _: int64 -> ""
+                    };
+                    false -> case is_search_tree_type(collection_type) or is_tree_type(collection_type) or is_heap_type(collection_type) of {
+                        true -> do
+                            (ok: bool, item: string, _: string) <- case is_heap_type(collection_type) of {
+                                true -> parse_heap_type(collection_type);
+                                false -> case is_tree_type(collection_type) of {
+                                    true -> parse_tree_type(collection_type);
+                                    false -> parse_search_tree_type(collection_type)
+                                }
+                            };
+                            case ok of { true -> item; false -> "" }
+                        end;
+                        false -> case is_undirected_graph_type(collection_type) of {
+                            true -> case arg_index of {
+                                1 -> do
+                                    (ok: bool, node: string, _: string, _: string) <- parse_undirected_graph_type(collection_type);
+                                    case ok of { true -> node; false -> "" }
+                                end;
+                                2 -> do
+                                    (ok: bool, _: string, edge_data: string, _: string) <- parse_undirected_graph_type(collection_type);
+                                    case ok of { true -> edge_data; false -> "" }
+                                end;
+                                _: int64 -> ""
+                            };
+                            false -> case is_weighted_graph_type(collection_type) of {
+                                true -> case arg_index of {
+                                    1 -> do
+                                        (ok: bool, node: string, _: string, _: string, _: string) <- parse_weighted_graph_type(collection_type);
+                                        case ok of { true -> node; false -> "" }
+                                    end;
+                                    2 -> do
+                                        (ok: bool, _: string, edge_data: string, _: string, _: string) <- parse_weighted_graph_type(collection_type);
+                                        case ok of { true -> edge_data; false -> "" }
+                                    end;
+                                    3 -> do
+                                        (ok: bool, _: string, _: string, weight: string, _: string) <- parse_weighted_graph_type(collection_type);
+                                        case ok of { true -> weight; false -> "" }
+                                    end;
+                                    _: int64 -> ""
+                                };
+                                false -> case is_priority_queue_type(collection_type) of {
+                                    true -> case arg_index of {
+                                        1 -> do
+                                            (ok: bool, priority: string, _: string, _: string) <- parse_priority_queue_type(collection_type);
+                                            case ok of { true -> priority; false -> "" }
+                                        end;
+                                        2 -> do
+                                            (ok: bool, _: string, item: string, _: string) <- parse_priority_queue_type(collection_type);
+                                            case ok of { true -> item; false -> "" }
+                                        end;
+                                        _: int64 -> ""
+                                    };
+                                    false -> ""
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn is_assoc_type_placeholder(t: string) -> bool {
+    u: string <- strip_spaces_col(t);
+    u == "ItemType" or u == "KeyType" or u == "ValueType" or u == "SpaceType" or u == "SetType" or u == "MapType" or u == "HeapType" or u == "GraphType" or u == "QueueType" or u == "TreeType" or u == "NodeIdType" or u == "EdgePayloadType" or u == "EdgeDataType" or u == "PriorityType" or u == "WeightType" or u == "AccType"
+}
+
+fn collection_space_from_type(collection_type: string) -> string {
+    case is_ordered_set_type(collection_type) of {
+        true -> do
+            (ok: bool, _: string, space: string) <- parse_ordered_set_type(collection_type);
+            case ok of { true -> space; false -> "" }
+        end;
+        false -> case is_ordered_map_type(collection_type) of {
+            true -> do
+                (ok: bool, _: string, _: string, space: string) <- parse_ordered_map_type(collection_type);
+                case ok of { true -> space; false -> "" }
+            end;
+            false -> case is_heap_type(collection_type) of {
+                true -> do
+                    (ok: bool, _: string, space: string) <- parse_heap_type(collection_type);
+                    case ok of { true -> space; false -> "" }
+                end;
+                false -> case is_directed_graph_type(collection_type) of {
+                    true -> do
+                        (ok: bool, _: string, _: string, space: string) <- parse_directed_graph_type(collection_type);
+                        case ok of { true -> space; false -> "" }
+                    end;
+                    false -> case is_search_tree_type(collection_type) of {
+                        true -> do
+                            (ok: bool, _: string, space: string) <- parse_search_tree_type(collection_type);
+                            case ok of { true -> space; false -> "" }
+                        end;
+                        false -> case is_undirected_graph_type(collection_type) of {
+                            true -> do
+                                (ok: bool, _: string, _: string, space: string) <- parse_undirected_graph_type(collection_type);
+                                case ok of { true -> space; false -> "" }
+                            end;
+                            false -> case is_weighted_graph_type(collection_type) of {
+                                true -> do
+                                    (ok: bool, _: string, _: string, _: string, space: string) <- parse_weighted_graph_type(collection_type);
+                                    case ok of { true -> space; false -> "" }
+                                end;
+                                false -> case is_priority_queue_type(collection_type) of {
+                                    true -> do
+                                        (ok: bool, _: string, _: string, space: string) <- parse_priority_queue_type(collection_type);
+                                        case ok of { true -> space; false -> "" }
+                                    end;
+                                    false -> case is_tree_type(collection_type) of {
+                                        true -> do
+                                            (ok: bool, _: string, space: string) <- parse_tree_type(collection_type);
+                                            case ok of { true -> space; false -> "" }
+                                        end;
+                                        false -> record_runtime_space_from_region_field(collection_type)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn resolve_assoc_type_placeholder(placeholder: string, collection_type: string, param_index: int64) -> string {
+    p: string <- strip_spaces_col(placeholder);
+    case is_assoc_type_placeholder(p) of {
+        false -> p;
+        true -> case p == "ItemType" or p == "PriorityType" of {
+            true -> collection_param_type_for_trait_arg(collection_type, 1);
+            false -> case p == "KeyType" or p == "NodeIdType" of {
+                true -> collection_param_type_for_trait_arg(collection_type, 1);
+                false -> case p == "ValueType" or p == "EdgePayloadType" of {
+                    true -> collection_param_type_for_trait_arg(collection_type, 2);
+                    false -> case p == "SpaceType" of {
+                        true -> collection_space_from_type(collection_type);
+                        false -> case p == "SetType" of {
+                            true -> case is_ordered_set_type(collection_type) of { true -> collection_type; false -> "" };
+                            false -> case p == "MapType" of {
+                                true -> case is_ordered_map_type(collection_type) of { true -> collection_type; false -> "" };
+                                false -> case p == "HeapType" of {
+                                    true -> case is_heap_type(collection_type) of { true -> collection_type; false -> "" };
+                                    false -> case p == "GraphType" of {
+                                        true -> case is_directed_graph_type(collection_type) or is_undirected_graph_type(collection_type) or is_weighted_graph_type(collection_type) of { true -> collection_type; false -> "" };
+                                        false -> case p == "QueueType" or p == "TreeType" or p == "EdgeDataType" or p == "WeightType" or p == "AccType" of {
+                                            true -> collection_type;
+                                            false -> ""
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn resolve_trait_formal_type(formal: string, collection_type: string, param_index: int64) -> string {
+    f: string <- strip_spaces_col(formal);
+    case len(collection_type) == 0 of {
+        true -> f;
+        false -> case is_assoc_type_placeholder(f) of {
+            true -> resolve_assoc_type_placeholder(f, collection_type, param_index);
+            false -> f
+        }
+    }
+}
+
+fn witness_type_from_record_field(record_type: string, field: string) -> string {
+    ft: string <- type_checker_record_types@find_field_type_in_record(record_type, field);
+    case len(ft) == 0 of {
+        true -> "";
+        false -> do
+            (ok: bool, left: string, _: string) <- parse_fn_binary_param_types(ft);
+            case ok of { true -> left; false -> "" }
+        end
+    }
+}
+
+fn assoc_type_from_record_witness(placeholder: string, record_type: string) -> string {
+    p: string <- strip_spaces_col(placeholder);
+    case len(record_type) == 0 of {
+        true -> "";
+        false -> case p == "ItemType" or p == "PriorityType" of {
+            true -> case len(witness_type_from_record_field(record_type, "compare_priority")) > 0 of {
+                true -> witness_type_from_record_field(record_type, "compare_priority");
+                false -> witness_type_from_record_field(record_type, "compare_item")
+            };
+            false -> case p == "KeyType" or p == "NodeIdType" of {
+                true -> case len(witness_type_from_record_field(record_type, "compare_node")) > 0 of {
+                    true -> witness_type_from_record_field(record_type, "compare_node");
+                    false -> witness_type_from_record_field(record_type, "compare_key")
+                };
+                false -> case p == "ValueType" or p == "EdgePayloadType" of {
+                    true -> case len(witness_type_from_record_field(record_type, "compare_edge")) > 0 of {
+                        true -> witness_type_from_record_field(record_type, "compare_edge");
+                        false -> witness_type_from_record_field(record_type, "compare_value")
+                    };
+                    false -> ""
+                }
+            }
+        }
+    }
+}
+
+fn resolve_trait_formal_with_contexts(formal: string, collection_type: string, record_type: string, param_index: int64) -> string {
+    f: string <- strip_spaces_col(formal);
+    case is_assoc_type_placeholder(f) of {
+        true -> do
+            from_col: string <- case len(collection_type) > 0 of {
+                true -> resolve_assoc_type_placeholder(f, collection_type, param_index);
+                false -> ""
+            };
+            case len(from_col) > 0 of {
+                true -> from_col;
+                false -> do
+                    from_rec: string <- assoc_type_from_record_witness(f, record_type);
+                    case len(from_rec) > 0 of {
+                        true -> from_rec;
+                        // AccType is witnessed by the call's accumulator/result, not by a
+                        // collection receiver.  Leave the placeholder so AccType~AccType
+                        // matches inside trait impl bodies that forward to wbt_map@fold.
+                        false -> case f == "AccType" of {
+                            true -> "AccType";
+                            false -> ""
+                        }
+                    }
+                end
+            }
+        end;
+        // Composite formals (constructor records, fn types) may embed ItemType/KeyType/ValueType.
+        false -> case len(collection_type) > 0 of {
+            true -> resolve_constructor_call_formal(collection_type, formal);
+            false -> case len(record_type) > 0 of {
+                true -> resolve_constructor_call_formal(record_type, formal);
+                false -> f
+            }
+        }
+    }
+}
+
+fn replace_assoc_token_in_type(s: string, token: string, replacement: string) -> string {
+    case len(replacement) == 0 or len(token) == 0 of {
+        true -> s;
+        false -> replace_assoc_token_scan(s, token, replacement, 0, "")
+    }
+}
+
+fn replace_assoc_token_scan(s: string, token: string, replacement: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case i + len(token) <= len(s) and substring(s, i, i + len(token)) == token of {
+            true -> replace_assoc_token_scan(s, token, replacement, i + len(token), concat(acc, replacement));
+            false -> replace_assoc_token_scan(s, token, replacement, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn constructor_witness_type_for_placeholder(bind_type: string, placeholder: string) -> string {
+    case is_collection_trait_type(bind_type) of {
+        true -> resolve_assoc_type_placeholder(placeholder, bind_type, 1);
+        false -> do
+            // Full runtime records (root/region/specialization_key) and bare
+            // constructor records ({compare_key, compare_value}) both witness
+            // ItemType/KeyType/ValueType via their comparator fields.
+            from_rec: string <- assoc_type_from_record_witness(placeholder, bind_type);
+            case len(from_rec) > 0 of {
+                true -> from_rec;
+                false -> ""
+            }
+        end
+    }
+}
+
+fn resolve_constructor_call_formal(bind_type: string, formal: string) -> string {
+    case len(formal) == 0 of {
+        true -> formal;
+        false -> do
+            item_t: string <- constructor_witness_type_for_placeholder(bind_type, "ItemType");
+            key_t: string <- constructor_witness_type_for_placeholder(bind_type, "KeyType");
+            val_t: string <- constructor_witness_type_for_placeholder(bind_type, "ValueType");
+            s1: string <- replace_assoc_token_in_type(formal, "ItemType", item_t);
+            s2: string <- replace_assoc_token_in_type(s1, "KeyType", key_t);
+            replace_assoc_token_in_type(s2, "ValueType", val_t)
+        end
+    }
+}
+
+// AccType is not witnessed by a collection receiver.  It is bound by the
+// expected result of fold-like calls, so keep this substitution separate from
+// constructor witness resolution (which may receive a function or record type
+// as its bind_type for unrelated reasons).
+fn resolve_accumulator_call_formal(expected_type: string, formal: string) -> string {
+    e: string <- strip_spaces_col(expected_type);
+    case len(e) == 0 or e == "discard" or e == "AccType" of {
+        true -> formal;
+        false -> replace_assoc_token_in_type(formal, "AccType", expected_type)
+    }
+}
+
+fn infer_collection_decl_from_receiver(inferred: string, arg_expr: Expr, context_env: ListSymbolEntry) -> string {
+    inf: string <- strip_all_spaces_col(inferred);
+    case is_collection_trait_type(inf) of {
+        true -> inferred;
+        false -> case arg_expr.kind == 4 of {
+            true -> case arg_expr.inner.kind == 1 of {
+                true -> do
+                    (found: bool, bound: string) <- type_checker_core@lookup_symbol_found(context_env, arg_expr.inner.name);
+                    case found of {
+                        false -> "";
+                        true -> case is_collection_trait_type(bound) of { true -> bound; false -> "" }
+                    }
+                end;
+                false -> ""
+            };
+            false -> ""
+        }
+    }
+}
+
+fn find_collection_keyword_index(s: string, i: int64, kw: string) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case len(s) - i >= len(kw) and substring(s, i, i + len(kw)) == kw of {
+            true -> i;
+            false -> find_collection_keyword_index(s, i + 1, kw)
+        }
+    }
+}
+
+fn find_matching_closing_bracket_col(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "[" or c == "(" or c == "{" of {
+                true -> find_matching_closing_bracket_col(s, i + 1, depth + 1);
+                false -> case c == "]" or c == ")" or c == "}" of {
+                    true -> case depth == 1 of {
+                        true -> i;
+                        false -> find_matching_closing_bracket_col(s, i + 1, depth - 1)
+                    };
+                    false -> find_matching_closing_bracket_col(s, i + 1, depth)
+                }
+            }
+        end
+    }
+}
+
+fn validate_one_collection_surface(col_type: string, location: SourceLocation) -> TypeCheckResult {
+    case is_ordered_set_type(col_type) of {
+        true -> do
+            (ok: bool, _: string, space: string) <- parse_ordered_set_type(col_type);
+            case ok of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid OrderedSet type: ", col_type), ""), "sect4");
+                true -> case collection_space_has_mem_form(space) of {
+                    false -> type_checker_core@type_check_err("E2015", location, concat(concat("OrderedSet requires mem(Space): ", col_type), ""), "sect4");
+                    true -> type_checker_core@type_check_ok()
+                }
+            }
+        end;
+        false -> case is_ordered_map_type(col_type) of {
+            true -> do
+                (ok: bool, _: string, _: string, space: string) <- parse_ordered_map_type(col_type);
+                case ok of {
+                    false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid OrderedMap type: ", col_type), ""), "sect4");
+                    true -> case collection_space_has_mem_form(space) of {
+                        false -> type_checker_core@type_check_err("E2015", location, concat(concat("OrderedMap requires mem(Space): ", col_type), ""), "sect4");
+                        true -> type_checker_core@type_check_ok()
+                    }
+                }
+            end;
+            false -> case is_heap_type(col_type) of {
+                true -> do
+                    (ok: bool, _: string, space: string) <- parse_heap_type(col_type);
+                    case ok of {
+                        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid Heap type: ", col_type), ""), "sect4");
+                        true -> case collection_space_has_mem_form(space) of {
+                            false -> type_checker_core@type_check_err("E2015", location, concat(concat("Heap requires mem(Space): ", col_type), ""), "sect4");
+                            true -> type_checker_core@type_check_ok()
+                        }
+                    }
+                end;
+                false -> case is_directed_graph_type(col_type) of {
+                    true -> do
+                        (ok: bool, _: string, _: string, space: string) <- parse_directed_graph_type(col_type);
+                        case ok of {
+                            false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid DirectedGraph type: ", col_type), ""), "sect4");
+                            true -> case collection_space_has_mem_form(space) of {
+                                false -> type_checker_core@type_check_err("E2015", location, concat(concat("DirectedGraph requires mem(Space): ", col_type), ""), "sect4");
+                                true -> type_checker_core@type_check_ok()
+                            }
+                        }
+                    end;
+                    false -> case is_search_tree_type(col_type) of {
+                        true -> do
+                            (ok: bool, _: string, space: string) <- parse_search_tree_type(col_type);
+                            case ok of {
+                                false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid SearchTree type: ", col_type), ""), "sect4");
+                                true -> case collection_space_has_mem_form(space) of {
+                                    false -> type_checker_core@type_check_err("E2015", location, concat(concat("SearchTree requires mem(Space): ", col_type), ""), "sect4");
+                                    true -> type_checker_core@type_check_ok()
+                                }
+                            }
+                        end;
+                        false -> case is_undirected_graph_type(col_type) of {
+                            true -> do
+                                (ok: bool, _: string, _: string, space: string) <- parse_undirected_graph_type(col_type);
+                                case ok of {
+                                    false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid UndirectedGraph type: ", col_type), ""), "sect4");
+                                    true -> case collection_space_has_mem_form(space) of {
+                                        false -> type_checker_core@type_check_err("E2015", location, concat(concat("UndirectedGraph requires mem(Space): ", col_type), ""), "sect4");
+                                        true -> type_checker_core@type_check_ok()
+                                    }
+                                }
+                            end;
+                            false -> case is_weighted_graph_type(col_type) of {
+                                true -> do
+                                    (ok: bool, _: string, _: string, _: string, space: string) <- parse_weighted_graph_type(col_type);
+                                    case ok of {
+                                        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid WeightedGraph type: ", col_type), ""), "sect4");
+                                        true -> case collection_space_has_mem_form(space) of {
+                                            false -> type_checker_core@type_check_err("E2015", location, concat(concat("WeightedGraph requires mem(Space): ", col_type), ""), "sect4");
+                                            true -> type_checker_core@type_check_ok()
+                                        }
+                                    }
+                                end;
+                                false -> case is_priority_queue_type(col_type) of {
+                                    true -> do
+                                        (ok: bool, _: string, _: string, space: string) <- parse_priority_queue_type(col_type);
+                                        case ok of {
+                                            false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid PriorityQueue type: ", col_type), ""), "sect4");
+                                            true -> case collection_space_has_mem_form(space) of {
+                                                false -> type_checker_core@type_check_err("E2015", location, concat(concat("PriorityQueue requires mem(Space): ", col_type), ""), "sect4");
+                                                true -> type_checker_core@type_check_ok()
+                                            }
+                                        }
+                                    end;
+                                    false -> case is_tree_type(col_type) of {
+                                        true -> do
+                                            (ok: bool, _: string, space: string) <- parse_tree_type(col_type);
+                                            case ok of {
+                                                false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid Tree type: ", col_type), ""), "sect4");
+                                                true -> case collection_space_has_mem_form(space) of {
+                                                    false -> type_checker_core@type_check_err("E2015", location, concat(concat("Tree requires mem(Space): ", col_type), ""), "sect4");
+                                                    true -> type_checker_core@type_check_ok()
+                                                }
+                                            }
+                                        end;
+                                        false -> type_checker_core@type_check_ok()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn min_pos4(a: int64, b: int64, c: int64, d: int64) -> int64 {
+    m: int64 <- min_pos3(a, b, c);
+    case d < 0 of {
+        true -> m;
+        false -> case m < 0 of {
+            true -> d;
+            false -> case d < m of { true -> d; false -> m }
+        }
+    }
+}
+
+fn collection_keyword_len_at(s: string, pos: int64) -> int64 {
+    case pos >= 0 and len(s) - pos >= 15 and substring(s, pos, pos + 15) == "UndirectedGraph" of {
+        true -> 15;
+        false -> case pos >= 0 and len(s) - pos >= 13 and substring(s, pos, pos + 13) == "DirectedGraph" of {
+            true -> 13;
+            false -> case pos >= 0 and len(s) - pos >= 13 and substring(s, pos, pos + 13) == "WeightedGraph" of {
+                true -> 13;
+                false -> case pos >= 0 and len(s) - pos >= 13 and substring(s, pos, pos + 13) == "PriorityQueue" of {
+                    true -> 13;
+                    false -> case pos >= 0 and len(s) - pos >= 10 and substring(s, pos, pos + 10) == "OrderedSet" of {
+                        true -> 10;
+                        false -> case pos >= 0 and len(s) - pos >= 10 and substring(s, pos, pos + 10) == "OrderedMap" of {
+                            true -> 10;
+                            false -> case pos >= 0 and len(s) - pos >= 10 and substring(s, pos, pos + 10) == "SearchTree" of {
+                                true -> 10;
+                                false -> case pos >= 0 and len(s) - pos >= 4 and substring(s, pos, pos + 4) == "Heap" of {
+                                    true -> 4;
+                                    false -> case pos >= 0 and len(s) - pos >= 4 and substring(s, pos, pos + 4) == "Tree" of {
+                                        true -> 4;
+                                        false -> 0
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collection_keyword_valid_at(s: string, pos: int64, kw: string) -> bool {
+    case pos < 0 or len(s) - pos < len(kw) of {
+        true -> false;
+        false -> case substring(s, pos, pos + len(kw)) == kw of {
+            false -> false;
+            true -> case pos > 0 of {
+                true -> do
+                    prev: string <- substring(s, pos - 1, pos);
+                    case prev == "A" or prev == "B" or prev == "C" or prev == "D" or prev == "E" or prev == "F" or prev == "G" or prev == "H" or prev == "I" or prev == "J" or prev == "K" or prev == "L" or prev == "M" or prev == "N" or prev == "O" or prev == "P" or prev == "Q" or prev == "R" or prev == "S" or prev == "T" or prev == "U" or prev == "V" or prev == "W" or prev == "X" or prev == "Y" or prev == "Z" of {
+                        true -> false;
+                        false -> case prev == "a" or prev == "b" or prev == "c" or prev == "d" or prev == "e" or prev == "f" or prev == "g" or prev == "h" or prev == "i" or prev == "j" or prev == "k" or prev == "l" or prev == "m" or prev == "n" or prev == "o" or prev == "p" or prev == "q" or prev == "r" or prev == "s" or prev == "t" or prev == "u" or prev == "v" or prev == "w" or prev == "x" or prev == "y" or prev == "z" of {
+                            true -> false;
+                            false -> true
+                        }
+                    }
+                end;
+                false -> true
+            }
+        }
+    }
+}
+
+fn find_valid_collection_keyword_index(s: string, i: int64, kw: string) -> int64 {
+    raw: int64 <- find_collection_keyword_index(s, i, kw);
+    case raw < 0 of {
+        true -> -1;
+        false -> case collection_keyword_valid_at(s, raw, kw) of {
+            true -> raw;
+            false -> find_valid_collection_keyword_index(s, raw + 1, kw)
+        }
+    }
+}
+
+fn find_earliest_collection_keyword(s: string, i: int64) -> (int64, int64) {
+    pos_set: int64 <- find_valid_collection_keyword_index(s, i, "OrderedSet");
+    pos_map: int64 <- find_valid_collection_keyword_index(s, i, "OrderedMap");
+    pos_search: int64 <- find_valid_collection_keyword_index(s, i, "SearchTree");
+    pos_heap: int64 <- find_valid_collection_keyword_index(s, i, "Heap");
+    pos_dg: int64 <- find_valid_collection_keyword_index(s, i, "DirectedGraph");
+    pos_ug: int64 <- find_valid_collection_keyword_index(s, i, "UndirectedGraph");
+    pos_wg: int64 <- find_valid_collection_keyword_index(s, i, "WeightedGraph");
+    pos_pq: int64 <- find_valid_collection_keyword_index(s, i, "PriorityQueue");
+    pos_tree: int64 <- find_valid_collection_keyword_index(s, i, "Tree");
+    pos0123: int64 <- min_pos4(pos_set, pos_map, pos_search, pos_heap);
+    pos4567: int64 <- min_pos4(pos_dg, pos_ug, pos_wg, pos_pq);
+    pos: int64 <- min_pos3(pos0123, pos4567, pos_tree);
+    case pos < 0 of {
+        true -> (-1, 0);
+        false -> (pos, collection_keyword_len_at(s, pos))
+    }
+}
+
+fn validate_collection_in_type_string(s: string, location: SourceLocation, i: int64) -> TypeCheckResult {
+    case i >= len(s) of {
+        true -> type_checker_core@type_check_ok();
+        false -> do
+            (pos: int64, kw_len: int64) <- find_earliest_collection_keyword(s, i);
+            case pos < 0 of {
+                true -> type_checker_core@type_check_ok();
+                false -> do
+                    j: int64 <- skip_spaces_index_col(s, pos + kw_len);
+                    case j >= len(s) of {
+                        true -> validate_collection_in_type_string(s, location, pos + kw_len);
+                        false -> case substring(s, j, j + 1) == "[" of {
+                            false -> validate_collection_in_type_string(s, location, pos + kw_len);
+                            true -> do
+                                end_j: int64 <- find_matching_closing_bracket_col(s, j, 0);
+                                case end_j >= len(s) of {
+                                    true -> validate_collection_in_type_string(s, location, pos + kw_len);
+                                    false -> do
+                                        col_ty: string <- substring(s, pos, end_j + 1);
+                                        one_r: TypeCheckResult <- validate_one_collection_surface(col_ty, location);
+                                        case one_r.is_ok of {
+                                            false -> one_r;
+                                            true -> validate_collection_in_type_string(s, location, end_j + 1)
+                                        }
+                                    end
+                                }
+                            end
+                        }
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn min_pos3(a: int64, b: int64, c: int64) -> int64 {
+    case a < 0 of {
+        true -> case b < 0 of { true -> c; false -> case c < 0 of { true -> b; false -> case b < c of { true -> b; false -> c } } };
+        false -> case b < 0 of {
+            true -> case c < 0 of { true -> a; false -> case a < c of { true -> a; false -> c } };
+            false -> case c < 0 of {
+                true -> case a < b of { true -> a; false -> b };
+                false -> case a < b of {
+                    true -> case a < c of { true -> a; false -> c };
+                    false -> case b < c of { true -> b; false -> c }
+                }
+            }
+        }
+    }
+}
+
+fn validate_collection_type_declaration(type_str: string, location: SourceLocation) -> TypeCheckResult {
+    validate_collection_in_type_string(type_str, location, 0)
+}
+
+fn is_lookup_status_union_type(type_str: string) -> bool {
+    s: string <- strip_all_spaces_col(type_str);
+    case s == ":not_found|:found" of {
+        true -> true;
+        false -> s == ":found|:not_found"
+    }
+}
+
+fn record_type_has_field(type_str: string, field: string) -> bool {
+    ft: string <- type_checker_record_types@find_field_type_in_record(type_str, field);
+    len(ft) > 0
+}
+
+// Collection lookup/update results use { status: :not_found | :found, payload } per common_contract §6.
+// Only records with status plus a collection payload field (value or item) are validated; unrelated
+// records such as supervisor replies may also carry a status field with a different meaning.
+fn is_collection_lookup_result_record_shape(type_str: string) -> bool {
+    case record_type_has_field(type_str, "status") of {
+        false -> false;
+        true -> case record_type_has_field(type_str, "value") of {
+            true -> true;
+            false -> record_type_has_field(type_str, "item")
+        }
+    }
+}
+
+fn validate_lookup_result_record_type(type_str: string, location: SourceLocation) -> TypeCheckResult {
+    case is_collection_lookup_result_record_shape(type_str) of {
+        false -> type_checker_core@type_check_ok();
+        true -> do
+            status_type: string <- type_checker_record_types@find_field_type_in_record(type_str, "status");
+            case is_lookup_status_union_type(status_type) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat("collection lookup status must be :not_found | :found, got ", status_type), ""), "common_contract§6");
+                true -> case type_checker_record_types@count_record_fields(type_str) < 2 of {
+                    true -> type_checker_core@type_check_err("E2017", location, "collection lookup result record must include status and a separate payload field", "common_contract§6");
+                    false -> type_checker_core@type_check_ok()
+                }
+            }
+        end
+    }
+}
+
+fn validate_collection_result_type_declaration(type_str: string, location: SourceLocation) -> TypeCheckResult {
+    case type_checker_record_types@record_type_starts(type_str) of {
+        true -> validate_lookup_result_record_type(type_str, location);
+        false -> type_checker_core@type_check_ok()
+    }
+}
+
+struct ConstructorFieldList {
+    is_nil: bool,
+    head: string,
+    tail: ConstructorFieldList
+}
+
+fn empty_constructor_field_list() -> ConstructorFieldList {
+    nil_f: ConstructorFieldList <- ConstructorFieldList { is_nil: true, head: "", tail: nil_f };
+    nil_f
+}
+
+fn cons_constructor_field(s: string, tail: ConstructorFieldList) -> ConstructorFieldList {
+    ConstructorFieldList { is_nil: false, head: s, tail: tail }
+}
+
+fn constructor_field_list_contains(lst: ConstructorFieldList, name: string) -> bool {
+    case lst.is_nil of {
+        true -> false;
+        false -> case lst.head == name of {
+            true -> true;
+            false -> constructor_field_list_contains(lst.tail, name)
+        }
+    }
+}
+
+fn required_constructor_fields(bind_type: string) -> ConstructorFieldList {
+    case is_ordered_set_type(bind_type) of {
+        true -> cons_constructor_field("compare_item", empty_constructor_field_list());
+        false -> case is_search_tree_type(bind_type) of {
+            true -> cons_constructor_field("compare_item", empty_constructor_field_list());
+            false -> case is_ordered_map_type(bind_type) of {
+                true -> cons_constructor_field("compare_value", cons_constructor_field("compare_key", empty_constructor_field_list()));
+                false -> case is_heap_type(bind_type) of {
+                    true -> cons_constructor_field("compare_item", empty_constructor_field_list());
+                    false -> case is_tree_type(bind_type) of {
+                        true -> cons_constructor_field("compare_item", empty_constructor_field_list());
+                        false -> case is_priority_queue_type(bind_type) of {
+                            true -> cons_constructor_field("compare_item", cons_constructor_field("compare_priority", empty_constructor_field_list()));
+                            false -> case is_directed_graph_type(bind_type) of {
+                                true -> cons_constructor_field("edge_target", cons_constructor_field("compare_edge", cons_constructor_field("compare_node", empty_constructor_field_list())));
+                                false -> case is_undirected_graph_type(bind_type) of {
+                                    true -> cons_constructor_field("compare_edge_data", cons_constructor_field("compare_node", empty_constructor_field_list()));
+                                    false -> case is_weighted_graph_type(bind_type) of {
+                                        true -> cons_constructor_field("compare_weight", cons_constructor_field("edge_weight", cons_constructor_field("compare_edge_data", cons_constructor_field("compare_node", empty_constructor_field_list()))));
+                                        false -> empty_constructor_field_list()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn record_literal_field_names(expr: Expr, acc: ConstructorFieldList) -> ConstructorFieldList {
+    case expr.kind == 21 of {
+        true -> record_literal_field_names(expr.right_expr, cons_constructor_field(expr.name, acc));
+        false -> acc
+    }
+}
+
+fn validate_required_constructor_fields(required: ConstructorFieldList, provided: ConstructorFieldList, location: SourceLocation) -> TypeCheckResult {
+    case required.is_nil of {
+        true -> type_checker_core@type_check_ok();
+        false -> case constructor_field_list_contains(provided, required.head) of {
+            false -> type_checker_core@type_check_err("E2017", location, concat(concat("constructor record missing required field ", required.head), ""), "sect4");
+            true -> validate_required_constructor_fields(required.tail, provided, location)
+        }
+    }
+}
+
+fn validate_no_extra_constructor_fields(required: ConstructorFieldList, provided: ConstructorFieldList, location: SourceLocation) -> TypeCheckResult {
+    case provided.is_nil of {
+        true -> type_checker_core@type_check_ok();
+        false -> case constructor_field_list_contains(required, provided.head) of {
+            false -> type_checker_core@type_check_err("E2017", location, concat(concat("constructor record has unexpected field ", provided.head), ""), "sect4");
+            true -> validate_no_extra_constructor_fields(required, provided.tail, location)
+        }
+    }
+}
+
+fn validate_constructor_record_field_names(bind_type: string, record_expr: Expr, location: SourceLocation) -> TypeCheckResult {
+    required: ConstructorFieldList <- required_constructor_fields(bind_type);
+    case required.is_nil of {
+        true -> type_checker_core@type_check_ok();
+        false -> do
+            provided: ConstructorFieldList <- record_literal_field_names(record_expr, empty_constructor_field_list());
+            missing_ok: TypeCheckResult <- validate_required_constructor_fields(required, provided, location);
+            case missing_ok.is_ok of {
+                false -> missing_ok;
+                true -> validate_no_extra_constructor_fields(required, provided, location)
+            }
+        end
+    }
+}
+
+fn representation_id_from_module(module_name: string) -> int64 {
+    case module_name of {
+        "wbt_set" -> 1;
+        "StubWbtSet" -> 1;
+        "wbt_map" -> 2;
+        "StubWbtMap" -> 2;
+        "graph_wbt_directed" -> 3;
+        "StubGraphDirected" -> 3;
+        "graph_csr_directed" -> 10;
+        "graph_wbt_undirected" -> 4;
+        "StubGraphUndirected" -> 4;
+        "graph_csr_undirected" -> 11;
+        "graph_weighted" -> 5;
+        "StubGraphWeighted" -> 5;
+        "graph_dense_directed" -> 12;
+        "graph_dense_undirected" -> 13;
+        "brodal_okasaki_min" -> 6;
+        "StubHeap" -> 6;
+        "brodal_okasaki_max" -> 9;
+        "StubHeapMax" -> 9;
+        "brodal_okasaki_priority" -> 7;
+        "StubPriorityQueue" -> 7;
+        "tree_rose" -> 8;
+        "StubTreeRose" -> 8;
+        _: string -> 0
+    }
+}
+
+fn constructor_orientation_atom_lexeme(module_name: string) -> string {
+    case module_name of {
+        "StubHeapMax" -> ":max";
+        "brodal_okasaki_max" -> ":max";
+        _: string -> ":min"
+    }
+}
+
+fn constructor_field_list_length(lst: ConstructorFieldList) -> int64 {
+    case lst.is_nil of {
+        true -> 0;
+        false -> 1 + constructor_field_list_length(lst.tail)
+    }
+}
+
+fn constructor_field_at_index(lst: ConstructorFieldList, idx: int64) -> string {
+    case lst.is_nil of {
+        true -> "";
+        false -> case idx == 0 of {
+            true -> lst.head;
+            false -> constructor_field_at_index(lst.tail, idx - 1)
+        }
+    }
+}
+
+fn required_constructor_fields_for_module(module_name: string) -> ConstructorFieldList {
+    case module_name of {
+        "wbt_set" -> cons_constructor_field("compare_item", empty_constructor_field_list());
+        "StubWbtSet" -> cons_constructor_field("compare_item", empty_constructor_field_list());
+        "wbt_map" -> cons_constructor_field("compare_value", cons_constructor_field("compare_key", empty_constructor_field_list()));
+        "StubWbtMap" -> cons_constructor_field("compare_value", cons_constructor_field("compare_key", empty_constructor_field_list()));
+        "graph_wbt_directed" -> cons_constructor_field("edge_target", cons_constructor_field("compare_edge", cons_constructor_field("compare_node", empty_constructor_field_list())));
+        "StubGraphDirected" -> cons_constructor_field("edge_target", cons_constructor_field("compare_edge", cons_constructor_field("compare_node", empty_constructor_field_list())));
+        "graph_wbt_undirected" -> cons_constructor_field("compare_edge_data", cons_constructor_field("compare_node", empty_constructor_field_list()));
+        "StubGraphUndirected" -> cons_constructor_field("compare_edge_data", cons_constructor_field("compare_node", empty_constructor_field_list()));
+        "graph_weighted" -> cons_constructor_field("compare_weight", cons_constructor_field("edge_weight", cons_constructor_field("compare_edge_data", cons_constructor_field("compare_node", empty_constructor_field_list()))));
+        "StubGraphWeighted" -> cons_constructor_field("compare_weight", cons_constructor_field("edge_weight", cons_constructor_field("compare_edge_data", cons_constructor_field("compare_node", empty_constructor_field_list()))));
+        "brodal_okasaki_min" -> cons_constructor_field("compare_item", empty_constructor_field_list());
+        "StubHeap" -> cons_constructor_field("compare_item", empty_constructor_field_list());
+        "brodal_okasaki_max" -> cons_constructor_field("compare_item", empty_constructor_field_list());
+        "StubHeapMax" -> cons_constructor_field("compare_item", empty_constructor_field_list());
+        "brodal_okasaki_priority" -> cons_constructor_field("compare_item", cons_constructor_field("compare_priority", empty_constructor_field_list()));
+        "StubPriorityQueue" -> cons_constructor_field("compare_item", cons_constructor_field("compare_priority", empty_constructor_field_list()));
+        "tree_rose" -> cons_constructor_field("compare_item", empty_constructor_field_list());
+        "StubTreeRose" -> cons_constructor_field("compare_item", empty_constructor_field_list());
+        _: string -> empty_constructor_field_list()
+    }
+}
+
+fn constructor_ordering_field_count(bind_type: string) -> int64 {
+    required: ConstructorFieldList <- required_constructor_fields(bind_type);
+    constructor_field_list_length(required)
+}
+
+fn constructor_ordering_field_at(bind_type: string, idx: int64) -> string {
+    required: ConstructorFieldList <- required_constructor_fields(bind_type);
+    constructor_field_at_index(required, idx)
+}
+
+fn constructor_ordering_field_count_for_module(module_name: string) -> int64 {
+    required: ConstructorFieldList <- required_constructor_fields_for_module(module_name);
+    constructor_field_list_length(required)
+}
+
+fn constructor_ordering_field_at_for_module(module_name: string, idx: int64) -> string {
+    required: ConstructorFieldList <- required_constructor_fields_for_module(module_name);
+    constructor_field_at_index(required, idx)
+}
+
+fn bind_type_has_collection_runtime_fields(bind_type: string) -> bool {
+    key_ty: string <- type_checker_record_types@find_field_type_in_record(bind_type, "specialization_key");
+    region_ty: string <- type_checker_record_types@find_field_type_in_record(bind_type, "region");
+    len(key_ty) > 0 and len(region_ty) > 0
+}
+
+fn record_runtime_space_from_region_field(bind_type: string) -> string {
+    region_ty: string <- type_checker_record_types@find_field_type_in_record(bind_type, "region");
+    space: string <- type_checker_memory_regions@get_space_from_region_type(region_ty);
+    case len(space) == 0 of {
+        true -> "";
+        false -> concat(concat("mem(", space), ")")
+    }
+}
+
+fn is_registered_construction_module(module_name: string) -> bool {
+    representation_id_from_module(module_name) > 0
+}
+
+fn public_trait_family_tag(bind_type: string) -> int64 {
+    case is_ordered_set_type(bind_type) of {
+        true -> 1;
+        false -> case is_ordered_map_type(bind_type) of {
+            true -> 2;
+            false -> case is_search_tree_type(bind_type) of {
+                true -> 3;
+                false -> case is_heap_type(bind_type) of {
+                    true -> 4;
+                    false -> case is_directed_graph_type(bind_type) of {
+                        true -> 5;
+                        false -> case is_undirected_graph_type(bind_type) of {
+                            true -> 6;
+                            false -> case is_weighted_graph_type(bind_type) of {
+                                true -> 7;
+                                false -> case is_priority_queue_type(bind_type) of {
+                                    true -> 8;
+                                    false -> case is_tree_type(bind_type) of {
+                                        true -> 9;
+                                        false -> 0
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn combine_type_param_tags(a: int64, b: int64) -> int64 {
+    au: int64 <- case a == 0 of { true -> 1; false -> a };
+    bu: int64 <- case b == 0 of { true -> 1; false -> b };
+    (au * 16) + bu
+}
+
+fn space_tag_from_mem_space(space: string) -> int64 {
+    s: string <- strip_all_spaces_col(space);
+    case s == "mem(normal)" of {
+        true -> 1;
+        false -> case s == "mem(normal_writeback)" of {
+            true -> 2;
+            false -> case s == "mem(normal_writethrough)" of {
+                true -> 3;
+                false -> case s == "mem(normal_noncacheable)" of {
+                    true -> 4;
+                    false -> case s == "mem(atomic)" of {
+                        true -> 5;
+                        false -> case s == "mem(device)" of {
+                            true -> 6;
+                            false -> 0
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn record_constructor_field_compatible(expected_type: string, return_type: string, field_name: string, world: ListNamedProgram) -> bool {
+    expected_field: string <- type_checker_record_types@find_field_type_in_record(expected_type, field_name);
+    actual_field: string <- type_checker_record_types@find_field_type_in_record(return_type, field_name);
+    case len(expected_field) == 0 of {
+        true -> true;
+        false -> case len(actual_field) == 0 of {
+            true -> false;
+            false -> type_checker_lists@types_equal_strip(expected_field, actual_field)
+                or type_checker_lists@formal_type_accepts_actual(expected_field, actual_field, world)
+                or type_checker_lists@formal_type_accepts_actual(actual_field, expected_field, world)
+        }
+    }
+}
+
+fn runtime_record_accepts_constructor_return(expected_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    case bind_type_has_collection_runtime_fields(expected_type) and bind_type_has_collection_runtime_fields(return_type) of {
+        false -> false;
+        true ->
+            record_constructor_field_compatible(expected_type, return_type, "stored_root", world)
+            and record_constructor_field_compatible(expected_type, return_type, "root", world)
+            and record_constructor_field_compatible(expected_type, return_type, "stored_size", world)
+            and record_constructor_field_compatible(expected_type, return_type, "heap_size", world)
+            and record_constructor_field_compatible(expected_type, return_type, "compare_item", world)
+            and record_constructor_field_compatible(expected_type, return_type, "compare_key", world)
+            and record_constructor_field_compatible(expected_type, return_type, "compare_value", world)
+            and record_constructor_field_compatible(expected_type, return_type, "compare_priority", world)
+            and record_constructor_field_compatible(expected_type, return_type, "compare_node", world)
+            and record_constructor_field_compatible(expected_type, return_type, "compare_edge", world)
+            and record_constructor_field_compatible(expected_type, return_type, "compare_edge_data", world)
+            and record_constructor_field_compatible(expected_type, return_type, "compare_weight", world)
+            and record_constructor_field_compatible(expected_type, return_type, "edge_target", world)
+            and record_constructor_field_compatible(expected_type, return_type, "edge_weight", world)
+    }
+}
+
+fn type_param_tag(s: string) -> int64 {
+    t: string <- strip_spaces_col(s);
+    case t == "int64" of {
+        true -> 1;
+        false -> case t == "string" of {
+            true -> 2;
+            false -> case t == "unit" of {
+                true -> 3;
+                false -> 4
+            }
+        }
+    }
+}
+
+fn collection_type_param_tag(bind_type: string) -> int64 {
+    case is_ordered_set_type(bind_type) of {
+        true -> do
+            (ok: bool, item: string, _: string) <- parse_ordered_set_type(bind_type);
+            case ok of { true -> type_param_tag(item); false -> 0 }
+        end;
+        false -> case is_search_tree_type(bind_type) of {
+            true -> do
+                (ok: bool, item: string, _: string) <- parse_search_tree_type(bind_type);
+                case ok of { true -> type_param_tag(item); false -> 0 }
+            end;
+            false -> case is_heap_type(bind_type) of {
+                true -> do
+                    (ok: bool, item: string, _: string) <- parse_heap_type(bind_type);
+                    case ok of { true -> type_param_tag(item); false -> 0 }
+                end;
+                false -> case is_tree_type(bind_type) of {
+                    true -> do
+                        (ok: bool, item: string, _: string) <- parse_tree_type(bind_type);
+                        case ok of { true -> type_param_tag(item); false -> 0 }
+                    end;
+                    false -> case is_ordered_map_type(bind_type) of {
+                        true -> do
+                            (ok: bool, key: string, value: string, _: string) <- parse_ordered_map_type(bind_type);
+                            case ok of {
+                                true -> combine_type_param_tags(type_param_tag(key), type_param_tag(value));
+                                false -> 0
+                            }
+                        end;
+                        false -> case is_directed_graph_type(bind_type) of {
+                            true -> do
+                                (ok: bool, node: string, edge: string, _: string) <- parse_directed_graph_type(bind_type);
+                                case ok of {
+                                    true -> combine_type_param_tags(type_param_tag(node), type_param_tag(edge));
+                                    false -> 0
+                                }
+                            end;
+                            false -> case is_undirected_graph_type(bind_type) of {
+                                true -> do
+                                    (ok: bool, node: string, edge_data: string, _: string) <- parse_undirected_graph_type(bind_type);
+                                    case ok of {
+                                        true -> combine_type_param_tags(type_param_tag(node), type_param_tag(edge_data));
+                                        false -> 0
+                                    }
+                                end;
+                                false -> case is_weighted_graph_type(bind_type) of {
+                                    true -> do
+                                        (ok: bool, node: string, edge_data: string, weight: string, _: string) <- parse_weighted_graph_type(bind_type);
+                                        case ok of {
+                                            true -> combine_type_param_tags(combine_type_param_tags(type_param_tag(node), type_param_tag(edge_data)), type_param_tag(weight));
+                                            false -> 0
+                                        }
+                                    end;
+                                    false -> case is_priority_queue_type(bind_type) of {
+                                        true -> do
+                                            (ok: bool, priority: string, item: string, _: string) <- parse_priority_queue_type(bind_type);
+                                            case ok of {
+                                                true -> combine_type_param_tags(type_param_tag(priority), type_param_tag(item));
+                                                false -> 0
+                                            }
+                                        end;
+                                        false -> 0
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn record_binary_field_param_tag(bind_type: string, field_name: string) -> int64 {
+    fn_type: string <- type_checker_record_types@find_field_type_in_record(bind_type, field_name);
+    (ok: bool, left: string, _: string) <- parse_fn_binary_param_types(fn_type);
+    case ok of {
+        true -> type_param_tag(left);
+        false -> 0
+    }
+}
+
+fn record_collection_type_param_tag(bind_type: string, rep: int64) -> int64 {
+    case rep of {
+        1 -> record_binary_field_param_tag(bind_type, "compare_item");
+        2 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_key"),
+            record_binary_field_param_tag(bind_type, "compare_value")
+        );
+        3 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_node"),
+            record_binary_field_param_tag(bind_type, "compare_edge")
+        );
+        4 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_node"),
+            record_binary_field_param_tag(bind_type, "compare_edge_data")
+        );
+        5 -> combine_type_param_tags(
+            combine_type_param_tags(
+                record_binary_field_param_tag(bind_type, "compare_node"),
+                record_binary_field_param_tag(bind_type, "compare_edge_data")
+            ),
+            record_binary_field_param_tag(bind_type, "compare_weight")
+        );
+        6 -> record_binary_field_param_tag(bind_type, "compare_item");
+        7 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_priority"),
+            record_binary_field_param_tag(bind_type, "compare_item")
+        );
+        8 -> record_binary_field_param_tag(bind_type, "compare_item");
+        9 -> record_binary_field_param_tag(bind_type, "compare_item");
+        10 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_node"),
+            record_binary_field_param_tag(bind_type, "compare_edge")
+        );
+        11 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_node"),
+            record_binary_field_param_tag(bind_type, "compare_edge_data")
+        );
+        12 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_node"),
+            record_binary_field_param_tag(bind_type, "compare_edge")
+        );
+        13 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_node"),
+            record_binary_field_param_tag(bind_type, "compare_edge_data")
+        );
+        _: int64 -> 0
+    }
+}
+
+fn collection_specialization_key(bind_type: string, module_name: string) -> int64 {
+    rep: int64 <- representation_id_from_module(module_name);
+    case rep == 0 of {
+        true -> 0;
+        false -> do
+            family: int64 <- public_trait_family_tag(bind_type);
+            family_use: int64 <- case family == 0 of { true -> 1; false -> family };
+            space: string <- collection_space_from_type(bind_type);
+            st: int64 <- case len(space) == 0 of {
+                true -> 1;
+                false -> space_tag_from_mem_space(space)
+            };
+            public_tp: int64 <- collection_type_param_tag(bind_type);
+            tp: int64 <- case public_tp == 0 of {
+                true -> record_collection_type_param_tag(bind_type, rep);
+                false -> public_tp
+            };
+            tp_use: int64 <- case tp == 0 of { true -> 1; false -> tp };
+            (family_use * 16777216) + (rep * 65536) + (st * 256) + tp_use
+        end
+    }
+}
+
+fn collection_trait_accepts_module(bind_type: string, module_name: string) -> bool {
+    rep: int64 <- representation_id_from_module(module_name);
+    case rep == 0 of {
+        true -> false;
+        false -> case is_ordered_set_type(bind_type) of {
+            true -> rep == 1;
+            false -> case is_search_tree_type(bind_type) of {
+                true -> rep == 1;
+                false -> case is_ordered_map_type(bind_type) of {
+                    true -> rep == 2;
+                    false -> case is_heap_type(bind_type) of {
+                        true -> rep == 6 or rep == 9;
+                        false -> case is_priority_queue_type(bind_type) of {
+                            true -> rep == 7;
+                            false -> case is_directed_graph_type(bind_type) of {
+                                true -> rep == 3;
+                                false -> case is_undirected_graph_type(bind_type) of {
+                                    true -> rep == 4;
+                                    false -> case is_weighted_graph_type(bind_type) of {
+                                        true -> rep == 5;
+                                        false -> case is_tree_type(bind_type) of {
+                                            true -> rep == 8;
+                                            false -> false
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn module_name_from_qualified_call(call_name: string) -> string {
+    (mod_part: string, _: string) <- type_checker_core@split_module_qualified_call_name(call_name);
+    mod_part
+}
+
+fn is_collection_constructor_base_name(call_name: string) -> bool {
+    base: string <- type_checker_core@user_call_base_function_name(call_name);
+    base == "empty" or base == "with_root"
+}

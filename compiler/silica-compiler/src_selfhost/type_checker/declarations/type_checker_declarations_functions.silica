@@ -1,0 +1,318 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Capability: check function declaration (Declaration tag 0)
+// Adds function to symbol table, checks body expression
+// User-defined functions: store full function type (params -> return) for call resolution
+
+use parser_ast;
+use type_checker_core;
+use type_checker_expressions;
+use type_checker_memory_regions;
+use type_checker_recursion;
+use type_checker_lists;
+use type_checker_collections;
+use type_checker_expressions_actors;
+use type_checker_record_types;
+
+export add_function/2;
+export check_body/3;
+export build_function_type/1;
+
+// Build function type string "(T1,T2) -> R" from declaration. ListParam order: head=last param, tail=earlier params.
+fn param_types_str(params: ListParam) -> string {
+    case params.is_nil of {
+        true -> "";
+        false -> case params.tail.is_nil of {
+            true -> params.head.type_name;
+            false -> concat(concat(param_types_str(params.tail), ","), params.head.type_name)
+        }
+    }
+}
+
+// Exported for module export surface (§19.2) and cross-module type checking.
+fn build_function_type(decl: Declaration) -> string {
+    params_str: string <- param_types_str(decl.parameters);
+    case decl.parameters.is_nil of {
+        true -> concat("() -> ", decl.return_type_name);
+        false -> concat(concat(concat("(", params_str), ") -> "), decl.return_type_name)
+    }
+}
+
+// Add function name with full function type (params -> return) for call resolution. Used for first pass (all decls).
+fn add_function(decl: Declaration, context: TypeContext) -> TypeContext {
+    func_type: string <- build_function_type(decl);
+    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decl.name, func_type, decl.declared_effects, "");
+    type_checker_core@type_context_with_env(context, new_env)
+}
+
+fn add_params_to_context_loop(params: ListParam, context: TypeContext) -> TypeContext {
+    case params.is_nil of {
+        true -> context;
+        false -> do
+            p: Param <- params.head;
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, p.name, p.type_name, parser_ast@empty_effect_name_list(), "");
+            add_params_to_context_loop(params.tail, type_checker_core@type_context_with_env(context, new_env))
+        end
+    }
+}
+
+fn add_params_to_context(decl: Declaration, context: TypeContext) -> TypeContext {
+    add_params_to_context_loop(decl.parameters, context)
+}
+
+// Inline record param types `{ f: T, ... }` (§3.4.2): reject unbalanced `{` `}`.
+fn validate_record_type_string(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult {
+    case type_checker_record_types@record_type_starts(type_str) of {
+        false -> type_checker_core@type_check_ok();
+        true -> case type_checker_record_types@record_type_braces_balanced(type_str) of {
+            true -> type_checker_core@type_check_ok();
+            false -> type_checker_core@type_check_err("E2003", location, "malformed inline record type (unbalanced braces)", "sect3.4.2")
+        }
+    }
+}
+
+fn trim_left_type_text(s: string, i: int64) -> string {
+    case i >= len(s) of {
+        true -> "";
+        false -> case substring(s, i, i + 1) == " " or substring(s, i, i + 1) == "\t" or substring(s, i, i + 1) == "\n" or substring(s, i, i + 1) == "\r" of {
+            true -> trim_left_type_text(s, i + 1);
+            false -> substring(s, i, len(s))
+        }
+    }
+}
+
+fn trim_right_type_text(s: string, end_i: int64) -> string {
+    case end_i <= 0 of {
+        true -> "";
+        false -> case substring(s, end_i - 1, end_i) == " " or substring(s, end_i - 1, end_i) == "\t" or substring(s, end_i - 1, end_i) == "\n" or substring(s, end_i - 1, end_i) == "\r" of {
+            true -> trim_right_type_text(s, end_i - 1);
+            false -> substring(s, 0, end_i)
+        }
+    }
+}
+
+fn trim_type_text_local(s: string) -> string {
+    left: string <- trim_left_type_text(s, 0);
+    trim_right_type_text(left, len(left))
+}
+
+fn find_top_level_or_bar(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "|" and depth == 0 of {
+                true -> i;
+                false -> do
+                    d2: int64 <- case c == "(" or c == "{" or c == "[" of {
+                        true -> depth + 1;
+                        false -> case c == ")" or c == "}" or c == "]" of {
+                            true -> case depth > 0 of {
+                                true -> depth - 1;
+                                false -> 0
+                            };
+                            false -> depth
+                        }
+                    };
+                    find_top_level_or_bar(s, i + 1, d2)
+                end
+            }
+        end
+    }
+}
+
+fn return_type_has_top_level_or(type_str: string) -> bool {
+    find_top_level_or_bar(type_str, 0, 0) >= 0
+}
+
+fn return_or_part_is_atom(part: string) -> bool {
+    t: string <- trim_type_text_local(part);
+    len(t) > 1 and substring(t, 0, 1) == ":"
+}
+
+fn invalid_return_or_part(type_str: string) -> string {
+    invalid_return_or_part_from(type_str)
+}
+
+fn invalid_return_or_part_from(type_str: string) -> string {
+    t: string <- trim_type_text_local(type_str);
+    bar: int64 <- find_top_level_or_bar(t, 0, 0);
+    case bar < 0 of {
+        true -> case return_or_part_is_atom(t) of {
+            true -> "";
+            false -> t
+        };
+        false -> do
+            left: string <- substring(t, 0, bar);
+            case return_or_part_is_atom(left) of {
+                false -> trim_type_text_local(left);
+                true -> invalid_return_or_part_from(substring(t, bar + 1, len(t)))
+            }
+        end
+    }
+}
+
+fn validate_or_return_type(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult {
+    case return_type_has_top_level_or(type_str) of {
+        false -> type_checker_core@type_check_ok();
+        true -> do
+            bad: string <- invalid_return_or_part(type_str);
+            case len(bad) == 0 of {
+                true -> type_checker_core@type_check_ok();
+                false -> do
+                    msg: string <- concat(concat(concat("invalid OR return type ", type_str), "; OR'd return types are atom option lists, so every option must be an atom literal like :ok. Invalid option: "), bad);
+                    type_checker_core@type_check_err("E2003", location, msg, "sect4")
+                end
+            }
+        end
+    }
+}
+
+// Validate each param type (memory region types must be valid). Return first error or ok.
+fn validate_params_loop(params: ListParam) -> TypeCheckResult proc[DeviceIO] {
+    case params.is_nil of {
+        true -> type_checker_core@type_check_ok();
+        false -> do
+            rec_result: TypeCheckResult <- validate_record_type_string(params.head.type_name, params.head.location);
+            case rec_result.is_ok of {
+                false -> rec_result;
+                true -> do
+                    list_result: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(params.head.type_name, params.head.location);
+                    case list_result.is_ok of {
+                        false -> list_result;
+                        true -> do
+                            col_result: TypeCheckResult <- type_checker_collections@validate_collection_type_declaration(params.head.type_name, params.head.location);
+                            case col_result.is_ok of {
+                                false -> col_result;
+                                true -> do
+                                    result_result: TypeCheckResult <- type_checker_collections@validate_collection_result_type_declaration(params.head.type_name, params.head.location);
+                                    case result_result.is_ok of {
+                                        false -> result_result;
+                                        true -> case type_checker_memory_regions@is_memory_region_type(params.head.type_name) of {
+                                            true -> do
+                                                mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(params.head.type_name, params.head.location);
+                                                case mem_result.is_ok of {
+                                                    false -> mem_result;
+                                                    true -> validate_params_loop(params.tail)
+                                                }
+                                            end;
+                                            false -> validate_params_loop(params.tail)
+                                        }
+                                    }
+                                end
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+// Check function body. Context must already include all declarations (for mutual recursion).
+// Add parameters to context before checking body so param names are in scope.
+// For proc return types (T proc[E]), the body's expected type is T. The parser stores return_type_name as T.
+// Reject unit: not a valid return type per language design.
+// Validate memory region return types (ref, region, buf) before checking body.
+// Validate param types (memory region params) before checking body.
+fn check_body(decl: Declaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    params_result: TypeCheckResult <- validate_params_loop(decl.parameters);
+    case params_result.is_ok of {
+        false -> params_result;
+        true -> check_body_after_params(decl, context, world)
+    }
+}
+
+fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    context_with_params: TypeContext <- add_params_to_context(decl, context);
+    extended_env: ListSymbolEntry <- case type_checker_expressions_actors@is_actor_behavior_declaration(decl) of {
+        true -> type_checker_core@add_symbol(context_with_params.env, type_checker_expressions_actors@tc_in_behavior_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
+        false -> case decl.name == "main" of {
+            true -> type_checker_core@add_symbol(context_with_params.env, type_checker_expressions_actors@tc_in_main_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
+            false -> context_with_params.env
+        }
+    };
+    body_ctx: TypeContext <- type_checker_core@type_context_with_env(context_with_params, extended_env);
+    ret_rec: TypeCheckResult <- validate_record_type_string(decl.return_type_name, decl.return_type_location);
+    case ret_rec.is_ok of {
+        false -> ret_rec;
+        true -> do
+            ret_or: TypeCheckResult <- validate_or_return_type(decl.return_type_name, decl.return_type_location);
+            case ret_or.is_ok of {
+                false -> ret_or;
+                true -> do
+                    ret_list: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(decl.return_type_name, decl.return_type_location);
+                    case ret_list.is_ok of {
+                        false -> ret_list;
+                        true -> do
+                            ret_col: TypeCheckResult <- type_checker_collections@validate_collection_type_declaration(decl.return_type_name, decl.return_type_location);
+                            case ret_col.is_ok of {
+                                false -> ret_col;
+                                true -> do
+                                    ret_result: TypeCheckResult <- type_checker_collections@validate_collection_result_type_declaration(decl.return_type_name, decl.return_type_location);
+                                    case ret_result.is_ok of {
+                                        false -> ret_result;
+                                        true -> case decl.return_type_name == "unit" of {
+                                            true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
+                                            false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
+                                                true -> check_body_memory_region_return(decl, body_ctx, world);
+                                                false -> do
+                                                    body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, body_ctx, world);
+                                                    case body_result.is_ok of {
+                                                        false -> body_result;
+                                                        true -> do
+                                                            rec_result: TypeCheckResult <- type_checker_recursion@recursion_analyze_body(decl.body, decl.name);
+                                                            case rec_result.is_ok of {
+                                                                false -> rec_result;
+                                                                true -> type_checker_expressions_actors@check_behavior_no_self_recursion(decl)
+                                                            }
+                                                        end
+                                                    }
+                                                end
+                                            }
+                                        }
+                                    }
+                                end
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn check_body_memory_region_return(decl: Declaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(decl.return_type_name, decl.return_type_location);
+    case mem_result.is_ok of {
+        false -> mem_result;
+        true -> do
+            body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context, world);
+            case body_result.is_ok of {
+                false -> body_result;
+                true -> do
+                    rec_result: TypeCheckResult <- type_checker_recursion@recursion_analyze_body(decl.body, decl.name);
+                    case rec_result.is_ok of {
+                        false -> rec_result;
+                        true -> type_checker_expressions_actors@check_behavior_no_self_recursion(decl)
+                    }
+                end
+            }
+        end
+    }
+}
