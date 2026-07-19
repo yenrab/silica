@@ -84,13 +84,13 @@ fn asm_decimal_digit_char(c: string) -> bool {
 fn macho_global_sym_needs_underscore_prefix(raw: string) -> bool {
     case len(raw) > 0 of {
         false -> false;
-        true -> do
+        true -> {
             first: string <- substring(raw, 0, 1);
             case first == "L" of {
                 true -> true;
                 false -> asm_decimal_digit_char(first)
             }
-        end
+        }
     }
 }
 
@@ -124,14 +124,14 @@ fn asm_linkage_symbol_for_call(outer_reg: string, sir_callee: string) -> string 
     (qmod: string, qfn: string) <- split_qualified_callee(sir_callee);
     case len(qmod) > 0 of {
         true -> asm_symbol_for_definition(qmod, qual_fn_name_for_linkage(qfn));
-        false -> do
+        false -> {
             lm: string <- var@find_sp_binding(outer_reg, "_lm");
             mod: string <- case len(lm) > 0 of {
                 true -> lm;
                 false -> "main"
             };
             asm_symbol_for_definition(mod, qual_fn_name_for_linkage(sir_callee))
-        end
+        }
     }
 }
 
@@ -150,17 +150,17 @@ fn sir_name_from_export_fn_name(fn_name: string) -> string {
 fn emit_module_stack_prefix_record(module_name: string) -> string {
     case module_name == "__silica_runtime" of {
         true -> "";
-        false -> do
+        false -> {
             prefix: string <- concat(module_name, "_");
             label: string <- concat("_silica_modpfx_", module_name);
             hdr: string <- concat("\n.section __DATA,__silica_modpfx,cstring_literals\n.p2align 3\n.globl ", label);
             body: string <- concat(hdr, concat("\n", concat(label, concat(":\n    .asciz \"", concat(prefix, "\"\n")))));
             body
-        end
+        }
     }
 }
 
-fn module_defines_program_main_loop(fns: ListSIRFunction, module_name: string) -> bool {
+fn module_defines_program_main_loop(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], module_name: string) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case asm_symbol_for_definition(module_name, fns.head.name) == "main" of {
@@ -170,18 +170,18 @@ fn module_defines_program_main_loop(fns: ListSIRFunction, module_name: string) -
     }
 }
 
-fn module_defines_program_main(sir_module: SIRModule) -> bool {
+fn module_defines_program_main(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     module_defines_program_main_loop(sir_module.functions, sir_module.module_name)
 }
 
-fn format_used_modules_nonempty(uses: ListSirString) -> string {
+fn format_used_modules_nonempty(uses: List[string, mem(normal)]) -> string {
     case uses.tail.is_nil of {
         true -> uses.head;
         false -> concat(uses.head, concat(", ", format_used_modules_nonempty(uses.tail)))
     }
 }
 
-fn format_used_modules_comment(uses: ListSirString) -> string {
+fn format_used_modules_comment(uses: List[string, mem(normal)]) -> string {
     case uses.is_nil of {
         true -> "";
         false -> concat("    ; use ", concat(format_used_modules_nonempty(uses), "\n"))
@@ -195,53 +195,53 @@ fn format_used_modules_comment(uses: ListSirString) -> string {
 fn name_matches_export_surface(fn_name: string, surface: string) -> bool {
     case fn_name == surface of {
         true -> true;
-        false -> do
+        false -> {
             prefix: string <- concat(surface, "__");
             case len(fn_name) < len(prefix) of {
                 true -> false;
                 false -> substring(fn_name, 0, len(prefix)) == prefix
             }
-        end
+        }
     }
 }
 
-fn emit_globals_for_matching_functions(fns: ListSIRFunction, surface: string, module_name: string, acc: string) -> string {
+fn emit_globals_for_matching_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], surface: string, module_name: string, acc: string) -> string {
     case fns.is_nil of {
         true -> acc;
-        false -> do
+        false -> {
             next_acc: string <- case name_matches_export_surface(fns.head.name, surface) of {
-                true -> do
+                true -> {
                     sym: string <- asm_symbol_for_definition(module_name, fns.head.name);
                     concat(acc, concat(".global ", concat(sym, "\n")))
-                end;
+                };
                 false -> acc
             };
             emit_globals_for_matching_functions(fns.tail, surface, module_name, next_acc)
-        end
+        }
     }
 }
 
-fn emit_export_global_directives_loop(exps: ListSIRExportItem, fns: ListSIRFunction, module_name: string, acc: string) -> string {
+fn emit_export_global_directives_loop(exps: List[{ fn_name: string, arity: string }, mem(normal)], fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], module_name: string, acc: string) -> string {
     case exps.is_nil of {
         true -> acc;
-        false -> do
+        false -> {
             surface: string <- sir_name_from_export_fn_name(exps.head.fn_name);
             with_matches: string <- emit_globals_for_matching_functions(fns, surface, module_name, acc);
             // Fallback: if no SIR function matches (e.g. non-function export), still emit
             // a single .global for the surface name so legacy behavior is preserved.
             next_acc: string <- case len(with_matches) == len(acc) of {
-                true -> do
+                true -> {
                     sym: string <- asm_symbol_for_definition(module_name, surface);
                     concat(acc, concat(".global ", concat(sym, "\n")))
-                end;
+                };
                 false -> with_matches
             };
             emit_export_global_directives_loop(exps.tail, fns, module_name, next_acc)
-        end
+        }
     }
 }
 
-fn emit_export_global_directives(exports: ListSIRExportItem, fns: ListSIRFunction, module_name: string) -> string {
+fn emit_export_global_directives(exports: List[{ fn_name: string, arity: string }, mem(normal)], fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], module_name: string) -> string {
     emit_export_global_directives_loop(exports, fns, module_name, "")
 }
 
@@ -255,28 +255,28 @@ fn emit_export_global_directives(exports: ListSIRExportItem, fns: ListSIRFunctio
 // root FailureReporter bootstrap and unwind/handle_report delivery; pairs with `sir_module_to_text` / SIR `impl_failure_reporter`.
 // Supervisors Phase G (§15.4.8.4–8.7): no extra trait lines — link / monitor / demonitor are lowered in prims_actors; see
 // optional `; supervisors Phase G:` comment in emit_module_asm_prelude (emitter_core) when those prims appear.
-fn format_export_trait_names_comments_loop(names: ListSirString, acc: string) -> string {
+fn format_export_trait_names_comments_loop(names: List[string, mem(normal)], acc: string) -> string {
     case names.is_nil of {
         true -> acc;
         false -> format_export_trait_names_comments_loop(names.tail, concat(acc, concat("    ; export_trait ", concat(names.head, "\n"))))
     }
 }
 
-fn format_marker_impl_types_comments_loop(types: ListSirString, acc: string) -> string {
+fn format_marker_impl_types_comments_loop(types: List[string, mem(normal)], acc: string) -> string {
     case types.is_nil of {
         true -> acc;
         false -> format_marker_impl_types_comments_loop(types.tail, concat(acc, concat("    ; marker_impl ", concat(types.head, "\n"))))
     }
 }
 
-fn format_supervisor_impl_types_comments_loop(types: ListSirString, acc: string) -> string {
+fn format_supervisor_impl_types_comments_loop(types: List[string, mem(normal)], acc: string) -> string {
     case types.is_nil of {
         true -> acc;
         false -> format_supervisor_impl_types_comments_loop(types.tail, concat(acc, concat("    ; impl_supervisor ", concat(types.head, "\n"))))
     }
 }
 
-fn format_failure_reporter_impl_types_comments_loop(types: ListSirString, acc: string) -> string {
+fn format_failure_reporter_impl_types_comments_loop(types: List[string, mem(normal)], acc: string) -> string {
     case types.is_nil of {
         true -> acc;
         false -> format_failure_reporter_impl_types_comments_loop(types.tail, concat(acc, concat("    ; impl_failure_reporter ", concat(types.head, "\n"))))
@@ -290,17 +290,17 @@ fn format_one_supervisor_phase_e_comment(row: SIRSupervisorPhaseE) -> string {
     concat(p2, concat(row.init_return_sir, "\n"))
 }
 
-fn format_supervisor_phase_e_comments_loop(rows: ListSIRSupervisorPhaseE, acc: string) -> string {
+fn format_supervisor_phase_e_comments_loop(rows: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], acc: string) -> string {
     case rows.is_nil of {
         true -> acc;
-        false -> do
+        false -> {
             line: string <- format_one_supervisor_phase_e_comment(rows.head);
             format_supervisor_phase_e_comments_loop(rows.tail, concat(acc, line))
-        end
+        }
     }
 }
 
-fn format_one_required_sig_comment(s: SIRRequiredMethodSig) -> string {
+fn format_one_required_sig_comment(s: { name: string, param_names: string, param_types: string, return_type: string, effects: string }) -> string {
     p1: string <- concat("    ; required_fn ", s.name);
     p2: string <- concat(p1, " ");
     p3: string <- concat(p2, s.param_names);
@@ -312,13 +312,13 @@ fn format_one_required_sig_comment(s: SIRRequiredMethodSig) -> string {
     concat(p8, concat(s.effects, "\n"))
 }
 
-fn format_required_trait_sigs_comments_loop(sigs: ListSIRRequiredMethodSig, acc: string) -> string {
+fn format_required_trait_sigs_comments_loop(sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], acc: string) -> string {
     case sigs.is_nil of {
         true -> acc;
-        false -> do
+        false -> {
             line: string <- format_one_required_sig_comment(sigs.head);
             format_required_trait_sigs_comments_loop(sigs.tail, concat(acc, line))
-        end
+        }
     }
 }
 
@@ -328,7 +328,7 @@ fn supervisor_trampoline_top_level_comma_in_type(s: string, i: int64, depth: int
         true -> -1;
         false -> case depth == 0 and substring(s, i, i + 1) == "," of {
             true -> i;
-            false -> do
+            false -> {
                 c: string <- substring(s, i, i + 1);
                 d2: int64 <- case c == "(" of {
                     true -> depth + 1;
@@ -350,7 +350,7 @@ fn supervisor_trampoline_top_level_comma_in_type(s: string, i: int64, depth: int
                     }
                 };
                 supervisor_trampoline_top_level_comma_in_type(s, i + 1, d2)
-            end
+            }
         }
     }
 }
@@ -363,20 +363,20 @@ fn supervisor_init_sret_alloc_bytes(return_type_name: string) -> int64 {
         true -> 0;
         false -> case substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
             false -> 0;
-            true -> do
+            true -> {
                 inner: string <- prims_record@strip_spaces_rt(substring(t, 1, len(t) - 1));
                 comma: int64 <- supervisor_trampoline_top_level_comma_in_type(inner, 0, 0);
                 case comma < 0 of {
                     true -> 0;
-                    false -> do
+                    false -> {
                         first: string <- prims_record@strip_spaces_rt(substring(inner, 0, comma));
                         first_b: int64 <- prims_record@record_type_value_flat_byte_size(first);
                         list_b: int64 <- 8;
                         total: int64 <- first_b + list_b;
                         (total + 15) / 16 * 16
-                    end
+                    }
                 }
-            end
+            }
         }
     }
 }
@@ -408,29 +408,29 @@ fn format_one_supervisor_trampoline(module_name: string, actor_type: string, sre
     concat(header, body)
 }
 
-fn emit_supervisor_start_trampolines_phase_e_loop(module_name: string, rows: ListSIRSupervisorPhaseE, acc: string) -> string {
+fn emit_supervisor_start_trampolines_phase_e_loop(module_name: string, rows: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], acc: string) -> string {
     case rows.is_nil of {
         true -> acc;
-        false -> do
+        false -> {
             row: SIRSupervisorPhaseE <- rows.head;
             nb: int64 <- supervisor_init_sret_alloc_bytes(row.init_return_type_name);
             stanza: string <- format_one_supervisor_trampoline(module_name, row.actor_type, nb);
             emit_supervisor_start_trampolines_phase_e_loop(module_name, rows.tail, concat(acc, stanza))
-        end
+        }
     }
 }
 
-fn emit_supervisor_start_trampolines_loop(module_name: string, types: ListSirString, acc: string) -> string {
+fn emit_supervisor_start_trampolines_loop(module_name: string, types: List[string, mem(normal)], acc: string) -> string {
     case types.is_nil of {
         true -> acc;
-        false -> do
+        false -> {
             stanza: string <- format_one_supervisor_trampoline(module_name, types.head, 0);
             emit_supervisor_start_trampolines_loop(module_name, types.tail, concat(acc, stanza))
-        end
+        }
     }
 }
 
-fn emit_supervisor_start_trampolines(sir_module: SIRModule) -> string {
+fn emit_supervisor_start_trampolines(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> string {
     hdr: string <- "    ; supervisors Phase E (e3b): per-impl start trampolines (calls init + materialize children)\n";
     mod_name: string <- sir_module.module_name;
     case sir_module.supervisor_phase_e.is_nil of {
@@ -442,7 +442,7 @@ fn emit_supervisor_start_trampolines(sir_module: SIRModule) -> string {
     }
 }
 
-fn format_trait_metadata_comments(sir_module: SIRModule) -> string {
+fn format_trait_metadata_comments(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> string {
     t: string <- case sir_module.export_trait_names.is_nil of {
         true -> "";
         false -> format_export_trait_names_comments_loop(sir_module.export_trait_names, "")

@@ -60,18 +60,18 @@ export add_effect_if_absent/2;
 export expand_effect_list/2;
 export expand_single_effect/2;
 
-fn stamp_effect_locations(effects: ListEffectName, location: { file: string, line: int64, column: int64, offset: int64 }) -> ListEffectName {
+fn stamp_effect_locations(effects: ListEffectName, location: { file: string, line: int64, column: int64, offset: int64 }) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     case effects.is_nil of {
         true -> parser_ast@empty_effect_name_list();
-        false -> do
-            stamped_head: EffectName <- EffectName {
+        false -> {
+            stamped_head: EffectName <- {
                 name: effects.head.name,
                 parameter: effects.head.parameter,
                 location: location
             };
             stamped_tail: ListEffectName <- stamp_effect_locations(effects.tail, location);
             parser_ast@cons_effect_name(stamped_head, stamped_tail)
-        end
+        }
     }
 }
 
@@ -82,7 +82,7 @@ fn stamp_effect_locations(effects: ListEffectName, location: { file: string, lin
    For calls (kind 4): resolve callee effects (region ops use binding_type for Space), union with arg subtree.
    For let bindings (kind 6): pass expr.value (binding type) when recursing into RHS for region op effect extraction.
    Pure expressions contribute no effects (spec Section 9.3.1). -}
-fn collect_expr_effects(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> ListEffectName {
+fn collect_expr_effects(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             collect_expr_effects_with_binding(expr, ctx, "")
@@ -94,7 +94,7 @@ fn collect_expr_effects(expr: Expr, ctx: { fn_env: List[{ name: string, effects:
 {- Effects from calls that appear outside any sequence block (kind 11).
    Used for function-body E3001: nested sequence proc[...] blocks declare their own
    effects; those must not be attributed to the enclosing function body. -}
-fn collect_expr_effects_outside_sequence_blocks(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> ListEffectName {
+fn collect_expr_effects_outside_sequence_blocks(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             collect_expr_effects_outside_sequence_blocks_with_binding(expr, ctx, "")
@@ -103,41 +103,41 @@ fn collect_expr_effects_outside_sequence_blocks(expr: Expr, ctx: { fn_env: List[
     end
 }
 
-fn collect_expr_effects_outside_sequence_blocks_with_binding(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, binding_type: string) -> ListEffectName {
+fn collect_expr_effects_outside_sequence_blocks_with_binding(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, binding_type: string) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             case expr.kind == 11 of {
                 true -> parser_ast@empty_effect_name_list();
                 false -> case expr.kind == 4 of {
-                    true -> do
+                    true -> {
                         callee_effects: ListEffectName <- resolve_call_effects_with_binding(expr.name, ctx, expr.inner, binding_type, expr.location, expr.value, false);
                         arg_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "");
                         union_effect_lists(callee_effects, arg_effects)
-                    end;
+                    };
                     false -> case expr.kind == 3 of {
-                        true -> do
+                        true -> {
                             left_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "");
                             right_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, ctx, "");
                             union_effect_lists(left_effects, right_effects)
-                        end;
+                        };
                         false -> case expr.kind == 6 of {
-                            true -> do
+                            true -> {
                                 rhs_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, expr.value);
                                 next_type_env: List[{ name: string, type_name: string }, mem(normal)] <- effect_checker_core@add_type_entry(ctx.type_env, expr.name, expr.value);
                                 extended_ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram } <- effect_checker_core@effect_context_with_type_env(ctx, next_type_env);
                                 body_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, extended_ctx, "");
                                 union_effect_lists(rhs_effects, body_effects)
-                            end;
+                            };
                             false -> case expr.kind == 2 of {
                                 true -> collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type);
                                 false -> case expr.kind == 10 of {
-                                    true -> do
+                                    true -> {
                                         rhs_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "");
                                         body_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, ctx, "");
                                         union_effect_lists(rhs_effects, body_effects)
-                                    end;
+                                    };
                                     false -> case expr.kind == 20 of {
-                                        true -> do
+                                        true -> {
                                             lit_type_src: string <- case len(expr.value) > 0 of {
                                                 true -> expr.value;
                                                 false -> binding_type
@@ -145,13 +145,13 @@ fn collect_expr_effects_outside_sequence_blocks_with_binding(expr: Expr, ctx: { 
                                             lit_effects: ListEffectName <- effect_checker_lists@mem_effects_for_list_literal(lit_type_src, expr.location);
                                             rest_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "");
                                             union_effect_lists(lit_effects, rest_effects)
-                                        end;
+                                        };
                                         false -> case expr.kind == 13 of {
-                                            true -> do
+                                            true -> {
                                                 scrut_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "");
                                                 branch_effects: ListEffectName <- collect_case_branch_list_effects_outside(expr.right_expr, ctx);
                                                 union_effect_lists(scrut_effects, branch_effects)
-                                            end;
+                                            };
                                             false -> case expr.kind == 9 of {
                                                 true -> collect_tuple_literal_chain_effects_outside(expr, ctx, binding_type);
                                                 false -> case expr.kind == 21 of {
@@ -175,11 +175,11 @@ fn collect_expr_effects_outside_sequence_blocks_with_binding(expr: Expr, ctx: { 
     end
 }
 
-fn collect_expr_effects_with_binding(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, binding_type: string) -> ListEffectName {
+fn collect_expr_effects_with_binding(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, binding_type: string) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             case expr.kind == 4 of {
-                true -> do
+                true -> {
                     callee_effects: ListEffectName <- resolve_call_effects_with_binding(expr.name, ctx, expr.inner, binding_type, expr.location, expr.value, true);
                     binding_list_effects: ListEffectName <- case type_checker_core@user_call_base_function_name(expr.name) == "call_supervisor" of {
                         true -> parser_ast@empty_effect_name_list();
@@ -187,37 +187,37 @@ fn collect_expr_effects_with_binding(expr: Expr, ctx: { fn_env: List[{ name: str
                     };
                     arg_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
                     union_effect_lists(union_effect_lists(callee_effects, binding_list_effects), arg_effects)
-                end;
+                };
                 false -> case expr.kind == 3 of {
-                    true -> do
+                    true -> {
                         left_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
                         right_effects: ListEffectName <- collect_expr_effects_with_binding(expr.right_expr, ctx, "");
                         union_effect_lists(left_effects, right_effects)
-                    end;
+                    };
                     false -> case expr.kind == 6 of {
-                        true -> do
+                        true -> {
                             rhs_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, expr.value);
                             next_type_env: List[{ name: string, type_name: string }, mem(normal)] <- effect_checker_core@add_type_entry(ctx.type_env, expr.name, expr.value);
                                 extended_ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram } <- effect_checker_core@effect_context_with_type_env(ctx, next_type_env);
                             body_effects: ListEffectName <- collect_expr_effects_with_binding(expr.right_expr, extended_ctx, "");
                             union_effect_lists(rhs_effects, body_effects)
-                        end;
+                        };
                         false -> case expr.kind == 2 of {
                             true -> collect_expr_effects_with_binding(expr.inner, ctx, binding_type);
                             false -> case expr.kind == 10 of {
-                                true -> do
+                                true -> {
                                     rhs_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
                                     body_effects: ListEffectName <- collect_expr_effects_with_binding(expr.right_expr, ctx, "");
                                     union_effect_lists(rhs_effects, body_effects)
-                                end;
+                                };
                                 false -> case expr.kind == 11 of {
-                                    true -> do
+                                    true -> {
                                         body_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
                                         result_effects: ListEffectName <- collect_expr_effects_with_binding(expr.right_expr, ctx, "");
                                         union_effect_lists(body_effects, result_effects)
-                                    end;
+                                    };
                                     false -> case expr.kind == 20 of {
-                                        true -> do
+                                        true -> {
                                             lit_type_src: string <- case len(expr.value) > 0 of {
                                                 true -> expr.value;
                                                 false -> binding_type
@@ -225,13 +225,13 @@ fn collect_expr_effects_with_binding(expr: Expr, ctx: { fn_env: List[{ name: str
                                             lit_effects: ListEffectName <- effect_checker_lists@mem_effects_for_list_literal(lit_type_src, expr.location);
                                             rest_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
                                             union_effect_lists(lit_effects, rest_effects)
-                                        end;
+                                        };
                                         false -> case expr.kind == 13 of {
-                                            true -> do
+                                            true -> {
                                                 scrut_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
                                                 branch_effects: ListEffectName <- collect_case_branch_list_effects(expr.right_expr, ctx);
                                                 union_effect_lists(scrut_effects, branch_effects)
-                                            end;
+                                            };
                                             false -> case expr.kind == 9 of {
                                                 true -> collect_tuple_literal_chain_effects(expr, ctx, binding_type);
                                                 false -> case expr.kind == 21 of {
@@ -259,17 +259,17 @@ fn collect_expr_effects_with_binding(expr: Expr, ctx: { fn_env: List[{ name: str
 
 {- Right-nested chain of kind-9 nodes: inner = first element, right_expr = next element or tail Expr.
    Same spine shape as struct literals (kind 21); used for `(\.,\.[,])` and for then/else pair under kind 19 (union of branches). -}
-fn collect_tuple_literal_chain_effects(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, binding_type: string) -> ListEffectName {
+fn collect_tuple_literal_chain_effects(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, binding_type: string) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             case expr.kind == -1 of {
                 true -> parser_ast@empty_effect_name_list();
                 false -> case expr.kind == 9 of {
-                    true -> do
+                    true -> {
                         head_eff: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, binding_type);
                         tail_eff: ListEffectName <- collect_tuple_literal_chain_effects(expr.right_expr, ctx, binding_type);
                         union_effect_lists(head_eff, tail_eff)
-                    end;
+                    };
                     false -> collect_expr_effects_with_binding(expr, ctx, binding_type)
                 }
             }
@@ -278,17 +278,17 @@ fn collect_tuple_literal_chain_effects(expr: Expr, ctx: { fn_env: List[{ name: s
     end
 }
 
-fn collect_tuple_literal_chain_effects_outside(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, binding_type: string) -> ListEffectName {
+fn collect_tuple_literal_chain_effects_outside(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, binding_type: string) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             case expr.kind == -1 of {
                 true -> parser_ast@empty_effect_name_list();
                 false -> case expr.kind == 9 of {
-                    true -> do
+                    true -> {
                         head_eff: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type);
                         tail_eff: ListEffectName <- collect_tuple_literal_chain_effects_outside(expr.right_expr, ctx, binding_type);
                         union_effect_lists(head_eff, tail_eff)
-                    end;
+                    };
                     false -> collect_expr_effects_outside_sequence_blocks_with_binding(expr, ctx, binding_type)
                 }
             }
@@ -301,17 +301,17 @@ fn collect_tuple_literal_chain_effects_outside(expr: Expr, ctx: { fn_env: List[{
 
 {- Right-nested chain of kind-21 nodes: inner = field initializer, right_expr = next field or dummy.
    Union of effects from every field expression. -}
-fn collect_struct_literal_chain_effects(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, binding_type: string) -> ListEffectName {
+fn collect_struct_literal_chain_effects(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, binding_type: string) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             case expr.kind == -1 of {
                 true -> parser_ast@empty_effect_name_list();
                 false -> case expr.kind == 21 of {
-                    true -> do
+                    true -> {
                         head_eff: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, binding_type);
                         tail_eff: ListEffectName <- collect_struct_literal_chain_effects(expr.right_expr, ctx, binding_type);
                         union_effect_lists(head_eff, tail_eff)
-                    end;
+                    };
                     false -> collect_expr_effects_with_binding(expr, ctx, binding_type)
                 }
             }
@@ -320,17 +320,17 @@ fn collect_struct_literal_chain_effects(expr: Expr, ctx: { fn_env: List[{ name: 
     end
 }
 
-fn collect_struct_literal_chain_effects_outside(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, binding_type: string) -> ListEffectName {
+fn collect_struct_literal_chain_effects_outside(expr: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, binding_type: string) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             case expr.kind == -1 of {
                 true -> parser_ast@empty_effect_name_list();
                 false -> case expr.kind == 21 of {
-                    true -> do
+                    true -> {
                         head_eff: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type);
                         tail_eff: ListEffectName <- collect_struct_literal_chain_effects_outside(expr.right_expr, ctx, binding_type);
                         union_effect_lists(head_eff, tail_eff)
-                    end;
+                    };
                     false -> collect_expr_effects_outside_sequence_blocks_with_binding(expr, ctx, binding_type)
                 }
             }
@@ -342,7 +342,7 @@ fn collect_struct_literal_chain_effects_outside(expr: Expr, ctx: { fn_env: List[
 {- Resolve the effects of a called function by name.
    Lookup order: region builtins (alloc_region, alloc_ref, etc.), user-defined, then other builtins.
    Unknown functions are treated as pure (empty effects). -}
-fn resolve_call_effects(fn_name: string, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> ListEffectName {
+fn resolve_call_effects(fn_name: string, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             resolve_call_effects_with_binding(fn_name, ctx, parser_ast@dummy_expr(), "", parser_ast@zero_location(), "", true)
@@ -363,7 +363,7 @@ fn is_dangerous_module_name(name: string) -> boolean {
     }
 }
 
-fn external_danger_effect_singleton(location: { file: string, line: int64, column: int64, offset: int64 }) -> ListEffectName {
+fn external_danger_effect_singleton(location: { file: string, line: int64, column: int64, offset: int64 }) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     ed: EffectName <- { name: "external_danger", parameter: "", location: location };
     parser_ast@cons_effect_name(ed, parser_ast@empty_effect_name_list())
 }
@@ -372,10 +372,10 @@ fn first_arg_region_type(first_arg: Expr, ctx: { fn_env: List[{ name: string, ef
     sequence proc[mem(normal)]
         result: string <-
             case first_arg.kind == 1 of {
-                true -> do
+                true -> {
                     (found: boolean, typ: string) <- effect_checker_core@lookup_type_entry(ctx.type_env, first_arg.name);
                     case found of { true -> typ; false -> "" }
-                end;
+                };
                 false -> ""
             }
     produces
@@ -386,7 +386,7 @@ fn first_arg_region_type(first_arg: Expr, ctx: { fn_env: List[{ name: string, ef
 {- generic_value: kind-4 call value field (generic instantiation text), empty if none.
    include_foreign_c_wrapper_effects: when false, raw foreign c_wrapper calls are treated as pure
    (adapter stubs may call them outside sequence blocks; dangerous_* module calls still carry external_danger). -}
-fn resolve_call_effects_with_binding(fn_name: string, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, first_arg: Expr, binding_type: string, location: { file: string, line: int64, column: int64, offset: int64 }, generic_value: string, include_foreign_c_wrapper_effects: boolean) -> ListEffectName {
+fn resolve_call_effects_with_binding(fn_name: string, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }, first_arg: Expr, binding_type: string, location: { file: string, line: int64, column: int64, offset: int64 }, generic_value: string, include_foreign_c_wrapper_effects: boolean) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             case effect_checker_lists@is_list_primitive_fn(fn_name) of {
@@ -398,21 +398,21 @@ fn resolve_call_effects_with_binding(fn_name: string, ctx: { fn_env: List[{ name
                     false -> case fn_name == "ordering_identity_fresh_env" or fn_name == "ordering_identity_materialize" or fn_name == "ordering_identity_same" or fn_name == "ordering_identity_bundle_make" of {
                     true -> parser_ast@empty_effect_name_list();
                     false -> case effect_checker_memory_regions@is_region_builtin_fn(fn_name) of {
-                    true -> do
+                    true -> {
                         first_arg_type: string <- first_arg_region_type(first_arg, ctx);
                         (handled: boolean, region_effects: ListEffectName) <- effect_checker_memory_regions@get_region_call_effects(fn_name, first_arg, first_arg_type, binding_type, location);
                         case handled of {
                             true -> stamp_effect_locations(region_effects, location);
                             false -> parser_ast@empty_effect_name_list()
                         }
-                    end;
-                    false -> do
+                    };
+                    false -> {
                         case type_checker_core@call_name_is_module_qualified(fn_name) of {
-                            true -> do
+                            true -> {
                                 (qmod: string, _: string) <- type_checker_core@split_module_qualified_call_name(fn_name);
                                 case is_dangerous_module_name(qmod) of {
                                     true -> stamp_effect_locations(external_danger_effect_singleton(location), location);
-                                    false -> do
+                                    false -> {
                                         base: string <- type_checker_core@user_call_base_function_name(fn_name);
                                         resolved: string <- instantiated_fn_name@resolve_call_fn_name(base, generic_value);
                                         (found_mod: boolean, mod_prog: Program) <- parser_ast@find_named_program(qmod, ctx.world);
@@ -430,55 +430,55 @@ fn resolve_call_effects_with_binding(fn_name: string, ctx: { fn_env: List[{ name
                                         };
                                         case effect_checker_core@effect_list_length(resolved_mq_effects) > 0 of {
                                             true -> stamp_effect_locations(expand_effect_list(resolved_mq_effects, ctx.alias_env), location);
-                                            false -> do
+                                            false -> {
                                                 (found_local: boolean, local_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(ctx.fn_env, resolved);
                                                 case found_local of {
                                                     true -> stamp_effect_locations(expand_effect_list(local_effects, ctx.alias_env), location);
-                                                    false -> do
+                                                    false -> {
                                                         (found_builtin_mq: boolean, builtin_mq_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(base);
                                                         case found_builtin_mq of {
                                                             true -> stamp_effect_locations(builtin_mq_effects, location);
                                                             false -> parser_ast@empty_effect_name_list()
                                                         }
-                                                    end
+                                                    }
                                                 }
-                                            end
+                                            }
                                         }
-                                    end
+                                    }
                                 }
-                            end;
-                            false -> do
+                            };
+                            false -> {
                                 (found_user: boolean, user_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(ctx.fn_env, fn_name);
                                 case found_user of {
                                     true -> stamp_effect_locations(expand_effect_list(user_effects, ctx.alias_env), location);
-                                    false -> do
+                                    false -> {
                                         case include_foreign_c_wrapper_effects of {
-                                            true -> do
+                                            true -> {
                                                 (found_foreign: boolean, _: ListEffectName) <- effect_checker_core@lookup_fn_effects(ctx.foreign_c_wrapper_env, fn_name);
                                                 case found_foreign of {
                                                     true -> stamp_effect_locations(external_danger_effect_singleton(location), location);
-                                                    false -> do
+                                                    false -> {
                                                         (found_builtin: boolean, builtin_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(fn_name);
                                                         case found_builtin of {
                                                             true -> stamp_effect_locations(builtin_effects, location);
                                                             false -> parser_ast@empty_effect_name_list()
                                                         }
-                                                    end
+                                                    }
                                                 }
-                                            end;
-                                            false -> do
+                                            };
+                                            false -> {
                                                 (found_builtin: boolean, builtin_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(fn_name);
                                                 case found_builtin of {
                                                     true -> stamp_effect_locations(builtin_effects, location);
                                                     false -> parser_ast@empty_effect_name_list()
                                                 }
-                                            end
+                                            }
                                         }
-                                    end
+                                    }
                                 }
-                            end
+                            }
                         }
-                    end
+                    }
                 }
             }
             }
@@ -490,15 +490,15 @@ fn resolve_call_effects_with_binding(fn_name: string, ctx: { fn_env: List[{ name
 }
 
 {- kind 17 branch list: inner is kind 18 branch; right_expr is next 17 or dummy. -}
-fn collect_single_case_branch_effects(branch: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> ListEffectName {
+fn collect_single_case_branch_effects(branch: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             case branch.kind == 18 of {
-                true -> do
+                true -> {
                     pat_effects: ListEffectName <- effect_checker_lists@mem_effects_from_case_pattern(branch.value, branch.location);
                     rhs_effects: ListEffectName <- collect_expr_effects_with_binding(branch.right_expr, ctx, "");
                     union_effect_lists(pat_effects, rhs_effects)
-                end;
+                };
                 false -> collect_expr_effects_with_binding(branch, ctx, "")
             }
     produces
@@ -506,17 +506,17 @@ fn collect_single_case_branch_effects(branch: Expr, ctx: { fn_env: List[{ name: 
     end
 }
 
-fn collect_case_branch_list_effects(branches: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> ListEffectName {
+fn collect_case_branch_list_effects(branches: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             case branches.kind == -1 of {
                 true -> parser_ast@empty_effect_name_list();
                 false -> case branches.kind == 17 of {
-                    true -> do
+                    true -> {
                         one: ListEffectName <- collect_single_case_branch_effects(branches.inner, ctx);
                         rest: ListEffectName <- collect_case_branch_list_effects(branches.right_expr, ctx);
                         union_effect_lists(one, rest)
-                    end;
+                    };
                     false -> parser_ast@empty_effect_name_list()
                 }
             }
@@ -527,7 +527,7 @@ fn collect_case_branch_list_effects(branches: Expr, ctx: { fn_env: List[{ name: 
 
 {- Case branch RHS only: List[..., mem(S)] in pattern text is a type annotation for
    the type checker and E3011 alignment inside sequence blocks, not list allocation. -}
-fn collect_single_case_branch_effects_outside(branch: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> ListEffectName {
+fn collect_single_case_branch_effects_outside(branch: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             case branch.kind == 18 of {
@@ -539,17 +539,17 @@ fn collect_single_case_branch_effects_outside(branch: Expr, ctx: { fn_env: List[
     end
 }
 
-fn collect_case_branch_list_effects_outside(branches: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> ListEffectName {
+fn collect_case_branch_list_effects_outside(branches: Expr, ctx: { fn_env: List[{ name: string, effects: ListEffectName }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: ListEffectName }, mem(normal)], alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: ListNamedProgram }) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             case branches.kind == -1 of {
                 true -> parser_ast@empty_effect_name_list();
                 false -> case branches.kind == 17 of {
-                    true -> do
+                    true -> {
                         one: ListEffectName <- collect_single_case_branch_effects_outside(branches.inner, ctx);
                         rest: ListEffectName <- collect_case_branch_list_effects_outside(branches.right_expr, ctx);
                         union_effect_lists(one, rest)
-                    end;
+                    };
                     false -> parser_ast@empty_effect_name_list()
                 }
             }
@@ -563,18 +563,18 @@ fn collect_case_branch_list_effects_outside(branches: Expr, ctx: { fn_env: List[
 {- Compute the union of two effect lists (no duplicates).
    For each effect in list_a, add to list_b if not already present.
    Normalizes effects before comparison. -}
-fn union_effect_lists(list_a: ListEffectName, list_b: ListEffectName) -> ListEffectName {
+fn union_effect_lists(list_a: ListEffectName, list_b: ListEffectName) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     case list_a.is_nil of {
         true -> list_b;
-        false -> do
+        false -> {
             merged: ListEffectName <- add_effect_if_absent(list_b, effect_checker_core@normalize_effect(list_a.head));
             union_effect_lists(list_a.tail, merged)
-        end
+        }
     }
 }
 
 {- Add an effect to the list if it is not already present (by equality after normalization). -}
-fn add_effect_if_absent(list: ListEffectName, eff: EffectName) -> ListEffectName {
+fn add_effect_if_absent(list: ListEffectName, eff: EffectName) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     case effect_checker_core@effect_list_contains(list, eff) of {
         true -> list;
         false -> parser_ast@cons_effect_name(eff, list)
@@ -586,16 +586,16 @@ fn add_effect_if_absent(list: ListEffectName, eff: EffectName) -> ListEffectName
 {- Expand all aliases in an effect list.
    Each effect that is a built-in alias or user-defined alias is replaced
    by its expansion. Built-in effects pass through unchanged. -}
-fn expand_effect_list(effects: ListEffectName, alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)]) -> ListEffectName {
+fn expand_effect_list(effects: ListEffectName, alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)]) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         result: ListEffectName <-
             case effects.is_nil of {
                 true -> parser_ast@empty_effect_name_list();
-                false -> do
+                false -> {
                     expanded_head: ListEffectName <- expand_single_effect(effects.head, alias_env);
                     expanded_tail: ListEffectName <- expand_effect_list(effects.tail, alias_env);
                     union_effect_lists(expanded_head, expanded_tail)
-                end
+                }
             }
     produces
         pure result
@@ -606,26 +606,26 @@ fn expand_effect_list(effects: ListEffectName, alias_env: List[{ name: string, e
    If it is a built-in alias, return its expansion.
    If it is a user-defined alias, return its expansion.
    Otherwise, return as singleton list (will be caught by validation). -}
-fn expand_single_effect(eff: EffectName, alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)]) -> ListEffectName {
+fn expand_single_effect(eff: EffectName, alias_env: List[{ name: string, effects: ListEffectName }, mem(normal)]) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
     sequence proc[mem(normal)]
         norm: EffectName <- effect_checker_core@normalize_effect(eff);
         result: ListEffectName <- case effect_checker_core@is_builtin_effect(norm) of {
             true -> parser_ast@cons_effect_name(norm, parser_ast@empty_effect_name_list());
             false -> case effect_checker_core@is_builtin_alias_name(norm.name) of {
-                true -> do
+                true -> {
                     (found_alias: boolean, alias_effects: ListEffectName) <- effect_checker_core@expand_builtin_alias(norm.name);
                     case found_alias of {
                         true -> alias_effects;
                         false -> parser_ast@cons_effect_name(norm, parser_ast@empty_effect_name_list())
                     }
-                end;
-                false -> do
+                };
+                false -> {
                     (found_user: boolean, user_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(alias_env, norm.name);
                     case found_user of {
                         true -> user_effects;
                         false -> parser_ast@cons_effect_name(norm, parser_ast@empty_effect_name_list())
                     }
-                end
+                }
             }
         }
     produces

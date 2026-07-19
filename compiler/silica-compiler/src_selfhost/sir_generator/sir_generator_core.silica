@@ -16,7 +16,7 @@
 -}
 
 // Core sir_generator infrastructure (base)
-// Entry point: Program + TypeContext -> SIRModule (internal representation)
+// Entry point: Program + { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } -> SIRModule (internal representation)
 // Core+extensions pattern: orchestrates via dispatchers; no AST construct knowledge
 // §19: module name (filename stem and/or explicit `module`), `use`, `export` recorded on SIRModule
 
@@ -114,13 +114,13 @@ fn runtime_dependencies_for_sir(fns: ListSIRFunction, sup_impls: ListSirString) 
 fn module_name_for_sir(compilation_unit: string, decls: ListDeclaration) -> string {
     case len(compilation_unit) > 0 of {
         true -> compilation_unit;
-        false -> do
+        false -> {
             ex: string <- explicit_module_decl_name(decls);
             case len(ex) > 0 of {
                 true -> ex;
                 false -> "main"
             }
-        end
+        }
     }
 }
 
@@ -161,10 +161,10 @@ fn collect_used_modules(decls: ListDeclaration) -> ListSirString {
 fn params_to_export_items(params: ListParam) -> ListSIRExportItem {
     case params.is_nil of {
         true -> sir_ast@nil_sir_exports();
-        false -> do
+        false -> {
             item: SIRExportItem <- SIRExportItem { fn_name: params.head.name, arity: params.head.type_name };
             sir_ast@cons_sir_export(item, params_to_export_items(params.tail))
-        end
+        }
     }
 }
 
@@ -188,7 +188,7 @@ fn collect_exports(decls: ListDeclaration) -> ListSIRExportItem {
 // Build SIR for a Program. Returns SIRModule (internal representation).
 // Precondition: type checking has succeeded; AST has no dummy nodes in traversed paths.
 // Uses compilation unit name "" (see emit_program_for_unit).
-fn emit_program(program: Program, context: TypeContext) -> SIRModule proc[mem(normal)] {
+fn emit_program(program: Program, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }) -> SIRModule proc[mem(normal)] {
     emit_program_for_unit(program, context, "")
 }
 
@@ -202,14 +202,14 @@ fn sir_string_list_to_csv(list: ListSirString) -> string {
     }
 }
 
-fn emit_program_for_unit(program: Program, context: TypeContext, compilation_unit: string) -> SIRModule proc[mem(normal)] {
+fn emit_program_for_unit(program: Program, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, compilation_unit: string) -> SIRModule proc[mem(normal)] {
     emit_program_for_unit_with_link_libraries(program, context, compilation_unit, sir_ast@nil_sir_strings())
 }
 
-fn emit_program_for_unit_with_link_libraries(program: Program, context: TypeContext, compilation_unit: string, link_libraries: ListSirString) -> SIRModule proc[mem(normal)] {
+fn emit_program_for_unit_with_link_libraries(program: Program, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, compilation_unit: string, link_libraries: ListSirString) -> SIRModule proc[mem(normal)] {
     sup_impls: ListSirString <- traits@collect_supervisor_impl_types(program.declarations);
     sup_csv: string <- sir_string_list_to_csv(sup_impls);
-    ctx_emit: TypeContext <- type_checker_core@type_context_with_supervisor_types(context, sup_csv);
+    ctx_emit: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_core@type_context_with_supervisor_types(context, sup_csv);
     fns: ListSIRFunction <- emit_declarations(program.declarations, ctx_emit, program.declarations);
     uses: ListSirString <- collect_used_modules(program.declarations);
     exps: ListSIRExportItem <- collect_exports(program.declarations);
@@ -228,16 +228,16 @@ fn emit_program_for_unit_with_link_libraries(program: Program, context: TypeCont
 
 // Traverse ListDeclaration; dispatcher delegates per Declaration.tag.
 // Dummy results (name == "") are skipped (e.g. non-function declarations).
-fn emit_declarations(decls: ListDeclaration, context: TypeContext, program_decls: ListDeclaration) -> ListSIRFunction proc[mem(normal)] {
+fn emit_declarations(decls: ListDeclaration, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, program_decls: ListDeclaration) -> ListSIRFunction proc[mem(normal)] {
     case decls.is_nil of {
         true -> sir_ast@nil_sir_functions();
-        false -> do
+        false -> {
             head_fn: SIRFunction <- dispatcher@emit_declaration(decls.head, context, program_decls);
             tail_fns: ListSIRFunction <- emit_declarations(decls.tail, context, program_decls);
             case len(head_fn.name) > 0 of {
                 true -> sir_ast@cons_sir_functions(head_fn, tail_fns);
                 false -> tail_fns
             }
-        end
+        }
     }
 }

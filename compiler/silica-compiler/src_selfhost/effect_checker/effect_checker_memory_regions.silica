@@ -83,11 +83,11 @@ fn split_params_loop(s: string, i: int64, depth: int64, acc: string, result: Lis
                     true -> split_params_loop(s, i + 1, depth - 1, concat(acc, ")"), result);
                     false -> case substring(s, i, i + 1) == "," of {
                         true -> case depth == 0 of {
-                            true -> do
+                            true -> {
                                 trimmed: string <- trim_space(acc);
                                 new_result: List[string, mem(normal)] <- cons_string(trimmed, result);
                                 split_params_loop(s, i + 1, 0, "", new_result)
-                            end;
+                            };
                             false -> split_params_loop(s, i + 1, depth, concat(acc, ","), result)
                         };
                         false -> split_params_loop(s, i + 1, depth, concat(acc, substring(s, i, i + 1)), result)
@@ -147,14 +147,14 @@ fn extract_space_from_region_type(type_str: string) -> (boolean, string) {
     sequence proc[mem(normal)]
         (has_type: boolean, inner: string) <- extract_region_type_inner(type_str);
         result: (boolean, string) <- case has_type of {
-            true -> do
+            true -> {
                 params: List[string, mem(normal)] <- reverse_list_string(split_params_loop(inner, 0, 0, "", nil_list_string()));
                 space: string <- trim_space(list_string_nth(params, 1));
                 case is_valid_memory_space(space) of {
                     true -> (true, space);
                     false -> (false, "")
                 }
-            end;
+            };
             false -> (false, "")
         }
     produces
@@ -195,13 +195,13 @@ fn extract_region_type_inner(type_str: string) -> (boolean, string) {
 // first_arg: Expr for the first argument. For identifier (kind 1), use name.
 fn space_from_alloc_region_arg(first_arg: Expr) -> (boolean, string) {
     case first_arg.kind == 1 of {
-        true -> do
+        true -> {
             space: string <- first_arg.name;
             case is_valid_memory_space(space) of {
                 true -> (true, space);
                 false -> (false, "")
             }
-        end;
+        };
         false -> (false, "")
     }
 }
@@ -217,48 +217,48 @@ fn get_region_call_effects(fn_name: string, first_arg: Expr, first_arg_type: str
         zero: { file: string, line: int64, column: int64, offset: int64 } <- parser_ast@zero_location();
         loc: { file: string, line: int64, column: int64, offset: int64 } <- case len(location.file) > 0 of { true -> location; false -> zero };
         result: (boolean, ListEffectName) <- case fn_name == "alloc_region" of {
-            true -> do
+            true -> {
                 (ok: boolean, space: string) <- space_from_alloc_region_arg(first_arg);
                 space_to_use: string <- case ok of { true -> space; false -> "normal" };
                 eff: EffectName <- { name: "mem", parameter: space_to_use, location: loc };
                 (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
-            end;
+            };
             false -> case fn_name == "alloc_region_on_numa_node" of {
-                true -> do
+                true -> {
                     // First arg is numa_node (int); Space is second arg. Fallback to mem(normal).
                     eff: EffectName <- { name: "mem", parameter: "normal", location: loc };
                     (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
-                end;
+                };
                 false -> case fn_name == "alloc_ref" or fn_name == "alloc_buf" or fn_name == "alloc_rec" or fn_name == "build" or fn_name == "canonical_arena_lookup" of {
-                    true -> do
+                    true -> {
                         (ok: boolean, space: string) <- extract_space_from_region_type(binding_type);
                         space_to_use: string <- case ok of { true -> space; false -> "normal" };
                         mem_eff: EffectName <- { name: "mem", parameter: space_to_use, location: loc };
                         case space_to_use == "atomic" of {
-                            true -> do
+                            true -> {
                                 atomic_eff: EffectName <- { name: "atomic", parameter: "", location: loc };
                                 (true, parser_ast@cons_effect_name(mem_eff, parser_ast@cons_effect_name(atomic_eff, parser_ast@empty_effect_name_list())))
-                            end;
+                            };
                             false -> (true, parser_ast@cons_effect_name(mem_eff, parser_ast@empty_effect_name_list()))
                         }
-                    end;
+                    };
                     false -> case fn_name == "read_ref" or fn_name == "write_ref" or fn_name == "read_buf" or fn_name == "write_buf" or fn_name == "buf_load" or fn_name == "buf_store" of {
-                            true -> do
+                            true -> {
                                 (ok_arg: boolean, space_arg: string) <- extract_space_from_region_type(first_arg_type);
                                 source_type: string <- case ok_arg of { true -> first_arg_type; false -> binding_type };
                                 (ok: boolean, space: string) <- extract_space_from_region_type(source_type);
                                 case ok of {
-                                    true -> do
+                                    true -> {
                                         eff: EffectName <- { name: "mem", parameter: space, location: loc };
                                         (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
-                                    end;
-                                    false -> do
+                                    };
+                                    false -> {
                                         // binding_type is typically T or atom, not ref/buf. Use mem(normal) as fallback.
                                         eff: EffectName <- { name: "mem", parameter: "normal", location: loc };
                                         (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
-                                    end
+                                    }
                                 }
-                            end;
+                            };
                             false -> case fn_name == "canonical_arena_same" or fn_name == "ref_eq" or fn_name == "ref_in_region" of {
                                 true -> (true, parser_ast@empty_effect_name_list());
                                 false -> (false, parser_ast@empty_effect_name_list())

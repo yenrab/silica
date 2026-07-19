@@ -52,7 +52,7 @@ export mangle_calls_in_named_programs/1;
 fn mk_expr(kind_v: int64, value_v: string, name_v: string, loc: { file: string, line: int64, column: int64, offset: int64 },
            inner_v: Expr, right_v: Expr,
            pb: ListTupleDecomposeBinding, se: ListEffectName) -> Expr {
-    Expr {
+    {
         kind: kind_v,
         value: value_v,
         name: name_v,
@@ -64,30 +64,30 @@ fn mk_expr(kind_v: int64, value_v: string, name_v: string, loc: { file: string, 
     }
 }
 
-fn add_params_to_env(ps: ListParam, env: ListSymbolEntry) -> ListSymbolEntry {
+fn add_params_to_env(ps: ListParam, env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)]) -> List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] {
     case ps.is_nil of {
         true -> env;
-        false -> do
-            new_env: ListSymbolEntry <- type_checker_core@add_symbol(env, ps.head.name, ps.head.type_name, parser_ast@empty_effect_name_list(), "");
+        false -> {
+            new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(env, ps.head.name, ps.head.type_name, parser_ast@empty_effect_name_list(), "");
             add_params_to_env(ps.tail, new_env)
-        end
+        }
     }
 }
 
-fn extend_ctx_for_binding(ctx: TypeContext, bind_name: string, bind_type: string) -> TypeContext {
+fn extend_ctx_for_binding(ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, bind_name: string, bind_type: string) -> { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } {
     is_discard: bool <- bind_type == "unit" and bind_name == "_";
     case is_discard of {
         true -> ctx;
-        false -> do
-            extended_env: ListSymbolEntry <- type_checker_core@add_symbol(ctx.env, bind_name, bind_type, parser_ast@empty_effect_name_list(), "");
+        false -> {
+            extended_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(ctx.env, bind_name, bind_type, parser_ast@empty_effect_name_list(), "");
             type_checker_core@type_context_with_env(ctx, extended_env)
-        end
+        }
     }
 }
 
 // Returns the (possibly rewritten) name for a call. List primitives keep base name + value; user calls
 // with generic instantiation compose brackets into the link name; qualified calls also apply overload mangling.
-fn mangle_user_call_name(e: Expr, expected_ty: string, world: ListNamedProgram, ctx: TypeContext, local_decls: ListDeclaration) -> string {
+fn mangle_user_call_name(e: Expr, expected_ty: string, world: ListNamedProgram, ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, local_decls: ListDeclaration) -> string {
     case e.kind == 4 of {
         false -> e.name;
         // Arg-chain pairs (extract_call_rest) use kind 4 with name "" — not user calls.
@@ -97,18 +97,18 @@ fn mangle_user_call_name(e: Expr, expected_ty: string, world: ListNamedProgram, 
             true -> "";
             false -> case type_checker_lists@is_list_primitive_name(e.name) of {
             true -> e.name;
-            false -> do
+            false -> {
                 (mod_part: string, fn_part: string) <- type_checker_core@split_module_qualified_call_name(e.name);
                 instantiated: string <- instantiated_fn_name@resolve_call_fn_name(fn_part, e.value);
                 callee_decls: ListDeclaration <- case len(mod_part) == 0 of {
                     true -> local_decls;
-                    false -> do
+                    false -> {
                         (pf: bool, prog: Program) <- parser_ast@find_named_program(mod_part, world);
                         case pf of {
                             true -> prog.declarations;
                             false -> parser_ast@empty_list_decl()
                         }
-                    end
+                    }
                 };
                 ac: int64 <- overload_mangle@count_call_args_user_call(e);
                 recv_inferred: string <- case ac > 0 of {
@@ -121,28 +121,28 @@ fn mangle_user_call_name(e: Expr, expected_ty: string, world: ListNamedProgram, 
                     true -> new_fn;
                     false -> concat(mod_part, concat("@", new_fn))
                 }
-            end
+            }
         }
         }
     }
 }
 
 // Walk a sequence body (let / tuple-decompose chain before `produces`).
-fn walk_sequence_body(body: Expr, world: ListNamedProgram, ctx: TypeContext, local_decls: ListDeclaration) -> Expr {
+fn walk_sequence_body(body: Expr, world: ListNamedProgram, ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, local_decls: ListDeclaration) -> Expr {
     case body.kind == 6 of {
-        true -> do
+        true -> {
             new_inner: Expr <- walk_expr(body.inner, world, ctx, body.value, local_decls);
-            extended: TypeContext <- extend_ctx_for_binding(ctx, body.name, body.value);
+            extended: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- extend_ctx_for_binding(ctx, body.name, body.value);
             new_right: Expr <- walk_sequence_body(body.right_expr, world, extended, local_decls);
             mk_expr(body.kind, body.value, body.name, body.location, new_inner, new_right, body.pattern_bindings, body.sequence_effects)
-        end;
+        };
         false -> case body.kind == 10 of {
-            true -> do
+            true -> {
                 new_inner: Expr <- walk_expr(body.inner, world, ctx, "", local_decls);
-                extended: TypeContext <- type_checker_tuple_decompose_helpers@add_bindings_to_context(ctx, body.pattern_bindings);
+                extended: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_tuple_decompose_helpers@add_bindings_to_context(ctx, body.pattern_bindings);
                 new_right: Expr <- walk_sequence_body(body.right_expr, world, extended, local_decls);
                 mk_expr(body.kind, body.value, body.name, body.location, new_inner, new_right, body.pattern_bindings, body.sequence_effects)
-            end;
+            };
             false -> walk_expr(body, world, ctx, "", local_decls)
         }
     }
@@ -150,10 +150,10 @@ fn walk_sequence_body(body: Expr, world: ListNamedProgram, ctx: TypeContext, loc
 
 // Walk an Expr tree. Rewrites call names in place-ish (returns a fresh node with the
 // updated name) and recurses into inner and right_expr. Extends ctx for let bindings.
-fn walk_expr(e: Expr, world: ListNamedProgram, ctx: TypeContext, expected_ty: string, local_decls: ListDeclaration) -> Expr {
+fn walk_expr(e: Expr, world: ListNamedProgram, ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, expected_ty: string, local_decls: ListDeclaration) -> Expr {
     case e.kind < 0 of {
         true -> e;
-        false -> do
+        false -> {
             new_inner: Expr <- case e.kind == 11 of {
                 true -> walk_sequence_body(e.inner, world, ctx, local_decls);
                 false -> case e.kind == 6 of {
@@ -162,15 +162,15 @@ fn walk_expr(e: Expr, world: ListNamedProgram, ctx: TypeContext, expected_ty: st
                 }
             };
             new_right: Expr <- case e.kind == 11 of {
-                true -> do
-                    result_ctx: TypeContext <- type_checker_expressions@context_after_sequence_body(e.inner, ctx);
+                true -> {
+                    result_ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_expressions@context_after_sequence_body(e.inner, ctx);
                     walk_expr(e.right_expr, world, result_ctx, expected_ty, local_decls)
-                end;
+                };
                 false -> case e.kind == 6 of {
-                    true -> do
-                        extended: TypeContext <- extend_ctx_for_binding(ctx, e.name, e.value);
+                    true -> {
+                        extended: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- extend_ctx_for_binding(ctx, e.name, e.value);
                         walk_expr(e.right_expr, world, extended, "", local_decls)
-                    end;
+                    };
                     false -> walk_expr(e.right_expr, world, ctx, "", local_decls)
                 }
             };
@@ -183,22 +183,22 @@ fn walk_expr(e: Expr, world: ListNamedProgram, ctx: TypeContext, expected_ty: st
             };
             new_name: string <- mangle_user_call_name(pre_e, call_expected, world, ctx, local_decls);
             mk_expr(e.kind, e.value, new_name, e.location, new_inner, new_right, e.pattern_bindings, e.sequence_effects)
-        end
+        }
     }
 }
 
-fn mangle_decl_body(d: Declaration, world: ListNamedProgram, base_ctx: TypeContext, local_decls: ListDeclaration) -> Declaration {
+fn mangle_decl_body(d: Declaration, world: ListNamedProgram, base_ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, local_decls: ListDeclaration) -> Declaration {
     case d.tag == 0 of {
         false -> d;
-        true -> do
-            env_with_params: ListSymbolEntry <- add_params_to_env(d.parameters, base_ctx.env);
-            decl_ctx: TypeContext <- type_checker_core@type_context_with_env(base_ctx, env_with_params);
+        true -> {
+            env_with_params: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- add_params_to_env(d.parameters, base_ctx.env);
+            decl_ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_core@type_context_with_env(base_ctx, env_with_params);
             new_body: Expr <- walk_expr(d.body, world, decl_ctx, "", local_decls);
             params: ListParam <- d.parameters;
             eff: ListEffectName <- d.declared_effects;
             rtl: { file: string, line: int64, column: int64, offset: int64 } <- d.return_type_location;
             loc: { file: string, line: int64, column: int64, offset: int64 } <- d.location;
-            Declaration {
+            {
                 tag: d.tag,
                 name: d.name,
                 parameters: params,
@@ -208,26 +208,26 @@ fn mangle_decl_body(d: Declaration, world: ListNamedProgram, base_ctx: TypeConte
                 body: new_body,
                 declared_effects: eff
             }
-        end
+        }
     }
 }
 
-fn mangle_decls(ds: ListDeclaration, world: ListNamedProgram, base_ctx: TypeContext, local_decls: ListDeclaration) -> ListDeclaration {
+fn mangle_decls(ds: ListDeclaration, world: ListNamedProgram, base_ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, local_decls: ListDeclaration) -> ListDeclaration {
     case ds.is_nil of {
         true -> parser_ast@empty_list_decl();
-        false -> do
+        false -> {
             head_new: Declaration <- mangle_decl_body(ds.head, world, base_ctx, local_decls);
             tail_new: ListDeclaration <- mangle_decls(ds.tail, world, base_ctx, local_decls);
             parser_ast@cons_declaration(head_new, tail_new)
-        end
+        }
     }
 }
 
 fn mangle_calls_in_program(program: Program, world: ListNamedProgram) -> Program {
-    base_ctx: TypeContext <- type_checker_core@create_type_context();
+    base_ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_core@create_type_context();
     new_decls: ListDeclaration <- mangle_decls(program.declarations, world, base_ctx, program.declarations);
     loc: { file: string, line: int64, column: int64, offset: int64 } <- program.location;
-    Program { declarations: new_decls, location: loc }
+    { declarations: new_decls, location: loc }
 }
 
 // Rewrite every program in the world using the full world as the name-resolution target.
@@ -236,9 +236,9 @@ fn mangle_calls_in_program(program: Program, world: ListNamedProgram) -> Program
 fn mangle_calls_in_named_programs(world: ListNamedProgram) -> ListNamedProgram {
     case world.is_nil of {
         true -> world;
-        false -> do
+        false -> {
             new_prog: Program <- mangle_calls_in_program(world.head.program, world);
             parser_ast@cons_named_program(world.head.module_name, new_prog, mangle_calls_in_named_programs(world.tail))
-        end
+        }
     }
 }

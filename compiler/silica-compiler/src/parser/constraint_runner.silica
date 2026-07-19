@@ -327,6 +327,117 @@ fn has_spaced_bind_colon(slots: ListTokenSlot) -> (bool, SourceLocation, string)
     }
 }
 
+// `meta` / `wrapper_meta` are FFI keywords; using them as `name: type <-` bindings is rejected early
+// so the parser does not fall through to a misleading E1040 terminator error.
+fn is_reserved_binding_name_keyword(kinds: TokenKinds, token_kind: int64, lexeme: string) -> bool {
+    token_kind == kinds.meta_keyword or lexeme == "meta" or token_kind == kinds.wrapper_meta_keyword or lexeme == "wrapper_meta"
+}
+
+fn has_reserved_keyword_binding(slots: ListTokenSlot) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> do
+            after_name: ListTokenSlot <- skip_leading_whitespace_slots(slots.tail);
+            case is_reserved_binding_name_keyword(kinds, slots.head.token.kind, slots.head.token.lexeme) and after_name.is_nil == false and token_starts_with_colon(after_name.head.token) and has_bind_arrow_before_statement_boundary(after_name.tail, 0, 0) of {
+                true -> (true, slots.head.token.location, slots.head.token.lexeme);
+                false -> has_reserved_keyword_binding(slots.tail)
+            }
+        end
+    }
+}
+
+// Trait-section keywords `required` / `provided` cannot be record field names / `.field` suffixes.
+// Reject early so `{ required: … }` does not fall through to a misleading E1040 terminator error.
+fn is_reserved_record_field_name_keyword(kinds: TokenKinds, token_kind: int64, lexeme: string) -> bool {
+    token_kind == kinds.required_keyword or lexeme == "required" or token_kind == kinds.provided_keyword or lexeme == "provided"
+}
+
+fn has_reserved_keyword_record_field_after_dot(slots: ListTokenSlot, brace_depth: int64) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> has_reserved_keyword_record_field_walk(slots, brace_depth);
+        false -> case is_reserved_record_field_name_keyword(kinds, trimmed.head.token.kind, trimmed.head.token.lexeme) of {
+            true -> (true, trimmed.head.token.location, trimmed.head.token.lexeme);
+            false -> has_reserved_keyword_record_field_walk(trimmed, brace_depth)
+        }
+    }
+}
+
+fn has_reserved_keyword_record_field_after_opener(slots: ListTokenSlot, brace_depth: int64) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> has_reserved_keyword_record_field_walk(slots, brace_depth);
+        false -> case is_reserved_record_field_name_keyword(kinds, trimmed.head.token.kind, trimmed.head.token.lexeme) of {
+            true -> do
+                after_name: ListTokenSlot <- skip_leading_whitespace_slots(trimmed.tail);
+                case after_name.is_nil of {
+                    true -> has_reserved_keyword_record_field_walk(trimmed.tail, brace_depth);
+                    false -> case token_starts_with_colon(after_name.head.token) of {
+                        true -> (true, trimmed.head.token.location, trimmed.head.token.lexeme);
+                        false -> has_reserved_keyword_record_field_walk(trimmed, brace_depth)
+                    }
+                }
+            end;
+            false -> has_reserved_keyword_record_field_walk(trimmed, brace_depth)
+        }
+    }
+}
+
+fn has_reserved_keyword_record_field_walk(slots: ListTokenSlot, brace_depth: int64) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case slots.head.token.kind == kinds.left_brace or slots.head.token.lexeme == "{" of {
+            true -> has_reserved_keyword_record_field_after_opener(slots.tail, brace_depth + 1);
+            false -> case slots.head.token.kind == kinds.right_brace or slots.head.token.lexeme == "}" of {
+                true -> case brace_depth > 0 of {
+                    true -> has_reserved_keyword_record_field_walk(slots.tail, brace_depth - 1);
+                    false -> has_reserved_keyword_record_field_walk(slots.tail, 0)
+                };
+                false -> case (slots.head.token.kind == kinds.comma or slots.head.token.lexeme == ",") and brace_depth > 0 of {
+                    true -> has_reserved_keyword_record_field_after_opener(slots.tail, brace_depth);
+                    false -> case slots.head.token.kind == kinds.dot or slots.head.token.lexeme == "." of {
+                        true -> has_reserved_keyword_record_field_after_dot(slots.tail, brace_depth);
+                        false -> has_reserved_keyword_record_field_walk(slots.tail, brace_depth)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn has_reserved_keyword_record_field(slots: ListTokenSlot) -> (bool, SourceLocation, string) {
+    has_reserved_keyword_record_field_walk(slots, 0)
+}
+
+// Unbalanced `{` / `}` falls through to a misleading E1040 terminator error; reject early.
+fn has_unbalanced_braces_walk(slots: ListTokenSlot, brace_depth: int64, open_loc: SourceLocation) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> case brace_depth > 0 of {
+            true -> (true, open_loc, "unclosed '{'; expected a matching '}' before end of file");
+            false -> (false, parser_ast@zero_location(), "")
+        };
+        false -> case slots.head.token.kind == kinds.left_brace or slots.head.token.lexeme == "{" of {
+            true -> has_unbalanced_braces_walk(slots.tail, brace_depth + 1, slots.head.token.location);
+            false -> case slots.head.token.kind == kinds.right_brace or slots.head.token.lexeme == "}" of {
+                true -> case brace_depth > 0 of {
+                    true -> has_unbalanced_braces_walk(slots.tail, brace_depth - 1, open_loc);
+                    false -> (true, slots.head.token.location, "unexpected '}'; no matching '{' is open")
+                };
+                false -> has_unbalanced_braces_walk(slots.tail, brace_depth, open_loc)
+            }
+        }
+    }
+}
+
+fn has_unbalanced_braces(slots: ListTokenSlot) -> (bool, SourceLocation, string) {
+    has_unbalanced_braces_walk(slots, 0, parser_ast@zero_location())
+}
+
 fn prev_allows_atom_literal(slots_before_colon_reversed: ListTokenSlot) -> bool {
     case slots_before_colon_reversed.is_nil of {
         true -> true;
@@ -647,6 +758,175 @@ fn has_named_struct_declaration(slots: ListTokenSlot) -> (bool, SourceLocation, 
     }
 }
 
+// §3.4.2: named construction `Name { field: … }` is ill-formed; records are anonymous `{ field: … }`.
+// Skip `-> Name {` (function body after a named return-type spelling).
+fn slots_start_named_struct_construction(slots: ListTokenSlot) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, trimmed.head.token.kind) of {
+            false -> (false, parser_ast@zero_location(), "");
+            true -> do
+                after_name: ListTokenSlot <- skip_leading_whitespace_slots(trimmed.tail);
+                case after_name.is_nil of {
+                    true -> (false, parser_ast@zero_location(), "");
+                    false -> case after_name.head.token.kind == kinds.left_brace or after_name.head.token.lexeme == "{" of {
+                        false -> (false, parser_ast@zero_location(), "");
+                        true -> do
+                            after_lbrace: ListTokenSlot <- skip_leading_whitespace_slots(after_name.tail);
+                            case after_lbrace.is_nil of {
+                                true -> (false, parser_ast@zero_location(), "");
+                                false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, after_lbrace.head.token.kind) of {
+                                    false -> (false, parser_ast@zero_location(), "");
+                                    true -> do
+                                        after_field: ListTokenSlot <- skip_leading_whitespace_slots(after_lbrace.tail);
+                                        case after_field.is_nil of {
+                                            true -> (false, parser_ast@zero_location(), "");
+                                            false -> case token_starts_with_colon(after_field.head.token) of {
+                                                true -> (true, trimmed.head.token.location, trimmed.head.token.lexeme);
+                                                false -> (false, parser_ast@zero_location(), "")
+                                            }
+                                        }
+                                    end
+                                }
+                            }
+                        end
+                    }
+                }
+            end
+        }
+    }
+}
+
+fn has_named_struct_construction_walk(slots: ListTokenSlot, prev_was_arrow: bool) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case slot_is_whitespace(slots.head) of {
+            true -> has_named_struct_construction_walk(slots.tail, prev_was_arrow);
+            false -> do
+                is_arrow: bool <- slots.head.token.kind == kinds.right_arrow or slots.head.token.lexeme == "->";
+                case prev_was_arrow of {
+                    true -> has_named_struct_construction_walk(slots.tail, is_arrow);
+                    false -> do
+                        (hit: bool, loc: SourceLocation, name: string) <- slots_start_named_struct_construction(slots);
+                        case hit of {
+                            true -> (true, loc, name);
+                            false -> has_named_struct_construction_walk(slots.tail, is_arrow)
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
+fn has_named_struct_construction(slots: ListTokenSlot) -> (bool, SourceLocation, string) {
+    has_named_struct_construction_walk(slots, false)
+}
+
+// E1063: `-> name { field: … }` — named construction after `->` (case-arm RHS).
+// Does not reject `-> AccType { body… }` / `-> ParseResult { x: T <- … }`: those are return type + function body.
+fn has_arrow_identifier_before_brace(slots: ListTokenSlot) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case trimmed.head.token.kind == kinds.right_arrow or trimmed.head.token.lexeme == "->" of {
+            true -> do
+                after_arrow: ListTokenSlot <- skip_leading_whitespace_slots(trimmed.tail);
+                case after_arrow.is_nil of {
+                    true -> (false, parser_ast@zero_location(), "");
+                    false -> do
+                        (hit: bool, loc: SourceLocation, name: string) <- slots_start_named_struct_construction(after_arrow);
+                        case hit of {
+                            true -> do
+                                after_name: ListTokenSlot <- skip_leading_whitespace_slots(after_arrow.tail);
+                                after_lbrace: ListTokenSlot <- skip_leading_whitespace_slots(after_name.tail);
+                                case after_lbrace.is_nil of {
+                                    true -> has_arrow_identifier_before_brace(trimmed.tail);
+                                    false -> case has_bind_arrow_before_statement_boundary(after_lbrace.tail, 0, 0) of {
+                                        true -> has_arrow_identifier_before_brace(trimmed.tail);
+                                        false -> (true, loc, name)
+                                    }
+                                }
+                            end;
+                            false -> has_arrow_identifier_before_brace(trimmed.tail)
+                        }
+                    end
+                }
+            end;
+            false -> has_arrow_identifier_before_brace(trimmed.tail)
+        }
+    }
+}
+
+// `-> List {` is incomplete: List requires type arguments `List[T, mem(S)]` before the body `{`.
+fn has_incomplete_list_return_type(slots: ListTokenSlot) -> (bool, SourceLocation) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> case trimmed.head.token.kind == kinds.right_arrow or trimmed.head.token.lexeme == "->" of {
+            true -> do
+                after_arrow: ListTokenSlot <- skip_leading_whitespace_slots(trimmed.tail);
+                case after_arrow.is_nil of {
+                    true -> (false, parser_ast@zero_location());
+                    false -> case after_arrow.head.token.kind == kinds.list_keyword or after_arrow.head.token.lexeme == "List" of {
+                        true -> do
+                            after_list: ListTokenSlot <- skip_leading_whitespace_slots(after_arrow.tail);
+                            case after_list.is_nil of {
+                                true -> (false, parser_ast@zero_location());
+                                false -> case after_list.head.token.kind == kinds.left_brace or after_list.head.token.lexeme == "{" of {
+                                    true -> (true, after_arrow.head.token.location);
+                                    false -> has_incomplete_list_return_type(trimmed.tail)
+                                }
+                            }
+                        end;
+                        false -> has_incomplete_list_return_type(trimmed.tail)
+                    }
+                }
+            end;
+            false -> has_incomplete_list_return_type(trimmed.tail)
+        }
+    }
+}
+
+// §3.4.2: `type Name = …` introduces a custom type name and is ill-formed.
+fn has_named_type_alias_declaration(slots: ListTokenSlot) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, trimmed.head.token.kind) of {
+            true -> case trimmed.head.token.lexeme == "type" of {
+                true -> do
+                    after_type: ListTokenSlot <- skip_leading_whitespace_slots(trimmed.tail);
+                    case after_type.is_nil of {
+                        true -> has_named_type_alias_declaration(trimmed.tail);
+                        false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, after_type.head.token.kind) of {
+                            true -> do
+                                after_name: ListTokenSlot <- skip_leading_whitespace_slots(after_type.tail);
+                                case after_name.is_nil of {
+                                    true -> has_named_type_alias_declaration(trimmed.tail);
+                                    false -> case after_name.head.token.kind == kinds.equal of {
+                                        true -> (true, trimmed.head.token.location, after_type.head.token.lexeme);
+                                        false -> has_named_type_alias_declaration(trimmed.tail)
+                                    }
+                                }
+                            end;
+                            false -> has_named_type_alias_declaration(trimmed.tail)
+                        }
+                    }
+                end;
+                false -> has_named_type_alias_declaration(trimmed.tail)
+            };
+            false -> has_named_type_alias_declaration(trimmed.tail)
+        }
+    }
+}
+
 fn skip_bracketed_slots(slots: ListTokenSlot, depth: int64) -> ListTokenSlot {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case slots.is_nil of {
@@ -831,6 +1111,193 @@ fn has_sequence_keyword_error(slots: ListTokenSlot) -> (bool, SourceLocation, st
     has_malformed_sequence_keywords(slots)
 }
 
+// True when, starting at slots, a case-arm `->` appears at depth 0 before `;` or `}`.
+fn has_case_arrow_before_semi_or_rbrace(slots: ListTokenSlot, paren_depth: int64, bracket_depth: int64, brace_depth: int64) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> false;
+        false -> do
+            tok: Token <- slots.head.token;
+            next_paren: int64 <- case tok.kind == kinds.left_paren or tok.lexeme == "(" of {
+                true -> paren_depth + 1;
+                false -> case tok.kind == kinds.right_paren or tok.lexeme == ")" of {
+                    true -> case paren_depth <= 0 of { true -> 0; false -> paren_depth - 1 };
+                    false -> paren_depth
+                }
+            };
+            next_bracket: int64 <- case tok.kind == kinds.left_bracket or tok.lexeme == "[" of {
+                true -> bracket_depth + 1;
+                false -> case tok.kind == kinds.right_bracket or tok.lexeme == "]" of {
+                    true -> case bracket_depth <= 0 of { true -> 0; false -> bracket_depth - 1 };
+                    false -> bracket_depth
+                }
+            };
+            next_brace: int64 <- case tok.kind == kinds.left_brace or tok.lexeme == "{" of {
+                true -> brace_depth + 1;
+                false -> case tok.kind == kinds.right_brace or tok.lexeme == "}" of {
+                    true -> case brace_depth <= 0 of { true -> 0; false -> brace_depth - 1 };
+                    false -> brace_depth
+                }
+            };
+            case paren_depth == 0 and bracket_depth == 0 and brace_depth == 0 of {
+                true -> case tok.kind == kinds.right_arrow or tok.lexeme == "->" of {
+                    true -> true;
+                    false -> case tok.kind == kinds.semicolon or tok.lexeme == ";" or tok.kind == kinds.right_brace or tok.lexeme == "}" of {
+                        true -> false;
+                        false -> has_case_arrow_before_semi_or_rbrace(slots.tail, next_paren, next_bracket, next_brace)
+                    }
+                };
+                false -> has_case_arrow_before_semi_or_rbrace(slots.tail, next_paren, next_bracket, next_brace)
+            }
+        end
+    }
+}
+
+// After a depth-0 `;` in an unbraced case arm: true if that `;` terminates the arm (next arm or `}`).
+fn unbraced_case_semi_terminates_arm(after_semi: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    rest: ListTokenSlot <- skip_leading_whitespace_slots(after_semi);
+    case rest.is_nil of {
+        true -> true;
+        false -> case rest.head.token.kind == kinds.right_brace or rest.head.token.lexeme == "}" of {
+            true -> true;
+            false -> has_case_arrow_before_semi_or_rbrace(rest, 0, 0, 0)
+        }
+    }
+}
+
+// Scan unbraced case-arm RHS for an internal `;` (multi-statement, including one line with `;` between exprs).
+// Expression continuations across lines (e.g. `and` / `+`) are allowed without braces.
+fn unbraced_case_rhs_has_internal_semi(slots: ListTokenSlot, paren_depth: int64, bracket_depth: int64, brace_depth: int64) -> (bool, SourceLocation) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> case slot_is_whitespace(slots.head) of {
+            true -> unbraced_case_rhs_has_internal_semi(slots.tail, paren_depth, bracket_depth, brace_depth);
+            false -> do
+                tok: Token <- slots.head.token;
+                next_paren: int64 <- case tok.kind == kinds.left_paren or tok.lexeme == "(" of {
+                    true -> paren_depth + 1;
+                    false -> case tok.kind == kinds.right_paren or tok.lexeme == ")" of {
+                        true -> case paren_depth <= 0 of { true -> 0; false -> paren_depth - 1 };
+                        false -> paren_depth
+                    }
+                };
+                next_bracket: int64 <- case tok.kind == kinds.left_bracket or tok.lexeme == "[" of {
+                    true -> bracket_depth + 1;
+                    false -> case tok.kind == kinds.right_bracket or tok.lexeme == "]" of {
+                        true -> case bracket_depth <= 0 of { true -> 0; false -> bracket_depth - 1 };
+                        false -> bracket_depth
+                    }
+                };
+                next_brace: int64 <- case tok.kind == kinds.left_brace or tok.lexeme == "{" of {
+                    true -> brace_depth + 1;
+                    false -> case tok.kind == kinds.right_brace or tok.lexeme == "}" of {
+                        true -> case brace_depth <= 0 of { true -> 0; false -> brace_depth - 1 };
+                        false -> brace_depth
+                    }
+                };
+                case paren_depth == 0 and bracket_depth == 0 and brace_depth == 0 of {
+                    true -> case tok.kind == kinds.semicolon or tok.lexeme == ";" of {
+                        true -> case unbraced_case_semi_terminates_arm(slots.tail) of {
+                            true -> (false, parser_ast@zero_location());
+                            false -> (true, tok.location)
+                        };
+                        false -> case tok.kind == kinds.right_brace or tok.lexeme == "}" of {
+                            true -> (false, parser_ast@zero_location());
+                            false -> case has_case_arrow_before_semi_or_rbrace(slots, 0, 0, 0) of {
+                                true -> (false, parser_ast@zero_location());
+                                false -> unbraced_case_rhs_has_internal_semi(slots.tail, next_paren, next_bracket, next_brace)
+                            }
+                        }
+                    };
+                    false -> unbraced_case_rhs_has_internal_semi(slots.tail, next_paren, next_bracket, next_brace)
+                }
+            end
+        }
+    }
+}
+
+fn check_case_arm_arrow_rhs(after_arrow: ListTokenSlot) -> (bool, SourceLocation) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(after_arrow);
+    case trimmed.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> case trimmed.head.token.kind == kinds.left_brace or trimmed.head.token.lexeme == "{" of {
+            true -> (false, parser_ast@zero_location());
+            false -> unbraced_case_rhs_has_internal_semi(trimmed, 0, 0, 0)
+        }
+    }
+}
+
+// Walk tokens; inside `case … of { … }`, reject unbraced multi-statement / multi-line arm RHSs (E1064).
+fn has_unbraced_multiline_case_arm_walk(slots: ListTokenSlot, after_of: bool, case_brace_depth: int64) -> (bool, SourceLocation) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> case slot_is_whitespace(slots.head) of {
+            true -> has_unbraced_multiline_case_arm_walk(slots.tail, after_of, case_brace_depth);
+            false -> do
+                tok: Token <- slots.head.token;
+                case tok.kind == kinds.of_keyword or tok.lexeme == "of" of {
+                    true -> has_unbraced_multiline_case_arm_walk(slots.tail, true, case_brace_depth);
+                    false -> case after_of and (tok.kind == kinds.left_brace or tok.lexeme == "{") of {
+                        true -> has_unbraced_multiline_case_arm_walk(slots.tail, false, case_brace_depth + 1);
+                        false -> case case_brace_depth > 0 of {
+                            true -> case tok.kind == kinds.left_brace or tok.lexeme == "{" of {
+                                true -> has_unbraced_multiline_case_arm_walk(slots.tail, false, case_brace_depth + 1);
+                                false -> case tok.kind == kinds.right_brace or tok.lexeme == "}" of {
+                                    true -> has_unbraced_multiline_case_arm_walk(slots.tail, false, case_brace_depth - 1);
+                                    false -> case case_brace_depth == 1 and (tok.kind == kinds.right_arrow or tok.lexeme == "->") of {
+                                        true -> do
+                                            (bad: bool, bad_loc: SourceLocation) <- check_case_arm_arrow_rhs(slots.tail);
+                                            case bad of {
+                                                true -> (true, bad_loc);
+                                                false -> has_unbraced_multiline_case_arm_walk(slots.tail, false, case_brace_depth)
+                                            }
+                                        end;
+                                        false -> has_unbraced_multiline_case_arm_walk(slots.tail, false, case_brace_depth)
+                                    }
+                                }
+                            };
+                            false -> has_unbraced_multiline_case_arm_walk(slots.tail, false, 0)
+                        }
+                    }
+                }
+            end
+        }
+    }
+}
+
+fn has_unbraced_multiline_case_arm(slots: ListTokenSlot) -> (bool, SourceLocation) {
+    has_unbraced_multiline_case_arm_walk(slots, false, 0)
+}
+
+// Case-arm / expression `-> sequence ... produces pure ... end` is not allowed; use `-> { ... }` for pure multi-step arms.
+fn has_arrow_sequence_case_rhs(slots: ListTokenSlot) -> (bool, SourceLocation) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> case trimmed.tail.is_nil of {
+            true -> (false, parser_ast@zero_location());
+            false -> case trimmed.head.token.kind == kinds.right_arrow or trimmed.head.token.lexeme == "->" of {
+                true -> do
+                    after_arrow: ListTokenSlot <- skip_leading_whitespace_slots(trimmed.tail);
+                    case after_arrow.is_nil of {
+                        true -> (false, parser_ast@zero_location());
+                        false -> case after_arrow.head.token.kind == kinds.sequence_keyword or after_arrow.head.token.lexeme == "sequence" of {
+                            true -> (true, after_arrow.head.token.location);
+                            false -> has_arrow_sequence_case_rhs(trimmed.tail)
+                        }
+                    }
+                end;
+                false -> has_arrow_sequence_case_rhs(trimmed.tail)
+            }
+        }
+    }
+}
+
 fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
     reversed: ListToken <- reverse_tokens(lexer_runner@empty_token_list(), tokens);
     slots: ListTokenSlot <- tokens_to_slots(reversed);
@@ -844,6 +1311,18 @@ fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
     case has_proc_error of {
         true -> parser_core@parse_err("E3009", err_loc, "proc[...] is only allowed on sequence clauses directly after the sequence keyword, not on function return types", "sect9.3.1");
         false -> do
+            (has_reserved_bind: bool, reserved_bind_loc: SourceLocation, reserved_bind_name: string) <- has_reserved_keyword_binding(slots);
+            case has_reserved_bind of {
+                true -> parser_core@parse_err("E1058", reserved_bind_loc, concat(concat("'", reserved_bind_name), "' is a reserved keyword and cannot be used as a variable binding name; choose a different name"), "sect3");
+                false -> do
+            (has_reserved_field: bool, reserved_field_loc: SourceLocation, reserved_field_name: string) <- has_reserved_keyword_record_field(slots);
+            case has_reserved_field of {
+                true -> parser_core@parse_err("E1059", reserved_field_loc, concat(concat("'", reserved_field_name), "' is a reserved keyword and cannot be used as a record field name; choose a different name"), "sect3");
+                false -> do
+            (has_unbalanced: bool, unbalanced_loc: SourceLocation, unbalanced_msg: string) <- has_unbalanced_braces(slots);
+            case has_unbalanced of {
+                true -> parser_core@parse_err("E1060", unbalanced_loc, unbalanced_msg, "sect3");
+                false -> do
             (has_bind_colon_space: bool, bind_colon_loc: SourceLocation, bind_name: string) <- has_spaced_bind_colon(slots);
             case has_bind_colon_space of {
                 true -> parser_core@parse_err("E1043", bind_colon_loc, concat(concat("variable declaration name '", bind_name), "' must be followed immediately by ':' with no whitespace"), "sect3");
@@ -860,63 +1339,99 @@ fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
                                     case has_named_struct of {
                                         true -> parser_core@parse_err("E1047", named_struct_loc, concat(concat("named struct declaration '", named_struct_name), "' is not allowed; declare records inline where the type is used"), "sect3.4.2");
                                         false -> do
+                                            (has_type_alias: bool, type_alias_loc: SourceLocation, type_alias_name: string) <- has_named_type_alias_declaration(slots);
+                                            case has_type_alias of {
+                                                true -> parser_core@parse_err("E1047", type_alias_loc, concat(concat("named type alias declaration '", type_alias_name), "' is not allowed; declare types inline where the type is used"), "sect3.4.2");
+                                                false -> do
+                                            (has_named_ctor: bool, named_ctor_loc: SourceLocation, named_ctor_name: string) <- has_named_struct_construction(slots);
+                                            case has_named_ctor of {
+                                                true -> parser_core@parse_err("E1061", named_ctor_loc, concat(concat("named struct construction '", named_ctor_name), "' is not allowed; use an anonymous record '{ field: … }' instead"), "sect3.4.2");
+                                                false -> do
+                                            (has_arrow_ident: bool, arrow_ident_loc: SourceLocation, arrow_ident_name: string) <- has_arrow_identifier_before_brace(slots);
+                                            case has_arrow_ident of {
+                                                true -> parser_core@parse_err("E1063", arrow_ident_loc, concat(concat("named construction '", arrow_ident_name), "' after '->' is not allowed; use an anonymous record '-> { field: … }' instead"), "sect3");
+                                                false -> do
+                                            (has_incomplete_list: bool, incomplete_list_loc: SourceLocation) <- has_incomplete_list_return_type(slots);
+                                            case has_incomplete_list of {
+                                                true -> parser_core@parse_err("E1062", incomplete_list_loc, "incomplete List return type: write '-> List[T, mem(S)]' with type arguments before the function body '{'", "sect3");
+                                                false -> do
                                             (has_record_bad_tail: bool, record_bad_tail_loc: SourceLocation, record_bad_tail_token: string) <- has_struct_record_invalid_last_item_follower(slots);
                                             case has_record_bad_tail of {
                                                 true -> parser_core@parse_err("E1046", record_bad_tail_loc, concat(concat("unexpected '", record_bad_tail_token), "' after the last item in a struct/record; close it with '}'"), "sect3");
                                                 false -> do
-                                                    (has_sequence_err: bool, sequence_err_loc: SourceLocation, sequence_err_code: string, sequence_err_msg: string) <- has_sequence_keyword_error(slots);
-                                                    case has_sequence_err of {
-                                                        true -> parser_core@parse_err(sequence_err_code, sequence_err_loc, sequence_err_msg, "sect9.3.1");
+                                                    (has_arrow_seq: bool, arrow_seq_loc: SourceLocation) <- has_arrow_sequence_case_rhs(slots);
+                                                    case has_arrow_seq of {
+                                                        true -> parser_core@parse_err("E1057", arrow_seq_loc, "sequence...produces pure...end cannot be the RHS of '->'; use a '{ ... }' block for pure multi-step case arms (spec §3.3.3 / §3.3.4)", "sect3.3.3");
                                                         false -> do
-                                                            (has_missing_ret: bool, missing_ret_loc: SourceLocation, missing_ret_fn: string) <- has_missing_function_return_type(propagated);
-                                                            case has_missing_ret of {
-                                                                true -> parser_core@parse_err("E1042", missing_ret_loc, concat(concat("function '", missing_ret_fn), "' is missing a return type; write '-> <type>' before the function body"), "sect3.4");
+                                                            (has_unbraced_multi: bool, unbraced_multi_loc: SourceLocation) <- has_unbraced_multiline_case_arm(slots);
+                                                            case has_unbraced_multi of {
+                                                                true -> parser_core@parse_err("E1064", unbraced_multi_loc, "multi-statement case arm must be wrapped in '{ ... }'; use braces when the arm contains ';' between expressions", "sect3.3.3");
                                                                 false -> do
-                                                                    program: Program <- constraint_extract@slots_to_program(propagated);
-                                                                    result0: ParseResult <- constraint_extract@validate_required_statement_terminators(program);
-                                                                    case result0.is_ok of {
-                                                                        true -> do
-                                                                            result0b: ParseResult <- constraint_extract@validate_no_illegal_trailing_semicolon(result0.program);
-                                                                            case result0b.is_ok of {
+                                                            (has_sequence_err: bool, sequence_err_loc: SourceLocation, sequence_err_code: string, sequence_err_msg: string) <- has_sequence_keyword_error(slots);
+                                                            case has_sequence_err of {
+                                                                true -> parser_core@parse_err(sequence_err_code, sequence_err_loc, sequence_err_msg, "sect9.3.1");
+                                                                false -> do
+                                                                    (has_missing_ret: bool, missing_ret_loc: SourceLocation, missing_ret_fn: string) <- has_missing_function_return_type(propagated);
+                                                                    case has_missing_ret of {
+                                                                        true -> parser_core@parse_err("E1042", missing_ret_loc, concat(concat("function '", missing_ret_fn), "' is missing a return type; write '-> <type>' before the function body"), "sect3.4");
+                                                                        false -> do
+                                                                            program: Program <- constraint_extract@slots_to_program(propagated);
+                                                                            result0: ParseResult <- constraint_extract@validate_required_statement_terminators(program);
+                                                                            case result0.is_ok of {
                                                                                 true -> do
-                                                                                    result1: ParseResult <- constraint_extract@validate_no_single_element_tuples(result0b.program);
-                                                                                    case result1.is_ok of {
+                                                                                    result0b: ParseResult <- constraint_extract@validate_no_illegal_trailing_semicolon(result0.program);
+                                                                                    case result0b.is_ok of {
                                                                                         true -> do
-                                                                                            result2: ParseResult <- constraint_extract@validate_max_params(result1.program);
-                                                                                            case result2.is_ok of {
+                                                                                            result1: ParseResult <- constraint_extract@validate_no_single_element_tuples(result0b.program);
+                                                                                            case result1.is_ok of {
                                                                                                 true -> do
-                                                                                                    result3: ParseResult <- constraint_extract@validate_max_tuple_decompose_bindings(result2.program);
-                                                                                                    case result3.is_ok of {
+                                                                                                    result2: ParseResult <- constraint_extract@validate_max_params(result1.program);
+                                                                                                    case result2.is_ok of {
                                                                                                         true -> do
-                                                                                                            result4: ParseResult <- constraint_extract@validate_no_unused_scope_bindings(result3.program);
-                                                                                                            case result4.is_ok of {
+                                                                                                            result3: ParseResult <- constraint_extract@validate_max_tuple_decompose_bindings(result2.program);
+                                                                                                            case result3.is_ok of {
                                                                                                                 true -> do
-                                                                                                                    lifted: Program <- constraint_extract@lift_lambda_expressions(result4.program);
-                                                                                                                    wrapped_prog: Program <- constraint_extract@wrap_lifted_lambda_hof_calls(lifted);
-                                                                                                                    parser_core@parse_ok(wrapped_prog)
+                                                                                                                    result4: ParseResult <- constraint_extract@validate_no_unused_scope_bindings(result3.program);
+                                                                                                                    case result4.is_ok of {
+                                                                                                                        true -> do
+                                                                                                                            lifted: Program <- constraint_extract@lift_lambda_expressions(result4.program);
+                                                                                                                            wrapped_prog: Program <- constraint_extract@wrap_lifted_lambda_hof_calls(lifted);
+                                                                                                                            parser_core@parse_ok(wrapped_prog)
+                                                                                                                        end;
+                                                                                                                        false -> result4
+                                                                                                                    }
                                                                                                                 end;
-                                                                                                                false -> result4
+                                                                                                                false -> result3
                                                                                                             }
                                                                                                         end;
-                                                                                                        false -> result3
+                                                                                                        false -> result2
                                                                                                     }
                                                                                                 end;
-                                                                                                false -> result2
+                                                                                                false -> result1
                                                                                             }
                                                                                         end;
-                                                                                        false -> result1
+                                                                                        false -> result0b
                                                                                     }
                                                                                 end;
-                                                                                false -> result0b
+                                                                                false -> result0
                                                                             }
-                                                                        end;
-                                                                        false -> result0
+                                                                        end
                                                                     }
+                                                                end
+                                                            }
                                                                 end
                                                             }
                                                         end
                                                     }
                                                 end
+                                            }
+                                            end
+                                            }
+                                            end
+                                            }
+                                            end
+                                            }
+                                            end
                                             }
                                         end
                                     }
@@ -924,6 +1439,12 @@ fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
                             }
                         end;
                     }
+                end
+            }
+                end
+            }
+                end
+            }
                 end
             }
         end

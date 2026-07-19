@@ -26,7 +26,7 @@ use ffi_placement_checker;
 
 export validate_program_ffi_taint/1;
 
-fn append_unique_taint_name(items: ListSirString, name: string) -> ListSirString {
+fn append_unique_taint_name(items: List[string, mem(normal)], name: string) -> List[string, mem(normal)] {
     case len(name) == 0 of {
         true -> items;
         false -> case name == "_" of {
@@ -39,7 +39,7 @@ fn append_unique_taint_name(items: ListSirString, name: string) -> ListSirString
     }
 }
 
-fn env_has_taint(items: ListSirString, name: string) -> bool {
+fn env_has_taint(items: List[string, mem(normal)], name: string) -> bool {
     sir_ast@sir_string_list_contains(items, name)
 }
 
@@ -66,10 +66,10 @@ fn string_starts_with(s: string, prefix: string) -> bool {
 fn is_dangerous_qualified_call(name: string) -> bool {
     case type_checker_core@call_name_is_module_qualified(name) of {
         false -> false;
-        true -> do
+        true -> {
             (qmod: string, _: string) <- type_checker_core@split_module_qualified_call_name(name);
             is_dangerous_module_name(qmod)
-        end
+        }
     }
 }
 
@@ -130,7 +130,7 @@ fn is_call_reply(name: string) -> bool {
     }
 }
 
-fn cast_or_call_payload_expr(call_expr: Expr) -> Expr {
+fn cast_or_call_payload_expr(call_expr: Expr) -> { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: Expr, right_expr: Expr, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } {
     case call_expr.right_expr.kind == 4 and call_expr.right_expr.name == "" of {
         true -> call_expr.right_expr.inner;
         false -> call_expr.right_expr
@@ -146,7 +146,7 @@ fn print_taint_type_error(code: string, loc: { file: string, line: int64, column
     end
 }
 
-fn expr_is_scalar_tainted(expr: Expr, scalar_env: ListSirString) -> int64 {
+fn expr_is_scalar_tainted(expr: Expr, scalar_env: List[string, mem(normal)]) -> int64 {
     case expr.kind < 0 of {
         true -> 0;
         false -> case expr.kind == 1 of {
@@ -180,14 +180,14 @@ fn expr_is_scalar_tainted(expr: Expr, scalar_env: ListSirString) -> int64 {
     }
 }
 
-fn expr_is_scalar_tainted_pair(inner: Expr, right: Expr, scalar_env: ListSirString) -> int64 {
+fn expr_is_scalar_tainted_pair(inner: Expr, right: Expr, scalar_env: List[string, mem(normal)]) -> int64 {
     case expr_is_scalar_tainted(inner, scalar_env) == 1 of {
         true -> 1;
         false -> expr_is_scalar_tainted(right, scalar_env)
     }
 }
 
-fn struct_literal_is_scalar_tainted(expr: Expr, scalar_env: ListSirString) -> int64 {
+fn struct_literal_is_scalar_tainted(expr: Expr, scalar_env: List[string, mem(normal)]) -> int64 {
     case expr.kind == -1 or expr.kind == 999 of {
         true -> 0;
         false -> case expr.kind == 21 of {
@@ -200,7 +200,7 @@ fn struct_literal_is_scalar_tainted(expr: Expr, scalar_env: ListSirString) -> in
     }
 }
 
-fn expr_is_region_tainted(expr: Expr, region_env: ListSirString) -> int64 {
+fn expr_is_region_tainted(expr: Expr, region_env: List[string, mem(normal)]) -> int64 {
     case expr.kind == 1 of {
         true -> case env_has_taint(region_env, expr.name) of {
             true -> 1;
@@ -228,7 +228,7 @@ fn expr_is_region_tainted(expr: Expr, region_env: ListSirString) -> int64 {
     }
 }
 
-fn struct_literal_is_region_tainted(expr: Expr, region_env: ListSirString) -> int64 {
+fn struct_literal_is_region_tainted(expr: Expr, region_env: List[string, mem(normal)]) -> int64 {
     case expr.kind == -1 or expr.kind == 999 of {
         true -> 0;
         false -> case expr.kind == 21 of {
@@ -241,14 +241,14 @@ fn struct_literal_is_region_tainted(expr: Expr, region_env: ListSirString) -> in
     }
 }
 
-fn expr_is_boundary_tainted(expr: Expr, scalar_env: ListSirString, region_env: ListSirString) -> int64 {
+fn expr_is_boundary_tainted(expr: Expr, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)]) -> int64 {
     case expr_is_scalar_tainted(expr, scalar_env) == 1 of {
         true -> 1;
         false -> expr_is_region_tainted(expr, region_env)
     }
 }
 
-fn env_after_binding(name: string, bind_type: string, rhs: Expr, scalar_env: ListSirString, region_env: ListSirString, in_external_danger: int64) -> (ListSirString, ListSirString) {
+fn env_after_binding(name: string, bind_type: string, rhs: Expr, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], in_external_danger: int64) -> (List[string, mem(normal)], List[string, mem(normal)]) {
     case in_external_danger == 1 of {
         true -> case type_text_is_region_type(bind_type) of {
             true -> (scalar_env, append_unique_taint_name(region_env, name));
@@ -264,7 +264,7 @@ fn env_after_binding(name: string, bind_type: string, rhs: Expr, scalar_env: Lis
     }
 }
 
-fn check_restricted_use_expr(expr: Expr, scalar_env: ListSirString, region_env: ListSirString, loc: { file: string, line: int64, column: int64, offset: int64 }) -> int64 {
+fn check_restricted_use_expr(expr: Expr, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], loc: { file: string, line: int64, column: int64, offset: int64 }) -> int64 {
     sequence proc[DeviceIO]
         result: int64 <- case expr_is_boundary_tainted(expr, scalar_env, region_env) == 1 of {
                 true -> print_taint_type_error("E2103", loc, "external_danger-touched data cannot be used inside sequence blocks that declare device_io, network_io, hot_swap, or register_rwr (spec 7.3)");
@@ -275,13 +275,13 @@ fn check_restricted_use_expr(expr: Expr, scalar_env: ListSirString, region_env: 
     end
 }
 
-fn check_restricted_call_args(call_expr: Expr, scalar_env: ListSirString, region_env: ListSirString, loc: { file: string, line: int64, column: int64, offset: int64 }) -> int64 {
+fn check_restricted_call_args(call_expr: Expr, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], loc: { file: string, line: int64, column: int64, offset: int64 }) -> int64 {
     sequence proc[DeviceIO]
         result: int64 <- case is_cast_call(call_expr.name) or is_call_reply(call_expr.name) of {
-                true -> do
+                true -> {
                     msg: Expr <- cast_or_call_payload_expr(call_expr);
                     check_restricted_use_expr(msg, scalar_env, region_env, loc)
-                end;
+                };
                 false -> check_restricted_use_expr(call_expr.inner, scalar_env, region_env, loc)
             }
     produces
@@ -289,7 +289,7 @@ fn check_restricted_call_args(call_expr: Expr, scalar_env: ListSirString, region
     end
 }
 
-fn check_cast_or_call_boundary(call_expr: Expr, scalar_env: ListSirString, region_env: ListSirString, allow_ffi_result_cast: int64) -> int64 {
+fn check_cast_or_call_boundary(call_expr: Expr, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], allow_ffi_result_cast: int64) -> int64 {
     sequence proc[DeviceIO]
         msg: Expr <- cast_or_call_payload_expr(call_expr);
         result: int64 <- case expr_is_boundary_tainted(msg, scalar_env, region_env) == 1 of {
@@ -310,12 +310,12 @@ fn check_cast_or_call_boundary(call_expr: Expr, scalar_env: ListSirString, regio
     end
 }
 
-fn walk_expr_taint_checks(expr: Expr, scalar_env: ListSirString, region_env: ListSirString, in_external_danger: int64, is_ffi_worker: int64, restricted_seq: int64, ffi_cast_budget: int64) -> (int64, int64) {
+fn walk_expr_taint_checks(expr: Expr, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], in_external_danger: int64, is_ffi_worker: int64, restricted_seq: int64, ffi_cast_budget: int64) -> (int64, int64) {
     sequence proc[DeviceIO]
         result: (int64, int64) <- case expr.kind < 0 of {
                 true -> (0, ffi_cast_budget);
                 false -> case expr.kind == 4 of {
-                    true -> do
+                    true -> {
                         msg: Expr <- cast_or_call_payload_expr(expr);
                         payload_tainted: int64 <- expr_is_boundary_tainted(msg, scalar_env, region_env);
                         allow_ffi: int64 <- case in_external_danger == 1 of {
@@ -342,7 +342,7 @@ fn walk_expr_taint_checks(expr: Expr, scalar_env: ListSirString, region_env: Lis
                         case boundary == 0 of {
                             false -> (boundary, ffi_cast_budget);
                             true -> case restricted_seq == 1 of {
-                                true -> do
+                                true -> {
                                     restricted_args: int64 <- check_restricted_call_args(expr, scalar_env, region_env, expr.location);
                                     case restricted_args == 0 of {
                                         false -> (restricted_args, ffi_cast_budget);
@@ -351,7 +351,7 @@ fn walk_expr_taint_checks(expr: Expr, scalar_env: ListSirString, region_env: Lis
                                             false -> walk_expr_taint_checks_pair(expr.inner, expr.right_expr, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, next_budget)
                                         }
                                     }
-                                end;
+                                };
                                 false -> case is_cast_call(expr.name) of {
                                     true -> case allow_ffi == 1 of {
                                         true -> (0, next_budget);
@@ -361,38 +361,38 @@ fn walk_expr_taint_checks(expr: Expr, scalar_env: ListSirString, region_env: Lis
                                 }
                             }
                         }
-                    end;
+                    };
                     false -> case expr.kind == 6 of {
-                        true -> do
+                        true -> {
                             (inner_st: int64, budget_after_inner: int64) <- walk_expr_taint_checks(expr.inner, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, ffi_cast_budget);
                             case inner_st == 0 of {
                                 false -> (inner_st, budget_after_inner);
                                 true -> case restricted_seq == 1 of {
-                                    true -> do
+                                    true -> {
                                         use_st: int64 <- check_restricted_use_expr(expr.inner, scalar_env, region_env, expr.location);
                                         case use_st == 0 of {
                                             false -> (use_st, budget_after_inner);
-                                            true -> do
-                                                (next_scalar: ListSirString, next_region: ListSirString) <- env_after_binding(expr.name, expr.value, expr.inner, scalar_env, region_env, in_external_danger);
+                                            true -> {
+                                                (next_scalar: List[string, mem(normal)], next_region: List[string, mem(normal)]) <- env_after_binding(expr.name, expr.value, expr.inner, scalar_env, region_env, in_external_danger);
                                                 walk_expr_taint_checks(expr.right_expr, next_scalar, next_region, in_external_danger, is_ffi_worker, restricted_seq, budget_after_inner)
-                                            end
+                                            }
                                         }
-                                    end;
-                                    false -> do
-                                        (next_scalar2: ListSirString, next_region2: ListSirString) <- env_after_binding(expr.name, expr.value, expr.inner, scalar_env, region_env, in_external_danger);
+                                    };
+                                    false -> {
+                                        (next_scalar2: List[string, mem(normal)], next_region2: List[string, mem(normal)]) <- env_after_binding(expr.name, expr.value, expr.inner, scalar_env, region_env, in_external_danger);
                                         walk_expr_taint_checks(expr.right_expr, next_scalar2, next_region2, in_external_danger, is_ffi_worker, restricted_seq, budget_after_inner)
-                                    end
+                                    }
                                 }
                             }
-                        end;
+                        };
                         false -> case expr.kind == 11 of {
-                            true -> do
+                            true -> {
                                 seq_st: int64 <- walk_sequence_taint(expr, scalar_env, region_env, is_ffi_worker);
                                 case seq_st == 0 of {
                                     true -> (0, ffi_cast_budget);
                                     false -> (seq_st, ffi_cast_budget)
                                 }
-                            end;
+                            };
                             false -> walk_expr_taint_checks_pair(expr.inner, expr.right_expr, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, ffi_cast_budget)
                         }
                     }
@@ -403,7 +403,7 @@ fn walk_expr_taint_checks(expr: Expr, scalar_env: ListSirString, region_env: Lis
     end
 }
 
-fn walk_expr_taint_checks_pair(inner: Expr, right: Expr, scalar_env: ListSirString, region_env: ListSirString, in_external_danger: int64, is_ffi_worker: int64, restricted_seq: int64, ffi_cast_budget: int64) -> (int64, int64) {
+fn walk_expr_taint_checks_pair(inner: Expr, right: Expr, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], in_external_danger: int64, is_ffi_worker: int64, restricted_seq: int64, ffi_cast_budget: int64) -> (int64, int64) {
     sequence proc[DeviceIO]
         (first_st: int64, mid_budget: int64) <- walk_expr_taint_checks(inner, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, ffi_cast_budget);
         result: (int64, int64) <- case first_st == 0 of {
@@ -415,7 +415,7 @@ fn walk_expr_taint_checks_pair(inner: Expr, right: Expr, scalar_env: ListSirStri
     end
 }
 
-fn walk_sequence_taint(seq: Expr, scalar_env: ListSirString, region_env: ListSirString, is_ffi_worker: int64) -> int64 {
+fn walk_sequence_taint(seq: Expr, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], is_ffi_worker: int64) -> int64 {
     sequence proc[DeviceIO]
         has_ed: bool <- effect_list_has_external_danger(seq.sequence_effects);
             has_restricted: bool <- effect_list_has_restricted_effect(seq.sequence_effects);
@@ -432,8 +432,8 @@ fn walk_sequence_taint(seq: Expr, scalar_env: ListSirString, region_env: ListSir
         result: int64 <- case body_st == 0 of {
                 false -> body_st;
                 true -> case has_ed of {
-                    true -> do
-                        (body_scalar: ListSirString, body_region: ListSirString) <- env_from_stmt_chain(seq.inner, scalar_env, region_env, 1);
+                    true -> {
+                        (body_scalar: List[string, mem(normal)], body_region: List[string, mem(normal)]) <- env_from_stmt_chain(seq.inner, scalar_env, region_env, 1);
                         case expr_is_region_tainted(seq.right_expr, body_region) == 1 of {
                             true -> print_taint_type_error("E2102", seq.right_expr.location, "Memory regions created, modified, or used inside sequence proc[external_danger] cannot move out of the FFI worker behavior function, except when explicitly converted into actor-state-owned region references returned as actor state, or delivered through an FFI result cast under §7.6 (spec 7.5)");
                             false -> case expr_is_scalar_tainted(seq.right_expr, body_scalar) == 1 of {
@@ -441,7 +441,7 @@ fn walk_sequence_taint(seq: Expr, scalar_env: ListSirString, region_env: ListSir
                                 false -> 0
                             }
                         }
-                    end;
+                    };
                     false -> 0
                 }
             }
@@ -450,14 +450,14 @@ fn walk_sequence_taint(seq: Expr, scalar_env: ListSirString, region_env: ListSir
     end
 }
 
-fn env_from_stmt_chain(expr: Expr, scalar_env: ListSirString, region_env: ListSirString, in_external_danger: int64) -> (ListSirString, ListSirString) {
+fn env_from_stmt_chain(expr: Expr, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], in_external_danger: int64) -> (List[string, mem(normal)], List[string, mem(normal)]) {
     case expr.kind < 0 of {
         true -> (scalar_env, region_env);
         false -> case expr.kind == 6 of {
-            true -> do
-                (next_scalar: ListSirString, next_region: ListSirString) <- env_after_binding(expr.name, expr.value, expr.inner, scalar_env, region_env, in_external_danger);
+            true -> {
+                (next_scalar: List[string, mem(normal)], next_region: List[string, mem(normal)]) <- env_after_binding(expr.name, expr.value, expr.inner, scalar_env, region_env, in_external_danger);
                 env_from_stmt_chain(expr.right_expr, next_scalar, next_region, in_external_danger)
-            end;
+            };
             false -> case expr.kind == 10 of {
                 true -> env_from_stmt_chain(expr.right_expr, scalar_env, region_env, in_external_danger);
                 false -> (scalar_env, region_env)
@@ -466,7 +466,7 @@ fn env_from_stmt_chain(expr: Expr, scalar_env: ListSirString, region_env: ListSi
     }
 }
 
-fn walk_function_body_taint(body: Expr, fn_name: string, ffi_workers: ListSirString) -> int64 {
+fn walk_function_body_taint(body: Expr, fn_name: string, ffi_workers: List[string, mem(normal)]) -> int64 {
     sequence proc[DeviceIO]
         is_worker: int64 <- case sir_ast@sir_string_list_contains(ffi_workers, fn_name) of {
                 true -> 1;
@@ -479,18 +479,18 @@ fn walk_function_body_taint(body: Expr, fn_name: string, ffi_workers: ListSirStr
     end
 }
 
-fn validate_decls_taint_loop(decls: ListDeclaration, ffi_workers: ListSirString) -> int64 {
+fn validate_decls_taint_loop(decls: ListDeclaration, ffi_workers: List[string, mem(normal)]) -> int64 {
     sequence proc[DeviceIO]
         result: int64 <- case decls.is_nil of {
                 true -> 0;
                 false -> case decls.head.tag == 0 of {
-                    true -> do
+                    true -> {
                         st: int64 <- walk_function_body_taint(decls.head.body, decls.head.name, ffi_workers);
                         case st == 0 of {
                             false -> st;
                             true -> validate_decls_taint_loop(decls.tail, ffi_workers)
                         }
-                    end;
+                    };
                     false -> validate_decls_taint_loop(decls.tail, ffi_workers)
                 }
             }
@@ -501,7 +501,7 @@ fn validate_decls_taint_loop(decls: ListDeclaration, ffi_workers: ListSirString)
 
 fn validate_program_ffi_taint(program: Program) -> int64 {
     sequence proc[DeviceIO]
-        ffi_workers: ListSirString <- ffi_placement_checker@collect_ffi_worker_names(program);
+        ffi_workers: List[string, mem(normal)] <- ffi_placement_checker@collect_ffi_worker_names(program);
         result: int64 <- validate_decls_taint_loop(program.declarations, ffi_workers)
     produces
         pure result

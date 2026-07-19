@@ -15,20 +15,15 @@
    limitations under the License.
 -}
 
-// Type checker core - TypeContext, TypeCheckResult, symbol table
-// Shared by type checker capabilities and runner
+// Type checker core - type context, type-check result, symbol table
+// Shared by type checker capabilities and runner.
+// Seed-legal: inline records + List (no named struct / type alias).
 
 use parser_ast;
 use instantiated_fn_name;
 use lexer_core;
 
-export TypeContext/0;
-export ParamConcreteEnv/0;
 export add_params_concrete_loop1/1;
-export TypeCheckResult/0;
-export TypeCheckWithContext/0;
-export SymbolEntry/0;
-export ListSymbolEntry/0;
 export create_type_context/0;
 export add_symbol/5;
 export add_effect_alias_symbol/3;
@@ -47,79 +42,35 @@ export type_context_with_env/2;
 export type_context_with_supervisor_types/2;
 export lookup_supervisor_csv/1;
 export type_name_in_supervisor_csv/2;
+export module_typecheck_outcome_from_pair/2;
 
-// Symbol table: name -> type_name, declared_effects
-struct SymbolEntry {
-    name: string,
-    type_name: string,
-    declared_effects: ListEffectName,
-    is_effect_alias: bool,
-    source_module: string
-}
+// SymbolEntry = { name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }
+// ListSymbolEntry = List[<SymbolEntry>, mem(normal)]
+// TypeContext = { env: List[<SymbolEntry>, mem(normal)] }
+// TypeCheckResult = { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }
+// TypeCheckWithContext = { result: <TypeCheckResult>, context: <TypeContext> }
+// ModuleTypecheckOutcome = { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string, context: <TypeContext> }
+// ParamConcreteEnv = { decl_params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], concrete_types: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], base: <TypeContext> }
 
-struct ListSymbolEntry {
-    is_nil: bool,
-    head: SymbolEntry,
-    tail: ListSymbolEntry
-}
-
-struct TypeContext {
-    env: ListSymbolEntry
-}
-
-struct ParamConcreteEnv {
-    decl_params: ListParam,
-    concrete_types: ListParam,
-    base: TypeContext
-}
-
-fn add_params_concrete_loop1(st: ParamConcreteEnv) -> TypeContext {
+fn add_params_concrete_loop1(st: { decl_params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], concrete_types: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], base: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } }) -> { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } {
     case st.decl_params.is_nil of {
         true -> st.base;
         false -> case st.concrete_types.is_nil of {
             true -> st.base;
-            false -> do
-                new_env: ListSymbolEntry <- add_symbol(st.base.env, st.decl_params.head.name, st.concrete_types.head.type_name, parser_ast@empty_effect_name_list(), "");
-                add_params_concrete_loop1(ParamConcreteEnv {
+            false -> {
+                new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- add_symbol(st.base.env, st.decl_params.head.name, st.concrete_types.head.type_name, parser_ast@empty_effect_name_list(), "");
+                add_params_concrete_loop1({
                     decl_params: st.decl_params.tail,
                     concrete_types: st.concrete_types.tail,
                     base: type_context_with_env(st.base, new_env)
                 })
-            end
+            }
         }
     }
 }
 
-struct TypeCheckResult {
-    is_ok: bool,
-    error_code: string,
-    error_location: { file: string, line: int64, column: int64, offset: int64 },
-    error_message: string,
-    spec_section: string
-}
-
-// Single return value for callers that cannot tuple-destructure (e.g. main.silica codegen).
-struct TypeCheckWithContext {
-    result: TypeCheckResult,
-    context: TypeContext
-}
-
-// Flat copy of type-check outcome for main.silica: nested TypeCheckWithContext return could SIGSEGV
-// after deep module type-check (bootstrap sret/stack); one struct level + scalar fields avoids that path.
-struct ModuleTypecheckOutcome {
-    is_ok: bool,
-    error_code: string,
-    error_location: { file: string, line: int64, column: int64, offset: int64 },
-    error_message: string,
-    spec_section: string,
-    context: TypeContext
-}
-
-export ModuleTypecheckOutcome/0;
-export module_typecheck_outcome_from_pair/2;
-
-fn module_typecheck_outcome_from_pair(r: TypeCheckResult, c: TypeContext) -> ModuleTypecheckOutcome {
-    ModuleTypecheckOutcome {
+fn module_typecheck_outcome_from_pair(r: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, c: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } } {
+    {
         is_ok: r.is_ok,
         error_code: r.error_code,
         error_location: r.error_location,
@@ -129,34 +80,33 @@ fn module_typecheck_outcome_from_pair(r: TypeCheckResult, c: TypeContext) -> Mod
     }
 }
 
-fn dummy_symbol_entry() -> SymbolEntry {
-    SymbolEntry { name: "", type_name: "", declared_effects: parser_ast@empty_effect_name_list(), is_effect_alias: false, source_module: "" }
+fn empty_symbol_table() -> List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- empty[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)]()
+    produces
+        pure result
+    end
 }
 
-fn empty_symbol_table() -> ListSymbolEntry {
-    nil_placeholder: ListSymbolEntry <- ListSymbolEntry { is_nil: true, head: dummy_symbol_entry(), tail: nil_placeholder };
-    nil_placeholder
-}
-
-fn create_type_context() -> TypeContext {
-    env: ListSymbolEntry <- empty_symbol_table();
-    env_with_false: ListSymbolEntry <- add_symbol(env, "false", "boolean", parser_ast@empty_effect_name_list(), "");
-    env_with_both: ListSymbolEntry <- add_symbol(env_with_false, "true", "boolean", parser_ast@empty_effect_name_list(), "");
-    TypeContext { env: env_with_both }
+fn create_type_context() -> { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } {
+    env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- empty_symbol_table();
+    env_with_false: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- add_symbol(env, "false", "boolean", parser_ast@empty_effect_name_list(), "");
+    env_with_both: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- add_symbol(env_with_false, "true", "boolean", parser_ast@empty_effect_name_list(), "");
+    { env: env_with_both }
 }
 
 // Replace env (let bindings, params, pattern bindings).
-fn type_context_with_env(ctx: TypeContext, new_env: ListSymbolEntry) -> TypeContext {
-    TypeContext { env: new_env }
+fn type_context_with_env(ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)]) -> { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } {
+    { env: new_env }
 }
 
 // Phase E e3b: store supervisor CSV as a magic symbol in the env so struct shape stays unchanged.
-fn type_context_with_supervisor_types(ctx: TypeContext, csv: string) -> TypeContext {
-    new_env: ListSymbolEntry <- add_symbol(ctx.env, "__silica_e3b_sup_csv", csv, parser_ast@empty_effect_name_list(), "");
-    TypeContext { env: new_env }
+fn type_context_with_supervisor_types(ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, csv: string) -> { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } {
+    new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- add_symbol(ctx.env, "__silica_e3b_sup_csv", csv, parser_ast@empty_effect_name_list(), "");
+    { env: new_env }
 }
 
-fn lookup_supervisor_csv(ctx: TypeContext) -> string {
+fn lookup_supervisor_csv(ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }) -> string {
     lookup_symbol(ctx.env, "__silica_e3b_sup_csv")
 }
 
@@ -180,17 +130,25 @@ fn type_name_in_supervisor_csv(t: string, csv: string) -> bool {
     }
 }
 
-fn add_symbol(env: ListSymbolEntry, name: string, type_name: string, declared_effects: ListEffectName, source_module: string) -> ListSymbolEntry {
-    entry: SymbolEntry <- SymbolEntry { name: name, type_name: type_name, declared_effects: declared_effects, is_effect_alias: false, source_module: source_module };
-    ListSymbolEntry { is_nil: false, head: entry, tail: env }
+fn add_symbol(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], source_module: string) -> List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        entry: { name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string } <- { name: name, type_name: type_name, declared_effects: declared_effects, is_effect_alias: false, source_module: source_module };
+        result: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- prepend[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)](entry, env)
+    produces
+        pure result
+    end
 }
 
-fn add_effect_alias_symbol(env: ListSymbolEntry, name: string, effects: ListEffectName) -> ListSymbolEntry {
-    entry: SymbolEntry <- SymbolEntry { name: name, type_name: "", declared_effects: effects, is_effect_alias: true, source_module: "" };
-    ListSymbolEntry { is_nil: false, head: entry, tail: env }
+fn add_effect_alias_symbol(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        entry: { name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string } <- { name: name, type_name: "", declared_effects: effects, is_effect_alias: true, source_module: "" };
+        result: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- prepend[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)](entry, env)
+    produces
+        pure result
+    end
 }
 
-fn lookup_symbol(env: ListSymbolEntry, name: string) -> string {
+fn lookup_symbol(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], name: string) -> string {
     case env.is_nil of {
         true -> "";
         false -> case env.head.name == name of {
@@ -201,7 +159,7 @@ fn lookup_symbol(env: ListSymbolEntry, name: string) -> string {
 }
 
 // Returns (found, type_name). Use when string comparison for "" is unreliable.
-fn lookup_symbol_found(env: ListSymbolEntry, name: string) -> (bool, string) {
+fn lookup_symbol_found(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], name: string) -> (bool, string) {
     case env.is_nil of {
         true -> (false, "");
         false -> case env.head.name == name of {
@@ -212,7 +170,7 @@ fn lookup_symbol_found(env: ListSymbolEntry, name: string) -> (bool, string) {
 }
 
 // Defining Silica module for imported functions (spec §19.3); "" for locals and non-function symbols.
-fn lookup_symbol_source_module(env: ListSymbolEntry, name: string) -> string {
+fn lookup_symbol_source_module(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], name: string) -> string {
     case env.is_nil of {
         true -> "";
         false -> case env.head.name == name and env.head.is_effect_alias == false of {
@@ -255,7 +213,7 @@ fn user_call_base_function_name(composite: string) -> string {
 }
 
 // String return avoids (bool, string) tuple return ABI issues from proc[DeviceIO] callers (bootstrap on macOS).
-fn lookup_fn_type_by_name_and_module(env: ListSymbolEntry, fn_name: string, required_module: string) -> string {
+fn lookup_fn_type_by_name_and_module(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], fn_name: string, required_module: string) -> string {
     case env.is_nil of {
         true -> "";
         false -> case instantiated_fn_name@decl_name_matches(env.head.name, fn_name) and env.head.is_effect_alias == false of {
@@ -275,7 +233,7 @@ fn lookup_fn_type_by_name_and_module(env: ListSymbolEntry, fn_name: string, requ
 }
 
 // Internal helper for callers that need (bool, string); prefer lookup_fn_type_by_name_and_module from proc callers.
-fn lookup_fn_by_name_and_module(env: ListSymbolEntry, fn_name: string, required_module: string) -> (bool, string) {
+fn lookup_fn_by_name_and_module(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], fn_name: string, required_module: string) -> (bool, string) {
     ft: string <- lookup_fn_type_by_name_and_module(env, fn_name, required_module);
     case len(ft) == 0 of {
         true -> (false, "");
@@ -283,7 +241,7 @@ fn lookup_fn_by_name_and_module(env: ListSymbolEntry, fn_name: string, required_
     }
 }
 
-fn lookup_function_for_call(env: ListSymbolEntry, composite_name: string) -> (bool, string) {
+fn lookup_function_for_call(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], composite_name: string) -> (bool, string) {
     ft: string <- lookup_function_type_for_call(env, composite_name);
     case len(ft) == 0 of {
         true -> (false, "");
@@ -291,7 +249,7 @@ fn lookup_function_for_call(env: ListSymbolEntry, composite_name: string) -> (bo
     }
 }
 
-fn lookup_function_type_for_call(env: ListSymbolEntry, composite_name: string) -> string {
+fn lookup_function_type_for_call(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], composite_name: string) -> string {
     at: int64 <- first_at_in_call_name(composite_name, 0);
     case at < 0 of {
         true -> lookup_fn_type_by_name_and_module(env, composite_name, "");
@@ -299,10 +257,10 @@ fn lookup_function_type_for_call(env: ListSymbolEntry, composite_name: string) -
     }
 }
 
-fn type_check_ok() -> TypeCheckResult {
-    TypeCheckResult { is_ok: true, error_code: "", error_location: parser_ast@zero_location(), error_message: "", spec_section: "" }
+fn type_check_ok() -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    { is_ok: true, error_code: "", error_location: parser_ast@zero_location(), error_message: "", spec_section: "" }
 }
 
-fn type_check_err(error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string) -> TypeCheckResult {
-    TypeCheckResult { is_ok: false, error_code: error_code, error_location: error_location, error_message: error_message, spec_section: spec_section }
+fn type_check_err(error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    { is_ok: false, error_code: error_code, error_location: error_location, error_message: error_message, spec_section: spec_section }
 }

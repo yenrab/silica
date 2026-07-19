@@ -15,7 +15,7 @@
    limitations under the License.
 -}
 
-// Emitter core: SIRModule -> AArch64 assembly
+// Emitter core: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] } -> AArch64 assembly
 // Entry point: orchestrates emission of SIR to assembly text
 
 use sir_ast;
@@ -64,14 +64,14 @@ export emit_module_with_atom_and_debug/3;
 export module_needs_actor_runtime/1;
 export emit_actor_runtime_module/1;
 
-fn aggregate_return_heap_stub_fn(fn_val: SIRFunction) -> bool {
+fn aggregate_return_heap_stub_fn(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type)
     }
 }
 
-fn aggregate_return_heap_stub_scan(fns: ListSIRFunction) -> bool {
+fn aggregate_return_heap_stub_scan(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case aggregate_return_heap_stub_fn(fns.head) of {
@@ -81,18 +81,19 @@ fn aggregate_return_heap_stub_scan(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn module_needs_aggregate_return_heap_stub(sir_module: SIRModule) -> bool {
+fn module_needs_aggregate_return_heap_stub(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     aggregate_return_heap_stub_scan(sir_module.functions)
 }
 
-fn term_has_aggregate_stack_let(term: SIRTerm) -> bool {
+fn term_has_aggregate_stack_let(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case term.kind < 0 of {
         true -> false;
         false -> case term.kind of {
-            2 -> do
+            //2 -> do
+            2 -> {
                 rhs_agg: bool <- term.inner.kind == 6 and (term.inner.name == "record_make" or term.inner.name == "tuple_make");
                 rhs_agg or term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr)
-            end;
+            };
             3 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
             4 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
             5 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
@@ -104,7 +105,7 @@ fn term_has_aggregate_stack_let(term: SIRTerm) -> bool {
     }
 }
 
-fn module_has_aggregate_stack_let_scan(fns: ListSIRFunction) -> bool {
+fn module_has_aggregate_stack_let_scan(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_aggregate_stack_let(fns.head.body) of {
@@ -114,18 +115,18 @@ fn module_has_aggregate_stack_let_scan(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn module_needs_region_alloc_for_aggregate_copy(sir_module: SIRModule) -> bool {
+fn module_needs_region_alloc_for_aggregate_copy(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     case module_needs_aggregate_return_heap_stub(sir_module) of {
         true -> true;
         false -> module_has_aggregate_stack_let_scan(sir_module.functions)
     }
 }
 
-fn module_needs_actor_runtime(sir_module: SIRModule) -> bool {
+fn module_needs_actor_runtime(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     sir_ast@sir_string_list_contains(sir_module.runtime_dependencies, "actor_runtime")
 }
 
-fn emit_actor_runtime_module(sir_module: SIRModule) -> string {
+fn emit_actor_runtime_module(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> string {
     concat("; Silica actor/supervisor runtime definitions. Link this object once per executable.\n", prims_actors_runtime_asm@emit_actor_runtime_helpers(atom_table@build_atom_table(sir_module)))
 }
 
@@ -134,17 +135,18 @@ fn emit_actor_runtime_module_with_atom_table(atom_table_shared: { is_empty: bool
 }
 
 // shared_atom_table: per-unit from build_atom_table, or executable-wide merged table from build_atom_table_executable for multi-unit silica.config batches.
-fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, emitter_debug: bool) -> string {
+fn emit_module_with_atom_and_debug(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }, shared_atom_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, emitter_debug: bool) -> string {
     sequence proc[DeviceIO]
         header: string <- case recursion_support@module_uses_tail_calls(sir_module) of {
-            true -> do
+            true -> {
                 bss: string <- recursion_support@emit_recursion_bss_section();
                 p1: string <- recursion_support@emit_recursion_phase_header_comment();
                 p4: string <- recursion_support@emit_stack_trace_hook_comment();
                 p6: string <- recursion_support@emit_trampoline_fallback_stub();
                 base: string <- emit_module_asm_prelude(sir_module);
-                concat(concat(concat(concat(concat(concat(bss, "\n"), base), "\n"), p1), concat("\n", concat(p4, concat("\n", p6)))), "\n")
-            end;
+                result: string <- concat(concat(concat(concat(concat(concat(bss, "\n"), base), "\n"), p1), concat("\n", concat(p4, concat("\n", p6)))), "\n");
+                result
+            };
             false -> emit_module_asm_prelude(sir_module)
         };
         table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] } <- shared_atom_table;
@@ -156,7 +158,7 @@ fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: { i
         float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } <- float64_literal_pool@build_float64_literal_table(sir_module);
         float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } <- float32_literal_pool@build_float32_literal_table(sir_module);
         string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } <- string_literal_pool@build_string_literal_table(sir_module);
-        ctx: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }, debug: bool, module_name: string, foreign_bindings: ListSIRForeignBinding } <- { table: table, int64_table: int64_table, int32_table: int32_table, int16_table: int16_table, int8_table: int8_table, literal_table: literal_table, float64_literal_table: float64_literal_table, float32_literal_table: float32_literal_table, string_literal_table: string_literal_table, debug: emitter_debug, module_name: sir_module.module_name, foreign_bindings: sir_module.foreign_bindings };
+        ctx: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }, debug: bool, module_name: string, foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] } <- { table: table, int64_table: int64_table, int32_table: int32_table, int16_table: int16_table, int8_table: int8_table, literal_table: literal_table, float64_literal_table: float64_literal_table, float32_literal_table: float32_literal_table, string_literal_table: string_literal_table, debug: emitter_debug, module_name: sir_module.module_name, foreign_bindings: sir_module.foreign_bindings };
         funcs: string <- emit_functions(sir_module.functions, sir_module.functions, ctx);
         needs_region_overflow_helper: bool <- prims_memory@module_uses_region_allocation(sir_module);
         region_overflow_helper: string <- case needs_region_overflow_helper of {
@@ -382,7 +384,7 @@ fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: { i
     end
 }
 
-fn emit_module(sir_module: SIRModule) -> string {
+fn emit_module(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> string {
     sequence proc[DeviceIO]
         result: string <- emit_module_with_atom_and_debug(sir_module, atom_table@build_atom_table(sir_module), false)
     produces
@@ -390,7 +392,7 @@ fn emit_module(sir_module: SIRModule) -> string {
     end
 }
 
-fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string {
+fn emit_module_debug(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }, debug: bool) -> string {
     sequence proc[DeviceIO]
         result: string <- emit_module_with_atom_and_debug(sir_module, atom_table@build_atom_table(sir_module), debug)
     produces
@@ -398,7 +400,7 @@ fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string {
     end
 }
 
-fn emit_module_with_atom_table(sir_module: SIRModule, shared_atom_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> string {
+fn emit_module_with_atom_table(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }, shared_atom_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> string {
     sequence proc[DeviceIO]
         result: string <- emit_module_with_atom_and_debug(sir_module, shared_atom_table, false)
     produces
@@ -409,7 +411,7 @@ fn emit_module_with_atom_table(sir_module: SIRModule, shared_atom_table: { is_em
 // Spec 19: assembly linkage — `use` list, .global for exports, .global main when defined.
 // Spec §3.4.8: trait module metadata as comments (export_trait / marker_impl / required_fn) via module_linkage.
 // Supervisors Phase G: optional marker when lowering link/monitor/demonitor (supervisors_implementation_development_plan.md §4 Phase G; silica-spec §15.4.8.4–8.7).
-fn emit_module_asm_prelude(sir_module: SIRModule) -> string {
+fn emit_module_asm_prelude(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> string {
     text: string <- ".text\n";
     use_line: string <- module_linkage@format_used_modules_comment(sir_module.used_modules);
     exp: string <- module_linkage@emit_export_global_directives(sir_module.exports, sir_module.functions, sir_module.module_name);
@@ -431,19 +433,20 @@ fn emit_module_asm_prelude(sir_module: SIRModule) -> string {
     concat(concat(concat(concat(concat(concat(concat(concat(text, use_line), exp), ffi_ext), ffi_free_ext), trait_meta), phase_g_marker), sup_tramps), main_g)
 }
 
-fn emit_functions(fns: ListSIRFunction, all_functions: ListSIRFunction, ctx: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }, debug: bool, module_name: string, foreign_bindings: ListSIRForeignBinding }) -> string {
+fn emit_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], all_functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], ctx: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }, debug: bool, module_name: string, foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] }) -> string {
     sequence proc[DeviceIO]
         result: string <- case fns.is_nil of {
-    true -> "";
-    false -> do
-        fn_asm: string <- emit_sir_function(fns.head, all_functions, ctx);
-        rest_asm: string <- emit_functions(fns.tail, all_functions, ctx);
-        case rest_asm == "" of {
-            true -> fn_asm;
-            false -> concat(concat(fn_asm, "\n"), rest_asm)
+            true -> "";
+            false -> {
+                fn_asm: string <- emit_sir_function(fns.head, all_functions, ctx);
+                rest_asm: string <- emit_functions(fns.tail, all_functions, ctx);
+                result: string <- case rest_asm == "" of {
+                    true -> fn_asm;
+                    false -> concat(concat(fn_asm, "\n"), rest_asm)
+                };
+                result
+            }
         }
-    end
-}
     produces
         pure result
     end
@@ -486,12 +489,13 @@ fn aapcs_next_fp_after_type(ptype: string, fp_slot: int64) -> int64 {
 fn aapcs_arg_slots_at_index(param_types: string, idx: int64) -> (int64, int64) {
     case idx <= 0 of {
         true -> (0, 0);
-        false -> do
+        false -> {
             prev: int64 <- idx - 1;
             (g0: int64, f0: int64) <- aapcs_arg_slots_at_index(param_types, prev);
             pt_prev: string <- param_type_at_index(param_types, prev);
-            (aapcs_next_gpr_after_type(pt_prev, g0), aapcs_next_fp_after_type(pt_prev, f0))
-        end
+            result: (int64, int64) <- (aapcs_next_gpr_after_type(pt_prev, g0), aapcs_next_fp_after_type(pt_prev, f0));
+            result
+        }
     }
 }
 
@@ -557,18 +561,19 @@ fn is_gpr64_param_type(ptype: string) -> bool {
 fn count_gpr64_params_from(param_types: string, acc: int64) -> int64 {
     case len(param_types) == 0 of {
         true -> acc;
-        false -> do
+        false -> {
             pipe: int64 <- find_pipe_in_param_names(param_types, 0);
-            case pipe < 0 of {
+            result: int64 <- case pipe < 0 of {
                 true -> case is_gpr64_param_type(param_types) of { true -> acc + 1; false -> acc };
-                false -> do
+                false -> {
                     head: string <- substring(param_types, 0, pipe);
                     rest: string <- substring(param_types, pipe + 1, len(param_types));
                     n: int64 <- case is_gpr64_param_type(head) of { true -> 1; false -> 0 };
                     count_gpr64_params_from(rest, acc + n)
-                end
-            }
-        end
+                }
+            };
+            result
+        }
     }
 }
 
@@ -595,61 +600,80 @@ fn bind_reg_int64_abi_shadow(param_types: string, idx: int64, ptype: string, str
             1 -> case reply_sret_second_uses_x21 of { true -> "X21"; false -> "X20" };
             _: int64 -> param_reg_for_index(param_types, idx, ptype)
         };
-        false -> case idx == 1 and hold_second_in_x21 of {
-            true -> "X21";
+        false -> case idx == 1 of {
+            true -> case hold_second_in_x21 of {
+                true -> "X21";
+                false -> bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow, false)
+            };
             false -> bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow, false)
         }
     }
 }
 
-fn build_param_outer_reg_int64_abi_shadow_loop(param_names: string, param_types: string, idx: int64, acc: string, string_shadow: bool, second_param_shadow: bool, reply_sret_second_uses_x21: bool, hold_second_in_x21: bool) -> string {
-    pipe: int64 <- find_pipe_in_param_names(param_names, 0);
-    ptype: string <- param_type_at_index(param_types, idx);
-    case pipe < 0 of {
-        true -> case len(param_names) == 0 of {
-            true -> acc;
-            false -> do
-                prefixed: string <- concat("%", param_names);
+// flags: bit0=string_shadow, bit1=second_param_shadow, bit2=reply_sret_second_uses_x21, bit3=hold_second_in_x21 (E3010).
+fn build_param_outer_reg_int64_abi_shadow_loop(param_names: string, param_types: string, idx: int64, acc: string, flags: int64) -> string {
+    sequence proc[DeviceIO]
+        string_shadow: bool <- case flags - (flags / 2) * 2 of { 1 -> true; _: int64 -> false };
+        second_param_shadow: bool <- case (flags / 2) - ((flags / 2) / 2) * 2 of { 1 -> true; _: int64 -> false };
+        reply_sret_second_uses_x21: bool <- case (flags / 4) - ((flags / 4) / 2) * 2 of { 1 -> true; _: int64 -> false };
+        hold_second_in_x21: bool <- case (flags / 8) - ((flags / 8) / 2) * 2 of { 1 -> true; _: int64 -> false };
+        pipe: int64 <- find_pipe_in_param_names(param_names, 0);
+        ptype: string <- param_type_at_index(param_types, idx);
+        result: string <- case pipe < 0 of {
+            true -> case len(param_names) == 0 of {
+                true -> acc;
+                false -> {
+                    prefixed: string <- concat("%", param_names);
+                    br: string <- bind_reg_int64_abi_shadow(param_types, idx, ptype, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21);
+                    sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
+                    merged: string <- concat(acc, concat(sep, concat(prefixed, concat("=", br))));
+                    merged
+                }
+            };
+            false -> {
+                first: string <- substring(param_names, 0, pipe);
+                rest: string <- case pipe + 1 < len(param_names) of { true -> substring(param_names, pipe + 1, len(param_names)); false -> "" };
+                rest_types: string <- case pipe + 1 < len(param_types) of { true -> substring(param_types, pipe + 1, len(param_types)); false -> "" };
+                prefixed: string <- concat("%", first);
                 br: string <- bind_reg_int64_abi_shadow(param_types, idx, ptype, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21);
                 sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
-                concat(acc, concat(sep, concat(prefixed, concat("=", br))))
-            end
-        };
-        false -> do
-            first: string <- substring(param_names, 0, pipe);
-            rest: string <- case pipe + 1 < len(param_names) of { true -> substring(param_names, pipe + 1, len(param_names)); false -> "" };
-            rest_types: string <- case pipe + 1 < len(param_types) of { true -> substring(param_types, pipe + 1, len(param_types)); false -> "" };
-            prefixed: string <- concat("%", first);
-            br: string <- bind_reg_int64_abi_shadow(param_types, idx, ptype, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21);
-            sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
-            part: string <- concat(sep, concat(prefixed, concat("=", br)));
-            base: string <- case len(acc) == 0 of {
-                true -> do
-                    pt0: string <- param_type_at_index(param_types, 0);
-                    case is_gpr64_param_type(pt0) of { true -> "X19"; false -> param_reg_for_index(param_types, 0, pt0) }
-                end;
-                false -> acc
-            };
-            next_acc: string <- concat(base, part);
-            build_param_outer_reg_int64_abi_shadow_loop(rest, rest_types, idx + 1, next_acc, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21)
-        end
-    }
+                part: string <- concat(sep, concat(prefixed, concat("=", br)));
+                base: string <- case len(acc) == 0 of {
+                    true -> {
+                        pt0: string <- param_type_at_index(param_types, 0);
+                        case is_gpr64_param_type(pt0) of { true -> "X19"; false -> param_reg_for_index(param_types, 0, pt0) }
+                    };
+                    false -> acc
+                };
+                next_acc: string <- concat(base, part);
+                build_param_outer_reg_int64_abi_shadow_loop(rest, rest_types, idx + 1, next_acc, flags)
+            }
+        }
+    produces
+        pure result
+    end
 }
 
 fn build_param_outer_reg_int64_abi_shadow(param_names: string, param_types: string, string_shadow: bool, second_param_shadow: bool, reply_sret_second_uses_x21: bool, hold_second_in_x21: bool) -> string {
     case len(param_names) == 0 of {
         true -> "";
-        false -> do
+        false -> {
             first_ptype: string <- param_type_at_index(param_types, 0);
             first_base: string <- case is_gpr64_param_type(first_ptype) of { true -> "X19"; false -> param_reg_for_index(param_types, 0, first_ptype) };
-            build_param_outer_reg_int64_abi_shadow_loop(param_names, param_types, 0, first_base, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21)
-        end
+            b0: int64 <- case string_shadow of { true -> 1; false -> 0 };
+            b1: int64 <- case second_param_shadow of { true -> 2; false -> 0 };
+            b2: int64 <- case reply_sret_second_uses_x21 of { true -> 4; false -> 0 };
+            b3: int64 <- case hold_second_in_x21 of { true -> 8; false -> 0 };
+            flags: int64 <- ((b0 + b1) + b2) + b3;
+            result: string <- build_param_outer_reg_int64_abi_shadow_loop(param_names, param_types, 0, first_base, flags);
+            result
+        }
     }
 }
 
 fn emit_int64_abi_shadow_moves(param_types: string, reply_sret_second_uses_x21: bool, hold_second_in_x21: bool) -> string {
     c: int64 <- count_gpr64_params(param_types);
-    case c >= 2 of {
+    result: string <- case c >= 2 of {
         true -> case reply_sret_second_uses_x21 of {
             true -> "    MOV X19, X0\n    MOV X21, X1\n";
             false -> "    MOV X19, X0\n    MOV X20, X1\n"
@@ -661,12 +685,13 @@ fn emit_int64_abi_shadow_moves(param_types: string, reply_sret_second_uses_x21: 
             };
             false -> ""
         }
-    }
+    };
+    result
 }
 
 // True when the body contains a call-like or caller-saved-clobbering primitive.
 // These clobber X0-X18 so any live value in caller-saved regs must be spilled to callee-saved regs.
-fn body_has_bl_producing_prim(term: SIRTerm) -> bool {
+fn body_has_bl_producing_prim(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case term.kind < 0 of {
         true -> false;
         false -> case term.kind of {
@@ -705,12 +730,12 @@ fn body_has_bl_producing_prim(term: SIRTerm) -> bool {
 
 // True when we must copy ABI GPR args from X0/X1 into callee-saved regs before device_io / BL.
 // Requires the first parameter to be int64/uint64 so X0 is that value; otherwise X0 may be struct/string/etc.
-fn needs_int64_abi_entry_shadow(fn_val: SIRFunction) -> bool {
+fn needs_int64_abi_entry_shadow(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
             true -> false;
-            false -> do
+            false -> {
                 c: int64 <- count_gpr64_params(fn_val.param_types);
                 fp_gpr: bool <- first_param_is_gpr64(fn_val.param_types);
                 case fp_gpr of {
@@ -723,7 +748,7 @@ fn needs_int64_abi_entry_shadow(fn_val: SIRFunction) -> bool {
                         }
                     }
                 }
-            end
+            }
         }
     }
 }
@@ -736,19 +761,19 @@ fn second_param_is_non_float(param_types: string) -> bool {
     pipe: int64 <- find_pipe_in_param_names(param_types, 0);
     case pipe < 0 of {
         true -> false;
-        false -> do
+        false -> {
             p1: string <- param_type_at_index(param_types, 1);
             case p1 == "float64" or p1 == "float32" of {
                 true -> false;
                 false -> true
             }
-        end
+        }
     }
 }
 
 // First param int64 in X0 (shadowed to X19); second param in X1 (struct/actor_ref/etc.) but only one GPR64 —
 // BL clobbers X1. Copy X1→X21 and bind the second param to X21 (X20 may hold temps after prims; forwarder cast).
-fn needs_second_param_x21_bl_survival(fn_val: SIRFunction) -> bool {
+fn needs_second_param_x21_bl_survival(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
@@ -812,21 +837,21 @@ fn behavior_return_uses_actor_sret_tuple(return_type: string) -> bool {
 }
 
 // Strip a spine of SIR let (kind 2) nodes to the first non-let subexpression.
-fn sir_strip_lets_to_tail(term: SIRTerm) -> SIRTerm {
+fn sir_strip_lets_to_tail(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     case term.kind == 2 of {
         true -> sir_strip_lets_to_tail(term.right_expr);
         false -> term
     }
 }
 
-fn sir_tail_is_aggregate_tuple_or_record_make(term: SIRTerm) -> bool {
+fn sir_tail_is_aggregate_tuple_or_record_make(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     term.kind == 6 and (term.name == "tuple_make" or term.name == "record_make")
         and reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name)
 }
 
 // Let tail with aggregate tuple/record return uses aggregate_return_heap_promote_x0 + ADD SP in term_emitter;
 // epilogue tuple_ret_dealloc would pop again and corrupt the frame (e.g. main.forwarder / actor_behavior_forward_cast).
-fn tuple_return_stack_already_freed_in_body(body: SIRTerm) -> bool {
+fn tuple_return_stack_already_freed_in_body(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case body.kind == 2 of {
         true -> sir_tail_is_aggregate_tuple_or_record_make(sir_strip_lets_to_tail(body));
         false -> false
@@ -834,7 +859,7 @@ fn tuple_return_stack_already_freed_in_body(body: SIRTerm) -> bool {
 }
 
 // `let r = aggregate_make ...; r` — return value lives in caller X8 (sret), not on callee SP; skip epilogue ADD SP.
-fn tuple_return_id_ret_aggregate_var(body: SIRTerm) -> bool {
+fn tuple_return_id_ret_aggregate_var(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case body.kind == 2 of {
         false -> false;
         true -> body.right_expr.kind == 1 and body.right_expr.name == body.name and reg_conventions@is_aggregate_struct_or_tuple_return_type(body.inner.type_name)
@@ -842,11 +867,11 @@ fn tuple_return_id_ret_aggregate_var(body: SIRTerm) -> bool {
 }
 
 // Tail is tuple_make/record_make (e.g. `(a,b,c)`); same sret path as id_ret.
-fn tuple_return_tail_aggregate_make(body: SIRTerm) -> bool {
+fn tuple_return_tail_aggregate_make(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     sir_tail_is_aggregate_tuple_or_record_make(sir_strip_lets_to_tail(body))
 }
 
-fn tuple_callee_skips_tuple_ret_dealloc(body: SIRTerm) -> bool {
+fn tuple_callee_skips_tuple_ret_dealloc(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case tuple_return_stack_already_freed_in_body(body) of {
         true -> true;
         false -> case tuple_return_id_ret_aggregate_var(body) of {
@@ -861,7 +886,7 @@ fn tuple_callee_skips_tuple_ret_dealloc(body: SIRTerm) -> bool {
 }
 
 // Actor runtime passes X2 = sret pointer; store reply tuple there (not callee stack). Skip when first param uses X19 shadow (string or list; X20 may hold second param shadow).
-fn use_actor_reply_sret_buffer(fn_val: SIRFunction) -> bool {
+fn use_actor_reply_sret_buffer(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> case behavior_return_uses_actor_sret_tuple(fn_val.return_type) of {
@@ -875,7 +900,7 @@ fn use_actor_reply_sret_buffer(fn_val: SIRFunction) -> bool {
 }
 
 // Reply sret uses X20 for the buffer pointer (MOV X20, X2) after int64 ABI shadow MOV X19,X0 / MOV X20,X1 — that clobbers the second GPR parameter. When both apply and there are two int64/uint64 params, hold the second param in X21 instead (prologue must save X21 via needs_actor_ref_x21_x22_frame).
-fn actor_reply_sret_second_param_uses_x21(fn_val: SIRFunction) -> bool {
+fn actor_reply_sret_second_param_uses_x21(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case use_actor_reply_sret_buffer(fn_val) of {
         false -> false;
         true -> case needs_int64_abi_entry_shadow(fn_val) of {
@@ -891,14 +916,14 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
     case pipe < 0 of {
         true -> case len(param_names) == 0 of {
             true -> acc;
-            false -> do
+            false -> {
                 prefixed: string <- concat("%", param_names);
                 br: string <- bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow, aggregate_first_shadow);
                 sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
                 concat(acc, concat(sep, concat(prefixed, concat("=", br))))
-            end
+            }
         };
-        false -> do
+        false -> {
             first: string <- substring(param_names, 0, pipe);
             rest: string <- case pipe + 1 < len(param_names) of { true -> substring(param_names, pipe + 1, len(param_names)); false -> "" };
             rest_types: string <- case pipe + 1 < len(param_types) of { true -> substring(param_types, pipe + 1, len(param_types)); false -> "" };
@@ -909,7 +934,7 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
             base: string <- case len(acc) == 0 of { true -> param_reg_for_index(param_types, idx, ptype); false -> acc };
             next_acc: string <- concat(base, part);
             build_param_outer_reg_loop(rest, rest_types, idx + 1, next_acc, string_shadow, second_param_shadow, aggregate_first_shadow)
-        end
+        }
     }
 }
 
@@ -926,7 +951,7 @@ fn find_pipe_in_param_names(s: string, start: int64) -> int64 {
 fn build_param_outer_reg(param_names: string, param_types: string, string_shadow: bool, aggregate_first_shadow: bool) -> string {
     case len(param_names) == 0 of {
         true -> "";
-        false -> do
+        false -> {
             first_ptype: string <- param_type_at_index(param_types, 0);
             first_reg: string <- case reg_conventions@is_aggregate_struct_or_tuple_return_type(first_ptype) of {
                 true -> case aggregate_first_shadow of { true -> "X20"; false -> "X11" };
@@ -934,7 +959,7 @@ fn build_param_outer_reg(param_names: string, param_types: string, string_shadow
             };
             second_ps: bool <- second_param_shadow_enabled(param_types, string_shadow);
             build_param_outer_reg_loop(param_names, param_types, 0, first_reg, string_shadow, second_ps, aggregate_first_shadow)
-        end
+        }
     }
 }
 
@@ -942,10 +967,10 @@ fn build_param_outer_reg(param_names: string, param_types: string, string_shadow
 // clobber X0/X11. Skip when string/list shadow uses X19 or int64 ABI shadow uses X19/X20.
 // Tail-call bodies (kind 5) still need this when the callee is not passed the aggregate unchanged (e.g. load a field
 // then BR to another function — see calculate_order_total loading order.items before tail-calling sum_items).
-fn first_param_aggregate_needs_x11_base(fn_val: SIRFunction) -> bool {
+fn first_param_aggregate_needs_x11_base(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case len(fn_val.param_types) == 0 of {
         true -> false;
-        false -> do
+        false -> {
             p0: string <- param_type_at_index(fn_val.param_types, 0);
             case reg_conventions@is_aggregate_struct_or_tuple_return_type(p0) of {
                 false -> false;
@@ -957,11 +982,11 @@ fn first_param_aggregate_needs_x11_base(fn_val: SIRFunction) -> bool {
                     }
                 }
             }
-        end
+        }
     }
 }
 
-fn first_param_is_aggregate_struct_or_tuple(fn_val: SIRFunction) -> bool {
+fn first_param_is_aggregate_struct_or_tuple(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case len(fn_val.param_types) == 0 of {
         true -> false;
         false -> reg_conventions@is_aggregate_struct_or_tuple_return_type(param_type_at_index(fn_val.param_types, 0))
@@ -975,10 +1000,10 @@ fn first_param_x0_shadow_enabled(param_types: string, body_kind: int64) -> bool 
         true -> false;
         false -> case len(param_types) == 0 of {
             true -> false;
-            false -> do
+            false -> {
                 p0: string <- param_type_at_index(param_types, 0);
                 p0 == "string" or term_emitter@type_name_is_list_like(p0)
-            end
+            }
         }
     }
 }
@@ -989,13 +1014,13 @@ fn first_param_x0_shadow_enabled(param_types: string, body_kind: int64) -> bool 
 fn second_param_shadow_enabled(param_types: string, string_shadow: bool) -> bool {
     case string_shadow of {
         true -> case find_pipe_in_param_names(param_types, 0) >= 0 of {
-            true -> do
+            true -> {
                 second_type: string <- param_type_at_index(param_types, 1);
                 case second_type == "float64" or second_type == "float32" of {
                     true -> false;
                     false -> true
                 }
-            end;
+            };
             false -> false
         };
         false -> false
@@ -1009,58 +1034,58 @@ fn list_cons_pattern_tail_nonwild(name: string) -> int64 {
     pipe_n: int64 <- var@find_pipe_from(name, 0);
     case pipe_n < 0 of {
         true -> 0;
-        false -> do
+        false -> {
             right_pat: string <- substring(name, pipe_n + 1, len(name));
             case right_pat == "_" of {
                 true -> 0;
                 false -> 1
             }
-        end
+        }
     }
 }
 
-fn list_cons_pattern_head_aggregate_nonwild(branch: SIRTerm) -> int64 {
+fn list_cons_pattern_head_aggregate_nonwild(branch: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
     case branch.value == "list_cons" of {
         false -> 0;
-        true -> do
+        true -> {
             pipe_n: int64 <- var@find_pipe_from(branch.name, 0);
             case pipe_n < 0 of {
                 true -> 0;
-                false -> do
+                false -> {
                     left_pat: string <- substring(branch.name, 0, pipe_n);
                     case left_pat == "_" of {
                         true -> 0;
-                        false -> do
+                        false -> {
                             pipe_t: int64 <- var@find_pipe_from(branch.type_name, 0);
                             case pipe_t < 0 of {
                                 true -> 0;
-                                false -> do
+                                false -> {
                                     head_t: string <- substring(branch.type_name, 0, pipe_t);
                                     case reg_conventions@is_aggregate_struct_or_tuple_return_type(head_t) of {
                                         true -> 1;
                                         false -> 0
                                     }
-                                end
+                                }
                             }
-                        end
+                        }
                     }
-                end
+                }
             }
-        end
+        }
     }
 }
 
-fn count_list_cons_nonwild_tail_bindings(term: SIRTerm) -> int64 {
+fn count_list_cons_nonwild_tail_bindings(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
     case term.kind < 0 of {
         true -> 0;
         false -> case term.kind of {
-            8 -> do
+            8 -> {
                 extra: int64 <- case term.value == "list_cons" of {
                     true -> list_cons_pattern_tail_nonwild(term.name);
                     false -> 0
                 };
                 extra + count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr)
-            end;
+            };
             2 -> count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr);
             3 -> count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr);
             4 -> count_list_cons_nonwild_tail_bindings(term.inner);
@@ -1072,7 +1097,7 @@ fn count_list_cons_nonwild_tail_bindings(term: SIRTerm) -> int64 {
     }
 }
 
-fn count_list_cons_aggregate_head_nonwild_bindings(term: SIRTerm) -> int64 {
+fn count_list_cons_aggregate_head_nonwild_bindings(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
     case term.kind < 0 of {
         true -> 0;
         false -> case term.kind of {
@@ -1088,7 +1113,7 @@ fn count_list_cons_aggregate_head_nonwild_bindings(term: SIRTerm) -> int64 {
     }
 }
 
-fn count_callee_saved_spill_pressure(term: SIRTerm) -> int64 {
+fn count_callee_saved_spill_pressure(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
     count_spill_eligible_lets_in_term(term) + count_list_cons_nonwild_tail_bindings(term) * 3 + count_list_cons_aggregate_head_nonwild_bindings(term) * 3
 }
 
@@ -1099,17 +1124,17 @@ fn term_type_is_float_scalar(type_name: string) -> bool {
 // Count non-discarded let bindings whose type is spill-eligible (not float, not unit).
 // Used to decide how many callee-saved register pairs (X19–X28) to save in the prologue.
 // Overcounting is harmless (a few extra STP/LDP instructions); undercounting corrupts the caller's callee-saved state.
-fn count_spill_eligible_lets_in_term(term: SIRTerm) -> int64 {
+fn count_spill_eligible_lets_in_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
     case term.kind < 0 of {
         true -> 0;
         false -> case term.kind of {
-            2 -> do
+            2 -> {
                 c: int64 <- case term.name != "%_" and term.name != "_" and term.type_name != "float64" and term.type_name != "float32" and term.type_name != "float16" and term.type_name != "unit" of {
                     true -> 1;
                     false -> 0
                 };
                 c + count_spill_eligible_lets_in_term(term.inner) + count_spill_eligible_lets_in_term(term.right_expr)
-            end;
+            };
             3 -> count_spill_eligible_lets_in_term(term.inner) + count_spill_eligible_lets_in_term(term.right_expr);
             4 -> count_spill_eligible_lets_in_term(term.inner);
             5 -> count_spill_eligible_lets_in_term(term.inner) + count_spill_eligible_lets_in_term(term.right_expr);
@@ -1121,17 +1146,17 @@ fn count_spill_eligible_lets_in_term(term: SIRTerm) -> int64 {
     }
 }
 
-fn count_float_spill_eligible_lets_in_term(term: SIRTerm) -> int64 {
+fn count_float_spill_eligible_lets_in_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
     case term.kind < 0 of {
         true -> 0;
         false -> case term.kind of {
-            2 -> do
+            2 -> {
                 c: int64 <- case term.name != "%_" and term.name != "_" and term_type_is_float_scalar(term.type_name) of {
                     true -> 1;
                     false -> 0
                 };
                 c + count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr)
-            end;
+            };
             3 -> count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr);
             4 -> count_float_spill_eligible_lets_in_term(term.inner);
             5 -> count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr);
@@ -1161,7 +1186,7 @@ fn count_float_spill_eligible_lets_in_term(term: SIRTerm) -> int64 {
 // reused by bumping the spill-pressure count by the shadowed-param count.
 
 // True when subtree contains a user call (kind 4). Mirrors term_emitter@term_subterm_has_user_call.
-fn fs_subtree_has_user_call(t: SIRTerm) -> bool {
+fn fs_subtree_has_user_call(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case t.kind < 0 of {
         true -> false;
         false -> case t.kind of {
@@ -1178,7 +1203,7 @@ fn fs_subtree_has_user_call(t: SIRTerm) -> bool {
 }
 
 // True when the term tree contains a `case` (kind 3) whose scrutinee (inner) performs a user call.
-fn fs_term_has_hazard(t: SIRTerm) -> bool {
+fn fs_term_has_hazard(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case t.kind < 0 of {
         true -> false;
         false -> case t.kind of {
@@ -1197,7 +1222,7 @@ fn fs_term_has_hazard(t: SIRTerm) -> bool {
     }
 }
 
-fn fs_term_has_case(t: SIRTerm) -> bool {
+fn fs_term_has_case(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case t.kind < 0 of {
         true -> false;
         false -> case t.kind of {
@@ -1226,33 +1251,33 @@ fn fs_param_is_simple_gpr(ptype: string) -> bool {
 fn fs_all_params_simple_gpr(param_types: string) -> bool {
     case len(param_types) == 0 of {
         true -> true;
-        false -> do
+        false -> {
             pipe: int64 <- find_pipe_in_param_names(param_types, 0);
             case pipe < 0 of {
                 true -> fs_param_is_simple_gpr(param_types);
-                false -> do
+                false -> {
                     head: string <- substring(param_types, 0, pipe);
                     rest: string <- substring(param_types, pipe + 1, len(param_types));
                     case fs_param_is_simple_gpr(head) of {
                         false -> false;
                         true -> fs_all_params_simple_gpr(rest)
                     }
-                end
+                }
             }
-        end
+        }
     }
 }
 
 fn fs_count_params(param_names: string) -> int64 {
     case len(param_names) == 0 of {
         true -> 0;
-        false -> do
+        false -> {
             pipe: int64 <- find_pipe_in_param_names(param_names, 0);
             case pipe < 0 of {
                 true -> 1;
                 false -> 1 + fs_count_params(substring(param_names, pipe + 1, len(param_names)))
             }
-        end
+        }
     }
 }
 
@@ -1269,7 +1294,7 @@ fn fs_is_program_main_name(name: string) -> bool {
 // Aggregate returns use X8 as their independent return buffer and do not conflict with
 // callee-saved parameter shadows; excluding them leaves parameters vulnerable while a
 // helper call constructs the aggregate result.
-fn use_full_param_shadow(fn_val: SIRFunction) -> bool {
+fn use_full_param_shadow(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> case fs_is_program_main_name(fn_val.name) of {
@@ -1280,7 +1305,7 @@ fn use_full_param_shadow(fn_val: SIRFunction) -> bool {
                         true -> false;
                         false -> case count_float_spill_eligible_lets_in_term(fn_val.body) >= 1 of {
                             true -> false;
-                            false -> do
+                            false -> {
                                 n: int64 <- fs_count_params(fn_val.param_names);
                                 case n >= 1 and n <= 8 of {
                                     false -> false;
@@ -1289,7 +1314,7 @@ fn use_full_param_shadow(fn_val: SIRFunction) -> bool {
                                         true -> fs_subtree_has_user_call(fn_val.body) or fs_term_has_case(fn_val.body)
                                     }
                                 }
-                            end
+                            }
                         }
                     }
                 }
@@ -1299,7 +1324,7 @@ fn use_full_param_shadow(fn_val: SIRFunction) -> bool {
 
 // Extra callee-saved register pressure contributed by shadowed params, so the existing
 // frame predicates save enough X19–X28 pairs to cover both params and let-spills.
-fn full_shadow_pressure_bump(fn_val: SIRFunction) -> int64 {
+fn full_shadow_pressure_bump(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> int64 {
     case use_full_param_shadow(fn_val) of {
         true -> fs_count_params(fn_val.param_names);
         false -> 0
@@ -1321,7 +1346,7 @@ fn fs_x_view_of_abi(reg: string) -> string {
 fn fs_emit_moves_loop(param_types: string, idx: int64, n: int64) -> string {
     case idx >= n of {
         true -> "";
-        false -> do
+        false -> {
             ptype: string <- param_type_at_index(param_types, idx);
             abi: string <- param_reg_for_index(param_types, idx, ptype);
             xabi: string <- fs_x_view_of_abi(abi);
@@ -1331,7 +1356,7 @@ fn fs_emit_moves_loop(param_types: string, idx: int64, n: int64) -> string {
                 false -> concat("    MOV ", concat(dest, concat(", ", concat(xabi, "\n"))))
             };
             concat(mv, fs_emit_moves_loop(param_types, idx + 1, n))
-        end
+        }
     }
 }
 
@@ -1353,12 +1378,12 @@ fn fs_name_at_index(param_names: string, idx: int64) -> string {
 fn fs_build_param_outer_loop(param_names: string, idx: int64, n: int64, acc: string) -> string {
     case idx >= n of {
         true -> acc;
-        false -> do
+        false -> {
             nm: string <- fs_name_at_index(param_names, idx);
             dest: string <- fs_callee_reg_for_index(idx);
             entry: string <- concat("|%", concat(nm, concat("=", dest)));
             fs_build_param_outer_loop(param_names, idx + 1, n, concat(acc, entry))
-        end
+        }
     }
 }
 
@@ -1368,7 +1393,7 @@ fn fs_build_param_outer(param_names: string, n: int64) -> string {
 }
 
 // STP/LDP X21,X22 when spill pressure (lets + weighted list-cons tails) reaches 2, or when X21 holds the second GPR parameter (actor reply sret + int64 shadow).
-fn needs_actor_ref_x21_x22_frame(fn_val: SIRFunction) -> bool {
+fn needs_actor_ref_x21_x22_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> case actor_reply_sret_second_param_uses_x21(fn_val) of {
@@ -1384,7 +1409,7 @@ fn needs_actor_ref_x21_x22_frame(fn_val: SIRFunction) -> bool {
 // Tuple/record destructuring can materialize up to four additional callee-saved
 // bindings beyond the source-level let count. Keep the frame thresholds four
 // registers ahead of the nominal pressure so emitted X23-X29 uses obey AAPCS64.
-fn needs_callee_x23_x24_frame(fn_val: SIRFunction) -> bool {
+fn needs_callee_x23_x24_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2
@@ -1392,7 +1417,7 @@ fn needs_callee_x23_x24_frame(fn_val: SIRFunction) -> bool {
 }
 
 // STP/LDP X25,X26 when pressure reaches 6.
-fn needs_callee_x25_x26_frame(fn_val: SIRFunction) -> bool {
+fn needs_callee_x25_x26_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2
@@ -1400,7 +1425,7 @@ fn needs_callee_x25_x26_frame(fn_val: SIRFunction) -> bool {
 }
 
 // STP/LDP X27,X28 when pressure reaches 8.
-fn needs_callee_x27_x28_frame(fn_val: SIRFunction) -> bool {
+fn needs_callee_x27_x28_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 4
@@ -1408,11 +1433,11 @@ fn needs_callee_x27_x28_frame(fn_val: SIRFunction) -> bool {
 }
 
 // X29 is the frame base for overflow spill slots, not a value spill register.
-fn needs_callee_x29_frame(fn_val: SIRFunction) -> bool {
+fn needs_callee_x29_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     false
 }
 
-fn frame_spill_slot_count(fn_val: SIRFunction) -> int64 {
+fn frame_spill_slot_count(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> int64 {
     pressure: int64 <- count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val);
     case pressure > 10 of {
         true -> pressure - 10;
@@ -1420,32 +1445,32 @@ fn frame_spill_slot_count(fn_val: SIRFunction) -> int64 {
     }
 }
 
-fn frame_spill_bytes(fn_val: SIRFunction) -> int64 {
+fn frame_spill_bytes(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> int64 {
     frame_spill_slot_count(fn_val) * 16
 }
 
-fn needs_callee_d8_d9_frame(fn_val: SIRFunction) -> bool {
+fn needs_callee_d8_d9_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 1
     }
 }
 
-fn needs_callee_d10_d11_frame(fn_val: SIRFunction) -> bool {
+fn needs_callee_d10_d11_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 3
     }
 }
 
-fn needs_callee_d12_d13_frame(fn_val: SIRFunction) -> bool {
+fn needs_callee_d12_d13_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 5
     }
 }
 
-fn needs_callee_d14_d15_frame(fn_val: SIRFunction) -> bool {
+fn needs_callee_d14_d15_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 7
@@ -1457,7 +1482,7 @@ fn needs_callee_d14_d15_frame(fn_val: SIRFunction) -> bool {
 // tiny generic helpers whose source-level return type does not reveal that pressure.
 // Save them for every non-tail function unless the string/list shadow prologue
 // already emits this exact pair.
-fn function_needs_callee_saved_x19_x20_frame(fn_val: SIRFunction) -> bool {
+fn function_needs_callee_saved_x19_x20_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
@@ -1467,7 +1492,7 @@ fn function_needs_callee_saved_x19_x20_frame(fn_val: SIRFunction) -> bool {
     }
 }
 
-fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, ctx: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }, debug: bool, module_name: string, foreign_bindings: ListSIRForeignBinding }) -> string {
+fn emit_sir_function(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, all_functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], ctx: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }, debug: bool, module_name: string, foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] }) -> string {
     sequence proc[DeviceIO]
         entry_label: string <- module_linkage@asm_symbol_for_definition(ctx.module_name, fn_val.name);
         eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
@@ -1655,11 +1680,11 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, ctx: {
                     true -> "";
                     false -> case tuple_callee_skips_tuple_ret_dealloc(fn_val.body) of {
                         true -> "";
-                        false -> do
+                        false -> {
                             tc: int64 <- prims_tuple@count_type_elements(fn_val.return_type);
                             ts: int64 <- prims_tuple@flat_alloc_size(tc);
                             term_emitter@aggregate_return_heap_promote_x0(ts)
-                        end
+                        }
                     }
                 };
                 false -> ""
@@ -1672,11 +1697,11 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, ctx: {
                     true -> "";
                     false -> case tuple_callee_skips_tuple_ret_dealloc(fn_val.body) of {
                         true -> "";
-                        false -> do
+                        false -> {
                             tc: int64 <- prims_tuple@count_type_elements(fn_val.return_type);
                             ts: int64 <- prims_tuple@flat_alloc_size(tc);
                             concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(ts), "\n"))
-                        end
+                        }
                     }
                 };
                 false -> ""
@@ -1726,7 +1751,7 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, ctx: {
         epilogue: string <- case kind5_tail_returns_directly of {
             true -> "";
             false -> case string_shadow of {
-                true -> do
+                true -> {
                     ep_sh: string <- concat("    LDP X19, X20, [SP], #16\n", concat(frame_spill_dealloc, control@function_epilogue_with_effects(fn_val.effects)));
                     ep_sh_1: string <- concat(actor_x21_x22_restore, ep_sh);
                     ep_sh_2: string <- concat(callee_x23_x24_restore, ep_sh_1);
@@ -1738,8 +1763,8 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, ctx: {
                     ep_sh_7: string <- concat(callee_d12_d13_restore, ep_sh_6);
                     ep_sh_8: string <- concat(callee_d14_d15_restore, ep_sh_7);
                     concat(concat(tuple_ret_promote, tuple_ret_dealloc), ep_sh_8)
-                end;
-                false -> do
+                };
+                false -> {
                     ep_ns: string <- concat(callee_saved_restore, concat(frame_spill_dealloc, control@function_epilogue_with_effects(fn_val.effects)));
                     ep_ns_1: string <- concat(actor_x21_x22_restore, ep_ns);
                     ep_ns_2: string <- concat(callee_x23_x24_restore, ep_ns_1);
@@ -1751,7 +1776,7 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, ctx: {
                     ep_ns_7: string <- concat(callee_d12_d13_restore, ep_ns_6);
                     ep_ns_8: string <- concat(callee_d14_d15_restore, ep_ns_7);
                     concat(concat(tuple_ret_promote, tuple_ret_dealloc), ep_ns_8)
-                end
+                }
             }
         };
         result: string <- concat(concat(concat(eff_comment, "\n"), concat(prologue_full, "\n")), concat(registry_init_inject, concat(concat(concat(body, "\n"), float_to_exit), epilogue)))
