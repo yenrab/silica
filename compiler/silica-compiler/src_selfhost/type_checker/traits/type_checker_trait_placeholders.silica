@@ -92,7 +92,7 @@ fn record_return_types_assoc_compatible(req_ret: string, impl_ret: string) -> bo
         true -> true;
         false -> case len(req_t) > 0 and substring(req_t, 0, 1) == "{" and len(impl_t) > 0 and substring(impl_t, 0, 1) == "{" of {
             false -> assoc_placeholder_param_compatible(req_t, impl_t);
-            true -> do
+            true -> {
                 req_val: string <- type_checker_record_types@find_field_type_in_record(req_t, "value");
                 impl_val: string <- type_checker_record_types@find_field_type_in_record(impl_t, "value");
                 req_found: string <- type_checker_record_types@find_field_type_in_record(req_t, "found");
@@ -101,7 +101,7 @@ fn record_return_types_assoc_compatible(req_ret: string, impl_ret: string) -> bo
                     false -> false;
                     true -> record_field_assoc_compatible(req_found, impl_found) and record_field_assoc_compatible(req_val, impl_val)
                 }
-            end
+            }
         }
     }
 }
@@ -150,14 +150,14 @@ fn params_placeholder_compatible_loop(req: ListParam, impl_p: ListParam, trait_n
 fn impl_signature_matches_required(impl_decl: Declaration, req_decl: Declaration, trait_name: string, trait_prog: Program, world: ListNamedProgram) -> bool {
     case list_param_length_ph(impl_decl.parameters) == list_param_length_ph(req_decl.parameters) of {
         false -> false;
-        true -> do
+        true -> {
             req_src: ListParam <- parser_ast@list_param_reverse_with_acc(req_decl.parameters, parser_ast@nil_list_param());
             impl_src: ListParam <- parser_ast@list_param_reverse_with_acc(impl_decl.parameters, parser_ast@nil_list_param());
             case params_placeholder_compatible_loop(req_src, impl_src, trait_name, trait_prog, world) of {
                 false -> false;
                 true -> placeholder_return_types_compatible(impl_decl.return_type_name, req_decl.return_type_name, trait_prog, world)
             }
-        end
+        }
     }
 }
 
@@ -166,7 +166,7 @@ fn is_concrete_impl_fn(d: Declaration, trait_name: string, unit_decls: ListDecla
         false -> false;
         true -> case d.parameters.is_nil of {
             true -> false;
-            false -> do
+            false -> {
                 src: ListParam <- parser_ast@list_param_reverse_with_acc(d.parameters, parser_ast@nil_list_param());
                 p0: string <- trim_ph(src.head.type_name);
                 case p0 == trim_ph(trait_name) of {
@@ -176,7 +176,7 @@ fn is_concrete_impl_fn(d: Declaration, trait_name: string, unit_decls: ListDecla
                         false -> true
                     }
                 }
-            end
+            }
         }
     }
 }
@@ -216,10 +216,10 @@ fn check_one_impl_against_required(decls: ListDeclaration, impl_decl: Declaratio
         false -> (0, "", parser_ast@zero_location(), "");
         true -> case impl_signature_matches_required(impl_decl, req, trait_name, trait_prog, world) of {
             true -> (0, "", parser_ast@zero_location(), "");
-            false -> do
+            false -> {
                 msg: string <- concat(concat(concat(concat("impl fn ", impl_decl.name), " does not match required signature for trait "), trait_name), " (spec 3.4.8)");
                 (1, "E2092", impl_decl.location, msg)
-            end
+            }
         }
     }
 }
@@ -228,13 +228,13 @@ fn check_impls_match_required_loop(decls: ListDeclaration, all_decls: ListDeclar
     case decls.is_nil of {
         true -> (0, "", parser_ast@zero_location(), "");
         false -> case is_concrete_impl_fn(decls.head, trait_name, all_decls) of {
-            true -> do
+            true -> {
                 (st: int64, ec: string, eloc: { file: string, line: int64, column: int64, offset: int64 }, emsg: string) <- check_one_impl_against_required(all_decls, decls.head, trait_name, trait_prog, world);
                 case st == 0 of {
                     false -> (st, ec, eloc, emsg);
                     true -> check_impls_match_required_loop(decls.tail, all_decls, trait_name, trait_prog, world)
                 }
-            end;
+            };
             false -> check_impls_match_required_loop(decls.tail, all_decls, trait_name, trait_prog, world)
         }
     }
@@ -261,10 +261,10 @@ fn check_required_have_impl_loop(decls: ListDeclaration, all_decls: ListDeclarat
         true -> (0, "", parser_ast@zero_location(), "");
         false -> case decls.head.tag == 7 of {
             true -> case has_matching_impl_for_required_loop(all_decls, decls.head, trait_name, trait_prog, world, all_decls) of {
-                false -> do
+                false -> {
                     msg: string <- concat(concat(concat(concat("required fn ", decls.head.name), " has no matching impl fn for trait "), trait_name), " (spec 3.4.8)");
                     (1, "E2092", decls.head.location, msg)
-                end;
+                };
                 true -> check_required_have_impl_loop(decls.tail, all_decls, trait_name, trait_prog, world)
             };
             false -> check_required_have_impl_loop(decls.tail, all_decls, trait_name, trait_prog, world)
@@ -275,7 +275,7 @@ fn check_required_have_impl_loop(decls: ListDeclaration, all_decls: ListDeclarat
 fn check_trait_module_placeholders(program: Program, trait_name: string, world: ListNamedProgram) -> (int64, string, { file: string, line: int64, column: int64, offset: int64 }, string) {
     case len(trait_name) == 0 of {
         true -> (0, "", parser_ast@zero_location(), "");
-        false -> do
+        false -> {
             (st1: int64, ec1: string, loc1: { file: string, line: int64, column: int64, offset: int64 }, msg1: string) <- case program_is_export_trait_declaration(program.declarations) of {
                 true -> (0, "", parser_ast@zero_location(), "");
                 false -> check_required_have_impl_loop(program.declarations, program.declarations, trait_name, program, world)
@@ -284,7 +284,7 @@ fn check_trait_module_placeholders(program: Program, trait_name: string, world: 
                 false -> (st1, ec1, loc1, msg1);
                 true -> check_impls_match_required_loop(program.declarations, program.declarations, trait_name, program, world)
             }
-        end
+        }
     }
 }
 

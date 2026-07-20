@@ -17,18 +17,14 @@
 
 // SIR internal data structures (AST representation)
 // SIR is held in memory; text .sir format is for debugging/export only
+//
+// Wave C (seed-legal): no named struct declarations.
+//   SIRTerm handle = { nodes: List[<Node>, mem(normal)], root: int64 } with root == -1 for none/dummy
+//   Node = { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }
+//   Linear collections use List[T, mem(normal)].
 
-export SIRTerm/0;
-export SIRFunction/0;
-export ListSIRFunction/0;
-export ListSirString/0;
-export SIRExportItem/0;
-export ListSIRExportItem/0;
-export SIRModule/0;
-export ListSIRModule/0;
-export SIRSupervisorPhaseE/0;
-export ListSIRSupervisorPhaseE/0;
 export dummy_sir_term/0;
+export make_sir_term/6;
 export dummy_sir_function/0;
 export cons_sir_functions/2;
 export nil_sir_functions/0;
@@ -38,8 +34,6 @@ export sir_string_list_contains/2;
 export dummy_export_item/0;
 export nil_sir_exports/0;
 export cons_sir_export/2;
-export SIRRequiredMethodSig/0;
-export ListSIRRequiredMethodSig/0;
 export dummy_required_method_sig/0;
 export nil_required_method_sigs/0;
 export cons_required_method_sig/2;
@@ -47,170 +41,132 @@ export dummy_supervisor_phase_e/0;
 export nil_supervisor_phase_e/0;
 export cons_supervisor_phase_e/2;
 export sir_supervisor_phase_e_rows_to_text/2;
-export SIRForeignBinding/0;
-export ListSIRForeignBinding/0;
 export dummy_sir_foreign_binding/0;
 export nil_sir_foreign_bindings/0;
 export cons_sir_foreign_binding/2;
 export dummy_sir_module/0;
 export nil_sir_modules/0;
 export cons_sir_module/2;
+export sir_term_to_text/1;
+export sir_module_to_text/1;
 
 // Supervisors plan Phase E (supervisors_implementation_development_plan.md §15.4.12–15.4.13.2):
 // concrete `impl T for Supervisor` + SIR of `init`'s return type (static child_spec / supervisor_flags used by
 // runtime internal child table and automatic restart; pairs with `impl_supervisor T` in module text).
-struct SIRSupervisorPhaseE {
-    actor_type: string,
-    init_return_sir: string,
-    init_return_type_name: string
+// Row: { actor_type: string, init_return_sir: string, init_return_type_name: string }
+
+// SIRTerm node kinds: 0=const, 1=var, 2=let, 3=case, 4=call, 5=tail_call, 6=prim,
+//   7=case_branch_seq, 8=case_branch; see prior comments for slot layout.
+
+fn empty_sir_term_nodes() -> List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- empty[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]()
+    produces
+        pure result
+    end
 }
 
-struct ListSIRSupervisorPhaseE {
-    is_nil: bool,
-    head: SIRSupervisorPhaseE,
-    tail: ListSIRSupervisorPhaseE
+fn dummy_sir_term() -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    sequence
+        nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- empty_sir_term_nodes();
+        result: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- { nodes: nodes, root: -1 }
+    produces
+        pure result
+    end
 }
 
-// SIRTerm: kind 0=const, 1=var, 2=let, 3=case, 4=call, 5=tail_call, 6=prim,
-//   tail_call: same slot layout as call (name=callee, inner/ right_expr=args, value=effects+|sir_rec:...)
-//   7=case_branch_seq (inner=case_branch kind 8, right_expr=next seq or dummy),
-//   8=case_branch (value=pattern kind bool|int|wild|bind, type_name=pattern type, name=payload, inner=guard, right_expr=body)
-// const: type_name, value used; name="", inner=dummy, right_expr=dummy
-// var: name used (%prefix); type_name="", value="", inner=dummy, right_expr=dummy
-// prim: name=op (add/sub/etc), inner=left arg, right_expr=right arg
-// call: name=callee, inner=arg, value=effect set
-struct SIRTerm {
-    kind: int64,
-    type_name: string,
-    value: string,
-    name: string,
-    inner: SIRTerm,
-    right_expr: SIRTerm
+fn sir_term_nodes_reverse_acc(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], acc: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] {
+    case nodes.is_nil of {
+        true -> acc;
+        false -> {
+            stepped: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- prepend[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](nodes.head, acc);
+            sir_term_nodes_reverse_acc(nodes.tail, stepped)
+        }
+    }
 }
 
-struct SIRFunction {
-    name: string,
-    return_type: string,
-    effects: string,
-    body: SIRTerm,
-    param_names: string,
-    param_types: string
+fn sir_term_nodes_reverse(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] {
+    sir_term_nodes_reverse_acc(nodes, empty_sir_term_nodes())
 }
 
-struct ListSIRFunction {
-    is_nil: bool,
-    head: SIRFunction,
-    tail: ListSIRFunction
+fn sir_term_nodes_append(a: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], b: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] {
+    case a.is_nil of {
+        true -> b;
+        false -> prepend[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](a.head, sir_term_nodes_append(a.tail, b))
+    }
 }
 
-// §19.3: imported module names (from `use`), in source order across declarations
-struct ListSirString {
-    is_nil: bool,
-    head: string,
-    tail: ListSirString
+fn sir_term_remap_node(n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, offset: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    inner2: int64 <- case n.inner < 0 of { true -> -1; false -> n.inner + offset };
+    right2: int64 <- case n.right_expr < 0 of { true -> -1; false -> n.right_expr + offset };
+    { kind: n.kind, type_name: n.type_name, value: n.value, name: n.name, inner: inner2, right_expr: right2 }
 }
 
-// §19.2: export surface name/arity as in source
-struct SIRExportItem {
-    fn_name: string,
-    arity: string
+fn sir_term_remap_nodes(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], offset: int64) -> List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] {
+    case nodes.is_nil of {
+        true -> empty_sir_term_nodes();
+        false -> {
+            hd: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_remap_node(nodes.head, offset);
+            prepend[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](hd, sir_term_remap_nodes(nodes.tail, offset))
+        }
+    }
 }
 
-struct ListSIRExportItem {
-    is_nil: bool,
-    head: SIRExportItem,
-    tail: ListSIRExportItem
+// Build a binary SIRTerm handle by merging child arenas (Wave C). Dummy children use root == -1.
+fn make_sir_term(kind_v: int64, type_name_v: string, value_v: string, name_v: string,
+                 left: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 },
+                 right: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    left_len: int64 <- length[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](left.nodes);
+    right_len: int64 <- length[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](right.nodes);
+    left_idx: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_nodes_reverse(left.nodes);
+    right_remapped: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_remap_nodes(right.nodes, left_len);
+    right_idx: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_nodes_reverse(right_remapped);
+    combined_idx: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_nodes_append(left_idx, right_idx);
+    left_root: int64 <- left.root;
+    right_root: int64 <- case right.root < 0 of { true -> -1; false -> right.root + left_len };
+    new_node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- { kind: kind_v, type_name: type_name_v, value: value_v, name: name_v, inner: left_root, right_expr: right_root };
+    with_new: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_nodes_append(combined_idx, prepend[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](new_node, empty_sir_term_nodes()));
+    new_root: int64 <- left_len + right_len;
+    { nodes: sir_term_nodes_reverse(with_new), root: new_root }
 }
 
-// silica-specification §3.4.8: required trait method signatures (Declaration tag 7); no body in SIR
-struct SIRRequiredMethodSig {
-    name: string,
-    param_names: string,
-    param_types: string,
-    return_type: string,
-    effects: string
+fn dummy_sir_function() -> { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string } {
+    { name: "", return_type: "", effects: "[]", body: dummy_sir_term(), param_names: "", param_types: "" }
 }
 
-struct ListSIRRequiredMethodSig {
-    is_nil: bool,
-    head: SIRRequiredMethodSig,
-    tail: ListSIRRequiredMethodSig
+fn cons_sir_functions(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, rest: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] <- prepend[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)](fn_val, rest)
+    produces
+        pure result
+    end
 }
 
-// FFI wrapper specification: raw foreign c_wrapper bindings (Declaration tag 9).
-struct SIRForeignBinding {
-    local_name: string,
-    c_symbol: string,
-    meta_path: string,
-    return_type: string,
-    param_names: string,
-    param_types: string
+fn nil_sir_functions() -> List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] <- empty[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]()
+    produces
+        pure result
+    end
 }
 
-struct ListSIRForeignBinding {
-    is_nil: bool,
-    head: SIRForeignBinding,
-    tail: ListSIRForeignBinding
+fn nil_sir_strings() -> List[string, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[string, mem(normal)] <- empty[string, mem(normal)]()
+    produces
+        pure result
+    end
 }
 
-struct SIRModule {
-    module_name: string,
-    used_modules: ListSirString,
-    exports: ListSIRExportItem,
-    export_trait_names: ListSirString,
-    marker_impl_types: ListSirString,
-    // supervisor_implementation_development_plan.md Phases C–D: types named in `impl T for Supervisor;` (tag 6) for runtime supervisor metadata (§15.4.10–§15.4.13).
-    supervisor_impl_types: ListSirString,
-    // Phase E: per–actor-type SIR of `init` return (flags + static List[child_spec, …]) for internal child table / restart; empty when no `init` in unit.
-    supervisor_phase_e: ListSIRSupervisorPhaseE,
-    // supervisors plan Phase F (§15.4.13.4): actor types in `impl T for FailureReporter;` (tag 6) for root FailureReporter bootstrap / unwind delivery metadata.
-    failure_reporter_impl_types: ListSirString,
-    required_method_sigs: ListSIRRequiredMethodSig,
-    // Runtime dependencies required by this SIR module. The emitter lowers calls to these runtimes, while build output/linking supplies each runtime definition once.
-    runtime_dependencies: ListSirString,
-    // FFI: module name prefix dangerous_*, sidecar paths (wrapper_meta + per-binding meta), raw foreign bindings.
-    is_dangerous_module: bool,
-    wrapper_meta_paths: ListSirString,
-    foreign_bindings: ListSIRForeignBinding,
-    link_libraries: ListSirString,
-    functions: ListSIRFunction
+fn cons_sir_string(s: string, rest: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[string, mem(normal)] <- prepend[string, mem(normal)](s, rest)
+    produces
+        pure result
+    end
 }
 
-// Ordered queue of compilation units’ SIR (silica.config batch atom index merge uses this shape).
-struct ListSIRModule {
-    is_nil: bool,
-    head: SIRModule,
-    tail: ListSIRModule
-}
-
-fn dummy_sir_term() -> SIRTerm {
-    placeholder: SIRTerm <- SIRTerm { kind: -1, type_name: "", value: "", name: "", inner: placeholder, right_expr: placeholder };
-    placeholder
-}
-
-fn dummy_sir_function() -> SIRFunction {
-    SIRFunction { name: "", return_type: "", effects: "[]", body: dummy_sir_term(), param_names: "", param_types: "" }
-}
-
-fn cons_sir_functions(fn_val: SIRFunction, rest: ListSIRFunction) -> ListSIRFunction {
-    ListSIRFunction { is_nil: false, head: fn_val, tail: rest }
-}
-
-fn nil_sir_functions() -> ListSIRFunction {
-    ph: ListSIRFunction <- ListSIRFunction { is_nil: true, head: dummy_sir_function(), tail: ph };
-    ph
-}
-
-fn nil_sir_strings() -> ListSirString {
-    ph: ListSirString <- ListSirString { is_nil: true, head: "", tail: ph };
-    ph
-}
-
-fn cons_sir_string(s: string, rest: ListSirString) -> ListSirString {
-    ListSirString { is_nil: false, head: s, tail: rest }
-}
-
-fn sir_string_list_contains(items: ListSirString, needle: string) -> bool {
+fn sir_string_list_contains(items: List[string, mem(normal)], needle: string) -> bool {
     case items.is_nil of {
         true -> false;
         false -> case items.head == needle of {
@@ -220,60 +176,88 @@ fn sir_string_list_contains(items: ListSirString, needle: string) -> bool {
     }
 }
 
-fn dummy_export_item() -> SIRExportItem {
-    SIRExportItem { fn_name: "", arity: "" }
+fn dummy_export_item() -> { fn_name: string, arity: string } {
+    { fn_name: "", arity: "" }
 }
 
-fn nil_sir_exports() -> ListSIRExportItem {
-    ph: ListSIRExportItem <- ListSIRExportItem { is_nil: true, head: dummy_export_item(), tail: ph };
-    ph
+fn nil_sir_exports() -> List[{ fn_name: string, arity: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ fn_name: string, arity: string }, mem(normal)] <- empty[{ fn_name: string, arity: string }, mem(normal)]()
+    produces
+        pure result
+    end
 }
 
-fn cons_sir_export(item: SIRExportItem, rest: ListSIRExportItem) -> ListSIRExportItem {
-    ListSIRExportItem { is_nil: false, head: item, tail: rest }
+fn cons_sir_export(item: { fn_name: string, arity: string }, rest: List[{ fn_name: string, arity: string }, mem(normal)]) -> List[{ fn_name: string, arity: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ fn_name: string, arity: string }, mem(normal)] <- prepend[{ fn_name: string, arity: string }, mem(normal)](item, rest)
+    produces
+        pure result
+    end
 }
 
-fn dummy_required_method_sig() -> SIRRequiredMethodSig {
-    SIRRequiredMethodSig { name: "", param_names: "", param_types: "", return_type: "", effects: "[]" }
+fn dummy_required_method_sig() -> { name: string, param_names: string, param_types: string, return_type: string, effects: string } {
+    { name: "", param_names: "", param_types: "", return_type: "", effects: "[]" }
 }
 
-fn nil_required_method_sigs() -> ListSIRRequiredMethodSig {
-    ph: ListSIRRequiredMethodSig <- ListSIRRequiredMethodSig { is_nil: true, head: dummy_required_method_sig(), tail: ph };
-    ph
+fn nil_required_method_sigs() -> List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)] <- empty[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)]()
+    produces
+        pure result
+    end
 }
 
-fn cons_required_method_sig(item: SIRRequiredMethodSig, rest: ListSIRRequiredMethodSig) -> ListSIRRequiredMethodSig {
-    ListSIRRequiredMethodSig { is_nil: false, head: item, tail: rest }
+fn cons_required_method_sig(item: { name: string, param_names: string, param_types: string, return_type: string, effects: string }, rest: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)]) -> List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)] <- prepend[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)](item, rest)
+    produces
+        pure result
+    end
 }
 
-fn dummy_sir_foreign_binding() -> SIRForeignBinding {
-    SIRForeignBinding { local_name: "", c_symbol: "", meta_path: "", return_type: "", param_names: "", param_types: "" }
+fn dummy_sir_foreign_binding() -> { local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string } {
+    { local_name: "", c_symbol: "", meta_path: "", return_type: "", param_names: "", param_types: "" }
 }
 
-fn nil_sir_foreign_bindings() -> ListSIRForeignBinding {
-    ph: ListSIRForeignBinding <- ListSIRForeignBinding { is_nil: true, head: dummy_sir_foreign_binding(), tail: ph };
-    ph
+fn nil_sir_foreign_bindings() -> List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] <- empty[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)]()
+    produces
+        pure result
+    end
 }
 
-fn cons_sir_foreign_binding(item: SIRForeignBinding, rest: ListSIRForeignBinding) -> ListSIRForeignBinding {
-    ListSIRForeignBinding { is_nil: false, head: item, tail: rest }
+fn cons_sir_foreign_binding(item: { local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, rest: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)]) -> List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] <- prepend[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)](item, rest)
+    produces
+        pure result
+    end
 }
 
-fn dummy_supervisor_phase_e() -> SIRSupervisorPhaseE {
-    SIRSupervisorPhaseE { actor_type: "", init_return_sir: "", init_return_type_name: "" }
+fn dummy_supervisor_phase_e() -> { actor_type: string, init_return_sir: string, init_return_type_name: string } {
+    { actor_type: "", init_return_sir: "", init_return_type_name: "" }
 }
 
-fn nil_supervisor_phase_e() -> ListSIRSupervisorPhaseE {
-    ph: ListSIRSupervisorPhaseE <- ListSIRSupervisorPhaseE { is_nil: true, head: dummy_supervisor_phase_e(), tail: ph };
-    ph
+fn nil_supervisor_phase_e() -> List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)] <- empty[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)]()
+    produces
+        pure result
+    end
 }
 
-fn cons_supervisor_phase_e(item: SIRSupervisorPhaseE, rest: ListSIRSupervisorPhaseE) -> ListSIRSupervisorPhaseE {
-    ListSIRSupervisorPhaseE { is_nil: false, head: item, tail: rest }
+fn cons_supervisor_phase_e(item: { actor_type: string, init_return_sir: string, init_return_type_name: string }, rest: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)]) -> List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)] <- prepend[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)](item, rest)
+    produces
+        pure result
+    end
 }
 
-fn dummy_sir_module() -> SIRModule {
-    SIRModule {
+fn dummy_sir_module() -> { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] } {
+    {
         module_name: "",
         used_modules: nil_sir_strings(),
         exports: nil_sir_exports(),
@@ -292,98 +276,131 @@ fn dummy_sir_module() -> SIRModule {
     }
 }
 
-fn nil_sir_modules() -> ListSIRModule {
-    ph: ListSIRModule <- ListSIRModule { is_nil: true, head: dummy_sir_module(), tail: ph };
-    ph
+fn nil_sir_modules() -> List[{ module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }, mem(normal)] <- empty[{ module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }, mem(normal)]()
+    produces
+        pure result
+    end
 }
 
-fn cons_sir_module(mod_val: SIRModule, rest: ListSIRModule) -> ListSIRModule {
-    ListSIRModule { is_nil: false, head: mod_val, tail: rest }
+fn cons_sir_module(mod_val: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }, rest: List[{ module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }, mem(normal)]) -> List[{ module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }, mem(normal)] <- prepend[{ module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }, mem(normal)](mod_val, rest)
+    produces
+        pure result
+    end
 }
 
-// Debug: convert SIR term/module to readable text (for debugging emitter branch logic)
-export sir_term_to_text/1;
-export sir_module_to_text/1;
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
 
-fn sir_term_to_text(term: SIRTerm) -> string {
-    case term.kind < 0 of {
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+// Nodes are prepend-built with ascending indices; index i is at list position (len - 1 - i).
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_to_text_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> string {
+    case idx < 0 of {
         true -> "dummy";
-        false -> case term.kind of {
-            0 -> {
-                c1: string <- concat("const(", term.type_name);
-                c2: string <- concat(", ", term.value);
-                concat(c1, concat(c2, ")"))
-            };
-            1 -> concat("var(", concat(term.name, ")"));
-            2 -> {
-                inner_t: string <- sir_term_to_text(term.inner);
-                body_t: string <- sir_term_to_text(term.right_expr);
-                part1: string <- concat("let(", term.name);
-                part2: string <- concat(part1, concat(", ", inner_t));
-                part3: string <- concat(part2, concat(", ", body_t));
-                concat(part3, ")")
-            };
-            4 -> {
-                arg_t: string <- sir_term_to_text(term.inner);
-                c1: string <- concat("call(", term.name);
-                c2: string <- concat(c1, concat(", ", arg_t));
-                c3: string <- case term.right_expr.kind < 0 of {
-                    true -> c2;
-                    false -> concat(c2, concat(", ", sir_term_to_text(term.right_expr)))
-                };
-                concat(c3, ")")
-            };
-            5 -> {
-                arg_t: string <- sir_term_to_text(term.inner);
-                c1: string <- concat("tail_call(", term.name);
-                c2: string <- concat(c1, concat(", ", arg_t));
-                c3: string <- case term.right_expr.kind < 0 of {
-                    true -> c2;
-                    false -> concat(c2, concat(", ", sir_term_to_text(term.right_expr)))
-                };
-                concat(c3, ")")
-            };
-            6 -> {
-                left_t: string <- sir_term_to_text(term.inner);
-                right_t: string <- sir_term_to_text(term.right_expr);
-                p1: string <- concat("prim(", term.name);
-                p2: string <- concat(p1, concat(", ", left_t));
-                p3: string <- concat(p2, concat(", ", right_t));
-                concat(p3, ")")
-            };
-            3 -> {
-                sct: string <- sir_term_to_text(term.inner);
-                br: string <- sir_term_to_text(term.right_expr);
-                p1: string <- concat("case(", term.type_name);
-                p2: string <- concat(p1, concat(", ", term.value));
-                p3: string <- concat(p2, concat(", ", sct));
-                concat(p3, concat(", ", concat(br, ")")))
-            };
-            7 -> {
-                b: string <- sir_term_to_text(term.inner);
-                r: string <- sir_term_to_text(term.right_expr);
-                concat(concat("case_seq(", b), concat(", ", concat(r, ")")))
-            };
-            8 -> {
-                g: string <- sir_term_to_text(term.inner);
-                bd: string <- sir_term_to_text(term.right_expr);
-                p1: string <- concat("branch(", term.value);
-                p2: string <- concat(p1, concat(", ", term.type_name));
-                p3: string <- concat(p2, concat(", ", term.name));
-                p4: string <- concat(p3, concat(", guard=", g));
-                concat(p4, concat(", ", concat(bd, ")")))
-            };
-            _: int64 -> concat("term(kind=", "?)")
+        false -> {
+            term: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_node_at(nodes, idx);
+            case term.kind < 0 of {
+                true -> "dummy";
+                false -> case term.kind of {
+                    0 -> {
+                        c1: string <- concat("const(", term.type_name);
+                        c2: string <- concat(", ", term.value);
+                        concat(c1, concat(c2, ")"))
+                    };
+                    1 -> concat("var(", concat(term.name, ")"));
+                    2 -> {
+                        inner_t: string <- sir_term_to_text_at(nodes, term.inner);
+                        body_t: string <- sir_term_to_text_at(nodes, term.right_expr);
+                        part1: string <- concat("let(", term.name);
+                        part2: string <- concat(part1, concat(", ", inner_t));
+                        part3: string <- concat(part2, concat(", ", body_t));
+                        concat(part3, ")")
+                    };
+                    4 -> {
+                        arg_t: string <- sir_term_to_text_at(nodes, term.inner);
+                        c1: string <- concat("call(", term.name);
+                        c2: string <- concat(c1, concat(", ", arg_t));
+                        c3: string <- case term.right_expr < 0 of {
+                            true -> c2;
+                            false -> concat(c2, concat(", ", sir_term_to_text_at(nodes, term.right_expr)))
+                        };
+                        concat(c3, ")")
+                    };
+                    5 -> {
+                        arg_t: string <- sir_term_to_text_at(nodes, term.inner);
+                        c1: string <- concat("tail_call(", term.name);
+                        c2: string <- concat(c1, concat(", ", arg_t));
+                        c3: string <- case term.right_expr < 0 of {
+                            true -> c2;
+                            false -> concat(c2, concat(", ", sir_term_to_text_at(nodes, term.right_expr)))
+                        };
+                        concat(c3, ")")
+                    };
+                    6 -> {
+                        left_t: string <- sir_term_to_text_at(nodes, term.inner);
+                        right_t: string <- sir_term_to_text_at(nodes, term.right_expr);
+                        p1: string <- concat("prim(", term.name);
+                        p2: string <- concat(p1, concat(", ", left_t));
+                        p3: string <- concat(p2, concat(", ", right_t));
+                        concat(p3, ")")
+                    };
+                    3 -> {
+                        sct: string <- sir_term_to_text_at(nodes, term.inner);
+                        br: string <- sir_term_to_text_at(nodes, term.right_expr);
+                        p1: string <- concat("case(", term.type_name);
+                        p2: string <- concat(p1, concat(", ", term.value));
+                        p3: string <- concat(p2, concat(", ", sct));
+                        concat(p3, concat(", ", concat(br, ")")))
+                    };
+                    7 -> {
+                        b: string <- sir_term_to_text_at(nodes, term.inner);
+                        r: string <- sir_term_to_text_at(nodes, term.right_expr);
+                        concat(concat("case_seq(", b), concat(", ", concat(r, ")")))
+                    };
+                    8 -> {
+                        g: string <- sir_term_to_text_at(nodes, term.inner);
+                        bd: string <- sir_term_to_text_at(nodes, term.right_expr);
+                        p1: string <- concat("branch(", term.value);
+                        p2: string <- concat(p1, concat(", ", term.type_name));
+                        p3: string <- concat(p2, concat(", ", term.name));
+                        p4: string <- concat(p3, concat(", guard=", g));
+                        concat(p4, concat(", ", concat(bd, ")")))
+                    };
+                    _: int64 -> concat("term(kind=", "?)")
+                }
+            }
         }
     }
 }
 
-fn sir_function_to_text(fn_val: SIRFunction) -> string {
+fn sir_term_to_text(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    sir_term_to_text_at(term.nodes, term.root)
+}
+
+fn sir_function_to_text(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> string {
     body_str: string <- sir_term_to_text(fn_val.body);
     concat(concat(concat(concat(concat(concat("fn ", fn_val.name), " -> "), concat(fn_val.return_type, " ")), concat(fn_val.effects, " ")), "body: "), body_str)
 }
 
-fn sir_used_modules_to_text(uses: ListSirString, acc: string) -> string {
+fn sir_used_modules_to_text(uses: List[string, mem(normal)], acc: string) -> string {
     case uses.is_nil of {
         true -> acc;
         false -> {
@@ -396,7 +413,7 @@ fn sir_used_modules_to_text(uses: ListSirString, acc: string) -> string {
     }
 }
 
-fn sir_exports_to_text(exps: ListSIRExportItem, acc: string) -> string {
+fn sir_exports_to_text(exps: List[{ fn_name: string, arity: string }, mem(normal)], acc: string) -> string {
     case exps.is_nil of {
         true -> acc;
         false -> {
@@ -410,7 +427,7 @@ fn sir_exports_to_text(exps: ListSIRExportItem, acc: string) -> string {
     }
 }
 
-fn sir_trait_exports_to_text(names: ListSirString, acc: string) -> string {
+fn sir_trait_exports_to_text(names: List[string, mem(normal)], acc: string) -> string {
     case names.is_nil of {
         true -> acc;
         false -> {
@@ -424,7 +441,7 @@ fn sir_trait_exports_to_text(names: ListSirString, acc: string) -> string {
     }
 }
 
-fn sir_marker_impls_to_text(types: ListSirString, acc: string) -> string {
+fn sir_marker_impls_to_text(types: List[string, mem(normal)], acc: string) -> string {
     case types.is_nil of {
         true -> acc;
         false -> {
@@ -438,7 +455,7 @@ fn sir_marker_impls_to_text(types: ListSirString, acc: string) -> string {
     }
 }
 
-fn sir_supervisor_impls_to_text(types: ListSirString, acc: string) -> string {
+fn sir_supervisor_impls_to_text(types: List[string, mem(normal)], acc: string) -> string {
     case types.is_nil of {
         true -> acc;
         false -> {
@@ -452,12 +469,11 @@ fn sir_supervisor_impls_to_text(types: ListSirString, acc: string) -> string {
     }
 }
 
-// Phase E: `init` return SIR for automatic restart / internal child table (one row per `impl T for Supervisor` marker).
-fn sir_supervisor_phase_e_rows_to_text(rows: ListSIRSupervisorPhaseE, acc: string) -> string {
+fn sir_supervisor_phase_e_rows_to_text(rows: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], acc: string) -> string {
     case rows.is_nil of {
         true -> acc;
         false -> {
-            r: SIRSupervisorPhaseE <- rows.head;
+            r: { actor_type: string, init_return_sir: string, init_return_type_name: string } <- rows.head;
             p1: string <- concat("  supervisor_phase_e ", r.actor_type);
             p2: string <- concat(p1, " init_returns ");
             p3: string <- concat(p2, concat(r.init_return_sir, "\n"));
@@ -470,7 +486,7 @@ fn sir_supervisor_phase_e_rows_to_text(rows: ListSIRSupervisorPhaseE, acc: strin
     }
 }
 
-fn sir_failure_reporter_impls_to_text(types: ListSirString, acc: string) -> string {
+fn sir_failure_reporter_impls_to_text(types: List[string, mem(normal)], acc: string) -> string {
     case types.is_nil of {
         true -> acc;
         false -> {
@@ -484,7 +500,7 @@ fn sir_failure_reporter_impls_to_text(types: ListSirString, acc: string) -> stri
     }
 }
 
-fn sir_wrapper_meta_paths_to_text(paths: ListSirString, acc: string) -> string {
+fn sir_wrapper_meta_paths_to_text(paths: List[string, mem(normal)], acc: string) -> string {
     case paths.is_nil of {
         true -> acc;
         false -> {
@@ -498,11 +514,11 @@ fn sir_wrapper_meta_paths_to_text(paths: ListSirString, acc: string) -> string {
     }
 }
 
-fn sir_foreign_bindings_to_text(bindings: ListSIRForeignBinding, acc: string) -> string {
+fn sir_foreign_bindings_to_text(bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], acc: string) -> string {
     case bindings.is_nil of {
         true -> acc;
         false -> {
-            b: SIRForeignBinding <- bindings.head;
+            b: { local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string } <- bindings.head;
             p1: string <- concat("  foreign_binding ", b.local_name);
             p2: string <- concat(p1, " ");
             p3: string <- concat(p2, b.c_symbol);
@@ -526,11 +542,11 @@ fn sir_foreign_bindings_to_text(bindings: ListSIRForeignBinding, acc: string) ->
     }
 }
 
-fn sir_required_sigs_to_text(sigs: ListSIRRequiredMethodSig, acc: string) -> string {
+fn sir_required_sigs_to_text(sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], acc: string) -> string {
     case sigs.is_nil of {
         true -> acc;
         false -> {
-            s: SIRRequiredMethodSig <- sigs.head;
+            s: { name: string, param_names: string, param_types: string, return_type: string, effects: string } <- sigs.head;
             p1: string <- concat("  required_fn ", s.name);
             p2: string <- concat(p1, " ");
             p3: string <- concat(p2, s.param_names);
@@ -549,7 +565,7 @@ fn sir_required_sigs_to_text(sigs: ListSIRRequiredMethodSig, acc: string) -> str
     }
 }
 
-fn sir_module_to_text_acc(fns: ListSIRFunction, acc: string) -> string {
+fn sir_module_to_text_acc(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], acc: string) -> string {
     case fns.is_nil of {
         true -> acc;
         false -> {
@@ -563,7 +579,7 @@ fn sir_module_to_text_acc(fns: ListSIRFunction, acc: string) -> string {
     }
 }
 
-fn sir_module_to_text(sir_module: SIRModule) -> string {
+fn sir_module_to_text(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> string {
     header: string <- concat(concat("SIRModule ", sir_module.module_name), "\n");
     uses_line: string <- case sir_module.used_modules.is_nil of {
         true -> "";
@@ -618,20 +634,18 @@ fn sir_module_to_text(sir_module: SIRModule) -> string {
         false -> concat(concat("  link_library ", sir_used_modules_to_text(sir_module.link_libraries, "")), "\n")
     };
     funcs: string <- sir_module_to_text_acc(sir_module.functions, "");
-    do
-        part1: string <- concat(header, uses_line);
-        part2: string <- concat(part1, exports_line);
-        part3: string <- concat(part2, trait_exports_line);
-        part4: string <- concat(part3, marker_line);
-        part4b: string <- concat(part4, sup_line);
-        part4b2: string <- concat(part4b, phe_line);
-        part4c: string <- concat(part4b2, fr_line);
-        part5: string <- concat(part4c, req_line);
-        part6: string <- concat(part5, rt_line);
-        part7: string <- concat(part6, dangerous_line);
-        part8: string <- concat(part7, wm_line);
-        part9: string <- concat(part8, fb_line);
-        part10: string <- concat(part9, ll_line);
-        concat(part10, funcs)
-    end
+    part1: string <- concat(header, uses_line);
+    part2: string <- concat(part1, exports_line);
+    part3: string <- concat(part2, trait_exports_line);
+    part4: string <- concat(part3, marker_line);
+    part4b: string <- concat(part4, sup_line);
+    part4b2: string <- concat(part4b, phe_line);
+    part4c: string <- concat(part4b2, fr_line);
+    part5: string <- concat(part4c, req_line);
+    part6: string <- concat(part5, rt_line);
+    part7: string <- concat(part6, dangerous_line);
+    part8: string <- concat(part7, wm_line);
+    part9: string <- concat(part8, fb_line);
+    part10: string <- concat(part9, ll_line);
+    concat(part10, funcs)
 }

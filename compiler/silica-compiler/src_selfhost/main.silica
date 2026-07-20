@@ -61,7 +61,7 @@ fn build_module_world(all: ListParsedFile, exclude_path: string) -> ListNamedPro
 fn parse_all_files_recursive(files: ListString, acc: ListParsedFile) -> (bool, ListParsedFile) proc[DeviceIO] {
     case files.is_nil of {
         true -> (true, reverse_parsed_files(acc, empty_parsed_files()));
-        false -> do
+        false -> {
             println("Parsing ");
             print(files.head);
             println("...");
@@ -70,7 +70,7 @@ fn parse_all_files_recursive(files: ListString, acc: ListParsedFile) -> (bool, L
             println("  Parsing...");
             parse_result: ParseResult <- parser_runner@parse_program(tokens);
             case parse_result.is_ok of {
-                false -> do
+                false -> {
                     error_code: string <- case parse_result.error_code == "" of {
                         true -> "E1001";
                         false -> parse_result.error_code
@@ -81,10 +81,10 @@ fn parse_all_files_recursive(files: ListString, acc: ListParsedFile) -> (bool, L
                     };
                     diagnostics_core@print_compiler_error("ParseError", error_code, parse_result.error_location, parse_result.error_message, spec_section);
                     (false, empty_parsed_files())
-                end;
+                };
                 true -> parse_all_files_recursive(files.tail, cons_parsed_file(files.head, parse_result.program, acc))
             }
-        end
+        }
     }
 }
 
@@ -99,7 +99,7 @@ fn list_string_length(lst: ListString) -> int64 {
 fn parse_config_lines(content: string, start: int64, acc: ListString) -> ListString proc[DeviceIO] {
     case start >= len(content) of {
         true -> acc;
-        false -> do
+        false -> {
             line: string <- substring_until_char(content, start, '\n');
             line_len: int64 <- len(line);
             next_start: int64 <- start + line_len + 1;
@@ -114,7 +114,7 @@ fn parse_config_lines(content: string, start: int64, acc: ListString) -> ListStr
                 }
             };
             parse_config_lines(content, next_start, new_acc)
-        end
+        }
     }
 }
 
@@ -188,14 +188,14 @@ fn path_for_module(files: ListString, mod_name: string) -> string {
 fn resolve_deps_to_paths(modules: ListString, files: ListString, acc: ListString) -> ListString {
     case modules.is_nil of {
         true -> acc;
-        false -> do
+        false -> {
             path: string <- path_for_module(files, modules.head);
             new_acc: ListString <- case len(path) > 0 of {
                 true -> module_checker_core@cons_string(path, acc);
                 false -> acc
             };
             resolve_deps_to_paths(modules.tail, files, new_acc)
-        end
+        }
     }
 }
 
@@ -285,11 +285,11 @@ fn cons_dep_edges_for_paths(dependent: string, prereq_paths: ListString, acc: Li
 fn build_dep_edges_rev(config_files: ListString, parsed: ListParsedFile, acc: List[{ dependent: string, prerequisite: string }, mem(normal)]) -> List[{ dependent: string, prerequisite: string }, mem(normal)] {
     case config_files.is_nil of {
         true -> acc;
-        false -> do
+        false -> {
             dep_paths: ListString <- dep_paths_for_parsed_file(config_files.head, parsed, config_files);
             with_edges: List[{ dependent: string, prerequisite: string }, mem(normal)] <- cons_dep_edges_for_paths(config_files.head, dep_paths, acc);
             build_dep_edges_rev(config_files.tail, parsed, with_edges)
-        end
+        }
     }
 }
 
@@ -306,11 +306,11 @@ fn count_incoming_edges_for_path(edges: List[{ dependent: string, prerequisite: 
 fn build_compile_units_rev(config_files: ListString, edges: List[{ dependent: string, prerequisite: string }, mem(normal)], acc: List[{ path: string, in_degree: int64 }, mem(normal)]) -> List[{ path: string, in_degree: int64 }, mem(normal)] {
     case config_files.is_nil of {
         true -> acc;
-        false -> do
+        false -> {
             in_deg: int64 <- count_incoming_edges_for_path(edges, config_files.head);
             entry: { path: string, in_degree: int64 } <- { path: config_files.head, in_degree: in_deg };
             build_compile_units_rev(config_files.tail, edges, cons_compile_unit_deps(entry, acc))
-        end
+        }
     }
 }
 
@@ -337,14 +337,14 @@ fn remove_unit_from_dep_graph(graph: List[{ path: string, in_degree: int64 }, me
 fn decrement_in_degrees_for_emit(graph: List[{ path: string, in_degree: int64 }, mem(normal)], edges: List[{ dependent: string, prerequisite: string }, mem(normal)], emitted_path: string) -> List[{ path: string, in_degree: int64 }, mem(normal)] {
     case graph.is_nil of {
         true -> nil_compile_unit_deps_list();
-        false -> do
+        false -> {
             new_in_degree: int64 <- case has_edge_from_to(edges, graph.head.path, emitted_path) of {
                 true -> graph.head.in_degree - 1;
                 false -> graph.head.in_degree
             };
             updated: { path: string, in_degree: int64 } <- { path: graph.head.path, in_degree: new_in_degree };
             cons_compile_unit_deps(updated, decrement_in_degrees_for_emit(graph.tail, edges, emitted_path))
-        end
+        }
     }
 }
 
@@ -356,10 +356,10 @@ fn take_first_zero_in_degree_impl(scan: List[{ path: string, in_degree: int64 },
     case scan.is_nil of {
         true -> ("", full_graph);
         false -> case scan.head.in_degree == 0 of {
-            true -> do
+            true -> {
                 rest: List[{ path: string, in_degree: int64 }, mem(normal)] <- remove_unit_from_dep_graph(full_graph, scan.head.path);
                 (scan.head.path, rest)
-            end;
+            };
             false -> take_first_zero_in_degree_impl(scan.tail, full_graph)
         }
     }
@@ -369,16 +369,16 @@ fn take_first_zero_in_degree_impl(scan: List[{ path: string, in_degree: int64 },
 fn kahn_topological_sort(graph: List[{ path: string, in_degree: int64 }, mem(normal)], edges: List[{ dependent: string, prerequisite: string }, mem(normal)], result_rev: ListString) -> (bool, ListString) {
     case graph.is_nil of {
         true -> (true, reverse_list_string(result_rev));
-        false -> do
+        false -> {
             (ready_path: string, rest_graph: List[{ path: string, in_degree: int64 }, mem(normal)]) <- take_first_zero_in_degree(graph);
             case len(ready_path) == 0 of {
                 true -> (false, result_rev);
-                false -> do
+                false -> {
                     updated: List[{ path: string, in_degree: int64 }, mem(normal)] <- decrement_in_degrees_for_emit(rest_graph, edges, ready_path);
                     kahn_topological_sort(updated, edges, module_checker_core@cons_string(ready_path, result_rev))
-                end
+                }
             }
-        end
+        }
     }
 }
 
@@ -419,17 +419,17 @@ fn validate_config_files(files: ListString) -> int64 {
     sequence proc[DeviceIO]
         result: int64 <- case files.is_nil of {
             true -> 0;
-            false -> do
+            false -> {
                 exists: bool <- file_exists(files.head);
                 case exists of {
                     true -> validate_config_files(files.tail);
-                    false -> do
+                    false -> {
                         _: int8 <- println(concat("Error: File not found: ", files.head));
                         _: int8 <- println("Check silica.config - the file listed does not exist.");
                         1
-                    end
+                    }
                 }
-            end
+            }
         }
     produces
         pure result
@@ -450,12 +450,12 @@ fn debug_print_tokens_acc(tokens: ListToken, kinds: TokenKinds) -> int64 {
     sequence proc[DeviceIO]
         result: int64 <- case tokens.is_nil of {
             true -> 0;
-            false -> do
+            false -> {
                 t: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- tokens.head;
                 kind_label: string <- case t.kind == kinds.string_literal of { true -> "string_literal"; false -> case t.kind == kinds.identifier of { true -> "identifier"; false -> case t.kind == kinds.string_keyword of { true -> "string_keyword"; false -> t.lexeme } } };
                 _: unit <- println(concat(concat(concat("  [DEBUG LEX] kind=", kind_label), " lexeme="), t.lexeme));
                 debug_print_tokens_acc(tokens.tail, kinds)
-            end
+            }
         }
     produces
         pure result
@@ -466,38 +466,38 @@ fn debug_print_tokens_acc(tokens: ListToken, kinds: TokenKinds) -> int64 {
 fn debug_print_expr(expr: Expr, indent: string) -> int64 {
     sequence proc[DeviceIO]
         result: int64 <- case expr.kind < 0 of {
-            true -> do
+            true -> {
                 _: unit <- println(concat(concat("  [DEBUG EXPR] ", indent), "DUMMY(kind<0)"));
                 0
-            end;
+            };
             false -> case expr.kind of {
-                0 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "literal value="), expr.value)); 0 end;
-                1 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "identifier name="), expr.name)); 0 end;
-                4 -> do
+                0 -> { _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "literal value="), expr.value)); 0 };
+                1 -> { _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "identifier name="), expr.name)); 0 };
+                4 -> {
                     _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "call name="), expr.name));
                     _: int64 <- debug_print_expr(expr.inner, concat(indent, "  arg1:"));
                     _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  arg2:"));
                     0
-                end;
-                6 -> do
+                };
+                6 -> {
                     _: unit <- println(concat(concat(concat(concat("  [DEBUG EXPR] ", indent), "let "), expr.name), concat(": ", expr.value)));
                     _: int64 <- debug_print_expr(expr.inner, concat(indent, "  rhs:"));
                     _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  body:"));
                     0
-                end;
-                8 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "string_literal value="), expr.value)); 0 end;
-                11 -> do
+                };
+                8 -> { _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "string_literal value="), expr.value)); 0 };
+                11 -> {
                     _: unit <- println(concat(concat("  [DEBUG EXPR] ", indent), "SEQUENCE_BLOCK"));
                     _: int64 <- debug_print_expr(expr.inner, concat(indent, "  seq_body:"));
                     _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  seq_result:"));
                     0
-                end;
-                _: int64 -> do
+                };
+                _: int64 -> {
                     _: unit <- println(concat(concat(concat(concat("  [DEBUG EXPR] ", indent), "OTHER kind name="), expr.name), concat(" value=", expr.value)));
                     _: int64 <- debug_print_expr(expr.inner, concat(indent, "  inner:"));
                     _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  right:"));
                     0
-                end
+                }
             }
         }
     produces
@@ -534,11 +534,11 @@ fn debug_walk_decls(decls: ListDeclaration) -> int64 {
     sequence proc[DeviceIO]
         result: int64 <- case decls.is_nil of {
             true -> 0;
-            false -> do
+            false -> {
                 _: unit <- println(concat("  decl name=", decls.head.name));
                 _: int64 <- debug_print_expr(decls.head.body, "BODY>");
                 debug_walk_decls(decls.tail)
-            end
+            }
         }
     produces
         pure result
@@ -552,49 +552,49 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
     mc: int64 <- module_checker_core@module_checker_check_program(program, config_files, all_parsed, filename);
     case mc == 0 of {
         false -> (1, sir_ast@dummy_sir_module());
-        true -> do
+        true -> {
             println("  FFI metadata...");
             ffi_meta: int64 <- ffi_sidecar_loader@validate_program_sidecar_metadata(program);
             case ffi_meta == 0 of {
                 false -> (1, sir_ast@dummy_sir_module());
-                true -> do
+                true -> {
                     println("  FFI placement...");
                     placement: int64 <- ffi_placement_checker@validate_program_ffi_placement(program);
                     case placement == 0 of {
                         false -> (1, sir_ast@dummy_sir_module());
-                        true -> do
+                        true -> {
                             println("  Type checking...");
                             context: TypeContext <- type_checker_core@create_type_context();
                             mod_name: string <- module_checker_core@module_from_path(filename);
                             world_with_self: ListNamedProgram <- parser_ast@cons_named_program(mod_name, program, module_world);
                             tc_out: ModuleTypecheckOutcome <- type_checker_modules@type_check_program_with_modules_outcome(program, mod_name, world_with_self, context);
                             case tc_out.is_ok of {
-                                true -> do
+                                true -> {
                                     println("  FFI ABI...");
                                     abi_st: int64 <- ffi_abi_checker@validate_program_ffi_abi(program);
                                     case abi_st == 0 of {
                                         false -> (1, sir_ast@dummy_sir_module());
-                                        true -> do
+                                        true -> {
                                             println("  FFI taint...");
                                             taint_st: int64 <- ffi_taint_checker@validate_program_ffi_taint(program);
                                             case taint_st == 0 of {
                                                 false -> (1, sir_ast@dummy_sir_module());
-                                                true -> do
+                                                true -> {
                                                     println("  Trait checking...");
                                                     tr_code: int64 <- trait_checker_core@trait_checker_check_program(program);
                                                     case tr_code != 0 of {
                                                         true -> (1, sir_ast@dummy_sir_module());
-                                                        false -> do
+                                                        false -> {
                                                             println("  Effect checking...");
                                                             effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program, world_with_self);
                                                             case effect_result.is_ok of {
-                                                                true -> do
+                                                                true -> {
                                                                     _: int64 <- case debug_compile(filename) of {
-                                                                        true -> do
+                                                                        true -> {
                                                                             println("  [DEBUG AST] decl-count walk:");
                                                                             debug_walk_decls(program.declarations);
                                                                             0
-                                                                        end;
+                                                                        };
                                                                         false -> 0
                                                                     };
                                                                     println("  Generating SIR...");
@@ -604,16 +604,16 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
                                                                     link_libs: ListSirString <- ffi_sidecar_loader@collect_program_link_libraries(program);
                                                                     sir_module: SIRModule <- sir_generator_core@emit_program_for_unit_with_link_libraries(mangled_program, tc_out.context, mod_name, link_libs);
                                                                     _: int64 <- case debug_compile(filename) of {
-                                                                        true -> do
+                                                                        true -> {
                                                                             println("  [DEBUG SIR]:");
                                                                             println(sir_ast@sir_module_to_text(sir_module));
                                                                             0
-                                                                        end;
+                                                                        };
                                                                         false -> 0
                                                                     };
                                                                     (0, sir_module)
-                                                                end;
-                                                                false -> do
+                                                                };
+                                                                false -> {
                                                                     effect_error_code: string <- case effect_result.error_code == "" of {
                                                                         true -> "E3000";
                                                                         false -> effect_result.error_code
@@ -624,16 +624,16 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
                                                                     };
                                                                     diagnostics_core@print_compiler_error("EffectError", effect_error_code, effect_result.error_location, effect_result.error_message, effect_spec_section);
                                                                     (1, sir_ast@dummy_sir_module())
-                                                                end
+                                                                }
                                                             }
-                                                        end
+                                                        }
                                                     }
-                                                end
+                                                }
                                             }
-                                        end
+                                        }
                                     }
-                                end;
-                                false -> do
+                                };
+                                false -> {
                                     error_code: string <- case tc_out.error_code == "" of {
                                         true -> "E2000";
                                         false -> tc_out.error_code
@@ -644,13 +644,13 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
                                     };
                                     diagnostics_core@print_compiler_error("TypeError", error_code, tc_out.error_location, tc_out.error_message, spec_section);
                                     (1, sir_ast@dummy_sir_module())
-                                end
+                                }
                             }
-                        end
+                        }
                     }
-                end
+                }
             }
-        end
+        }
     }
 }
 
@@ -660,7 +660,7 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
         (sir_code: int64, sir_module: SIRModule) <- compile_to_sir_module(filename, program, module_world, config_files, all_parsed);
         result: int64 <- case sir_code != 0 of {
             true -> sir_code;
-            false -> do
+            false -> {
                 _: int8 <- println("  Emitting...");
                 asm: string <- case debug_compile(filename) of {
                     true -> emitter_core@emit_module_with_atom_and_debug(sir_module, atom_table@build_atom_table(sir_module), true);
@@ -669,7 +669,7 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
                 _: int8 <- build_output@write_assembly(filename, asm);
                 _: int64 <- build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module(sir_module));
                 announce_compiled_file(filename)
-            end
+            }
         }
     produces
         pure result
@@ -688,24 +688,24 @@ fn reverse_sir_modules_into_forward(lst: ListSIRModule, acc: ListSIRModule) -> L
 fn gather_sirs_rev(sorted_rem: ListString, parsed: ListParsedFile, config_files: ListString, acc_rev: ListSIRModule) -> (int64, ListSIRModule) proc[DeviceIO] {
     case sorted_rem.is_nil of {
         true -> (0, acc_rev);
-        false -> do
+        false -> {
             (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, sorted_rem.head);
             world: ListNamedProgram <- build_module_world(parsed, sorted_rem.head);
             case found of {
-                false -> do
+                false -> {
                     println("Error: internal parse table missing file");
                     print(sorted_rem.head);
                     (1, sir_ast@nil_sir_modules())
-                end;
-                true -> do
+                };
+                true -> {
                     (sir_c: int64, sir_val: SIRModule) <- compile_to_sir_module(sorted_rem.head, prog, world, config_files, parsed);
                     case sir_c != 0 of {
                         true -> (sir_c, sir_ast@nil_sir_modules());
                         false -> gather_sirs_rev(sorted_rem.tail, parsed, config_files, sir_ast@cons_sir_module(sir_val, acc_rev))
                     }
-                end
+                }
             }
-        end
+        }
     }
 }
 
@@ -725,7 +725,7 @@ fn emit_batch_with_exe_atom_table(paths: ListString, sirs: ListSIRModule, exe_tb
             true -> 0;
             false -> case sirs.is_nil of {
                 true -> 1;
-                false -> do
+                false -> {
                     _: int8 <- println("  Emitting...");
                     asm: string <- case debug_compile(paths.head) of {
                         true -> emitter_core@emit_module_with_atom_and_debug(sirs.head, exe_tbl, true);
@@ -734,7 +734,7 @@ fn emit_batch_with_exe_atom_table(paths: ListString, sirs: ListSIRModule, exe_tb
                     _: int8 <- build_output@write_assembly(paths.head, asm);
                     _: int64 <- announce_compiled_file(paths.head);
                     emit_batch_with_exe_atom_table(paths.tail, sirs.tail, exe_tbl)
-                end
+                }
             }
         }
     produces
@@ -760,10 +760,10 @@ fn compile_multi_unit_with_merged_atoms(sorted_topo: ListString, parsed_all: Lis
         (gather_code: int64, rev_queue: ListSIRModule) <- gather_sirs_rev(sorted_topo, parsed_all, config_files, sir_ast@nil_sir_modules());
         result: int64 <- case gather_code != 0 of {
             true -> gather_code;
-            false -> do
+            false -> {
                 fwd_queue: ListSIRModule <- reverse_sir_modules_into_forward(rev_queue, sir_ast@nil_sir_modules());
                 finish_multi_unit_emit(sorted_topo, fwd_queue, atom_table@build_atom_table_executable(fwd_queue))
-            end
+            }
         }
     produces
         pure result
@@ -774,24 +774,24 @@ fn compile_parsed_list_incremental(sorted: ListString, parsed: ListParsedFile, a
     sequence proc[DeviceIO]
         result: int64 <- case sorted.is_nil of {
             true -> 0;
-            false -> do
+            false -> {
                 (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, sorted.head);
                 world: ListNamedProgram <- build_module_world(parsed, sorted.head);
                 case found of {
-                    false -> do
+                    false -> {
                         _: int8 <- println("Error: internal parse table missing file");
                         _: int8 <- print(sorted.head);
                         1
-                    end;
-                    true -> do
+                    };
+                    true -> {
                         code: int64 <- compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed);
                         case code != 0 of {
                             true -> code;
                             false -> compile_parsed_list_incremental(sorted.tail, parsed, all_config_files)
                         }
-                    end
+                    }
                 }
-            end
+            }
         }
     produces
         pure result
@@ -804,18 +804,18 @@ fn compile_parsed_list(sorted: ListString, parsed: ListParsedFile, all_config_fi
         result: int64 <- case sorted.is_nil of {
             true -> 0;
             false -> case sorted.tail.is_nil of {
-                true -> do
+                true -> {
                     (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, sorted.head);
                     world: ListNamedProgram <- build_module_world(parsed, sorted.head);
                     case found of {
-                        false -> do
+                        false -> {
                             _: int8 <- println("Error: internal parse table missing file");
                             _: int8 <- print(sorted.head);
                             1
-                        end;
+                        };
                         true -> compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed)
                     }
-                end;
+                };
                 false -> compile_parsed_list_incremental(sorted, parsed, all_config_files)
             }
         }
@@ -843,12 +843,12 @@ fn compile_file(filename: string) -> int64 {
             false -> 0
         };
         result: int64 <- case parse_result.is_ok of {
-            true -> do
+            true -> {
                 mod_nm: string <- module_checker_core@module_from_path(filename);
                 world_one: ListNamedProgram <- parser_ast@cons_named_program(mod_nm, parse_result.program, type_checker_modules@empty_named_program_list());
                 compile_parsed_unit(filename, parse_result.program, world_one, cons_string(filename, empty_list_string()), cons_parsed_file(filename, parse_result.program, empty_parsed_files()))
-            end;
-            false -> do
+            };
+            false -> {
                 error_code: string <- case parse_result.error_code == "" of {
                     true -> "E1001";
                     false -> parse_result.error_code
@@ -859,7 +859,7 @@ fn compile_file(filename: string) -> int64 {
                 };
                 _: int8 <- diagnostics_core@print_compiler_error("ParseError", error_code, parse_result.error_location, parse_result.error_message, spec_section);
                 1
-            end
+            }
         }
     produces
         pure result
@@ -871,17 +871,17 @@ fn compile_all_parsed(sorted_files: ListString, parsed_all: ListParsedFile) -> i
     sequence proc[DeviceIO]
         result: int64 <- case sorted_files.is_nil of {
             true -> 0;
-            false -> do
+            false -> {
                 compile_code: int64 <- compile_parsed_list(sorted_files, parsed_all, sorted_files);
                 case compile_code != 0 of {
                     true -> compile_code;
-                    false -> do
+                    false -> {
                         _: int64 <- ffi_link_manifest@write_link_manifest_for_parsed(parsed_all);
                         _: int8 <- println("Compilation complete.");
                         0
-                    end
+                    }
                 }
-            end
+            }
         }
     produces
         pure result
@@ -903,35 +903,35 @@ fn main() -> int64 {
         };
         files: ListString <- reverse_list_string(files_rev);
         result: int64 <- case list_string_length(files) == 0 of {
-            true -> do
+            true -> {
                 _: int8 <- println("Error: silica.config not found or empty. Create silica.config with one .silica file per line.");
                 1
-            end;
-            false -> do
+            };
+            false -> {
                 validation: int64 <- validate_config_files(files);
                 case validation != 0 of {
                     true -> 1;
-                    false -> do
+                    false -> {
                         _: int8 <- println("Files to compile: ");
                         _: int8 <- print_int64(list_string_length(files));
                         _: int8 <- println("");
                         (ok_parse: bool, parsed_all: ListParsedFile) <- parse_all_files_recursive(files, empty_parsed_files());
                         case ok_parse of {
                             false -> 1;
-                            true -> do
+                            true -> {
                                 (sort_ok: bool, sorted_files: ListString) <- topological_sort_from_parsed(files, parsed_all);
                                 case sort_ok of {
-                                    false -> do
+                                    false -> {
                                         _: int8 <- println("Error: cyclic module dependencies among files in silica.config");
                                         1
-                                    end;
+                                    };
                                     true -> compile_all_parsed(sorted_files, parsed_all)
                                 }
-                            end
+                            }
                         }
-                    end
+                    }
                 }
-            end
+            }
         }
     produces
         pure result

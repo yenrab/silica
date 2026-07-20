@@ -99,13 +99,13 @@ fn is_whitespace_char(c: string) -> bool {
 fn trim_leading_from(s: string, pos: int64) -> string {
     case pos >= len(s) of {
         true -> "";
-        false -> do
+        false -> {
             c: string <- substring(s, pos, pos + 1);
             case is_whitespace_char(c) of {
                 true -> trim_leading_from(s, pos + 1);
                 false -> substring(s, pos, len(s))
             }
-        end
+        }
     }
 }
 
@@ -116,13 +116,13 @@ fn trim_leading(s: string) -> string {
 fn trim_trailing_from(s: string, pos: int64) -> string {
     case pos < 0 of {
         true -> "";
-        false -> do
+        false -> {
             c: string <- substring(s, pos, pos + 1);
             case is_whitespace_char(c) of {
                 true -> trim_trailing_from(s, pos - 1);
                 false -> substring(s, 0, pos + 1)
             }
-        end
+        }
     }
 }
 
@@ -148,13 +148,13 @@ fn extract_first_quoted_string(s: string) -> string {
     q1: int64 <- find_char_from(s, 0, "\"");
     case q1 < 0 of {
         true -> "";
-        false -> do
+        false -> {
             q2: int64 <- find_char_from(s, q1 + 1, "\"");
             case q2 < 0 of {
                 true -> "";
                 false -> substring(s, q1 + 1, q2)
             }
-        end
+        }
     }
 }
 
@@ -243,7 +243,7 @@ fn apply_wrapper_field_line(w: { symbol: string, result: string, error_domain: s
 fn parse_sidecar_link_library_scan(content: string, pos: int64, have_link_library: int64, link_library: string) -> (int64, string) {
     case pos >= len(content) of {
         true -> (have_link_library, link_library);
-        false -> do
+        false -> {
             line: string <- substring_until_char(content, pos, '\n');
             line_len: int64 <- len(line);
             next_pos: int64 <- pos + line_len + 1;
@@ -255,14 +255,14 @@ fn parse_sidecar_link_library_scan(content: string, pos: int64, have_link_librar
                     false -> parse_sidecar_link_library_scan(content, next_pos, 0, link_library)
                 }
             }
-        end
+        }
     }
 }
 
 fn parse_wrapper_block_lines(content: string, pos: int64, in_arguments: bool, acc: { symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 }) -> ({ symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 }, int64) {
     case pos >= len(content) of {
         true -> (acc, pos);
-        false -> do
+        false -> {
             line: string <- substring_until_char(content, pos, '\n');
             line_len: int64 <- len(line);
             next_pos: int64 <- pos + line_len + 1;
@@ -276,47 +276,47 @@ fn parse_wrapper_block_lines(content: string, pos: int64, in_arguments: bool, ac
                     true -> (acc, next_pos);
                     false -> case string_starts_with(trimmed, "arguments:") of {
                         true -> parse_wrapper_block_lines(content, next_pos, true, acc);
-                        false -> do
+                        false -> {
                             updated: { symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 } <- apply_wrapper_field_line(acc, line);
                             parse_wrapper_block_lines(content, next_pos, false, updated)
-                        end
+                        }
                     }
                 }
             }
-        end
+        }
     }
 }
 
 fn skip_to_next_line(content: string, pos: int64) -> int64 {
     case pos >= len(content) of {
         true -> pos;
-        false -> do
+        false -> {
             line: string <- substring_until_char(content, pos, '\n');
             pos + len(line) + 1
-        end
+        }
     }
 }
 
 fn parse_sidecar_wrappers_scan(content: string, pos: int64, acc: List[{ symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 }, mem(normal)]) -> List[{ symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 }, mem(normal)] {
     case pos >= len(content) of {
         true -> acc;
-        false -> do
+        false -> {
             line: string <- substring_until_char(content, pos, '\n');
             line_len: int64 <- len(line);
             next_pos: int64 <- pos + line_len + 1;
             trimmed: string <- trim_line(line);
             case string_starts_with(trimmed, "wrapper ") of {
                 false -> parse_sidecar_wrappers_scan(content, next_pos, acc);
-                true -> do
+                true -> {
                     block_start: int64 <- next_pos;
                     (wrapper: { symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 }, after_block: int64) <- parse_wrapper_block_lines(content, block_start, false, dummy_sidecar_wrapper());
                     case sidecar_wrapper_has_complete_fields(wrapper) of {
                         false -> parse_sidecar_wrappers_scan(content, after_block, acc);
                         true -> parse_sidecar_wrappers_scan(content, after_block, cons_sidecar_wrapper(wrapper, acc))
                     }
-                end
+                }
             }
-        end
+        }
     }
 }
 
@@ -426,15 +426,15 @@ fn print_sidecar_error(code: string, loc: { file: string, line: int64, column: i
 fn validate_loaded_sidecar(parsed: { link_library: string, has_link_library: bool, wrappers: List[{ symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 }, mem(normal)] }, path_lexeme: string, loc: { file: string, line: int64, column: int64, offset: int64 }) -> int64 {
     sequence proc[DeviceIO]
         result: int64 <- case parsed.has_link_library of {
-                false -> do
+                false -> {
                     msg: string <- concat(concat("sidecar file ", sidecar_path_from_lexeme(path_lexeme)), " is missing link_library (spec 13.2)");
                     print_sidecar_error("E4032", loc, msg)
-                end;
+                };
                 true -> case sidecar_wrapper_list_find_incomplete(parsed.wrappers) of {
-                    true -> do
+                    true -> {
                         msg2: string <- concat(concat("sidecar file ", sidecar_path_from_lexeme(path_lexeme)), " has wrapper entry missing required result or error_domain fields (spec 13.2)");
                         print_sidecar_error("E4033", loc, msg2)
-                    end;
+                    };
                     false -> 0
                 }
             }
@@ -452,7 +452,7 @@ fn validate_foreign_binding_sidecar_loop(decls: ListDeclaration, default_paths: 
         result: int64 <- case decls.is_nil of {
                 true -> 0;
                 false -> case decls.head.tag == 9 of {
-                    true -> do
+                    true -> {
                         paths: ListSirString <- sidecar_paths_for_foreign_decl(decls.head, default_paths);
                         sym: string <- foreign_symbol_from_decl(decls.head);
                         st: int64 <- validate_symbol_in_sidecar_paths(paths, sym, decls.head.location);
@@ -460,7 +460,7 @@ fn validate_foreign_binding_sidecar_loop(decls: ListDeclaration, default_paths: 
                             false -> st;
                             true -> validate_foreign_binding_sidecar_loop(decls.tail, default_paths)
                         }
-                    end;
+                    };
                     false -> validate_foreign_binding_sidecar_loop(decls.tail, default_paths)
                 }
             }
@@ -474,27 +474,27 @@ fn validate_symbol_in_one_sidecar(path_lexeme: string, sym: string, loc: { file:
         disk_path: string <- sidecar_path_from_lexeme(path_lexeme);
             exists: bool <- file_exists(disk_path);
         result: int64 <- case exists of {
-                false -> do
+                false -> {
                     msg: string <- concat(concat("sidecar file not found: ", disk_path), " (spec 13.1)");
                     print_sidecar_error("E4030", loc, msg)
-                end;
-                true -> do
+                };
+                true -> {
                     content: string <- read_lines(disk_path);
                     parsed: { link_library: string, has_link_library: bool, wrappers: List[{ symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 }, mem(normal)] } <- parse_sidecar_content(content);
                     vld: int64 <- validate_loaded_sidecar(parsed, path_lexeme, loc);
                     case vld == 0 of {
                         false -> vld;
                         true -> case find_wrapper_in_sidecar(parsed, sym) of {
-                            false -> do
+                            false -> {
                                 p1: string <- concat("no wrapper entry for symbol ", sym);
                                 p2: string <- concat(p1, " in sidecar ");
                                 msg: string <- concat(p2, disk_path);
                                 print_sidecar_error("E4031", loc, msg)
-                            end;
+                            };
                             true -> 0
                         }
                     }
-                end
+                }
             }
     produces
         pure result
@@ -504,11 +504,11 @@ fn validate_symbol_in_one_sidecar(path_lexeme: string, sym: string, loc: { file:
 fn validate_symbol_in_sidecar_paths(paths: ListSirString, sym: string, loc: { file: string, line: int64, column: int64, offset: int64 }) -> int64 {
     sequence proc[DeviceIO]
         result: int64 <- case paths.is_nil of {
-                true -> do
+                true -> {
                     msg: string <- concat("no sidecar path available for foreign symbol ", sym);
                     print_sidecar_error("E4031", loc, msg)
-                end;
-                false -> do
+                };
+                false -> {
                     first: int64 <- validate_symbol_in_one_sidecar(paths.head, sym, loc);
                     case first == 0 of {
                         true -> 0;
@@ -517,7 +517,7 @@ fn validate_symbol_in_sidecar_paths(paths: ListSirString, sym: string, loc: { fi
                             false -> validate_symbol_in_sidecar_paths(paths.tail, sym, loc)
                         }
                     }
-                end
+                }
             }
     produces
         pure result
@@ -528,13 +528,13 @@ fn validate_each_sidecar_file_loop(paths: ListSirString, loc: { file: string, li
     sequence proc[DeviceIO]
         result: int64 <- case paths.is_nil of {
                 true -> 0;
-                false -> do
+                false -> {
                     st: int64 <- validate_symbol_in_one_sidecar_for_file_only(paths.head, loc);
                     case st == 0 of {
                         false -> st;
                         true -> validate_each_sidecar_file_loop(paths.tail, loc)
                     }
-                end
+                }
             }
     produces
         pure result
@@ -546,15 +546,15 @@ fn validate_symbol_in_one_sidecar_for_file_only(path_lexeme: string, loc: { file
         disk_path: string <- sidecar_path_from_lexeme(path_lexeme);
             exists: bool <- file_exists(disk_path);
         result: int64 <- case exists of {
-                false -> do
+                false -> {
                     msg: string <- concat(concat("sidecar file not found: ", disk_path), " (spec 13.1)");
                     print_sidecar_error("E4030", loc, msg)
-                end;
-                true -> do
+                };
+                true -> {
                     content: string <- read_lines(disk_path);
                     parsed: { link_library: string, has_link_library: bool, wrappers: List[{ symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 }, mem(normal)] } <- parse_sidecar_content(content);
                     validate_loaded_sidecar(parsed, path_lexeme, loc)
-                end
+                }
             }
     produces
         pure result
@@ -582,22 +582,22 @@ fn collect_link_libraries_from_sidecar_paths(paths: ListSirString, acc: ListSirS
     sequence proc[DeviceIO]
         result: ListSirString <- case paths.is_nil of {
                 true -> acc;
-                false -> do
+                false -> {
                     disk_path: string <- sidecar_path_from_lexeme(paths.head);
                     exists: bool <- file_exists(disk_path);
                     rest: ListSirString <- collect_link_libraries_from_sidecar_paths(paths.tail, acc);
                     case exists of {
                         false -> rest;
-                        true -> do
+                        true -> {
                             content: string <- read_lines(disk_path);
                             parsed: { link_library: string, has_link_library: bool, wrappers: List[{ symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 }, mem(normal)] } <- parse_sidecar_content(content);
                             case parsed.has_link_library of {
                                 false -> rest;
                                 true -> append_sir_strings_unique(rest, parsed.link_library)
                             }
-                        end
+                        }
                     }
-                end
+                }
             }
     produces
         pure result
@@ -633,11 +633,11 @@ fn lookup_sidecar_wrapper_in_one_path(path_lexeme: string, sym: string) -> { sym
             exists: bool <- file_exists(disk_path);
         result: { symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 } <- case exists of {
                 false -> dummy_sidecar_wrapper();
-                true -> do
+                true -> {
                     content: string <- read_lines(disk_path);
                     parsed: { link_library: string, has_link_library: bool, wrappers: List[{ symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 }, mem(normal)] } <- parse_sidecar_content(content);
                     sidecar_wrapper_list_get_symbol(parsed.wrappers, sym)
-                end
+                }
             }
     produces
         pure result
@@ -648,13 +648,13 @@ fn lookup_sidecar_wrapper_result_kind(paths: ListSirString, sym: string) -> (boo
     sequence proc[DeviceIO]
         result: (bool, string) <- case paths.is_nil of {
                 true -> (false, "");
-                false -> do
+                false -> {
                     found: { symbol: string, result: string, error_domain: string, has_result: int64, has_error_domain: int64 } <- lookup_sidecar_wrapper_in_one_path(paths.head, sym);
                     case len(found.symbol) > 0 of {
                         true -> (true, found.result);
                         false -> lookup_sidecar_wrapper_result_kind(paths.tail, sym)
                     }
-                end
+                }
             }
     produces
         pure result
@@ -665,7 +665,7 @@ fn validate_program_sidecar_metadata(program: Program) -> int64 {
     sequence proc[DeviceIO]
         result: int64 <- case program_has_foreign_binding_loop(program.declarations) of {
                 false -> 0;
-                true -> do
+                true -> {
                     default_paths: ListSirString <- collect_module_default_sidecar_lexemes_from_program(program.declarations);
                     all_paths: ListSirString <- collect_referenced_sidecar_lexemes_loop(program.declarations);
                     meta_loc: { file: string, line: int64, column: int64, offset: int64 } <- first_foreign_or_meta_location(program.declarations);
@@ -674,7 +674,7 @@ fn validate_program_sidecar_metadata(program: Program) -> int64 {
                         false -> file_st;
                         true -> validate_foreign_binding_sidecar_loop(program.declarations, default_paths)
                     }
-                end
+                }
             }
     produces
         pure result

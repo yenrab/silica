@@ -27,7 +27,7 @@ Per silica-error-code-scheme.jsonld and silica-specification.md §1.6.
 - E0006 UnterminatedBlockComment
 
 ### Parser (E1000-E1999)
-- E1000 ParseErrorDefault
+- E1000 ParseErrorDefault — uncategorized syntactic defect (statement-boundary fall-through when the next token does not start another statement; see compiler message for LLM/agent recovery steps)
 - E1001 ExpectedToken
 - E1002 NestedFunctionDeclaration
 - E1003 ExpectedIdentifier
@@ -36,6 +36,7 @@ Per silica-error-code-scheme.jsonld and silica-specification.md §1.6.
 - E1006 ExpectedMemorySpace
 - E1007 WildcardRequiresTypeAnnotation
 - E1008 UnsupportedSyntax
+- E1040 MissingStatementTerminator — expected `;` after a statement before the next statement
 
 ### Type checker (E2000-E2999)
 - E2000 TypeErrorDefault

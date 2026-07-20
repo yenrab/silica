@@ -16,9 +16,9 @@
 -}
 
 // Core sir_generator infrastructure (base)
-// Entry point: Program + { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } -> SIRModule (internal representation)
+// Entry point: Program + { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } -> { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] } (internal representation)
 // Core+extensions pattern: orchestrates via dispatchers; no AST construct knowledge
-// §19: module name (filename stem and/or explicit `module`), `use`, `export` recorded on SIRModule
+// §19: module name (filename stem and/or explicit `module`), `use`, `export` recorded on { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }
 
 use parser_ast;
 use type_checker_core;
@@ -55,38 +55,67 @@ fn is_actor_runtime_prim(name: string) -> bool {
         or name == "wait_for_exit"
 }
 
-fn sir_term_uses_actor_runtime(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn sir_term_nodes_len_local(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len_local(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head_local(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head_local(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at_local(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len_local(nodes);
+    sir_term_node_at_from_head_local(nodes, n - 1 - idx)
+}
+
+fn sir_term_uses_actor_runtime_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> bool {
+    case idx < 0 of {
         true -> false;
-        false -> case term.kind of {
-            6 -> is_actor_runtime_prim(term.name) or ((term.name == "div" or term.name == "rem") and (term.type_name == "int64" or term.type_name == "uint64" or term.type_name == "int32" or term.type_name == "uint32" or term.type_name == "int16" or term.type_name == "uint16" or term.type_name == "int8" or term.type_name == "uint8"));
-            2 -> case sir_term_uses_actor_runtime(term.inner) of {
-                true -> true;
-                false -> sir_term_uses_actor_runtime(term.right_expr)
-            };
-            3 -> true;
-            4 -> case sir_term_uses_actor_runtime(term.inner) of {
-                true -> true;
-                false -> sir_term_uses_actor_runtime(term.right_expr)
-            };
-            5 -> case sir_term_uses_actor_runtime(term.inner) of {
-                true -> true;
-                false -> sir_term_uses_actor_runtime(term.right_expr)
-            };
-            7 -> case sir_term_uses_actor_runtime(term.inner) of {
-                true -> true;
-                false -> sir_term_uses_actor_runtime(term.right_expr)
-            };
-            8 -> case sir_term_uses_actor_runtime(term.inner) of {
-                true -> true;
-                false -> sir_term_uses_actor_runtime(term.right_expr)
-            };
-            _: int64 -> false
+        false -> {
+            term: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_node_at_local(nodes, idx);
+            case term.kind < 0 of {
+                true -> false;
+                false -> case term.kind of {
+                    6 -> is_actor_runtime_prim(term.name) or ((term.name == "div" or term.name == "rem") and (term.type_name == "int64" or term.type_name == "uint64" or term.type_name == "int32" or term.type_name == "uint32" or term.type_name == "int16" or term.type_name == "uint16" or term.type_name == "int8" or term.type_name == "uint8"));
+                    2 -> case sir_term_uses_actor_runtime_at(nodes, term.inner) of {
+                        true -> true;
+                        false -> sir_term_uses_actor_runtime_at(nodes, term.right_expr)
+                    };
+                    3 -> true;
+                    4 -> case sir_term_uses_actor_runtime_at(nodes, term.inner) of {
+                        true -> true;
+                        false -> sir_term_uses_actor_runtime_at(nodes, term.right_expr)
+                    };
+                    5 -> case sir_term_uses_actor_runtime_at(nodes, term.inner) of {
+                        true -> true;
+                        false -> sir_term_uses_actor_runtime_at(nodes, term.right_expr)
+                    };
+                    7 -> case sir_term_uses_actor_runtime_at(nodes, term.inner) of {
+                        true -> true;
+                        false -> sir_term_uses_actor_runtime_at(nodes, term.right_expr)
+                    };
+                    8 -> case sir_term_uses_actor_runtime_at(nodes, term.inner) of {
+                        true -> true;
+                        false -> sir_term_uses_actor_runtime_at(nodes, term.right_expr)
+                    };
+                    _: int64 -> false
+                }
+            }
         }
     }
 }
 
-fn sir_functions_use_actor_runtime(fns: ListSIRFunction) -> bool {
+fn sir_term_uses_actor_runtime(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    sir_term_uses_actor_runtime_at(term.nodes, term.root)
+}
+
+fn sir_functions_use_actor_runtime(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case sir_term_uses_actor_runtime(fns.head.body) of {
@@ -96,7 +125,7 @@ fn sir_functions_use_actor_runtime(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn runtime_dependencies_for_sir(fns: ListSIRFunction, sup_impls: ListSirString) -> ListSirString {
+fn runtime_dependencies_for_sir(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], sup_impls: List[string, mem(normal)]) -> List[string, mem(normal)] {
     needs_actor_runtime: bool <- case sir_functions_use_actor_runtime(fns) of {
         true -> true;
         false -> case sup_impls.is_nil of {
@@ -134,21 +163,21 @@ fn explicit_module_decl_name(decls: ListDeclaration) -> string {
     }
 }
 
-fn append_sir_strings(a: ListSirString, b: ListSirString) -> ListSirString {
+fn append_sir_strings(a: List[string, mem(normal)], b: List[string, mem(normal)]) -> List[string, mem(normal)] {
     case a.is_nil of {
         true -> b;
         false -> sir_ast@cons_sir_string(a.head, append_sir_strings(a.tail, b))
     }
 }
 
-fn params_to_used_modules(params: ListParam) -> ListSirString {
+fn params_to_used_modules(params: ListParam) -> List[string, mem(normal)] {
     case params.is_nil of {
         true -> sir_ast@nil_sir_strings();
         false -> sir_ast@cons_sir_string(params.head.name, params_to_used_modules(params.tail))
     }
 }
 
-fn collect_used_modules(decls: ListDeclaration) -> ListSirString {
+fn collect_used_modules(decls: ListDeclaration) -> List[string, mem(normal)] {
     case decls.is_nil of {
         true -> sir_ast@nil_sir_strings();
         false -> case decls.head.tag == 2 of {
@@ -158,24 +187,24 @@ fn collect_used_modules(decls: ListDeclaration) -> ListSirString {
     }
 }
 
-fn params_to_export_items(params: ListParam) -> ListSIRExportItem {
+fn params_to_export_items(params: ListParam) -> List[{ fn_name: string, arity: string }, mem(normal)] {
     case params.is_nil of {
         true -> sir_ast@nil_sir_exports();
         false -> {
-            item: SIRExportItem <- SIRExportItem { fn_name: params.head.name, arity: params.head.type_name };
+            item: { fn_name: string, arity: string } <- { fn_name: params.head.name, arity: params.head.type_name };
             sir_ast@cons_sir_export(item, params_to_export_items(params.tail))
         }
     }
 }
 
-fn append_sir_exports(a: ListSIRExportItem, b: ListSIRExportItem) -> ListSIRExportItem {
+fn append_sir_exports(a: List[{ fn_name: string, arity: string }, mem(normal)], b: List[{ fn_name: string, arity: string }, mem(normal)]) -> List[{ fn_name: string, arity: string }, mem(normal)] {
     case a.is_nil of {
         true -> b;
         false -> sir_ast@cons_sir_export(a.head, append_sir_exports(a.tail, b))
     }
 }
 
-fn collect_exports(decls: ListDeclaration) -> ListSIRExportItem {
+fn collect_exports(decls: ListDeclaration) -> List[{ fn_name: string, arity: string }, mem(normal)] {
     case decls.is_nil of {
         true -> sir_ast@nil_sir_exports();
         false -> case decls.head.tag == 3 of {
@@ -185,14 +214,14 @@ fn collect_exports(decls: ListDeclaration) -> ListSIRExportItem {
     }
 }
 
-// Build SIR for a Program. Returns SIRModule (internal representation).
+// Build SIR for a Program. Returns { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] } (internal representation).
 // Precondition: type checking has succeeded; AST has no dummy nodes in traversed paths.
 // Uses compilation unit name "" (see emit_program_for_unit).
-fn emit_program(program: Program, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }) -> SIRModule proc[mem(normal)] {
+fn emit_program(program: Program, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }) -> { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] } proc[mem(normal)] {
     emit_program_for_unit(program, context, "")
 }
 
-fn sir_string_list_to_csv(list: ListSirString) -> string {
+fn sir_string_list_to_csv(list: List[string, mem(normal)]) -> string {
     case list.is_nil of {
         true -> "";
         false -> case list.tail.is_nil of {
@@ -202,38 +231,38 @@ fn sir_string_list_to_csv(list: ListSirString) -> string {
     }
 }
 
-fn emit_program_for_unit(program: Program, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, compilation_unit: string) -> SIRModule proc[mem(normal)] {
+fn emit_program_for_unit(program: Program, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, compilation_unit: string) -> { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] } proc[mem(normal)] {
     emit_program_for_unit_with_link_libraries(program, context, compilation_unit, sir_ast@nil_sir_strings())
 }
 
-fn emit_program_for_unit_with_link_libraries(program: Program, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, compilation_unit: string, link_libraries: ListSirString) -> SIRModule proc[mem(normal)] {
-    sup_impls: ListSirString <- traits@collect_supervisor_impl_types(program.declarations);
+fn emit_program_for_unit_with_link_libraries(program: Program, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, compilation_unit: string, link_libraries: List[string, mem(normal)]) -> { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: bool, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] } proc[mem(normal)] {
+    sup_impls: List[string, mem(normal)] <- traits@collect_supervisor_impl_types(program.declarations);
     sup_csv: string <- sir_string_list_to_csv(sup_impls);
     ctx_emit: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_core@type_context_with_supervisor_types(context, sup_csv);
-    fns: ListSIRFunction <- emit_declarations(program.declarations, ctx_emit, program.declarations);
-    uses: ListSirString <- collect_used_modules(program.declarations);
-    exps: ListSIRExportItem <- collect_exports(program.declarations);
-    trait_names: ListSirString <- traits@collect_export_trait_names(program.declarations);
-    marker_impls: ListSirString <- traits@collect_marker_impl_types(program.declarations);
-    sup_phase_e: ListSIRSupervisorPhaseE <- traits@collect_supervisor_phase_e(program.declarations);
-    fr_impls: ListSirString <- traits@collect_failure_reporter_impl_types(program.declarations);
-    req_sigs: ListSIRRequiredMethodSig <- traits@collect_required_trait_method_sigs(program.declarations);
-    runtime_deps: ListSirString <- runtime_dependencies_for_sir(fns, sup_impls);
-    wm_paths: ListSirString <- ffi@collect_wrapper_meta_paths(program.declarations);
-    foreign_binds: ListSIRForeignBinding <- ffi@collect_foreign_bindings(program.declarations);
+    fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] <- emit_declarations(program.declarations, ctx_emit, program.declarations);
+    uses: List[string, mem(normal)] <- collect_used_modules(program.declarations);
+    exps: List[{ fn_name: string, arity: string }, mem(normal)] <- collect_exports(program.declarations);
+    trait_names: List[string, mem(normal)] <- traits@collect_export_trait_names(program.declarations);
+    marker_impls: List[string, mem(normal)] <- traits@collect_marker_impl_types(program.declarations);
+    sup_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)] <- traits@collect_supervisor_phase_e(program.declarations);
+    fr_impls: List[string, mem(normal)] <- traits@collect_failure_reporter_impl_types(program.declarations);
+    req_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)] <- traits@collect_required_trait_method_sigs(program.declarations);
+    runtime_deps: List[string, mem(normal)] <- runtime_dependencies_for_sir(fns, sup_impls);
+    wm_paths: List[string, mem(normal)] <- ffi@collect_wrapper_meta_paths(program.declarations);
+    foreign_binds: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] <- ffi@collect_foreign_bindings(program.declarations);
     nm: string <- module_name_for_sir(compilation_unit, program.declarations);
     is_dangerous: bool <- ffi@module_name_is_dangerous(nm);
-    SIRModule { module_name: nm, used_modules: uses, exports: exps, export_trait_names: trait_names, marker_impl_types: marker_impls, supervisor_impl_types: sup_impls, supervisor_phase_e: sup_phase_e, failure_reporter_impl_types: fr_impls, required_method_sigs: req_sigs, runtime_dependencies: runtime_deps, is_dangerous_module: is_dangerous, wrapper_meta_paths: wm_paths, foreign_bindings: foreign_binds, link_libraries: link_libraries, functions: fns }
+    { module_name: nm, used_modules: uses, exports: exps, export_trait_names: trait_names, marker_impl_types: marker_impls, supervisor_impl_types: sup_impls, supervisor_phase_e: sup_phase_e, failure_reporter_impl_types: fr_impls, required_method_sigs: req_sigs, runtime_dependencies: runtime_deps, is_dangerous_module: is_dangerous, wrapper_meta_paths: wm_paths, foreign_bindings: foreign_binds, link_libraries: link_libraries, functions: fns }
 }
 
 // Traverse ListDeclaration; dispatcher delegates per Declaration.tag.
 // Dummy results (name == "") are skipped (e.g. non-function declarations).
-fn emit_declarations(decls: ListDeclaration, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, program_decls: ListDeclaration) -> ListSIRFunction proc[mem(normal)] {
+fn emit_declarations(decls: ListDeclaration, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, program_decls: ListDeclaration) -> List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] proc[mem(normal)] {
     case decls.is_nil of {
         true -> sir_ast@nil_sir_functions();
         false -> {
-            head_fn: SIRFunction <- dispatcher@emit_declaration(decls.head, context, program_decls);
-            tail_fns: ListSIRFunction <- emit_declarations(decls.tail, context, program_decls);
+            head_fn: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string } <- dispatcher@emit_declaration(decls.head, context, program_decls);
+            tail_fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] <- emit_declarations(decls.tail, context, program_decls);
             case len(head_fn.name) > 0 of {
                 true -> sir_ast@cons_sir_functions(head_fn, tail_fns);
                 false -> tail_fns

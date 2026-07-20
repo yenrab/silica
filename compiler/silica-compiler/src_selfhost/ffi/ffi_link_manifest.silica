@@ -54,11 +54,11 @@ fn collect_closure_link_libraries(parsed: ListParsedFile, acc: ListSirString) ->
     sequence proc[DeviceIO]
         result: ListSirString <- case parsed.is_nil of {
                 true -> acc;
-                false -> do
+                false -> {
                     unit_libs: ListSirString <- ffi_sidecar_loader@collect_program_link_libraries(parsed.head.program);
                     merged: ListSirString <- merge_sir_strings_unique_end(acc, unit_libs);
                     collect_closure_link_libraries(parsed.tail, merged)
-                end
+                }
             }
     produces
         pure result
@@ -68,11 +68,11 @@ fn collect_closure_link_libraries(parsed: ListParsedFile, acc: ListSirString) ->
 fn collect_closure_foreign_symbols(parsed: ListParsedFile, acc: ListSirString) -> ListSirString {
     case parsed.is_nil of {
         true -> acc;
-        false -> do
+        false -> {
             unit_syms: ListSirString <- ffi_sidecar_loader@collect_program_foreign_symbols(parsed.head.program);
             merged: ListSirString <- merge_sir_strings_unique_end(acc, unit_syms);
             collect_closure_foreign_symbols(parsed.tail, merged)
-        end
+        }
     }
 }
 
@@ -133,13 +133,13 @@ fn location_is_set(loc: { file: string, line: int64, column: int64, offset: int6
 fn first_ffi_location_in_parsed(parsed: ListParsedFile) -> { file: string, line: int64, column: int64, offset: int64 } {
     case parsed.is_nil of {
         true -> parser_ast@zero_location();
-        false -> do
+        false -> {
             loc: { file: string, line: int64, column: int64, offset: int64 } <- ffi_sidecar_loader@first_foreign_or_meta_location_from_program(parsed.head.program);
             case location_is_set(loc) of {
                 true -> loc;
                 false -> first_ffi_location_in_parsed(parsed.tail)
             }
-        end
+        }
     }
 }
 
@@ -157,11 +157,11 @@ fn validate_one_archive_exists(lib_name: string, loc: { file: string, line: int6
         path: string <- archive_path_for_link_library(lib_name);
             exists: bool <- file_exists(path);
         result: int64 <- case exists of {
-                false -> do
+                false -> {
                     p1: string <- concat("prebuilt library archive not found: ", path);
                     msg: string <- concat(p1, " (spec 14.2)");
                     print_link_manifest_error("E4034", loc, msg)
-                end;
+                };
                 true -> 0
             }
     produces
@@ -173,13 +173,13 @@ fn validate_archives_exist_loop(libs: ListSirString, loc: { file: string, line: 
     sequence proc[DeviceIO]
         result: int64 <- case libs.is_nil of {
                 true -> 0;
-                false -> do
+                false -> {
                     st: int64 <- validate_one_archive_exists(libs.head, loc);
                     case st != 0 of {
                         true -> st;
                         false -> validate_archives_exist_loop(libs.tail, loc)
                     }
-                end
+                }
             }
     produces
         pure result
@@ -194,18 +194,18 @@ fn write_link_manifest_for_parsed(parsed: ListParsedFile) -> int64 {
             symbols: ListSirString <- collect_closure_foreign_symbols(parsed, sir_ast@nil_sir_strings());
         result: int64 <- case closure_needs_link_manifest(link_libraries, symbols) of {
                 false -> build_output@write_link_manifest("");
-                true -> do
+                true -> {
                     diag_loc: { file: string, line: int64, column: int64, offset: int64 } <- first_ffi_location_in_parsed(parsed);
                     arch_st: int64 <- validate_archives_exist_loop(link_libraries, diag_loc);
                     case arch_st != 0 of {
                         true -> arch_st;
-                        false -> do
+                        false -> {
                             println("  Writing silica.link...");
                             manifest: string <- build_link_manifest_text(link_libraries, symbols);
                             build_output@write_link_manifest(manifest)
-                        end
+                        }
                     }
-                end
+                }
             }
     produces
         pure result

@@ -98,7 +98,7 @@ fn find_module_for_export_key(marks: ListModuleExportMark, key: string) -> strin
 fn merge_export_items_cross_module(items: ListParam, mod: string, marks: ListModuleExportMark, err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> (TypeCheckResult, ListModuleExportMark) {
     case items.is_nil of {
         true -> (type_checker_core@type_check_ok(), marks);
-        false -> do
+        false -> {
             key: string <- export_key(items.head.name, items.head.type_name);
             prev_mod: string <- find_module_for_export_key(marks, key);
             case prev_mod == "" of {
@@ -108,7 +108,7 @@ fn merge_export_items_cross_module(items: ListParam, mod: string, marks: ListMod
                     false -> (type_checker_core@type_check_err("E4001", err_loc, concat(concat(concat(concat(concat(concat("name conflict for exported ", key), ": modules "), prev_mod), " and "), mod), " (spec 19.3.3)"), "sect19.3.3"), marks)
                 }
             }
-        end
+        }
     }
 }
 
@@ -116,13 +116,13 @@ fn accum_exports_cross_module(decls: ListDeclaration, mod: string, marks: ListMo
     case decls.is_nil of {
         true -> (type_checker_core@type_check_ok(), marks);
         false -> case decls.head.tag == 3 of {
-            true -> do
+            true -> {
                 (r1: TypeCheckResult, m1: ListModuleExportMark) <- merge_export_items_cross_module(decls.head.parameters, mod, marks, err_loc);
                 case r1.is_ok of {
                     true -> accum_exports_cross_module(decls.tail, mod, m1, err_loc);
                     false -> (r1, m1)
                 }
-            end;
+            };
             false -> accum_exports_cross_module(decls.tail, mod, marks, err_loc)
         }
     }
@@ -131,20 +131,20 @@ fn accum_exports_cross_module(decls: ListDeclaration, mod: string, marks: ListMo
 fn check_use_conflicts_ordered(mod_names: ListParam, world: ListNamedProgram, marks: ListModuleExportMark, err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult {
     case mod_names.is_nil of {
         true -> type_checker_core@type_check_ok();
-        false -> do
+        false -> {
             m: string <- mod_names.head.name;
             (found: bool, prog: Program) <- parser_ast@find_named_program(m, world);
             case found of {
                 false -> type_checker_core@type_check_err("E4002", err_loc, concat(concat("unknown module in use: ", m), " (spec 19.3)"), "sect19.3");
-                true -> do
+                true -> {
                     (r2: TypeCheckResult, m2: ListModuleExportMark) <- accum_exports_cross_module(prog.declarations, m, marks, err_loc);
                     case r2.is_ok of {
                         true -> check_use_conflicts_ordered(mod_names.tail, world, m2, err_loc);
                         false -> r2
                     }
-                end
+                }
             }
-        end
+        }
     }
 }
 
@@ -161,13 +161,13 @@ fn mark_has_export_key(marks: ListModuleExportMark, key: string) -> bool {
 fn merge_export_items_duplicate_local(items: ListParam, marks: ListModuleExportMark, err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> (TypeCheckResult, ListModuleExportMark) {
     case items.is_nil of {
         true -> (type_checker_core@type_check_ok(), marks);
-        false -> do
+        false -> {
             key: string <- export_key(items.head.name, items.head.type_name);
             case mark_has_export_key(marks, key) of {
                 true -> (type_checker_core@type_check_err("E4013", err_loc, concat(concat("duplicate export ", key), " in module (spec 19.2.2)"), "sect19.2.2"), marks);
                 false -> merge_export_items_duplicate_local(items.tail, cons_export_mark(key, "", marks), err_loc)
             }
-        end
+        }
     }
 }
 
@@ -175,13 +175,13 @@ fn accum_exports_local_duplicates(decls: ListDeclaration, marks: ListModuleExpor
     case decls.is_nil of {
         true -> (type_checker_core@type_check_ok(), marks);
         false -> case decls.head.tag == 3 of {
-            true -> do
+            true -> {
                 (r1: TypeCheckResult, m1: ListModuleExportMark) <- merge_export_items_duplicate_local(decls.head.parameters, marks, err_loc);
                 case r1.is_ok of {
                     true -> accum_exports_local_duplicates(decls.tail, m1, err_loc);
                     false -> (r1, m1)
                 }
-            end;
+            };
             false -> accum_exports_local_duplicates(decls.tail, marks, err_loc)
         }
     }
@@ -235,13 +235,13 @@ fn validate_dup_fn_outer(outer: ListDeclaration, all_decls: ListDeclaration) -> 
     case outer.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> case outer.head.tag == 0 of {
-            true -> do
+            true -> {
                 ar: int64 <- list_param_length(outer.head.parameters);
                 case count_matching_functions(all_decls, outer.head.name, ar, outer.head.parameters) > 1 of {
                     true -> type_checker_core@type_check_err("E4015", outer.head.location, concat(concat("duplicate function definition ", outer.head.name), " with same arity"), "sect19.2");
                     false -> validate_dup_fn_outer(outer.tail, all_decls)
                 }
-            end;
+            };
             false -> validate_dup_fn_outer(outer.tail, all_decls)
         }
     }
@@ -261,25 +261,25 @@ fn validate_module_program_surface(program: Program, current_module: string) -> 
     ord: TypeCheckResult <- validate_use_before_functions(program.declarations, false);
     case ord.is_ok of {
         false -> ord;
-        true -> do
+        true -> {
             modn: TypeCheckResult <- validate_explicit_module_name(program.declarations, current_module);
             case modn.is_ok of {
                 false -> modn;
-                true -> do
+                true -> {
                     dupf: TypeCheckResult <- validate_duplicate_function_definitions(program.declarations);
                     case dupf.is_ok of {
                         false -> dupf;
-                        true -> do
+                        true -> {
                             (dup_e: TypeCheckResult, _: ListModuleExportMark) <- accum_exports_local_duplicates(program.declarations, empty_export_marks(), program.location);
                             case dup_e.is_ok of {
                                 false -> dup_e;
                                 true -> type_checker_failure_reporter@check_failure_reporter_export_trait(program)
                             }
-                        end
+                        }
                     }
-                end
+                }
             }
-        end
+        }
     }
 }
 
@@ -287,37 +287,37 @@ fn check_all_declarations_functions_only(decls: ListDeclaration, all_program_dec
     case decls.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> case decls.head.tag of {
-            0 -> do
+            0 -> {
                 phe: TypeCheckResult <- type_checker_supervisor@check_init_if_supervisor_impl_phase_e(decls.head, all_program_decls);
                 case phe.is_ok of {
                     false -> phe;
-                    true -> do
+                    true -> {
                         result: TypeCheckResult <- type_checker_declarations_functions@check_body(decls.head, context, world);
                         case result.is_ok of {
-                            true -> do
+                            true -> {
                                 sup_lit: TypeCheckResult <- type_checker_supervisor@validate_supervisor_init_body_literal_agent_types_if_needed(decls.head, all_program_decls);
                                 case sup_lit.is_ok of {
                                     false -> sup_lit;
-                                    true -> do
+                                    true -> {
                                         sup_flav: TypeCheckResult <- type_checker_supervisor@validate_supervisor_init_body_literal_flavor_if_needed(decls.head, all_program_decls);
                                         case sup_flav.is_ok of {
                                             false -> sup_flav;
-                                            true -> do
+                                            true -> {
                                                 sup_dang: TypeCheckResult <- type_checker_supervisor@validate_supervisor_init_body_dangerous_flavor_constraints_if_needed(decls.head, all_program_decls, all_program_decls);
                                                 case sup_dang.is_ok of {
                                                     false -> sup_dang;
                                                     true -> check_all_declarations_functions_only(decls.tail, all_program_decls, context, world)
                                                 }
-                                            end
+                                            }
                                         }
-                                    end
+                                    }
                                 }
-                            end;
+                            };
                             false -> result
                         }
-                    end
+                    }
                 }
-            end;
+            };
             _: int64 -> check_all_declarations_functions_only(decls.tail, all_program_decls, context, world)
         }
     }
@@ -327,24 +327,24 @@ fn type_check_program_with_modules(program: Program, current_module: string, wor
     surface: TypeCheckResult <- validate_module_program_surface(program, current_module);
     case surface.is_ok of {
         false -> (surface, context);
-        true -> do
+        true -> {
             (pass1: TypeCheckResult, ctx1: TypeContext) <- type_checker_callee_env@add_all_declarations_with_world(program.declarations, context, world, current_module);
             case pass1.is_ok of {
                 false -> (pass1, ctx1);
-                true -> do
+                true -> {
                     sup_csv: string <- type_checker_supervisor@collect_supervisor_impl_types_csv(program.declarations);
                     ctx_sup: TypeContext <- type_checker_core@type_context_with_supervisor_types(ctx1, sup_csv);
                     sup_init: TypeCheckResult <- type_checker_supervisor@check_supervisor_impl_has_init_phase_b(program.declarations);
                     case sup_init.is_ok of {
                         false -> (sup_init, ctx_sup);
-                        true -> do
+                        true -> {
                             body: TypeCheckResult <- check_all_declarations_functions_only(program.declarations, program.declarations, ctx_sup, world);
                             (body, ctx_sup)
-                        end
+                        }
                     }
-                end
+                }
             }
-        end
+        }
     }
 }
 

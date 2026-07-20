@@ -63,11 +63,11 @@ fn add_function(decl: Declaration, context: TypeContext) -> TypeContext {
 fn add_params_to_context_loop(params: ListParam, context: TypeContext) -> TypeContext {
     case params.is_nil of {
         true -> context;
-        false -> do
+        false -> {
             p: Param <- params.head;
             new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, p.name, p.type_name, parser_ast@empty_effect_name_list(), "");
             add_params_to_context_loop(params.tail, type_checker_core@type_context_with_env(context, new_env))
-        end
+        }
     }
 }
 
@@ -114,11 +114,11 @@ fn trim_type_text_local(s: string) -> string {
 fn find_top_level_or_bar(s: string, i: int64, depth: int64) -> int64 {
     case i >= len(s) of {
         true -> -1;
-        false -> do
+        false -> {
             c: string <- substring(s, i, i + 1);
             case c == "|" and depth == 0 of {
                 true -> i;
-                false -> do
+                false -> {
                     d2: int64 <- case c == "(" or c == "{" or c == "[" of {
                         true -> depth + 1;
                         false -> case c == ")" or c == "}" or c == "]" of {
@@ -130,9 +130,9 @@ fn find_top_level_or_bar(s: string, i: int64, depth: int64) -> int64 {
                         }
                     };
                     find_top_level_or_bar(s, i + 1, d2)
-                end
+                }
             }
-        end
+        }
     }
 }
 
@@ -157,29 +157,29 @@ fn invalid_return_or_part_from(type_str: string) -> string {
             true -> "";
             false -> t
         };
-        false -> do
+        false -> {
             left: string <- substring(t, 0, bar);
             case return_or_part_is_atom(left) of {
                 false -> trim_type_text_local(left);
                 true -> invalid_return_or_part_from(substring(t, bar + 1, len(t)))
             }
-        end
+        }
     }
 }
 
 fn validate_or_return_type(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult {
     case return_type_has_top_level_or(type_str) of {
         false -> type_checker_core@type_check_ok();
-        true -> do
+        true -> {
             bad: string <- invalid_return_or_part(type_str);
             case len(bad) == 0 of {
                 true -> type_checker_core@type_check_ok();
-                false -> do
+                false -> {
                     msg: string <- concat(concat(concat("invalid OR return type ", type_str), "; OR'd return types are atom option lists, so every option must be an atom literal like :ok. Invalid option: "), bad);
                     type_checker_core@type_check_err("E2003", location, msg, "sect4")
-                end
+                }
             }
-        end
+        }
     }
 }
 
@@ -187,40 +187,40 @@ fn validate_or_return_type(type_str: string, location: { file: string, line: int
 fn validate_params_loop(params: ListParam) -> TypeCheckResult proc[DeviceIO] {
     case params.is_nil of {
         true -> type_checker_core@type_check_ok();
-        false -> do
+        false -> {
             rec_result: TypeCheckResult <- validate_record_type_string(params.head.type_name, params.head.location);
             case rec_result.is_ok of {
                 false -> rec_result;
-                true -> do
+                true -> {
                     list_result: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(params.head.type_name, params.head.location);
                     case list_result.is_ok of {
                         false -> list_result;
-                        true -> do
+                        true -> {
                             col_result: TypeCheckResult <- type_checker_collections@validate_collection_type_declaration(params.head.type_name, params.head.location);
                             case col_result.is_ok of {
                                 false -> col_result;
-                                true -> do
+                                true -> {
                                     result_result: TypeCheckResult <- type_checker_collections@validate_collection_result_type_declaration(params.head.type_name, params.head.location);
                                     case result_result.is_ok of {
                                         false -> result_result;
                                         true -> case type_checker_memory_regions@is_memory_region_type(params.head.type_name) of {
-                                            true -> do
+                                            true -> {
                                                 mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(params.head.type_name, params.head.location);
                                                 case mem_result.is_ok of {
                                                     false -> mem_result;
                                                     true -> validate_params_loop(params.tail)
                                                 }
-                                            end;
+                                            };
                                             false -> validate_params_loop(params.tail)
                                         }
                                     }
-                                end
+                                }
                             }
-                        end
+                        }
                     }
-                end
+                }
             }
-        end
+        }
     }
 }
 
@@ -251,19 +251,19 @@ fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListN
     ret_rec: TypeCheckResult <- validate_record_type_string(decl.return_type_name, decl.return_type_location);
     case ret_rec.is_ok of {
         false -> ret_rec;
-        true -> do
+        true -> {
             ret_or: TypeCheckResult <- validate_or_return_type(decl.return_type_name, decl.return_type_location);
             case ret_or.is_ok of {
                 false -> ret_or;
-                true -> do
+                true -> {
                     ret_list: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(decl.return_type_name, decl.return_type_location);
                     case ret_list.is_ok of {
                         false -> ret_list;
-                        true -> do
+                        true -> {
                             ret_col: TypeCheckResult <- type_checker_collections@validate_collection_type_declaration(decl.return_type_name, decl.return_type_location);
                             case ret_col.is_ok of {
                                 false -> ret_col;
-                                true -> do
+                                true -> {
                                     ret_result: TypeCheckResult <- type_checker_collections@validate_collection_result_type_declaration(decl.return_type_name, decl.return_type_location);
                                     case ret_result.is_ok of {
                                         false -> ret_result;
@@ -271,29 +271,29 @@ fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListN
                                             true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
                                             false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
                                                 true -> check_body_memory_region_return(decl, body_ctx, world);
-                                                false -> do
+                                                false -> {
                                                     body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, body_ctx, world);
                                                     case body_result.is_ok of {
                                                         false -> body_result;
-                                                        true -> do
+                                                        true -> {
                                                             rec_result: TypeCheckResult <- type_checker_recursion@recursion_analyze_body(decl.body, decl.name);
                                                             case rec_result.is_ok of {
                                                                 false -> rec_result;
                                                                 true -> type_checker_expressions_actors@check_behavior_no_self_recursion(decl)
                                                             }
-                                                        end
+                                                        }
                                                     }
-                                                end
+                                                }
                                             }
                                         }
                                     }
-                                end
+                                }
                             }
-                        end
+                        }
                     }
-                end
+                }
             }
-        end
+        }
     }
 }
 
@@ -301,18 +301,18 @@ fn check_body_memory_region_return(decl: Declaration, context: TypeContext, worl
     mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(decl.return_type_name, decl.return_type_location);
     case mem_result.is_ok of {
         false -> mem_result;
-        true -> do
+        true -> {
             body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context, world);
             case body_result.is_ok of {
                 false -> body_result;
-                true -> do
+                true -> {
                     rec_result: TypeCheckResult <- type_checker_recursion@recursion_analyze_body(decl.body, decl.name);
                     case rec_result.is_ok of {
                         false -> rec_result;
                         true -> type_checker_expressions_actors@check_behavior_no_self_recursion(decl)
                     }
-                end
+                }
             }
-        end
+        }
     }
 }
