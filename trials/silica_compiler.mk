@@ -1,14 +1,31 @@
-# Shared seed host for trials — same as src_selfhost (binaries/silica-compiler).
+# Shared seed host for trials — always binaries/silica-compiler unless overridden
+# on the make command line (e.g. `make SILICA_COMPILER=/path/to/other integrate`).
 # Paths are anchored to this file (trials/silica_compiler.mk).
 #
 # Usage (from any trials Makefile):
+#   THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 #   include $(THIS_DIR)../silica_compiler.mk          # depth-1 trial
 #   include $(THIS_DIR)../../silica_compiler.mk        # depth-2 trial
 #   include silica_compiler.mk                        # trials/Makefile
+#
+# IMPORTANT: capture THIS_DIR (or MAKEFILE_DIR / LEAF_DIR) *before* this include.
+# After include, $(lastword $(MAKEFILE_LIST)) is this file (trials/), so recipes that
+# still use MAKEFILE_LIST write silica.config in the wrong directory and integrate SKIPs.
+#
+# Leaf helpers that already include this file (do not re-point the compiler elsewhere):
+#   standard_data_structures_phase1/leaf.mk
+#   ffi_addition/common_app.mk
 
 _SILICA_COMPILER_MK_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 BINARIES_DIR := $(abspath $(_SILICA_COMPILER_MK_DIR)../binaries)
-SILICA_COMPILER ?= $(BINARIES_DIR)/silica-compiler
+_SILICA_COMPILER_SEED := $(BINARIES_DIR)/silica-compiler
+
+# Force the seed binary for undefined / environment origins. Command-line
+# SILICA_COMPILER=... still wins (GNU make: origin "command line").
+ifeq ($(filter command line,$(origin SILICA_COMPILER)),)
+SILICA_COMPILER := $(_SILICA_COMPILER_SEED)
+endif
+
 UPDATE_SILICA_COMPILER_LINK := $(BINARIES_DIR)/update_silica_compiler_link.bash
 
 # If silica-compiler is missing, run update_silica_compiler_link.bash and re-check.

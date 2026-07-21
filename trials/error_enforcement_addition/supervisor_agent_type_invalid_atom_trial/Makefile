@@ -12,9 +12,13 @@ MSG_PREFIX := $(TRIAL_DIR)/
 
 all: integrate
 
-integrate: clean silica.config check
+# Sequential: clean must not run after silica.config (sibling prereqs can reorder).
+integrate:
+	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
+	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
+	@$(MAKE) -f "$(THIS_DIR)Makefile" check
 
-check:
+check: silica.config
 	@cd "$(THIS_DIR)" && $(COMPILER) > supervisor_agent_type_invalid_atom_trial.cur_fail 2>&1 || true
 	@if diff -q "$(THIS_DIR)supervisor_agent_type_invalid_atom_trial.cur_fail" "$(THIS_DIR)supervisor_agent_type_invalid_atom_trial.golden_fail" > /dev/null 2>&1; then \
 		echo "✅✅ $(MSG_PREFIX)supervisor_agent_type_invalid_atom_trial"; \
@@ -29,7 +33,7 @@ check:
 clean:
 	@rm -f "$(THIS_DIR)supervisor_agent_type_invalid_atom_trial.cur_fail" "$(THIS_DIR)silica.config" "$(THIS_DIR).integrate_counts"
 
-silica.config: | clean
+silica.config:
 	@cd "$(THIS_DIR)" && printf '%s\n%s\n' \
 		"supervisor_agent_type_invalid_atom_trial.silica" \
 		"../../../compiler/silica-compiler/stdlib/Supervisor.silica" > silica.config

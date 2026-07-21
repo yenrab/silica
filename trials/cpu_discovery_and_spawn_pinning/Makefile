@@ -20,15 +20,15 @@ ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
-TRIAL_DIR := $(notdir $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
+TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
 MSG_PREFIX := $(TRIAL_DIR)/
 
 
 .DEFAULT_GOAL := all
 .PHONY: all clean assembly objects executables integrate phase-h help silica.config
 
-silica.config: | clean
-	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
+silica.config:
+	@cd "$(THIS_DIR)" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 all: executables
 
@@ -59,40 +59,47 @@ executables: objects
 		fi; \
 	done
 
-integrate: clean silica.config
+integrate:
+	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
+	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \
-		echo "SKIP: no silica.config"; \
-		printf '%d %d\n' 0 0 > .integrate_counts; \
-		exit 0; \
+		echo "❌❌ $(MSG_PREFIX)silica.config missing after generation"; \
+		printf '%d %d\n' 0 1 > .integrate_counts; \
+		exit 1; \
 	fi; \
 	rm -f *.sams; \
 	echo "Compiling with silica-compiler..."; \
 	if ! $(SILICA_COMPILER); then \
-		echo "FAIL: Compilation failed"; \
+		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
 	for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
-		if [ -f "$$base.ascomp" ]; then \
-			if ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
-				echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
-				diff -Bw "$$sams" "$$base.ascomp" || true; \
-				ko=$$((ko + 1)); failed=1; \
-			else \
-				echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
-				ok=$$((ok + 1)); \
-			fi; \
+		[ "$$base" = "__silica_runtime" ] && continue; \
+		if [ ! -f "$$base.ascomp" ]; then \
+			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; \
+			ko=$$((ko + 1)); failed=1; \
+		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
+			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
+			diff -Bw "$$sams" "$$base.ascomp" || true; \
+			ko=$$((ko + 1)); failed=1; \
+		else \
+			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
+			ok=$$((ok + 1)); \
 		fi; \
 	done; \
 	for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
 		echo "Assembling $$sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o || { failed=1; break; }; \
+		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o; then \
+		echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; \
+		ko=$$((ko + 1)); failed=1; break; \
+	fi; \
 	done; \
 	for o in *.o; do \
 		[ -f "$$o" ] || continue; \
@@ -102,16 +109,25 @@ integrate: clean silica.config
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 	echo "Linking $$base..."; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
+			if ! $(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld); then \
+			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
+			ko=$$((ko + 1)); failed=1; \
+		fi; \
 		else \
-			$(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang) || failed=1; \
+			if ! $(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang); then \
+			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
+			ko=$$((ko + 1)); failed=1; \
+		fi; \
 		fi; \
 	done; \
 	for exe in *.sams; do \
 		[ -f "$$exe" ] || continue; \
 		base=$${exe%.sams}; \
 		[ "$$base" = "__silica_runtime" ] && continue; \
-	if [ -x "$$base" ]; then \
+	if [ ! -x "$$base" ]; then \
+		echo "❌❌ $(MSG_PREFIX)$$base missing executable (assemble/link failed earlier)"; \
+		ko=$$((ko + 1)); failed=1; \
+	elif [ -x "$$base" ]; then \
 			if [ -f "$$base.scout" ]; then \
 				{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
 				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
@@ -123,8 +139,8 @@ integrate: clean silica.config
 					ok=$$((ok + 1)); \
 				fi; \
 			else \
-				echo "✅✅ $(MSG_PREFIX)$$base built (no .scout; skipped run check)"; \
-				ok=$$((ok + 1)); \
+				echo "❌❌ $(MSG_PREFIX)$$base has no .scout file"; \
+				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		fi; \
 	done; \

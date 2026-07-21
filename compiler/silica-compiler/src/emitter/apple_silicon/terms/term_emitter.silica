@@ -34,6 +34,7 @@ use prims_checked_int64;
 use prims_actors;
 use ffi_foreign;
 use prims_list;
+use prims_string;
 use string_parse;
 use let_dispatcher;
 use print_atom_inline;
@@ -61,6 +62,7 @@ export term_to_asm_debug/12;
 export term_to_asm_debug_with_outer/13;
 export type_name_is_list_like/1;
 export aggregate_return_heap_promote_x0/1;
+export record_make_stack_alloc_size/1;
 
 // Any let RHS in a caller-saved GPR (X0–X7, X9–X11, X13–X15) is overwritten by device_io
 // syscalls (write/SVC), print helpers (BL), and later actor_call/actor_cast before the let body runs.
@@ -1592,7 +1594,14 @@ fn emit_case_expression(term: SIRTerm, dest: string, table: AtomTable, int64_tab
     scr_br: string <- concat(scr_nl, branches_asm);
     scr_fb: string <- concat(scr_br, fb_asm);
     done_lbl: string <- concat(done_l, ":\n");
-    concat(scr_fb, done_lbl)
+    // Tuple-returning user-call scrutinees allocate a caller sret slab (SUB SP / MOV X8, SP).
+    // Let-bound calls free that slab at let-end; case scrutinees must free after the case completes.
+    scrut_sret_n: int64 <- let_user_call_tuple_sret_stack_bytes(term.inner);
+    sret_free: string <- case scrut_sret_n > 0 of {
+        true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(scrut_sret_n), "\n"));
+        false -> ""
+    };
+    concat(concat(scr_fb, done_lbl), sret_free)
 }
 
 // True when subterm contains a user call (kind 4). Used for two-arg GPR reorder: emitting arg1 into X0
@@ -3093,6 +3102,22 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 guarded_arg3: string <- concat("    STR X1, [SP, #-16]!\n", concat(arg3_asm, "\n    LDR X1, [SP], #16\n"));
                 concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), guarded_arg3), op_asm)
             end;
+            false -> case term.type_name == "bool" and prims_string@is_string_predicate_prim(term.name) of {
+            true -> do
+                // Same X0/X1 layout as string_concat; helper returns W0.
+                left_asm: string <- case debug of {
+                    true -> do term_to_asm_opt_bound_debug(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                    false -> term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                };
+                save_left: string <- "    STR X0, [SP, #-16]!\n";
+                right_asm: string <- case debug of {
+                    true -> do term_to_asm_opt_bound_debug(term.right_expr, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                    false -> term_to_asm_opt_bound(term.right_expr, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                };
+                restore_left: string <- "    LDR X0, [SP], #16\n";
+                op_asm: string <- prims_string@emit_prim_op(term, dest);
+                concat(concat(concat(concat(concat(left_asm, "\n"), save_left), concat(right_asm, "\n")), restore_left), op_asm)
+            end;
             false -> case prims_list@is_list_prim(term.name) of {
             true -> case term.name == "list_nil" of {
                 true -> prims_list@emit_prim_op(term, dest);
@@ -3805,6 +3830,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             }
             }
             end
+            }
             }
             }
             }

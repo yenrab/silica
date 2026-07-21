@@ -1596,11 +1596,17 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                     true -> lower_actor_builtin_expr(context, expr, expected_type, true, bound_name, bound_type);
                     false -> case list_terms@is_list_primitive_name(expr.name) of {
                     true -> build_list_primitive_from_expr(context, expr, expected_type, true, bound_name, bound_type);
-                    false -> case expr.name == "concatenate" of {
+                    false -> case expr.name == "concatenate" or expr.name == "concat" of {
                     true -> do
                         arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "string");
                         arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "string");
                         string_calls@build_concatenate_from_sir(arg1, arg2)
+                    end;
+                    false -> case expr.name == "starts_with" or expr.name == "ends_with" or expr.name == "contains" of {
+                    true -> do
+                        arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "string");
+                        arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "string");
+                        string_calls@build_string_predicate_from_sir(expr.name, arg1, arg2)
                     end;
                     false -> case expr.name == "substring" of {
                         true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
@@ -1643,6 +1649,7 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                             }
                             }
                         }
+                    }
                     }
                 }
                 }
@@ -1698,7 +1705,10 @@ fn build_single_arg_call(context: TypeContext, expr: Expr, arg: SIRTerm) -> SIRT
                                                                     true -> string_calls@build_length_bytes_from_sir(arg);
                                                                     false -> case expr.name == "length_chars" of {
                                                                         true -> string_calls@build_length_chars_from_sir(arg);
-                                                                        false -> int64_calls@build_call_from_sir(expr.name, arg)
+                                                                        false -> case expr.name == "len" of {
+                                                                            true -> string_calls@build_length_bytes_from_sir(arg);
+                                                                            false -> int64_calls@build_call_from_sir(expr.name, arg)
+                                                                        }
                                                                     }
                                                                 }
                                                             }
@@ -2084,7 +2094,9 @@ fn root_body_is_tail_user_call(expr: Expr) -> bool {
             true -> false;
             false -> case actor_calls@is_actor_sir_builtin(expr.name) of {
                 true -> false;
-                false -> case expr.name == "concatenate" of {
+                false -> case expr.name == "concatenate" or expr.name == "concat" of {
+                true -> false;
+                false -> case expr.name == "starts_with" or expr.name == "ends_with" or expr.name == "contains" of {
                 true -> false;
                 false -> case expr.name == "substring" of {
                     true -> false;
@@ -2098,6 +2110,7 @@ fn root_body_is_tail_user_call(expr: Expr) -> bool {
                             }
                         }
                     }
+                }
                 }
                 }
             }
@@ -2158,7 +2171,7 @@ fn expr_to_sir_function_body(context: TypeContext, expr: Expr, expected_type: st
 }
 
 fn is_single_arg_builtin(call_name: string) -> bool {
-    call_name == "atom_bits" or call_name == "actor_ref_bits" or call_name == "actor_ref_of_word" or call_name == "print_atom" or call_name == "print_int32" or call_name == "print_uint32" or call_name == "print_int16" or call_name == "print_uint16" or call_name == "print_int8" or call_name == "print_uint8" or call_name == "print_float16" or call_name == "print_float32" or call_name == "print_string" or call_name == "println" or call_name == "print_string_stderr" or call_name == "println_stderr" or call_name == "length_bytes" or call_name == "length_chars" or call_name == "print_int64" or call_name == "print_uint64" or call_name == "print_bool" or call_name == "print_float64"
+    call_name == "atom_bits" or call_name == "actor_ref_bits" or call_name == "actor_ref_of_word" or call_name == "print_atom" or call_name == "print_int32" or call_name == "print_uint32" or call_name == "print_int16" or call_name == "print_uint16" or call_name == "print_int8" or call_name == "print_uint8" or call_name == "print_float16" or call_name == "print_float32" or call_name == "print_string" or call_name == "println" or call_name == "print_string_stderr" or call_name == "println_stderr" or call_name == "length_bytes" or call_name == "length_chars" or call_name == "len" or call_name == "print_int64" or call_name == "print_uint64" or call_name == "print_bool" or call_name == "print_float64"
 }
 
 fn arg_expected_type(call_name: string, expected_type: string) -> string {
@@ -2167,6 +2180,7 @@ fn arg_expected_type(call_name: string, expected_type: string) -> string {
         "actor_ref_bits" -> "actor_ref";
         "actor_ref_of_word" -> "int64";
         "concatenate" -> "string";
+        "concat" -> "string";
         "substring" -> "string";
         "substring_until_char" -> "string";
         "print_string" -> "string";
@@ -2175,6 +2189,7 @@ fn arg_expected_type(call_name: string, expected_type: string) -> string {
         "println_stderr" -> "string";
         "length_bytes" -> "string";
         "length_chars" -> "string";
+        "len" -> "string";
         "print_int32" -> "int32";
         "print_uint32" -> "uint32";
         "print_int16" -> "int16";
@@ -2441,11 +2456,17 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
                     true -> lower_actor_builtin_expr(context, expr, expected_type, false, "", "");
                     false -> case list_terms@is_list_primitive_name(expr.name) of {
                     true -> build_list_primitive_from_expr(context, expr, expected_type, false, "", "");
-                    false -> case expr.name == "concatenate" of {
+                    false -> case expr.name == "concatenate" or expr.name == "concat" of {
                     true -> do
                         arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
                         arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "string");
                         string_calls@build_concatenate_from_sir(arg1, arg2)
+                    end;
+                    false -> case expr.name == "starts_with" or expr.name == "ends_with" or expr.name == "contains" of {
+                    true -> do
+                        arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
+                        arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "string");
+                        string_calls@build_string_predicate_from_sir(expr.name, arg1, arg2)
                     end;
                     false -> case expr.name == "substring" of {
                         true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
@@ -2489,6 +2510,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
                             }
                             }
                         }
+                    }
                     }
                 }
                 }

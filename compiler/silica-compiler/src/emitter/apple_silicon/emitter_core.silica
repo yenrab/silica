@@ -45,6 +45,7 @@ use string_concat_mmap_nomte;
 use string_substring_mmap_nomte;
 use string_length_mmap_nomte;
 use string_eq_mmap_nomte;
+use string_predicates_mmap_nomte;
 use prims_memory;
 use prims_list;
 use prims_tuple;
@@ -249,6 +250,17 @@ fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: Ato
         true -> concat("\n", string_eq_mmap_nomte@emit_string_cmp_helper());
         false -> ""
     };
+    needs_string_pred_helper: bool <- string_rodata@module_uses_string_predicates(sir_module);
+    string_pred_helpers: string <- case needs_string_pred_helper of {
+        true -> concat(
+            concat("\n", string_predicates_mmap_nomte@emit_string_starts_with_helper()),
+            concat(
+                concat("\n", string_predicates_mmap_nomte@emit_string_ends_with_helper()),
+                concat("\n", string_predicates_mmap_nomte@emit_string_contains_helper())
+            )
+        );
+        false -> ""
+    };
     needs_ffi_helpers: bool <- ffi_foreign@module_uses_foreign_calls(sir_module.foreign_bindings);
     ffi_helpers: string <- case needs_ffi_helpers of {
         true -> concat("\n", ffi_foreign@emit_foreign_runtime_helpers());
@@ -298,7 +310,8 @@ fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: Ato
     fwh_10: string <- concat(fwh_9, length_chars_helper);
     fwh_11: string <- concat(fwh_10, string_eq_helper);
     fwh_11cmp: string <- concat(fwh_11, string_cmp_helper);
-    fwh_11a: string <- concat(fwh_11cmp, ffi_helpers);
+    fwh_11pred: string <- concat(fwh_11cmp, string_pred_helpers);
+    fwh_11a: string <- concat(fwh_11pred, ffi_helpers);
     fwh_11b: string <- concat(fwh_11a, list_helpers_asm);
     fwh_11c: string <- concat(fwh_11b, actor_rt_helper_asm);
     fwh_11d: string <- concat(fwh_11c, region_alloc_stub_asm);
@@ -816,11 +829,28 @@ fn tuple_return_stack_already_freed_in_body(body: SIRTerm) -> bool {
     }
 }
 
-// `let r = aggregate_make ...; r` — return value lives in caller X8 (sret), not on callee SP; skip epilogue ADD SP.
+// `let r = aggregate_make ...; r` (possibly nested in a let spine) — body already heap-promoted /
+// freed the stack slot; skip epilogue promote + ADD SP.
 fn tuple_return_id_ret_aggregate_var(body: SIRTerm) -> bool {
     case body.kind == 2 of {
         false -> false;
-        true -> body.right_expr.kind == 1 and body.right_expr.name == body.name and reg_conventions@is_aggregate_struct_or_tuple_return_type(body.inner.type_name)
+        true -> case body.right_expr.kind == 1 and body.right_expr.name == body.name and reg_conventions@is_aggregate_struct_or_tuple_return_type(body.inner.type_name) of {
+            true -> true;
+            false -> tuple_return_id_ret_aggregate_var(body.right_expr)
+        }
+    }
+}
+
+// Record returns use callee-stack + heap promote (not X8 sret). Epilogue promote+ADD SP is only
+// needed for a bare record_make body root. Let spines that end in record_make already promote in
+// the let emitter; case/call/field-access/id-ret tails already leave a heap pointer in X0.
+fn record_callee_skips_ret_promote_dealloc(body: SIRTerm) -> bool {
+    case tuple_return_stack_already_freed_in_body(body) of {
+        true -> true;
+        false -> case body.kind == 6 and body.name == "record_make" and reg_conventions@is_inline_struct_type(body.type_name) of {
+            true -> false;
+            false -> true
+        }
     }
 }
 
@@ -1645,7 +1675,19 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
                     end
                 }
             };
-            false -> ""
+            false -> case reg_conventions@is_inline_struct_type(fn_val.return_type) of {
+                true -> case use_actor_reply_sret_buffer(fn_val) of {
+                    true -> "";
+                    false -> case record_callee_skips_ret_promote_dealloc(fn_val.body) of {
+                        true -> "";
+                        false -> do
+                            rs: int64 <- term_emitter@record_make_stack_alloc_size(fn_val.return_type);
+                            term_emitter@aggregate_return_heap_promote_x0(rs)
+                        end
+                    }
+                };
+                false -> ""
+            }
         }
     };
     tuple_ret_dealloc: string <- case kind5_tail_returns_directly of {
@@ -1662,7 +1704,19 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
                     end
                 }
             };
-            false -> ""
+            false -> case reg_conventions@is_inline_struct_type(fn_val.return_type) of {
+                true -> case use_actor_reply_sret_buffer(fn_val) of {
+                    true -> "";
+                    false -> case record_callee_skips_ret_promote_dealloc(fn_val.body) of {
+                        true -> "";
+                        false -> do
+                            rs: int64 <- term_emitter@record_make_stack_alloc_size(fn_val.return_type);
+                            concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(rs), "\n"))
+                        end
+                    }
+                };
+                false -> ""
+            }
         }
     };
     callee_saved_restore: string <- case function_needs_callee_saved_x19_x20_frame(fn_val) of {

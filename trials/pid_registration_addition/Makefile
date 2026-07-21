@@ -29,7 +29,7 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 .DEFAULT_GOAL := all
 .PHONY: all clean assembly objects executables integrate help silica.config
 
-silica.config: | clean
+silica.config:
 	@cd "$(THIS_DIR)" && \
 	{ \
 		for f in *.silica; do \
@@ -74,41 +74,48 @@ executables: objects
 		fi; \
 	done < silica.config
 
-# integrate: compile, diff .sams vs .ascomp (if present), run, diff .sout vs .scout (if present)
-integrate: clean silica.config
+# integrate: compile, diff .sams vs .ascomp, run, diff .sout vs .scout
+integrate:
+	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
+	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \
-		echo "SKIP: no silica.config"; \
-		printf '%d %d\n' 0 0 > .integrate_counts; \
-		exit 0; \
+		echo "❌❌ $(MSG_PREFIX)silica.config missing after generation"; \
+		printf '%d %d\n' 0 1 > .integrate_counts; \
+		exit 1; \
 	fi; \
 	rm -f *.sams; \
 	echo "Compiling with silica-compiler..."; \
 	if ! $(SILICA_COMPILER); then \
-		echo "FAIL: Compilation failed"; \
+		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
 	for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
-		if [ -f "$$base.ascomp" ]; then \
-			if ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
-				echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
-				diff -Bw "$$sams" "$$base.ascomp" || true; \
-				ko=$$((ko + 1)); failed=1; \
-			else \
-				echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
-				ok=$$((ok + 1)); \
-			fi; \
+		[ "$$base" = "__silica_runtime" ] && continue; \
+		if [ ! -f "$$base.ascomp" ]; then \
+			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; \
+			ko=$$((ko + 1)); failed=1; \
+		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
+			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
+			diff -Bw "$$sams" "$$base.ascomp" || true; \
+			ko=$$((ko + 1)); failed=1; \
+		else \
+			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
+			ok=$$((ok + 1)); \
 		fi; \
 	done; \
 	for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
 		echo "Assembling $$sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o || { failed=1; break; }; \
+		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o; then \
+		echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; \
+		ko=$$((ko + 1)); failed=1; break; \
+	fi; \
 	done; \
 	while read -r ln; do \
 		[ -n "$$ln" ] || continue; \
@@ -121,9 +128,15 @@ integrate: clean silica.config
 		[ -f "__silica_runtime.o" ] && rt_one="__silica_runtime.o"; \
 		echo "Linking $$stem..."; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$stem $$main_o $$rt_one $(LDFLAGS_rust-lld) || failed=1; \
+						if ! $(RUST_LLD) -flavor darwin -o $$stem $$main_o $$rt_one $(LDFLAGS_rust-lld); then \
+				echo "❌❌ $(MSG_PREFIX)$$stem link failed"; \
+				ko=$$((ko + 1)); failed=1; \
+			fi; \
 		else \
-			$(ASSEMBLER) $$main_o $$rt_one -o $$stem $(LDFLAGS_clang) || failed=1; \
+						if ! $(ASSEMBLER) $$main_o $$rt_one -o $$stem $(LDFLAGS_clang); then \
+				echo "❌❌ $(MSG_PREFIX)$$stem link failed"; \
+				ko=$$((ko + 1)); failed=1; \
+			fi; \
 		fi; \
 	done < silica.config; \
 	while read -r ln; do \
@@ -131,7 +144,10 @@ integrate: clean silica.config
 		bn=$$(basename "$$ln"); \
 		stem=$${bn%.silica}; \
 		[ "$$stem" = "__silica_runtime" ] && continue; \
-		[ ! -x "$$stem" ] && continue; \
+		if [ ! -x "$$stem" ]; then \
+			echo "❌❌ $(MSG_PREFIX)$$stem missing executable (assemble/link failed earlier)"; \
+			ko=$$((ko + 1)); failed=1; continue; \
+		fi; \
 		if [ -f "$$stem.scout" ]; then \
 			{ printf 'exit\n' | ./$$stem 2>&1; echo $$?; } > "$$stem.sout"; \
 			if ! diff -Bw -q "$$stem.sout" "$$stem.scout" > /dev/null 2>&1; then \
@@ -143,8 +159,8 @@ integrate: clean silica.config
 				ok=$$((ok + 1)); \
 			fi; \
 		else \
-			echo "✅✅ $(MSG_PREFIX)$$stem built (no .scout; skipped run check)"; \
-			ok=$$((ok + 1)); \
+			echo "❌❌ $(MSG_PREFIX)$$stem has no .scout file"; \
+			ko=$$((ko + 1)); failed=1; \
 		fi; \
 	done < silica.config; \
 	[ "$$failed" -ne 0 ] && [ "$$ko" -eq 0 ] && ko=$$((ko + 1)); \
@@ -170,7 +186,7 @@ help:
 	@echo "  assembly    - Run silica-compiler (generates .sams)"
 	@echo "  objects     - Assemble .sams to .o"
 	@echo "  executables - Full build: assembly + link"
-	@echo "  integrate   - Compile; optional .ascomp / .scout checks if those files exist"
+	@echo "  integrate   - Compile; diff .sams vs .ascomp, run, diff .sout vs .scout"
 	@echo "  clean       - Remove .sams, .o, executables, .sout"
 	@echo "  help        - Show this help"
 	@echo ""

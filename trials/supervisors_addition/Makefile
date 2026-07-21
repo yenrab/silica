@@ -28,8 +28,8 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
 .PHONY: all compile clean integrate stress-j2 help silica.config
 
-silica.config: | clean
-	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && { \
+silica.config:
+	@cd "$(THIS_DIR)" && { \
 		find "$$PWD" -type f -name '*.silica' ! -name 'trial_negative_*.silica' | sed "s|^$$PWD/||"; \
 		echo "../../compiler/silica-compiler/stdlib/Supervisor.silica"; \
 	} > silica.config
@@ -41,7 +41,7 @@ compile: clean silica.config
 	rm -f *.sams traits/*.sams __silica_runtime.o && \
 	echo "Compiling with silica-compiler..." && \
 	if ! "$(SILICA_COMPILER)"; then \
-		echo "FAIL: Compilation failed"; \
+		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
 		exit 1; \
 	fi && \
 	echo "✅ $(MSG_PREFIX)Assembly generated (.sams)"
@@ -58,18 +58,27 @@ all: compile
 			continue; \
 		fi; \
 		echo "Assembling $$sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
+		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o"; then \
+		echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; \
+		ko=$$((ko + 1)); failed=1; break; \
+	fi; \
 	done; \
 	for sams in traits/*.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$$(basename "$$sams" .sams); \
 		obj="traits/$$base.o"; \
 		echo "Assembling $$sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj" || { failed=1; break; }; \
+		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj"; then \
+		echo "❌❌ $(MSG_PREFIX)$$obj assemble failed"; \
+		ko=$$((ko + 1)); failed=1; break; \
+	fi; \
 	done; \
 	if [ -f "__silica_runtime.sams" ]; then \
 		echo "Assembling __silica_runtime.sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o" || failed=1; \
+		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o"; then \
+		echo "❌❌ $(MSG_PREFIX)__silica_runtime assemble failed"; \
+		ko=$$((ko + 1)); failed=1; \
+	fi; \
 	fi; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/silica-compiler/stdlib/'); do \
 		base=$${line%.silica}; \
@@ -82,13 +91,19 @@ all: compile
 		runtime_obj=""; \
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$trait_objs $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
+			if ! $(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$trait_objs $$runtime_obj $(LDFLAGS_rust-lld); then \
+			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
+			ko=$$((ko + 1)); failed=1; \
+		fi; \
 		else \
-			$(ASSEMBLER) "$$base.o" $$trait_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) || failed=1; \
+			if ! $(ASSEMBLER) "$$base.o" $$trait_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang); then \
+			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
+			ko=$$((ko + 1)); failed=1; \
+		fi; \
 		fi; \
 	done; \
 	if [ $$failed -ne 0 ]; then \
-		echo "FAIL: Assemble/link failed"; \
+		echo "❌❌ $(MSG_PREFIX)assemble/link failed"; \
 		exit 1; \
 	fi; \
 	echo "✅ $(MSG_PREFIX)Linked entrypoints (root *.silica + traits/*.o)"
@@ -100,7 +115,10 @@ all: compile
 # compare_scout_normalized.sh (ordered compare with dynamic runtime fields normalized). If <base>.scout.multiset
 # exists, use compare_scout_multiset.sh (or compare_scout_multiset_oneof.sh when <base>.scout.alt exists —
 # multiset matches any listed golden).
-integrate: clean silica.config compile
+integrate:
+	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
+	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
+	@$(MAKE) -f "$(THIS_DIR)Makefile" compile
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/silica-compiler/stdlib/'); do \
@@ -112,31 +130,42 @@ integrate: clean silica.config compile
 			continue; \
 		fi; \
 		echo "Assembling $$sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
+		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o"; then \
+		echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; \
+		ko=$$((ko + 1)); failed=1; break; \
+	fi; \
 	done; \
 	for sams in traits/*.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$$(basename "$$sams" .sams); \
 		obj="traits/$$base.o"; \
 		echo "Assembling $$sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj" || { failed=1; break; }; \
+		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj"; then \
+		echo "❌❌ $(MSG_PREFIX)$$obj assemble failed"; \
+		ko=$$((ko + 1)); failed=1; break; \
+	fi; \
 	done; \
 	if [ -f "__silica_runtime.sams" ]; then \
 		echo "Assembling __silica_runtime.sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o" || failed=1; \
+		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o"; then \
+		echo "❌❌ $(MSG_PREFIX)__silica_runtime assemble failed"; \
+		ko=$$((ko + 1)); failed=1; \
+	fi; \
 	fi; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$'); do \
 		base=$${line%.silica}; \
 		sams="$$base.sams"; \
-		if [ -f "$$base.ascomp" ]; then \
-			if ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
-				echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
-				diff -Bw "$$sams" "$$base.ascomp" || true; \
-				ko=$$((ko + 1)); failed=1; \
-			else \
-				echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
-				ok=$$((ok + 1)); \
-			fi; \
+		[ "$$base" = "__silica_runtime" ] && continue; \
+		if [ ! -f "$$base.ascomp" ]; then \
+			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; \
+			ko=$$((ko + 1)); failed=1; \
+		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
+			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
+			diff -Bw "$$sams" "$$base.ascomp" || true; \
+			ko=$$((ko + 1)); failed=1; \
+		else \
+			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
+			ok=$$((ok + 1)); \
 		fi; \
 	done; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/silica-compiler/stdlib/'); do \
@@ -150,14 +179,23 @@ integrate: clean silica.config compile
 		runtime_obj=""; \
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$trait_objs $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
+			if ! $(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$trait_objs $$runtime_obj $(LDFLAGS_rust-lld); then \
+			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
+			ko=$$((ko + 1)); failed=1; \
+		fi; \
 		else \
-			$(ASSEMBLER) "$$base.o" $$trait_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) || failed=1; \
+			if ! $(ASSEMBLER) "$$base.o" $$trait_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang); then \
+			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
+			ko=$$((ko + 1)); failed=1; \
+		fi; \
 		fi; \
 	done; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/silica-compiler/stdlib/'); do \
 		base=$${line%.silica}; \
-		if [ -x "$$base" ]; then \
+		if [ ! -x "$$base" ]; then \
+			echo "❌❌ $(MSG_PREFIX)$$base missing executable (assemble/link failed earlier)"; \
+			ko=$$((ko + 1)); failed=1; \
+		elif [ -x "$$base" ]; then \
 			if [ -f "$$base.scout" ]; then \
 				if [ -f "$(THIS_DIR)run_integration_exit_after_marker.py" ]; then \
 					python3 "$(THIS_DIR)run_integration_exit_after_marker.py" "$(THIS_DIR)" "$$base" "$$base.sout" "done"; \
@@ -211,8 +249,8 @@ integrate: clean silica.config compile
 					ok=$$((ok + 1)); \
 				fi; \
 			else \
-				echo "✅✅ $(MSG_PREFIX)$$base built (no .scout; skipped run check)"; \
-				ok=$$((ok + 1)); \
+				echo "❌❌ $(MSG_PREFIX)$$base has no .scout file"; \
+				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		fi; \
 	done; \

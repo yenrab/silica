@@ -6,7 +6,9 @@
 # To refresh only silica.config in a trial: `make -C <trial> silica.config`
 
 # Immediate trial subdirs that contain Makefile or makefile (GNU make finds makefile in -C dir)
-include silica_compiler.mk
+THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+include $(THIS_DIR)silica_compiler.mk
+
 TRIAL_MAKEFILES := $(wildcard */Makefile */makefile)
 TRIAL_SUBDIRS := $(sort $(foreach mf,$(TRIAL_MAKEFILES),$(notdir $(patsubst %/,%,$(dir $(mf))))))
 

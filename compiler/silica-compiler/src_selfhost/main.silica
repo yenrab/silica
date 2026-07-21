@@ -58,6 +58,28 @@ fn build_module_world(all: ListParsedFile, exclude_path: string) -> ListNamedPro
     }
 }
 
+// Trait-specialize every parsed module once per process. Incremental multi-unit
+// compiles must reuse this list — re-running specialize_named_program_list per
+// unit re-clones huge libs (wbt_map/wbt_set) and OOMs on large silica.config.
+fn specialize_all_parsed(parsed: ListParsedFile) -> ListNamedProgram {
+    case parsed.is_nil of {
+        true -> type_checker_modules@empty_named_program_list();
+        false -> type_checker_modules@cons_named_program(
+            module_checker_core@module_from_path(parsed.head.path),
+            trait_specialization@specialize_program(parsed.head.program),
+            specialize_all_parsed(parsed.tail)
+        )
+    }
+}
+
+fn specialized_program_for_module(mod_name: string, program: Program, specialized_all: ListNamedProgram) -> Program {
+    (found: bool, prog: Program) <- parser_ast@find_named_program(mod_name, specialized_all);
+    case found of {
+        true -> prog;
+        false -> trait_specialization@specialize_program(program)
+    }
+}
+
 fn parse_all_files_recursive(files: ListString, acc: ListParsedFile) -> (bool, ListParsedFile) proc[DeviceIO] {
     case files.is_nil of {
         true -> (true, reverse_parsed_files(acc, empty_parsed_files()));
@@ -546,7 +568,7 @@ fn debug_walk_decls(decls: ListDeclaration) -> int64 {
 }
 
 // Module-check → SIR only (used for multi-unit silica.config: merge atoms, then emit with shared { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }).
-fn compile_to_sir_module(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile) -> (int64, SIRModule) proc[DeviceIO] {
+fn compile_to_sir_module(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile, specialized_all: ListNamedProgram) -> (int64, SIRModule) proc[DeviceIO] {
     _: int64 <- announce_compiling_file(filename);
     println("  Module checking...");
     mc: int64 <- module_checker_core@module_checker_check_program(program, config_files, all_parsed, filename);
@@ -598,9 +620,8 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
                                                                         false -> 0
                                                                     };
                                                                     println("  Generating SIR...");
-                                                                    specialized_program: Program <- trait_specialization@specialize_program(program);
-                                                                    specialized_world: ListNamedProgram <- trait_specialization@specialize_named_program_list(world_with_self);
-                                                                    mangled_program: Program <- qualified_call_mangler@mangle_calls_in_program(specialized_program, specialized_world);
+                                                                    specialized_program: Program <- specialized_program_for_module(mod_name, program, specialized_all);
+                                                                    mangled_program: Program <- qualified_call_mangler@mangle_calls_in_program(specialized_program, specialized_all);
                                                                     link_libs: ListSirString <- ffi_sidecar_loader@collect_program_link_libraries(program);
                                                                     sir_module: SIRModule <- sir_generator_core@emit_program_for_unit_with_link_libraries(mangled_program, tc_out.context, mod_name, link_libs);
                                                                     _: int64 <- case debug_compile(filename) of {
@@ -655,9 +676,9 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
 }
 
 // Module-check, type-check, trait-check, effect-check, SIR, emit for one unit; module_world is other parsed units (spec §19).
-fn compile_parsed_unit(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile) -> int64 {
+fn compile_parsed_unit(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile, specialized_all: ListNamedProgram) -> int64 {
     sequence proc[DeviceIO]
-        (sir_code: int64, sir_module: SIRModule) <- compile_to_sir_module(filename, program, module_world, config_files, all_parsed);
+        (sir_code: int64, sir_module: SIRModule) <- compile_to_sir_module(filename, program, module_world, config_files, all_parsed, specialized_all);
         result: int64 <- case sir_code != 0 of {
             true -> sir_code;
             false -> {
@@ -685,7 +706,7 @@ fn reverse_sir_modules_into_forward(lst: ListSIRModule, acc: ListSIRModule) -> L
 }
 
 // Walk sorted_topo; accumulate SIR in reverse (cons) for each unit, then caller reverses to match topo order.
-fn gather_sirs_rev(sorted_rem: ListString, parsed: ListParsedFile, config_files: ListString, acc_rev: ListSIRModule) -> (int64, ListSIRModule) proc[DeviceIO] {
+fn gather_sirs_rev(sorted_rem: ListString, parsed: ListParsedFile, config_files: ListString, specialized_all: ListNamedProgram, acc_rev: ListSIRModule) -> (int64, ListSIRModule) proc[DeviceIO] {
     case sorted_rem.is_nil of {
         true -> (0, acc_rev);
         false -> {
@@ -698,10 +719,10 @@ fn gather_sirs_rev(sorted_rem: ListString, parsed: ListParsedFile, config_files:
                     (1, sir_ast@nil_sir_modules())
                 };
                 true -> {
-                    (sir_c: int64, sir_val: SIRModule) <- compile_to_sir_module(sorted_rem.head, prog, world, config_files, parsed);
+                    (sir_c: int64, sir_val: SIRModule) <- compile_to_sir_module(sorted_rem.head, prog, world, config_files, parsed, specialized_all);
                     case sir_c != 0 of {
                         true -> (sir_c, sir_ast@nil_sir_modules());
-                        false -> gather_sirs_rev(sorted_rem.tail, parsed, config_files, sir_ast@cons_sir_module(sir_val, acc_rev))
+                        false -> gather_sirs_rev(sorted_rem.tail, parsed, config_files, specialized_all, sir_ast@cons_sir_module(sir_val, acc_rev))
                     }
                 }
             }
@@ -757,7 +778,8 @@ fn finish_multi_unit_emit(sorted_topo: ListString, fwd_queue: ListSIRModule, exe
 // Two or more units: one merged atom table for the whole config (link-batch / process-image atom ids), then emit each .sams with that table.
 fn compile_multi_unit_with_merged_atoms(sorted_topo: ListString, parsed_all: ListParsedFile, config_files: ListString) -> int64 {
     sequence proc[DeviceIO]
-        (gather_code: int64, rev_queue: ListSIRModule) <- gather_sirs_rev(sorted_topo, parsed_all, config_files, sir_ast@nil_sir_modules());
+        specialized_all: ListNamedProgram <- specialize_all_parsed(parsed_all);
+        (gather_code: int64, rev_queue: ListSIRModule) <- gather_sirs_rev(sorted_topo, parsed_all, config_files, specialized_all, sir_ast@nil_sir_modules());
         result: int64 <- case gather_code != 0 of {
             true -> gather_code;
             false -> {
@@ -770,7 +792,7 @@ fn compile_multi_unit_with_merged_atoms(sorted_topo: ListString, parsed_all: Lis
     end
 }
 
-fn compile_parsed_list_incremental(sorted: ListString, parsed: ListParsedFile, all_config_files: ListString) -> int64 {
+fn compile_parsed_list_incremental(sorted: ListString, parsed: ListParsedFile, all_config_files: ListString, specialized_all: ListNamedProgram) -> int64 {
     sequence proc[DeviceIO]
         result: int64 <- case sorted.is_nil of {
             true -> 0;
@@ -784,10 +806,10 @@ fn compile_parsed_list_incremental(sorted: ListString, parsed: ListParsedFile, a
                         1
                     };
                     true -> {
-                        code: int64 <- compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed);
+                        code: int64 <- compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed, specialized_all);
                         case code != 0 of {
                             true -> code;
-                            false -> compile_parsed_list_incremental(sorted.tail, parsed, all_config_files)
+                            false -> compile_parsed_list_incremental(sorted.tail, parsed, all_config_files, specialized_all)
                         }
                     }
                 }
@@ -801,6 +823,7 @@ fn compile_parsed_list_incremental(sorted: ListString, parsed: ListParsedFile, a
 // all_config_files: every path from silica.config (not the recursive suffix) — needed for `use` / module@ validation per unit.
 fn compile_parsed_list(sorted: ListString, parsed: ListParsedFile, all_config_files: ListString) -> int64 {
     sequence proc[DeviceIO]
+        specialized_all: ListNamedProgram <- specialize_all_parsed(parsed);
         result: int64 <- case sorted.is_nil of {
             true -> 0;
             false -> case sorted.tail.is_nil of {
@@ -813,10 +836,10 @@ fn compile_parsed_list(sorted: ListString, parsed: ListParsedFile, all_config_fi
                             _: int8 <- print(sorted.head);
                             1
                         };
-                        true -> compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed)
+                        true -> compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed, specialized_all)
                     }
                 };
-                false -> compile_parsed_list_incremental(sorted, parsed, all_config_files)
+                false -> compile_parsed_list_incremental(sorted, parsed, all_config_files, specialized_all)
             }
         }
     produces
@@ -846,7 +869,9 @@ fn compile_file(filename: string) -> int64 {
             true -> {
                 mod_nm: string <- module_checker_core@module_from_path(filename);
                 world_one: ListNamedProgram <- parser_ast@cons_named_program(mod_nm, parse_result.program, type_checker_modules@empty_named_program_list());
-                compile_parsed_unit(filename, parse_result.program, world_one, cons_string(filename, empty_list_string()), cons_parsed_file(filename, parse_result.program, empty_parsed_files()))
+                parsed_one: ListParsedFile <- cons_parsed_file(filename, parse_result.program, empty_parsed_files());
+                specialized_one: ListNamedProgram <- specialize_all_parsed(parsed_one);
+                compile_parsed_unit(filename, parse_result.program, world_one, cons_string(filename, empty_list_string()), parsed_one, specialized_one)
             };
             false -> {
                 error_code: string <- case parse_result.error_code == "" of {

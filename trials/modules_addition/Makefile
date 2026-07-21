@@ -23,7 +23,7 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
 .PHONY: all integrate clean help silica.config
 
-silica.config: | clean
+silica.config:
 	@cd "$(THIS_DIR)" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 .DEFAULT_GOAL := all
@@ -33,12 +33,15 @@ all: clean silica.config
 	rm -f *.sams lib/*.sams && \
 	echo "Compiling with silica-compiler..." && \
 	if ! "$(SILICA_COMPILER)"; then \
-		echo "FAIL: Compilation failed"; \
+		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
 		exit 1; \
 	fi && \
 	echo "✅ $(MSG_PREFIX)Assembly generated"
 
-integrate: clean silica.config all
+integrate:
+	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
+	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
+	@$(MAKE) -f "$(THIS_DIR)Makefile" all
 	@cd "$(THIS_DIR)" && \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
@@ -66,18 +69,27 @@ integrate: clean silica.config all
 		sams="$$base.sams"; \
 		[ -f "$$sams" ] || continue; \
 		echo "Assembling $$sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
+		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o"; then \
+		echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; \
+		ko=$$((ko + 1)); failed=1; break; \
+	fi; \
 	done; \
 	if [ -f "__silica_runtime.sams" ]; then \
 		echo "Assembling __silica_runtime.sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o" || failed=1; \
+		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o"; then \
+		echo "❌❌ $(MSG_PREFIX)__silica_runtime assemble failed"; \
+		ko=$$((ko + 1)); failed=1; \
+	fi; \
 	fi; \
 	for sams in lib/*.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$$(basename "$$sams" .sams); \
 		obj="lib/$$base.o"; \
 		echo "Assembling $$sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj" || { failed=1; break; }; \
+		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj"; then \
+		echo "❌❌ $(MSG_PREFIX)$$obj assemble failed"; \
+		ko=$$((ko + 1)); failed=1; break; \
+	fi; \
 	done; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
 		base=$${line%.silica}; \
@@ -90,14 +102,23 @@ integrate: clean silica.config all
 		runtime_obj=""; \
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$lib_objs $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
+						if ! $(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$lib_objs $$runtime_obj $(LDFLAGS_rust-lld); then \
+				echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
+				ko=$$((ko + 1)); failed=1; \
+			fi; \
 		else \
-			$(ASSEMBLER) "$$base.o" $$lib_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) || failed=1; \
+			if ! $(ASSEMBLER) "$$base.o" $$lib_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang); then \
+			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
+			ko=$$((ko + 1)); failed=1; \
+		fi; \
 		fi; \
 	done; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
 		base=$${line%.silica}; \
-		if [ -x "$$base" ]; then \
+		if [ ! -x "$$base" ]; then \
+			echo "❌❌ $(MSG_PREFIX)$$base missing executable (assemble/link failed earlier)"; \
+			ko=$$((ko + 1)); failed=1; \
+	elif [ -x "$$base" ]; then \
 			{ ./"$$base" 2>&1; echo $$?; } > "$$base.sout"; \
 			if [ -f "$$base.scout" ]; then \
 				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \

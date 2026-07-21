@@ -33,8 +33,8 @@ check:
 clean:
 	@rm -f "$(THIS_DIR)main_use_partial.cur_fail" "$(THIS_DIR)silica.config" "$(THIS_DIR).integrate_counts"
 
-silica.config: | clean
-	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
+silica.config:
+	@cd "$(THIS_DIR)" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 help:
 	@echo "module_nonexported_callee_trial (multi-file error enforcement)"

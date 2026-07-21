@@ -16,17 +16,23 @@
 -}
 
 // String prim emission: string_concat, string_substring, string_substring_until_char,
-// and content compares (lt/gt/le/ge/eq/nq) via L_string_cmp_helper.
+// string predicates (starts_with/ends_with/contains), and content compares via L_string_cmp_helper.
 // Compare operands arrive in X9/X10 (term_emitter is_cmp branch), same as int64.
 // string_concat: X0 (arg1), X1 (arg2). BL L_concat_helper; result in X0.
+// string predicates: X0 (haystack), X1 (needle). BL L_string_*_helper; result in W0.
 // string_substring: X0 (s), X1 (start_char), X2 (end_char). Character-based indices. BL L_substring_helper; result in X0.
 // string_substring_until_char: X0 (s), X1 (start), X2 (encoded char: len<<56|packed). BL L_substring_until_char_helper; result in X0.
-// Helpers emitted by string_concat_mmap_nomte / string_substring_mmap_nomte / string_eq_mmap_nomte when module uses them.
+// Helpers emitted by string_concat_mmap_nomte / string_substring_mmap_nomte / string_eq_mmap_nomte / string_predicates_mmap_nomte when module uses them.
 // sir_design_spec §7.10, sir_emitter_pattern_spec §9
 
 use sir_ast;
 
 export emit_prim_op/2;
+export is_string_predicate_prim/1;
+
+fn is_string_predicate_prim(name: string) -> bool {
+    name == "string_starts_with" or name == "string_ends_with" or name == "string_contains"
+}
 
 fn emit_string_concat(dest: string) -> string {
     bl_line: string <- "    BL L_concat_helper";
@@ -51,6 +57,30 @@ fn emit_string_substring_until_char(dest: string) -> string {
     result_mov: string <- case dest == "X0" of {
         true -> "";
         false -> concat("\n", concat(concat(concat("    MOV ", dest), ", X0"), ""))
+    };
+    concat(bl_line, result_mov)
+}
+
+// AArch64: MOV Wn, Wm only — never MOV Xn, Wm (assembler rejects mixed widths).
+fn w_reg_from_dest(dest: string) -> string {
+    case len(dest) > 0 of {
+        true -> case substring(dest, 0, 1) == "X" of {
+            true -> concat("W", substring(dest, 1, len(dest)));
+            false -> dest
+        };
+        false -> dest
+    }
+}
+
+// Predicate: args already in X0/X1; helper returns W0. Move bool result to dest as Wn.
+fn emit_string_predicate(dest: string, helper: string) -> string {
+    bl_line: string <- concat("    BL ", helper);
+    result_mov: string <- case dest == "W0" or dest == "X0" of {
+        true -> "";
+        false -> do
+            wd: string <- w_reg_from_dest(dest);
+            concat("\n    MOV ", concat(wd, ", W0"))
+        end
     };
     concat(bl_line, result_mov)
 }
@@ -89,6 +119,9 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "string_concat" -> emit_string_concat(dest);
         "string_substring" -> emit_string_substring(dest);
         "string_substring_until_char" -> emit_string_substring_until_char(dest);
+        "string_starts_with" -> emit_string_predicate(dest, "L_string_starts_with_helper");
+        "string_ends_with" -> emit_string_predicate(dest, "L_string_ends_with_helper");
+        "string_contains" -> emit_string_predicate(dest, "L_string_contains_helper");
         _: string -> concat(concat("    ; unsupported string prim: ", term.name), "")
     }
 }

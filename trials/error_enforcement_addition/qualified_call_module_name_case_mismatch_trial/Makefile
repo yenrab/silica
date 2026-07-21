@@ -14,9 +14,13 @@ MSG_PREFIX := $(TRIAL_DIR)/
 
 all: integrate
 
-integrate: clean silica.config check
+# Sequential: clean must not run after silica.config (sibling prereqs can reorder).
+integrate:
+	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
+	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
+	@$(MAKE) -f "$(THIS_DIR)Makefile" check
 
-check:
+check: silica.config
 	@cd "$(THIS_DIR)" && $(COMPILER) > main_use_camelcase_qualifier.cur_fail 2>&1 || true
 	@if diff -q "$(THIS_DIR)main_use_camelcase_qualifier.cur_fail" "$(THIS_DIR)main_use_camelcase_qualifier.golden_fail" > /dev/null 2>&1; then \
 		echo "✅✅ $(MSG_PREFIX)qualified_call_module_name_case_mismatch_trial"; \
@@ -31,11 +35,11 @@ check:
 clean:
 	@rm -f "$(THIS_DIR)main_use_camelcase_qualifier.cur_fail" "$(THIS_DIR)silica.config" "$(THIS_DIR).integrate_counts"
 
-silica.config: | clean
+silica.config:
 	@printf '%s\n' \
 		main_use_camelcase_qualifier.silica \
 		PascalCaseLib.silica \
-		> "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))silica.config"
+		> "$(THIS_DIR)silica.config"
 
 help:
 	@echo "qualified_call_module_name_case_mismatch_trial (multi-file error enforcement)"

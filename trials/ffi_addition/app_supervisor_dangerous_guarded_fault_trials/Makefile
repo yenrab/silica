@@ -44,15 +44,34 @@ integrate: fixtures
 		echo "../../../compiler/silica-compiler/stdlib/Supervisor.silica"; \
 	} > silica.config
 	@$(ENSURE_SILICA_COMPILER)
-	@cd "$(APP_TRIAL_DIR)" && if ! "$(SILICA_COMPILER)"; then printf '%d %d\n' 0 1 > .integrate_counts; exit 1; fi
+	@cd "$(APP_TRIAL_DIR)" && if ! "$(SILICA_COMPILER)"; then echo "❌❌ $(APP_LABEL): compilation failed"; printf '%d %d\n' 0 1 > .integrate_counts; exit 1; fi
 	@failed=0; ok=0; ko=0; \
 	cd "$(APP_TRIAL_DIR)"; \
 	link_archives=$$("$(SILICA_LINK_SH)" .); \
 	for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
+		[ "$$base" = "__silica_runtime" ] && continue; \
+		if [ ! -f "$$base.ascomp" ]; then \
+			echo "  ❌ $(APP_LABEL)/$$base: missing .ascomp"; \
+			ko=$$((ko + 1)); failed=1; \
+		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
+			echo "  ❌ $(APP_LABEL)/$$base .sams differs from .ascomp"; \
+			diff -Bw "$$sams" "$$base.ascomp" || true; \
+			ko=$$((ko + 1)); failed=1; \
+		else \
+			echo "  ✅✅ $(APP_LABEL)/$$base assembly matches .ascomp"; \
+			ok=$$((ok + 1)); \
+		fi; \
+	done; \
+	for sams in *.sams; do \
+		[ -f "$$sams" ] || continue; \
+		base=$${sams%.sams}; \
 		echo "Assembling $$sams..."; \
-		clang $(ASFLAGS) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
+		if ! clang $(ASFLAGS) -c -x assembler "$$sams" -o "$$base.o"; then \
+		echo "❌❌ $$base assemble failed"; \
+		ko=$$((ko + 1)); failed=1; break; \
+	fi; \
 	done; \
 	[ -f __silica_runtime.sams ] && clang $(ASFLAGS) -c -x assembler __silica_runtime.sams -o __silica_runtime.o || true; \
 	for trial in $(APP_EXECUTABLES); do \
@@ -60,17 +79,29 @@ integrate: fixtures
 		runtime_obj=""; \
 		[ -f __silica_runtime.o ] && runtime_obj=__silica_runtime.o; \
 		if test -x "$(RUST_LLD)"; then \
-			"$(RUST_LLD)" -flavor darwin -o "$$trial" "$$trial.o" $$runtime_obj $$link_archives $(LDFLAGS_rust-lld) || failed=1; \
+						if ! "$(RUST_LLD)" -flavor darwin -o "$$trial" "$$trial.o" $$runtime_obj $$link_archives $(LDFLAGS_rust-lld); then \
+				echo "❌❌ $(APP_LABEL)/$$trial link failed"; \
+				ko=$$((ko + 1)); failed=1; \
+			fi; \
 		else \
-			clang "$$trial.o" $$runtime_obj $$link_archives -o "$$trial" $(LDFLAGS_clang) || failed=1; \
+						if ! clang "$$trial.o" $$runtime_obj $$link_archives -o "$$trial" $(LDFLAGS_clang); then \
+				echo "❌❌ $(APP_LABEL)/$$trial link failed"; \
+				ko=$$((ko + 1)); failed=1; \
+			fi; \
 		fi; \
 		[ "$$failed" -ne 0 ] && break; \
 		if [ -f "$$trial.wait_for_exit" ]; then \
 			marker=$$(awk 'NF { if ($$NF ~ /^[0-9]+$$/) { m=$$0; sub(/[ \t]+[0-9]+$$/, "", m); print m } else print $$0; exit } END { if (!NR) print "done" }' "$$trial.wait_for_exit"); \
 			marker_count=$$(awk 'NF { if ($$NF ~ /^[0-9]+$$/) print $$NF; else print 1; exit } END { if (!NR) print 1 }' "$$trial.wait_for_exit"); \
-			python3 "$(FFI_TRIAL_DIR)/run_integration_exit_after_marker.py" "$(APP_TRIAL_DIR)" "$$trial" "$$trial.sout" "$$marker" "$$marker_count" || failed=1; \
+			if ! python3 "$(FFI_TRIAL_DIR)/run_integration_exit_after_marker.py" "$(APP_TRIAL_DIR)" "$$trial" "$$trial.sout" "$$marker" "$$marker_count"; then \
+			echo "❌❌ $(APP_LABEL)/$$trial run failed"; \
+			ko=$$((ko + 1)); failed=1; \
+		fi; \
 		else \
-			{ ./"$$trial" 2>&1; echo $$?; } > "$$trial.sout" || failed=1; \
+			if ! { ./"$$trial" 2>&1; echo $$?; } > "$$trial.sout"; then \
+			echo "❌❌ $(APP_LABEL)/$$trial run failed"; \
+			ko=$$((ko + 1)); failed=1; \
+		fi; \
 		fi; \
 		[ "$$failed" -ne 0 ] && break; \
 		if [ ! -f "$$trial.scout" ]; then \
