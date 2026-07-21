@@ -3,7 +3,7 @@
    Copyright 2026 Lee Scott Barney
 
    Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
+   you may not USE this file except in compliance with the License.
    You may obtain a copy of the License at
 
        http://www.apache.org/licenses/LICENSE-2.0
@@ -62,26 +62,31 @@ fn trim_type_from(s: string, start: int64, last_idx: int64) -> string {
 
 // Split inner content by top-level commas (respecting nested parens). Returns list as string segments.
 // We use a simple approach: collect params one by one.
-fn split_params_at_top_level(inner: string) -> ListString {
+fn split_params_at_top_level(inner: string) -> List[string, mem(normal)] {
     split_params_loop(inner, 0, 0, "", nil_list_string())
 }
 
-struct ListString {
-    is_nil: bool,
-    head: string,
-    tail: ListString
+// String list helpers use List[string, mem(normal)] (spec §3.4.2).
+
+fn nil_list_string() -> List[string, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[string, mem(normal)] <- empty[string, mem(normal)]()
+    produces
+        pure result
+    end
 }
 
-fn nil_list_string() -> ListString {
-    dummy: ListString <- ListString { is_nil: true, head: "", tail: dummy };
-    dummy
+
+fn cons_string(s: string, rest: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[string, mem(normal)] <- prepend[string, mem(normal)](s, rest)
+    produces
+        pure result
+    end
 }
 
-fn cons_string(s: string, rest: ListString) -> ListString {
-    ListString { is_nil: false, head: s, tail: rest }
-}
 
-fn split_params_loop(s: string, i: int64, depth: int64, acc: string, result: ListString) -> ListString {
+fn split_params_loop(s: string, i: int64, depth: int64, acc: string, result: List[string, mem(normal)]) -> List[string, mem(normal)] {
     case i >= len(s) of {
         true -> case len(acc) > 0 of {
             true -> cons_string(trim_type(acc), result);
@@ -95,7 +100,7 @@ fn split_params_loop(s: string, i: int64, depth: int64, acc: string, result: Lis
                     true -> case depth == 0 of {
                         true -> {
                             trimmed: string <- trim_type(acc);
-                            new_result: ListString <- cons_string(trimmed, result);
+                            new_result: List[string, mem(normal)] <- cons_string(trimmed, result);
                             split_params_loop(s, i + 1, 0, "", new_result)
                         };
                         false -> split_params_loop(s, i + 1, depth, concat(acc, ","), result)
@@ -107,20 +112,20 @@ fn split_params_loop(s: string, i: int64, depth: int64, acc: string, result: Lis
     }
 }
 
-// Reverse ListString (cons builds in reverse order)
-fn reverse_list_string(lst: ListString) -> ListString {
+// Reverse List[string, mem(normal)] (cons builds in reverse order)
+fn reverse_list_string(lst: List[string, mem(normal)]) -> List[string, mem(normal)] {
     reverse_list_string_acc(lst, nil_list_string())
 }
 
-fn reverse_list_string_acc(lst: ListString, acc: ListString) -> ListString {
+fn reverse_list_string_acc(lst: List[string, mem(normal)], acc: List[string, mem(normal)]) -> List[string, mem(normal)] {
     case lst.is_nil of {
         true -> acc;
         false -> reverse_list_string_acc(lst.tail, cons_string(lst.head, acc))
     }
 }
 
-// Count elements in ListString
-fn list_string_length(lst: ListString) -> int64 {
+// Count elements in List[string, mem(normal)]
+fn list_string_length(lst: List[string, mem(normal)]) -> int64 {
     case lst.is_nil of {
         true -> 0;
         false -> 1 + list_string_length(lst.tail)
@@ -128,7 +133,7 @@ fn list_string_length(lst: ListString) -> int64 {
 }
 
 // Get nth element (0-based)
-fn list_string_nth(lst: ListString, n: int64) -> string {
+fn list_string_nth(lst: List[string, mem(normal)], n: int64) -> string {
     case lst.is_nil of {
         true -> "";
         false -> case n == 0 of {
@@ -189,7 +194,7 @@ fn validate_memory_region_type(type_str: string, location: { file: string, line:
     case len(ctor) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, concat("invalid memory region type: ", type_str), "sect4.4");
         false -> {
-            params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+            params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
             n: int64 <- list_string_length(params);
             case ctor of {
                 "ref" -> case n == 3 of {
@@ -218,7 +223,7 @@ fn validate_memory_region_type(type_str: string, location: { file: string, line:
     }
 }
 
-fn validate_ref_params(params: ListString, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn validate_ref_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
     t: string <- trim_type(list_string_nth(params, 2));
@@ -234,7 +239,7 @@ fn validate_ref_params(params: ListString, location: { file: string, line: int64
     }
 }
 
-fn validate_region_params(params: ListString, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn validate_region_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
     case len(r) == 0 of {
@@ -246,7 +251,7 @@ fn validate_region_params(params: ListString, location: { file: string, line: in
     }
 }
 
-fn validate_buf_params(params: ListString, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn validate_buf_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
     t: string <- trim_type(list_string_nth(params, 2));
@@ -323,7 +328,7 @@ fn validate_buf_length_param(n_str: string, location: { file: string, line: int6
 }
 
 fn validate_buf_length_param_in_context(n_str: string, location: { file: string, line: int64, column: int64, offset: int64 }, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
-    base: TypeCheckResult <- validate_buf_length_param(n_str, location);
+    base: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- validate_buf_length_param(n_str, location);
     case base.is_ok of {
         false -> base;
         true -> case is_nonnegative_integer_literal(trim_type(n_str)) of {
@@ -343,7 +348,7 @@ fn validate_buf_length_param_in_context(n_str: string, location: { file: string,
     }
 }
 
-fn validate_buf_params_in_context(params: ListString, location: { file: string, line: int64, column: int64, offset: int64 }, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn validate_buf_params_in_context(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
     t: string <- trim_type(list_string_nth(params, 2));
@@ -365,7 +370,7 @@ fn validate_memory_region_type_in_context(type_str: string, location: { file: st
     case len(ctor) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, concat("invalid memory region type: ", type_str), "sect4.4");
         false -> {
-            params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+            params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
             n: int64 <- list_string_length(params);
             case ctor of {
                 "buf" -> case n == 4 of {
@@ -378,7 +383,7 @@ fn validate_memory_region_type_in_context(type_str: string, location: { file: st
     }
 }
 
-fn validate_atomic_ref_params(params: ListString, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn validate_atomic_ref_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
     t: string <- trim_type(list_string_nth(params, 2));
@@ -408,7 +413,7 @@ fn ref_type_to_region_type(ref_type: string) -> string {
     (ctor: string, inner: string) <- parse_memory_region_type(ref_type);
     case ctor == "ref" of {
         true -> {
-            params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+            params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
             r: string <- trim_type(list_string_nth(params, 0));
             space: string <- trim_type(list_string_nth(params, 1));
             concat(concat(concat(concat("region(", r), ", "), space), ")")
@@ -422,7 +427,7 @@ fn extract_element_type_from_ref(ref_type: string) -> string {
     (ctor: string, inner: string) <- parse_memory_region_type(ref_type);
     case ctor == "ref" of {
         true -> {
-            params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+            params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
             trim_type(list_string_nth(params, 2))
         };
         false -> ""
@@ -434,7 +439,7 @@ fn extract_element_type_from_buf(buf_type: string) -> string {
     (ctor: string, inner: string) <- parse_memory_region_type(buf_type);
     case ctor == "buf" of {
         true -> {
-            params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+            params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
             trim_type(list_string_nth(params, 2))
         };
         false -> ""
@@ -446,7 +451,7 @@ fn extract_length_from_buf(buf_type: string) -> string {
     (ctor: string, inner: string) <- parse_memory_region_type(buf_type);
     case ctor == "buf" of {
         true -> {
-            params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+            params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
             trim_type(list_string_nth(params, 3))
         };
         false -> ""
@@ -463,7 +468,7 @@ fn buf_type_to_region_type(buf_type: string) -> string {
     (ctor: string, inner: string) <- parse_memory_region_type(buf_type);
     case ctor == "buf" of {
         true -> {
-            params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+            params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
             r: string <- trim_type(list_string_nth(params, 0));
             space: string <- trim_type(list_string_nth(params, 1));
             concat(concat(concat(concat("region(", r), ", "), space), ")")
@@ -477,7 +482,7 @@ fn extract_element_type_from_atomic_ref(atomic_ref_type: string) -> string {
     (ctor: string, inner: string) <- parse_memory_region_type(atomic_ref_type);
     case ctor == "atomic_ref" of {
         true -> {
-            params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+            params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
             trim_type(list_string_nth(params, 2))
         };
         false -> ""
@@ -489,7 +494,7 @@ fn atomic_ref_type_to_region_type(atomic_ref_type: string) -> string {
     (ctor: string, inner: string) <- parse_memory_region_type(atomic_ref_type);
     case ctor == "atomic_ref" of {
         true -> {
-            params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+            params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
             r: string <- trim_type(list_string_nth(params, 0));
             space: string <- trim_type(list_string_nth(params, 1));
             concat(concat(concat(concat("region(", r), ", "), space), ")")
@@ -503,7 +508,7 @@ fn get_space_from_ref_type(ref_type: string) -> string {
     (ctor: string, inner: string) <- parse_memory_region_type(ref_type);
     case ctor == "ref" of {
         true -> {
-            params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+            params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
             trim_type(list_string_nth(params, 1))
         };
         false -> ""
@@ -515,7 +520,7 @@ fn get_space_from_region_type(region_type: string) -> string {
     (ctor: string, inner: string) <- parse_memory_region_type(region_type);
     case ctor == "region" of {
         true -> {
-            params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+            params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
             trim_type(list_string_nth(params, 1))
         };
         false -> ""
@@ -533,12 +538,12 @@ fn is_region_builtin_call(call_name: string) -> bool {
 // Phases B (nested scopes) and C (cross-function) require implementation after functions are fully supported.
 fn check_sequence_return_lifetime(return_type: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
     t: string <- trim_type(return_type);
-    ref_ids: ListString <- collect_lifetime_ids_from_ref_types(t);
-    region_ids: ListString <- collect_lifetime_ids_from_region_types(t);
+    ref_ids: List[string, mem(normal)] <- collect_lifetime_ids_from_ref_types(t);
+    region_ids: List[string, mem(normal)] <- collect_lifetime_ids_from_region_types(t);
     check_ref_lifetimes_covered(ref_ids, region_ids, location)
 }
 
-fn check_ref_lifetimes_covered(ref_ids: ListString, region_ids: ListString, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn check_ref_lifetimes_covered(ref_ids: List[string, mem(normal)], region_ids: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
     case ref_ids.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> case list_contains_string(trim_type(ref_ids.head), region_ids) of {
@@ -548,7 +553,7 @@ fn check_ref_lifetimes_covered(ref_ids: ListString, region_ids: ListString, loca
     }
 }
 
-fn list_contains_string(s: string, lst: ListString) -> bool {
+fn list_contains_string(s: string, lst: List[string, mem(normal)]) -> bool {
     case lst.is_nil of {
         true -> false;
         false -> case trim_type(lst.head) == s of {
@@ -559,7 +564,7 @@ fn list_contains_string(s: string, lst: ListString) -> bool {
 }
 
 // Recursively collect lifetime IDs from ref(R,...), buf(R,...), atomic_ref(R,...) in type string.
-fn collect_lifetime_ids_from_ref_types(type_str: string) -> ListString {
+fn collect_lifetime_ids_from_ref_types(type_str: string) -> List[string, mem(normal)] {
     t: string <- trim_type(type_str);
     case len(t) < 4 of {
         true -> nil_list_string();
@@ -579,57 +584,57 @@ fn collect_lifetime_ids_from_ref_types(type_str: string) -> ListString {
     }
 }
 
-fn collect_from_ref(type_str: string) -> ListString {
+fn collect_from_ref(type_str: string) -> List[string, mem(normal)] {
     inner: string <- substring(type_str, 4, len(type_str) - 1);
-    params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+    params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
     case list_string_length(params) < 3 of {
         true -> nil_list_string();
         false -> {
             r: string <- trim_type(list_string_nth(params, 0));
             elem_type: string <- trim_type(list_string_nth(params, 2));
-            rest: ListString <- collect_lifetime_ids_from_ref_types(elem_type);
+            rest: List[string, mem(normal)] <- collect_lifetime_ids_from_ref_types(elem_type);
             cons_string(r, rest)
         }
     }
 }
 
-fn collect_from_buf(type_str: string) -> ListString {
+fn collect_from_buf(type_str: string) -> List[string, mem(normal)] {
     inner: string <- substring(type_str, 4, len(type_str) - 1);
-    params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+    params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
     case list_string_length(params) < 4 of {
         true -> nil_list_string();
         false -> {
             r: string <- trim_type(list_string_nth(params, 0));
             elem_type: string <- trim_type(list_string_nth(params, 2));
-            rest: ListString <- collect_lifetime_ids_from_ref_types(elem_type);
+            rest: List[string, mem(normal)] <- collect_lifetime_ids_from_ref_types(elem_type);
             cons_string(r, rest)
         }
     }
 }
 
-fn collect_from_atomic_ref(type_str: string) -> ListString {
+fn collect_from_atomic_ref(type_str: string) -> List[string, mem(normal)] {
     inner: string <- substring(type_str, 11, len(type_str) - 1);
-    params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+    params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
     case list_string_length(params) < 3 of {
         true -> nil_list_string();
         false -> {
             r: string <- trim_type(list_string_nth(params, 0));
             elem_type: string <- trim_type(list_string_nth(params, 2));
-            rest: ListString <- collect_lifetime_ids_from_ref_types(elem_type);
+            rest: List[string, mem(normal)] <- collect_lifetime_ids_from_ref_types(elem_type);
             cons_string(r, rest)
         }
     }
 }
 
 // Recursively collect lifetime IDs from region(R,...) in type string.
-fn collect_lifetime_ids_from_region_types(type_str: string) -> ListString {
+fn collect_lifetime_ids_from_region_types(type_str: string) -> List[string, mem(normal)] {
     t: string <- trim_type(type_str);
     case len(t) < 8 of {
         true -> nil_list_string();
         false -> case len(t) >= 7 and substring(t, 0, 6) == "region" and substring(t, 6, 7) == "(" of {
             true -> {
                 inner: string <- substring(t, 7, len(t) - 1);
-                params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+                params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
                 case list_string_length(params) < 1 of {
                     true -> nil_list_string();
                     false -> cons_string(trim_type(list_string_nth(params, 0)), nil_list_string())
@@ -640,7 +645,7 @@ fn collect_lifetime_ids_from_region_types(type_str: string) -> ListString {
     }
 }
 
-fn collect_from_tuple_or_union(type_str: string) -> ListString {
+fn collect_from_tuple_or_union(type_str: string) -> List[string, mem(normal)] {
     t: string <- trim_type(type_str);
     case len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
         true -> collect_from_tuple_contents(substring(t, 1, len(t) - 1));
@@ -651,7 +656,7 @@ fn collect_from_tuple_or_union(type_str: string) -> ListString {
     }
 }
 
-fn collect_region_ids_from_tuple_or_union(type_str: string) -> ListString {
+fn collect_region_ids_from_tuple_or_union(type_str: string) -> List[string, mem(normal)] {
     t: string <- trim_type(type_str);
     case len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
         true -> collect_region_from_tuple_contents(substring(t, 1, len(t) - 1));
@@ -678,31 +683,31 @@ fn find_union_separator(s: string, i: int64, depth: int64) -> int64 {
     }
 }
 
-fn collect_from_tuple_contents(inner: string) -> ListString {
-    parts: ListString <- reverse_list_string(split_params_at_top_level(inner));
+fn collect_from_tuple_contents(inner: string) -> List[string, mem(normal)] {
+    parts: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
     collect_from_parts(parts)
 }
 
-fn collect_from_parts(parts: ListString) -> ListString {
+fn collect_from_parts(parts: List[string, mem(normal)]) -> List[string, mem(normal)] {
     case parts.is_nil of {
         true -> nil_list_string();
         false -> union_list_string(collect_lifetime_ids_from_ref_types(parts.head), collect_from_parts(parts.tail))
     }
 }
 
-fn collect_region_from_tuple_contents(inner: string) -> ListString {
-    parts: ListString <- reverse_list_string(split_params_at_top_level(inner));
+fn collect_region_from_tuple_contents(inner: string) -> List[string, mem(normal)] {
+    parts: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
     collect_region_from_parts(parts)
 }
 
-fn collect_region_from_parts(parts: ListString) -> ListString {
+fn collect_region_from_parts(parts: List[string, mem(normal)]) -> List[string, mem(normal)] {
     case parts.is_nil of {
         true -> nil_list_string();
         false -> union_list_string(collect_lifetime_ids_from_region_types(parts.head), collect_region_from_parts(parts.tail))
     }
 }
 
-fn collect_from_union(type_str: string) -> ListString {
+fn collect_from_union(type_str: string) -> List[string, mem(normal)] {
     sep: int64 <- find_union_separator(type_str, 0, 0);
     case sep < 0 of {
         true -> collect_lifetime_ids_from_ref_types(type_str);
@@ -718,7 +723,7 @@ fn collect_from_union(type_str: string) -> ListString {
     }
 }
 
-fn collect_region_from_union(type_str: string) -> ListString {
+fn collect_region_from_union(type_str: string) -> List[string, mem(normal)] {
     sep: int64 <- find_union_separator(type_str, 0, 0);
     case sep < 0 of {
         true -> collect_lifetime_ids_from_region_types(type_str);
@@ -734,7 +739,7 @@ fn collect_region_from_union(type_str: string) -> ListString {
     }
 }
 
-fn union_list_string(a: ListString, b: ListString) -> ListString {
+fn union_list_string(a: List[string, mem(normal)], b: List[string, mem(normal)]) -> List[string, mem(normal)] {
     case a.is_nil of {
         true -> b;
         false -> case list_contains_string(a.head, b) of {

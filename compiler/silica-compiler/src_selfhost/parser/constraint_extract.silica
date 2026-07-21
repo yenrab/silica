@@ -3,7 +3,7 @@
    Copyright 2026 Lee Scott Barney
 
    Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
+   you may not USE this file except in compliance with the License.
    You may obtain a copy of the License at
 
        http://www.apache.org/licenses/LICENSE-2.0
@@ -2136,9 +2136,10 @@ fn extract_function_body_tail(first_expr: Expr, after_first: ListTokenSlot) -> (
     sequence proc[DeviceIO]
         kinds: TokenKinds <- lexer_token_kind@token_kinds();
         after_trim: ListTokenSlot <- skip_leading_whitespace_slots(after_first);
+        // Lexeme/role OR: after a bare record body, `}` kind may not match kinds.right_brace.
         result: (Expr, ListTokenSlot) <- case after_trim.is_nil of {
             true -> (first_expr, after_trim);
-            false -> case after_trim.head.token.kind == kinds.right_brace of {
+            false -> case after_trim.head.token.kind == kinds.right_brace or after_trim.head.token.lexeme == "}" or constraint_core@slot_role(after_trim.head) == role_right_brace() of {
                 true -> (first_expr, after_trim);
                 false -> case after_trim.head.token.lexeme == ";" of {
                     true -> {
@@ -2150,7 +2151,7 @@ fn extract_function_body_tail(first_expr: Expr, after_first: ListTokenSlot) -> (
                                 marked: Expr <- trailing_semicolon_marker(semi_slot.token.location, first_expr);
                                 (marked, rest_w)
                             };
-                            false -> case rest_w.head.token.kind == kinds.right_brace of {
+                            false -> case rest_w.head.token.kind == kinds.right_brace or rest_w.head.token.lexeme == "}" or constraint_core@slot_role(rest_w.head) == role_right_brace() of {
                                 true -> {
                                     semi_slot: TokenSlot <- after_trim.head;
                                     marked: Expr <- trailing_semicolon_marker(semi_slot.token.location, first_expr);
@@ -2635,8 +2636,26 @@ fn extract_body(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
                             true -> extract_if_expression(trimmed);
                             false -> case first.token.kind == kinds.left_bracket and (constraint_core@slot_role(first) == capability_list@role_list_lit_lbracket() or is_list_literal_lbracket_fallback(trimmed, kinds)) of {
                                 true -> extract_list_literal(trimmed);
-                                false -> case first.token.kind == kinds.left_brace and is_struct_literal_lbrace_fallback(trimmed, kinds) of {
-                                    true -> extract_struct_literal(trimmed);
+                                // Prefer lexeme "{" as well as kinds.left_brace: TokenKinds field-access
+                                // mismatches can make kind comparisons fail while lexeme stays reliable.
+                                // Bare record `{ field: expr, ... }` must win as the sole/first function-body
+                                // expression (otherwise fields are misread as the next statement → E1040).
+                                // Non-literal `{ ... }` remains a statement block (selfhost dialect).
+                                false -> case first.token.kind == kinds.left_brace or first.token.lexeme == "{" of {
+                                    true -> case is_struct_literal_lbrace_fallback(trimmed, kinds) of {
+                                        true -> extract_struct_literal(trimmed);
+                                        false -> {
+                                            inner_slots: ListTokenSlot <- trimmed.tail;
+                                            (body_expr: Expr, rest_after: ListTokenSlot) <- extract_function_body(inner_slots);
+                                            case slots_is_nil(rest_after) of {
+                                                true -> (parser_ast@dummy_expr(), trimmed);
+                                                false -> case rest_after.head.token.kind == kinds.right_brace or rest_after.head.token.lexeme == "}" or constraint_core@slot_role(rest_after.head) == role_right_brace() of {
+                                                    true -> (body_expr, rest_after.tail);
+                                                    false -> (parser_ast@dummy_expr(), trimmed)
+                                                }
+                                            }
+                                        }
+                                    };
                                     false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, first.token.kind) of {
                                         true -> case is_binding_start(trimmed) of {
                                             true -> extract_binding(trimmed);
@@ -3785,8 +3804,21 @@ fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO]
                     };
                     false -> case first_kind == kinds.left_bracket and (constraint_core@slot_role(first) == capability_list@role_list_lit_lbracket() or is_list_literal_lbracket_fallback(slots, kinds)) of {
                         true -> extract_list_literal(slots);
-                        false -> case first_kind == kinds.left_brace and is_struct_literal_lbrace_fallback(slots, kinds) of {
-                            true -> extract_struct_literal(slots);
+                        false -> case first_kind == kinds.left_brace or first.token.lexeme == "{" of {
+                            true -> case is_struct_literal_lbrace_fallback(slots, kinds) of {
+                                true -> extract_struct_literal(slots);
+                                false -> {
+                                    inner_slots_p: ListTokenSlot <- rest;
+                                    (body_expr_p: Expr, rest_after_p: ListTokenSlot) <- extract_function_body(inner_slots_p);
+                                    case slots_is_nil(rest_after_p) of {
+                                        true -> (parser_ast@dummy_expr(), slots);
+                                        false -> case rest_after_p.head.token.kind == kinds.right_brace or rest_after_p.head.token.lexeme == "}" or constraint_core@slot_role(rest_after_p.head) == role_right_brace() of {
+                                            true -> (body_expr_p, rest_after_p.tail);
+                                            false -> (parser_ast@dummy_expr(), slots)
+                                        }
+                                    }
+                                }
+                            };
                             false -> case first_kind == kinds.minus of {
                                 true -> {
                                     (operand: Expr, rest_after: ListTokenSlot) <- extract_expr_with_precedence(rest, 3);

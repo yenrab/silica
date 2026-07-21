@@ -1598,22 +1598,27 @@ fn validate_collection_result_type_declaration(type_str: string, location: { fil
     }
 }
 
-struct ConstructorFieldList {
-    is_nil: bool,
-    head: string,
-    tail: ConstructorFieldList
+// List[string, mem(normal)] is List[string, mem(normal)] (spec §3.4.2).
+
+fn empty_constructor_field_list() -> List[string, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[string, mem(normal)] <- empty[string, mem(normal)]()
+    produces
+        pure result
+    end
 }
 
-fn empty_constructor_field_list() -> ConstructorFieldList {
-    nil_f: ConstructorFieldList <- ConstructorFieldList { is_nil: true, head: "", tail: nil_f };
-    nil_f
+
+fn cons_constructor_field(s: string, tail: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[string, mem(normal)] <- prepend[string, mem(normal)](s, tail)
+    produces
+        pure result
+    end
 }
 
-fn cons_constructor_field(s: string, tail: ConstructorFieldList) -> ConstructorFieldList {
-    ConstructorFieldList { is_nil: false, head: s, tail: tail }
-}
 
-fn constructor_field_list_contains(lst: ConstructorFieldList, name: string) -> bool {
+fn constructor_field_list_contains(lst: List[string, mem(normal)], name: string) -> bool {
     case lst.is_nil of {
         true -> false;
         false -> case lst.head == name of {
@@ -1623,7 +1628,7 @@ fn constructor_field_list_contains(lst: ConstructorFieldList, name: string) -> b
     }
 }
 
-fn required_constructor_fields(bind_type: string) -> ConstructorFieldList {
+fn required_constructor_fields(bind_type: string) -> List[string, mem(normal)] {
     case is_ordered_set_type(bind_type) of {
         true -> cons_constructor_field("compare_item", empty_constructor_field_list());
         false -> case is_search_tree_type(bind_type) of {
@@ -1654,43 +1659,43 @@ fn required_constructor_fields(bind_type: string) -> ConstructorFieldList {
     }
 }
 
-fn record_literal_field_names(expr: Expr, acc: ConstructorFieldList) -> ConstructorFieldList {
+fn record_literal_field_names(expr: Expr, acc: List[string, mem(normal)]) -> List[string, mem(normal)] {
     case expr.kind == 21 of {
         true -> record_literal_field_names(expr.right_expr, cons_constructor_field(expr.name, acc));
         false -> acc
     }
 }
 
-fn validate_required_constructor_fields(required: ConstructorFieldList, provided: ConstructorFieldList, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    case required.is_nil of {
+fn validate_required_constructor_fields(required_fields: List[string, mem(normal)], provided_fields: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    case required_fields.is_nil of {
         true -> type_checker_core@type_check_ok();
-        false -> case constructor_field_list_contains(provided, required.head) of {
-            false -> type_checker_core@type_check_err("E2017", location, concat(concat("constructor record missing required field ", required.head), ""), "sect4");
-            true -> validate_required_constructor_fields(required.tail, provided, location)
+        false -> case constructor_field_list_contains(provided_fields, required_fields.head) of {
+            false -> type_checker_core@type_check_err("E2017", location, concat(concat("constructor record missing required field ", required_fields.head), ""), "sect4");
+            true -> validate_required_constructor_fields(required_fields.tail, provided_fields, location)
         }
     }
 }
 
-fn validate_no_extra_constructor_fields(required: ConstructorFieldList, provided: ConstructorFieldList, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    case provided.is_nil of {
+fn validate_no_extra_constructor_fields(required_fields: List[string, mem(normal)], provided_fields: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    case provided_fields.is_nil of {
         true -> type_checker_core@type_check_ok();
-        false -> case constructor_field_list_contains(required, provided.head) of {
-            false -> type_checker_core@type_check_err("E2017", location, concat(concat("constructor record has unexpected field ", provided.head), ""), "sect4");
-            true -> validate_no_extra_constructor_fields(required, provided.tail, location)
+        false -> case constructor_field_list_contains(required_fields, provided_fields.head) of {
+            false -> type_checker_core@type_check_err("E2017", location, concat(concat("constructor record has unexpected field ", provided_fields.head), ""), "sect4");
+            true -> validate_no_extra_constructor_fields(required_fields, provided_fields.tail, location)
         }
     }
 }
 
 fn validate_constructor_record_field_names(bind_type: string, record_expr: Expr, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    required: ConstructorFieldList <- required_constructor_fields(bind_type);
-    case required.is_nil of {
+    required_fields: List[string, mem(normal)] <- required_constructor_fields(bind_type);
+    case required_fields.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> {
-            provided: ConstructorFieldList <- record_literal_field_names(record_expr, empty_constructor_field_list());
-            missing_ok: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- validate_required_constructor_fields(required, provided, location);
+            provided_fields: List[string, mem(normal)] <- record_literal_field_names(record_expr, empty_constructor_field_list());
+            missing_ok: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- validate_required_constructor_fields(required_fields, provided_fields, location);
             case missing_ok.is_ok of {
                 false -> missing_ok;
-                true -> validate_no_extra_constructor_fields(required, provided, location)
+                true -> validate_no_extra_constructor_fields(required_fields, provided_fields, location)
             }
         }
     }
@@ -1732,14 +1737,14 @@ fn constructor_orientation_atom_lexeme(module_name: string) -> string {
     }
 }
 
-fn constructor_field_list_length(lst: ConstructorFieldList) -> int64 {
+fn constructor_field_list_length(lst: List[string, mem(normal)]) -> int64 {
     case lst.is_nil of {
         true -> 0;
         false -> 1 + constructor_field_list_length(lst.tail)
     }
 }
 
-fn constructor_field_at_index(lst: ConstructorFieldList, idx: int64) -> string {
+fn constructor_field_at_index(lst: List[string, mem(normal)], idx: int64) -> string {
     case lst.is_nil of {
         true -> "";
         false -> case idx == 0 of {
@@ -1749,7 +1754,7 @@ fn constructor_field_at_index(lst: ConstructorFieldList, idx: int64) -> string {
     }
 }
 
-fn required_constructor_fields_for_module(module_name: string) -> ConstructorFieldList {
+fn required_constructor_fields_for_module(module_name: string) -> List[string, mem(normal)] {
     case module_name of {
         "wbt_set" -> cons_constructor_field("compare_item", empty_constructor_field_list());
         "StubWbtSet" -> cons_constructor_field("compare_item", empty_constructor_field_list());
@@ -1774,23 +1779,23 @@ fn required_constructor_fields_for_module(module_name: string) -> ConstructorFie
 }
 
 fn constructor_ordering_field_count(bind_type: string) -> int64 {
-    required: ConstructorFieldList <- required_constructor_fields(bind_type);
-    constructor_field_list_length(required)
+    required_fields: List[string, mem(normal)] <- required_constructor_fields(bind_type);
+    constructor_field_list_length(required_fields)
 }
 
 fn constructor_ordering_field_at(bind_type: string, idx: int64) -> string {
-    required: ConstructorFieldList <- required_constructor_fields(bind_type);
-    constructor_field_at_index(required, idx)
+    required_fields: List[string, mem(normal)] <- required_constructor_fields(bind_type);
+    constructor_field_at_index(required_fields, idx)
 }
 
 fn constructor_ordering_field_count_for_module(module_name: string) -> int64 {
-    required: ConstructorFieldList <- required_constructor_fields_for_module(module_name);
-    constructor_field_list_length(required)
+    required_fields: List[string, mem(normal)] <- required_constructor_fields_for_module(module_name);
+    constructor_field_list_length(required_fields)
 }
 
 fn constructor_ordering_field_at_for_module(module_name: string, idx: int64) -> string {
-    required: ConstructorFieldList <- required_constructor_fields_for_module(module_name);
-    constructor_field_at_index(required, idx)
+    required_fields: List[string, mem(normal)] <- required_constructor_fields_for_module(module_name);
+    constructor_field_at_index(required_fields, idx)
 }
 
 fn bind_type_has_collection_runtime_fields(bind_type: string) -> bool {

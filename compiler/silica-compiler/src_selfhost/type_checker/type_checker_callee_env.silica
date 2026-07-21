@@ -3,7 +3,7 @@
    Copyright 2026 Lee Scott Barney
 
    Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
+   you may not USE this file except in compliance with the License.
    You may obtain a copy of the License at
 
        http://www.apache.org/licenses/LICENSE-2.0
@@ -29,26 +29,25 @@ export cons_export_mark/3;
 export accum_exports_local_duplicates/3;
 export add_all_declarations_with_world/4;
 
-struct ModuleExportMark {
-    export_key: string,
-    from_module: string
+// { export_key: string, from_module: string } list is List[{ export_key, from_module }, mem(normal)] (spec §3.4.2).
+
+fn empty_export_marks() -> List[{ export_key: string, from_module: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ export_key: string, from_module: string }, mem(normal)] <- empty[{ export_key: string, from_module: string }, mem(normal)]()
+    produces
+        pure result
+    end
 }
 
-struct ListModuleExportMark {
-    is_nil: bool,
-    head: ModuleExportMark,
-    tail: ListModuleExportMark
+
+fn cons_export_mark(key: string, mod: string, rest: List[{ export_key: string, from_module: string }, mem(normal)]) -> List[{ export_key: string, from_module: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ export_key: string, from_module: string }, mem(normal)] <- prepend[{ export_key: string, from_module: string }, mem(normal)]({ export_key: key, from_module: mod }, rest)
+    produces
+        pure result
+    end
 }
 
-fn empty_export_marks() -> ListModuleExportMark {
-    dummy: ModuleExportMark <- ModuleExportMark { export_key: "", from_module: "" };
-    nil_m: ListModuleExportMark <- ListModuleExportMark { is_nil: true, head: dummy, tail: nil_m };
-    nil_m
-}
-
-fn cons_export_mark(key: string, mod: string, rest: ListModuleExportMark) -> ListModuleExportMark {
-    ListModuleExportMark { is_nil: false, head: ModuleExportMark { export_key: key, from_module: mod }, tail: rest }
-}
 
 fn list_param_length(ps: ListParam) -> int64 {
     case ps.is_nil of {
@@ -120,7 +119,7 @@ fn find_function_decl_by_name_arity(decls: ListDeclaration, fn_name: string, ari
     }
 }
 
-fn find_module_for_export_key(marks: ListModuleExportMark, key: string) -> string {
+fn find_module_for_export_key(marks: List[{ export_key: string, from_module: string }, mem(normal)], key: string) -> string {
     case marks.is_nil of {
         true -> "";
         false -> case marks.head.export_key == key of {
@@ -130,7 +129,7 @@ fn find_module_for_export_key(marks: ListModuleExportMark, key: string) -> strin
     }
 }
 
-fn merge_export_items_cross_module(items: ListParam, mod: string, marks: ListModuleExportMark, err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> ({ is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, ListModuleExportMark) {
+fn merge_export_items_cross_module(items: ListParam, mod: string, marks: List[{ export_key: string, from_module: string }, mem(normal)], err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> ({ is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, List[{ export_key: string, from_module: string }, mem(normal)]) {
     case items.is_nil of {
         true -> (type_checker_core@type_check_ok(), marks);
         false -> {
@@ -147,12 +146,12 @@ fn merge_export_items_cross_module(items: ListParam, mod: string, marks: ListMod
     }
 }
 
-fn accum_exports_cross_module(decls: ListDeclaration, mod: string, marks: ListModuleExportMark, err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> ({ is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, ListModuleExportMark) {
+fn accum_exports_cross_module(decls: ListDeclaration, mod: string, marks: List[{ export_key: string, from_module: string }, mem(normal)], err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> ({ is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, List[{ export_key: string, from_module: string }, mem(normal)]) {
     case decls.is_nil of {
         true -> (type_checker_core@type_check_ok(), marks);
         false -> case decls.head.tag == 3 of {
             true -> {
-                (r1: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, m1: ListModuleExportMark) <- merge_export_items_cross_module(decls.head.parameters, mod, marks, err_loc);
+                (r1: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, m1: List[{ export_key: string, from_module: string }, mem(normal)]) <- merge_export_items_cross_module(decls.head.parameters, mod, marks, err_loc);
                 case r1.is_ok of {
                     true -> accum_exports_cross_module(decls.tail, mod, m1, err_loc);
                     false -> (r1, m1)
@@ -163,7 +162,7 @@ fn accum_exports_cross_module(decls: ListDeclaration, mod: string, marks: ListMo
     }
 }
 
-fn check_use_conflicts_ordered(mod_names: ListParam, world: ListNamedProgram, marks: ListModuleExportMark, err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+fn check_use_conflicts_ordered(mod_names: ListParam, world: ListNamedProgram, marks: List[{ export_key: string, from_module: string }, mem(normal)], err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     case mod_names.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> {
@@ -172,7 +171,7 @@ fn check_use_conflicts_ordered(mod_names: ListParam, world: ListNamedProgram, ma
             case found of {
                 false -> type_checker_core@type_check_err("E4002", err_loc, concat(concat("unknown module in use: ", m), " (spec 19.3)"), "sect19.3");
                 true -> {
-                    (r2: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, m2: ListModuleExportMark) <- accum_exports_cross_module(prog.declarations, m, marks, err_loc);
+                    (r2: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, m2: List[{ export_key: string, from_module: string }, mem(normal)]) <- accum_exports_cross_module(prog.declarations, m, marks, err_loc);
                     case r2.is_ok of {
                         true -> check_use_conflicts_ordered(mod_names.tail, world, m2, err_loc);
                         false -> r2
@@ -183,7 +182,7 @@ fn check_use_conflicts_ordered(mod_names: ListParam, world: ListNamedProgram, ma
     }
 }
 
-fn mark_has_export_key(marks: ListModuleExportMark, key: string) -> bool {
+fn mark_has_export_key(marks: List[{ export_key: string, from_module: string }, mem(normal)], key: string) -> bool {
     case marks.is_nil of {
         true -> false;
         false -> case marks.head.export_key == key of {
@@ -193,7 +192,7 @@ fn mark_has_export_key(marks: ListModuleExportMark, key: string) -> bool {
     }
 }
 
-fn merge_export_items_duplicate_local(items: ListParam, marks: ListModuleExportMark, err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> ({ is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, ListModuleExportMark) {
+fn merge_export_items_duplicate_local(items: ListParam, marks: List[{ export_key: string, from_module: string }, mem(normal)], err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> ({ is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, List[{ export_key: string, from_module: string }, mem(normal)]) {
     case items.is_nil of {
         true -> (type_checker_core@type_check_ok(), marks);
         false -> {
@@ -206,12 +205,12 @@ fn merge_export_items_duplicate_local(items: ListParam, marks: ListModuleExportM
     }
 }
 
-fn accum_exports_local_duplicates(decls: ListDeclaration, marks: ListModuleExportMark, err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> ({ is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, ListModuleExportMark) {
+fn accum_exports_local_duplicates(decls: ListDeclaration, marks: List[{ export_key: string, from_module: string }, mem(normal)], err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> ({ is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, List[{ export_key: string, from_module: string }, mem(normal)]) {
     case decls.is_nil of {
         true -> (type_checker_core@type_check_ok(), marks);
         false -> case decls.head.tag == 3 of {
             true -> {
-                (r1: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, m1: ListModuleExportMark) <- merge_export_items_duplicate_local(decls.head.parameters, marks, err_loc);
+                (r1: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, m1: List[{ export_key: string, from_module: string }, mem(normal)]) <- merge_export_items_duplicate_local(decls.head.parameters, marks, err_loc);
                 case r1.is_ok of {
                     true -> accum_exports_local_duplicates(decls.tail, m1, err_loc);
                     false -> (r1, m1)

@@ -3,7 +3,7 @@
    Copyright 2026 Lee Scott Barney
 
    Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
+   you may not USE this file except in compliance with the License.
    You may obtain a copy of the License at
 
        http://www.apache.org/licenses/LICENSE-2.0
@@ -830,42 +830,6 @@ fn has_named_struct_construction(slots: ListTokenSlot) -> (bool, { file: string,
     has_named_struct_construction_walk(slots, false)
 }
 
-// E1063: `-> name { field: … }` — named construction after `->` (case-arm RHS).
-// Does not reject `-> AccType { body… }` / `-> ParseResult { x: T <- … }`: those are return type + function body.
-fn has_arrow_identifier_before_brace(slots: ListTokenSlot) -> (bool, { file: string, line: int64, column: int64, offset: int64 }, string) {
-    kinds: TokenKinds <- lexer_token_kind@token_kinds();
-    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
-    case trimmed.is_nil of {
-        true -> (false, parser_ast@zero_location(), "");
-        false -> case trimmed.head.token.kind == kinds.right_arrow or trimmed.head.token.lexeme == "->" of {
-            true -> {
-                after_arrow: ListTokenSlot <- skip_leading_whitespace_slots(trimmed.tail);
-                case after_arrow.is_nil of {
-                    true -> (false, parser_ast@zero_location(), "");
-                    false -> {
-                        (hit: bool, loc: { file: string, line: int64, column: int64, offset: int64 }, name: string) <- slots_start_named_struct_construction(after_arrow);
-                        case hit of {
-                            true -> {
-                                after_name: ListTokenSlot <- skip_leading_whitespace_slots(after_arrow.tail);
-                                after_lbrace: ListTokenSlot <- skip_leading_whitespace_slots(after_name.tail);
-                                case after_lbrace.is_nil of {
-                                    true -> has_arrow_identifier_before_brace(trimmed.tail);
-                                    false -> case has_bind_arrow_before_statement_boundary(after_lbrace.tail, 0, 0) of {
-                                        true -> has_arrow_identifier_before_brace(trimmed.tail);
-                                        false -> (true, loc, name)
-                                    }
-                                }
-                            };
-                            false -> has_arrow_identifier_before_brace(trimmed.tail)
-                        }
-                    }
-                }
-            };
-            false -> has_arrow_identifier_before_brace(trimmed.tail)
-        }
-    }
-}
-
 // `-> List {` is incomplete: List requires type arguments `List[T, mem(S)]` before the body `{`.
 fn has_incomplete_list_return_type(slots: ListTokenSlot) -> (bool, { file: string, line: int64, column: int64, offset: int64 }) {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
@@ -1352,10 +1316,6 @@ fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
                                                                                     case has_named_ctor of {
                                                                                         true -> parser_core@parse_err("E1061", named_ctor_loc, concat(concat("named struct construction '", named_ctor_name), "' is not allowed; use an anonymous record '{ field: … }' instead"), "sect3.4.2");
                                                                                         false -> {
-                                                                                            (has_arrow_ident: bool, arrow_ident_loc: { file: string, line: int64, column: int64, offset: int64 }, arrow_ident_name: string) <- has_arrow_identifier_before_brace(slots);
-                                                                                            case has_arrow_ident of {
-                                                                                                true -> parser_core@parse_err("E1063", arrow_ident_loc, concat(concat("named construction '", arrow_ident_name), "' after '->' is not allowed; use an anonymous record '-> { field: … }' instead"), "sect3");
-                                                                                                false -> {
                                                                                             (has_incomplete_list: bool, incomplete_list_loc: { file: string, line: int64, column: int64, offset: int64 }) <- has_incomplete_list_return_type(slots);
                                                                                             case has_incomplete_list of {
                                                                                                 true -> parser_core@parse_err("E1062", incomplete_list_loc, "incomplete List return type: write '-> List[T, mem(S)]' with type arguments before the function body '{'", "sect3");
@@ -1430,8 +1390,6 @@ fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
                                                                                                             }
                                                                                                         }
                                                                                                     }
-                                                                                                }
-                                                                                            }
                                                                                                 }
                                                                                             }
                                                                                         }

@@ -3,7 +3,7 @@
    Copyright 2026 Lee Scott Barney
 
    Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
+   you may not USE this file except in compliance with the License.
    You may obtain a copy of the License at
 
        http://www.apache.org/licenses/LICENSE-2.0
@@ -56,7 +56,7 @@ fn build_function_type(decl: Declaration) -> string {
 // Add function name with full function type (params -> return) for call resolution. Used for first pass (all decls).
 fn add_function(decl: Declaration, context: TypeContext) -> TypeContext {
     func_type: string <- build_function_type(decl);
-    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decl.name, func_type, decl.declared_effects, "");
+    new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(context.env, decl.name, func_type, decl.declared_effects, "");
     type_checker_core@type_context_with_env(context, new_env)
 }
 
@@ -64,8 +64,8 @@ fn add_params_to_context_loop(params: ListParam, context: TypeContext) -> TypeCo
     case params.is_nil of {
         true -> context;
         false -> {
-            p: Param <- params.head;
-            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, p.name, p.type_name, parser_ast@empty_effect_name_list(), "");
+            p: { name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- params.head;
+            new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(context.env, p.name, p.type_name, parser_ast@empty_effect_name_list(), "");
             add_params_to_context_loop(params.tail, type_checker_core@type_context_with_env(context, new_env))
         }
     }
@@ -188,24 +188,24 @@ fn validate_params_loop(params: ListParam) -> TypeCheckResult proc[DeviceIO] {
     case params.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> {
-            rec_result: TypeCheckResult <- validate_record_type_string(params.head.type_name, params.head.location);
+            rec_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- validate_record_type_string(params.head.type_name, params.head.location);
             case rec_result.is_ok of {
                 false -> rec_result;
                 true -> {
-                    list_result: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(params.head.type_name, params.head.location);
+                    list_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_lists@validate_list_type_declaration(params.head.type_name, params.head.location);
                     case list_result.is_ok of {
                         false -> list_result;
                         true -> {
-                            col_result: TypeCheckResult <- type_checker_collections@validate_collection_type_declaration(params.head.type_name, params.head.location);
+                            col_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_collections@validate_collection_type_declaration(params.head.type_name, params.head.location);
                             case col_result.is_ok of {
                                 false -> col_result;
                                 true -> {
-                                    result_result: TypeCheckResult <- type_checker_collections@validate_collection_result_type_declaration(params.head.type_name, params.head.location);
+                                    result_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_collections@validate_collection_result_type_declaration(params.head.type_name, params.head.location);
                                     case result_result.is_ok of {
                                         false -> result_result;
                                         true -> case type_checker_memory_regions@is_memory_region_type(params.head.type_name) of {
                                             true -> {
-                                                mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(params.head.type_name, params.head.location);
+                                                mem_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_memory_regions@validate_memory_region_type(params.head.type_name, params.head.location);
                                                 case mem_result.is_ok of {
                                                     false -> mem_result;
                                                     true -> validate_params_loop(params.tail)
@@ -231,7 +231,7 @@ fn validate_params_loop(params: ListParam) -> TypeCheckResult proc[DeviceIO] {
 // Validate memory region return types (ref, region, buf) before checking body.
 // Validate param types (memory region params) before checking body.
 fn check_body(decl: Declaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    params_result: TypeCheckResult <- validate_params_loop(decl.parameters);
+    params_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- validate_params_loop(decl.parameters);
     case params_result.is_ok of {
         false -> params_result;
         true -> check_body_after_params(decl, context, world)
@@ -239,32 +239,32 @@ fn check_body(decl: Declaration, context: TypeContext, world: ListNamedProgram) 
 }
 
 fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    context_with_params: TypeContext <- add_params_to_context(decl, context);
-    extended_env: ListSymbolEntry <- case type_checker_expressions_actors@is_actor_behavior_declaration(decl) of {
+    context_with_params: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- add_params_to_context(decl, context);
+    extended_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- case type_checker_expressions_actors@is_actor_behavior_declaration(decl) of {
         true -> type_checker_core@add_symbol(context_with_params.env, type_checker_expressions_actors@tc_in_behavior_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
         false -> case decl.name == "main" of {
             true -> type_checker_core@add_symbol(context_with_params.env, type_checker_expressions_actors@tc_in_main_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
             false -> context_with_params.env
         }
     };
-    body_ctx: TypeContext <- type_checker_core@type_context_with_env(context_with_params, extended_env);
-    ret_rec: TypeCheckResult <- validate_record_type_string(decl.return_type_name, decl.return_type_location);
+    body_ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_core@type_context_with_env(context_with_params, extended_env);
+    ret_rec: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- validate_record_type_string(decl.return_type_name, decl.return_type_location);
     case ret_rec.is_ok of {
         false -> ret_rec;
         true -> {
-            ret_or: TypeCheckResult <- validate_or_return_type(decl.return_type_name, decl.return_type_location);
+            ret_or: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- validate_or_return_type(decl.return_type_name, decl.return_type_location);
             case ret_or.is_ok of {
                 false -> ret_or;
                 true -> {
-                    ret_list: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(decl.return_type_name, decl.return_type_location);
+                    ret_list: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_lists@validate_list_type_declaration(decl.return_type_name, decl.return_type_location);
                     case ret_list.is_ok of {
                         false -> ret_list;
                         true -> {
-                            ret_col: TypeCheckResult <- type_checker_collections@validate_collection_type_declaration(decl.return_type_name, decl.return_type_location);
+                            ret_col: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_collections@validate_collection_type_declaration(decl.return_type_name, decl.return_type_location);
                             case ret_col.is_ok of {
                                 false -> ret_col;
                                 true -> {
-                                    ret_result: TypeCheckResult <- type_checker_collections@validate_collection_result_type_declaration(decl.return_type_name, decl.return_type_location);
+                                    ret_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_collections@validate_collection_result_type_declaration(decl.return_type_name, decl.return_type_location);
                                     case ret_result.is_ok of {
                                         false -> ret_result;
                                         true -> case decl.return_type_name == "unit" of {
@@ -272,11 +272,11 @@ fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListN
                                             false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
                                                 true -> check_body_memory_region_return(decl, body_ctx, world);
                                                 false -> {
-                                                    body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, body_ctx, world);
+                                                    body_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, body_ctx, world);
                                                     case body_result.is_ok of {
                                                         false -> body_result;
                                                         true -> {
-                                                            rec_result: TypeCheckResult <- type_checker_recursion@recursion_analyze_body(decl.body, decl.name);
+                                                            rec_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_recursion@recursion_analyze_body(decl.body, decl.name);
                                                             case rec_result.is_ok of {
                                                                 false -> rec_result;
                                                                 true -> type_checker_expressions_actors@check_behavior_no_self_recursion(decl)
@@ -298,15 +298,15 @@ fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListN
 }
 
 fn check_body_memory_region_return(decl: Declaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(decl.return_type_name, decl.return_type_location);
+    mem_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_memory_regions@validate_memory_region_type(decl.return_type_name, decl.return_type_location);
     case mem_result.is_ok of {
         false -> mem_result;
         true -> {
-            body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context, world);
+            body_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context, world);
             case body_result.is_ok of {
                 false -> body_result;
                 true -> {
-                    rec_result: TypeCheckResult <- type_checker_recursion@recursion_analyze_body(decl.body, decl.name);
+                    rec_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_recursion@recursion_analyze_body(decl.body, decl.name);
                     case rec_result.is_ok of {
                         false -> rec_result;
                         true -> type_checker_expressions_actors@check_behavior_no_self_recursion(decl)
