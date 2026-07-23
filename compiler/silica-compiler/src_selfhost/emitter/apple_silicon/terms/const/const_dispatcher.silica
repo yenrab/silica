@@ -15,10 +15,9 @@
    limitations under the License.
 -}
 
-// Const dispatcher: case term.type_name -> type-specific emit
+// Const dispatcher: case sir_term_root_node(term).type_name -> type-specific emit
 // String is handled in term_emitter (emit_string_const) - not dispatched here
 
-use sir_ast;
 use const_int64;
 use const_uint64;
 use const_float64;
@@ -32,6 +31,35 @@ use module_linkage;
 use var;
 
 export emit_const/7;
+
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
 
 fn first_at_in_const_label(s: string, i: int64) -> int64 {
     case i >= len(s) of {
@@ -51,8 +79,8 @@ fn fn_ptr_link_label(label: string) -> string {
     }
 }
 
-fn emit_const(term: SIRTerm, dest: string, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, outer_reg: string) -> string {
-    case term.type_name of {
+fn emit_const(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, outer_reg: string) -> string {
+    case sir_term_root_node(term).type_name of {
         "int64" -> case len(dest) > 0 and substring(dest, 0, 1) == "S" of {
             true -> const_float32@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
             false -> case len(dest) > 0 and substring(dest, 0, 1) == "D" of {
@@ -69,11 +97,11 @@ fn emit_const(term: SIRTerm, dest: string, table: { is_empty: boolean, index_map
         "atom" -> const_atom@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
         "unit" -> const_unit@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
         "fn_ptr" -> {
-            param_reg: string <- var@find_sp_binding_bare_or_percent_param(outer_reg, term.value);
+            param_reg: string <- var@find_sp_binding_bare_or_percent_param(outer_reg, sir_term_root_node(term).value);
             case len(param_reg) > 0 and var@binding_is_physical_int_reg(param_reg) of {
                 true -> var@emit_var_reg(term, dest, param_reg);
                 false -> {
-                    label: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.value);
+                    label: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, sir_term_root_node(term).value);
                     // ADRP/ADD only accept X/W general-purpose regs, never D/S — load address in X8 then copy to dest.
                     addr_reg: string <- case len(dest) > 0 and substring(dest, 0, 1) == "X" of {
                         true -> dest;

@@ -82,7 +82,7 @@ link-fail:
 		ln -s "$(THIS_DIR)error_app_sidecar_metadata/dangerous_exposure_source/bad_link_only_symbol.meta" "$$tmpdir/dangerous_exposure_source/bad_link_only_symbol.meta"; \
 		ln -s "$(THIS_DIR)$$case.silica" "$$tmpdir/$$base.silica"; \
 		printf "$$base.silica\n" > "$$tmpdir/silica.config"; \
-		( cd "$$tmpdir" && "$(SILICA_COMPILER)" ) > "$$tmpdir/compile.out" 2>&1 || { \
+		( cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); } ) > "$$tmpdir/compile.out" 2>&1 || { \
 			echo "❌❌ $(MSG_PREFIX)$$case: expected compile success"; cat "$$tmpdir/compile.out"; rm -rf "$$tmpdir"; failed=1; continue; \
 		}; \
 		if [ ! -f "$$tmpdir/silica.link" ]; then \
@@ -142,7 +142,7 @@ archive-missing:
 	ln -s "$(THIS_DIR)error_app_sidecar_metadata/dangerous_exposure_source/bad_missing_archive.meta" "$$tmpdir/dangerous_exposure_source/bad_missing_archive.meta"; \
 	ln -s "$(THIS_DIR)$$case.silica" "$$tmpdir/$$base.silica"; \
 	printf "$$base.silica\n" > "$$tmpdir/silica.config"; \
-	(cd "$$tmpdir" && "$(SILICA_COMPILER)") > "$$cur" 2>&1 || true; \
+	(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$$cur" 2>&1 || true; \
 	rm -rf "$$tmpdir"; \
 	if [ ! -f "$$golden" ]; then \
 		echo "❌❌ $(MSG_PREFIX)$$case: missing .golden_fail"; ko=$$((ko + 1)); failed=1; \
@@ -197,7 +197,7 @@ compile-fail-goldens:
 				printf "$$base.silica\n" > "$$tmpdir/silica.config"; \
 				;; \
 		esac; \
-		(cd "$$tmpdir" && "$(SILICA_COMPILER)") > "$$cur" 2>&1 || true; \
+		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$$cur" 2>&1 || true; \
 		rm -rf "$$tmpdir"; \
 		if [ ! -f "$$golden" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$case: missing .golden_fail"; \

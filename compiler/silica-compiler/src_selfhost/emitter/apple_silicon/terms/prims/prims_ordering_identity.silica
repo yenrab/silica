@@ -17,11 +17,39 @@
 
 // Ordering identity prim emission (Layer 1 §7.2).
 
-use sir_ast;
 
 export is_ordering_identity_prim/1;
 export emit_prim_op/2;
 export module_uses_ordering_identity/1;
+
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
 
 fn is_ordering_identity_prim(name: string) -> bool {
     name == "ordering_identity_fresh_env" or name == "ordering_identity_make" or name == "ordering_identity_same" or name == "ordering_identity_bundle_make"
@@ -57,27 +85,27 @@ fn emit_ordering_identity_bundle_make(dest: string) -> string {
     concat(concat(concat(mov_fn, mov_orient), bl_make), mov_dest)
 }
 
-fn term_has_ordering_identity_prim(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_ordering_identity_prim(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            6 -> case is_ordering_identity_prim(term.name) of {
+        false -> case sir_term_root_node(term).kind of {
+            6 -> case is_ordering_identity_prim(sir_term_root_node(term).name) of {
                 true -> true;
-                false -> case term_has_ordering_identity_prim(term.inner) of {
+                false -> case term_has_ordering_identity_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
                     true -> true;
-                    false -> term_has_ordering_identity_prim(term.right_expr)
+                    false -> term_has_ordering_identity_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
                 }
             };
-            2 -> case term_has_ordering_identity_prim(term.inner) of {
+            2 -> case term_has_ordering_identity_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
                 true -> true;
-                false -> term_has_ordering_identity_prim(term.right_expr)
+                false -> term_has_ordering_identity_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
             };
             _: int64 -> false
         }
     }
 }
 
-fn ordering_identity_in_functions(fns: ListSIRFunction) -> bool {
+fn ordering_identity_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_ordering_identity_prim(fns.head.body) of {
@@ -87,16 +115,16 @@ fn ordering_identity_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn module_uses_ordering_identity(sir_module: SIRModule) -> bool {
+fn module_uses_ordering_identity(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     ordering_identity_in_functions(sir_module.functions)
 }
 
-fn emit_prim_op(term: SIRTerm, dest: string) -> string {
-    case term.name of {
+fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
+    case sir_term_root_node(term).name of {
         "ordering_identity_fresh_env" -> emit_ordering_identity_fresh_env(dest);
         "ordering_identity_make" -> emit_ordering_identity_make(dest);
         "ordering_identity_same" -> emit_ordering_identity_same(dest);
         "ordering_identity_bundle_make" -> emit_ordering_identity_bundle_make(dest);
-        _: string -> concat(concat("    ; unsupported ordering identity prim: ", term.name), "")
+        _: string -> concat(concat("    ; unsupported ordering identity prim: ", sir_term_root_node(term).name), "")
     }
 }

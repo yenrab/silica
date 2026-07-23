@@ -15,10 +15,9 @@
    limitations under the License.
 -}
 
-// var term emission (SIRTerm kind 1)
+// var term emission ({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } kind 1)
 // sir_emitter_pattern_spec §7.4: var -> dest = a (or MOV dest, a if needed)
 
-use sir_ast;
 use atom_table;
 use string_parse;
 use prims_tuple;
@@ -51,6 +50,35 @@ export binding_is_physical_int_reg/1;
 export type_name_is_function/1;
 
 export find_pipe_from/2;
+
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
 
 fn find_pipe_from(s: string, i: int64) -> int64 {
     case i >= len(s) of {
@@ -338,11 +366,11 @@ fn reg_binding(bound_name: string, base_bound_reg: string) -> string {
     }
 }
 
-fn new_tp_binding(let_name: string, inner_term: SIRTerm, sp_adj: int64) -> string {
-    case inner_term.kind == 6 and inner_term.name == "tuple_proj" of {
+fn new_tp_binding(let_name: string, inner_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, sp_adj: int64) -> string {
+    case sir_term_root_node(inner_term).kind == 6 and sir_term_root_node(inner_term).name == "tuple_proj" of {
         true -> {
-            pix: int64 <- string_parse@string_to_int64(inner_term.right_expr.value);
-            byte_o: int64 <- prims_tuple@tuple_field_start_byte_offset(inner_term.inner.type_name, pix);
+            pix: int64 <- string_parse@string_to_int64(sir_term_root_node(sir_term_at(inner_term, sir_term_root_node(inner_term).right_expr)).value);
+            byte_o: int64 <- prims_tuple@tuple_field_start_byte_offset(sir_term_root_node(sir_term_at(inner_term, sir_term_root_node(inner_term).inner)).type_name, pix);
             concat("|", concat(let_name, concat("=", sp_offset_for_byte_adj(byte_o, sp_adj))))
         };
         false -> ""
@@ -351,7 +379,7 @@ fn new_tp_binding(let_name: string, inner_term: SIRTerm, sp_adj: int64) -> strin
 
 // rhs_reg: register where this let's RHS will be emitted (must match |let_name= in outer for downstream lookups).
 // Do not use the parent's bound_reg here — that incorrectly maps e.g. |%empty_list=X0 when the list lives in X1.
-fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer: string, let_name: string, inner_term: SIRTerm, sp_adj: int64, rhs_reg: string) -> string {
+fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer: string, let_name: string, inner_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, sp_adj: int64, rhs_reg: string) -> string {
     raw_base: string <- base_reg_of(base_bound_reg);
     base: string <- case len(raw_base) == 0 of {
         true -> base_reg_of(current_outer);
@@ -503,14 +531,14 @@ fn is_memory_ref(s: string) -> bool {
     find_str_at(s, "[", 0) >= 0
 }
 
-fn emit_var_with_base_reg(term: SIRTerm, dest: string, base: string, outer_reg: string) -> string {
+fn emit_var_with_base_reg(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, base: string, outer_reg: string) -> string {
     case len(base) > 0 of {
         true -> emit_var_reg_outer(term, dest, base, outer_reg);
         false -> emit_var_outer(term, dest, outer_reg)
     }
 }
 
-fn emit_var_with_sp_check(term: SIRTerm, dest: string, outer_reg: string) -> string {
+fn emit_var_with_sp_check(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, outer_reg: string) -> string {
     emit_var_with_sp_check_core(term, dest, outer_reg)
 }
 
@@ -527,21 +555,21 @@ fn spurious_non_gpr_binding_for_fn_param(reg: string, type_name: string) -> bool
     }
 }
 
-fn emit_var_with_sp_check_core(term: SIRTerm, dest: string, outer_reg: string) -> string {
+fn emit_var_with_sp_check_core(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, outer_reg: string) -> string {
     // Resolve |name= once: prefer last binding (prepend tail rebind appends |%v=X2 after stale |%v=X0).
-    sp_last: string <- find_last_sp_binding(outer_reg, term.name);
-    sp_first: string <- find_sp_binding(outer_reg, term.name);
+    sp_last: string <- find_last_sp_binding(outer_reg, sir_term_root_node(term).name);
+    sp_first: string <- find_sp_binding(outer_reg, sir_term_root_node(term).name);
     sp_fin: string <- case len(sp_last) > 0 of {
         true -> sp_last;
         false -> sp_first
     };
     sp_resolved: string <- case len(sp_fin) > 0 of {
         true -> sp_fin;
-        false -> find_sp_binding_bare_or_percent_param(outer_reg, bare_name_from_term(term.name))
+        false -> find_sp_binding_bare_or_percent_param(outer_reg, bare_name_from_term(sir_term_root_node(term).name))
     };
-    sp_effective: string <- case spurious_non_gpr_binding_for_fn_param(sp_resolved, term.type_name) of {
+    sp_effective: string <- case spurious_non_gpr_binding_for_fn_param(sp_resolved, sir_term_root_node(term).type_name) of {
         true -> {
-            pct: string <- find_sp_binding_bare_or_percent_param(outer_reg, bare_name_from_term(term.name));
+            pct: string <- find_sp_binding_bare_or_percent_param(outer_reg, bare_name_from_term(sir_term_root_node(term).name));
             case len(pct) > 0 of { true -> pct; false -> sp_resolved }
         };
         false -> sp_resolved
@@ -552,8 +580,8 @@ fn emit_var_with_sp_check_core(term: SIRTerm, dest: string, outer_reg: string) -
             false -> emit_var_reg_outer(term, dest, sp_effective, outer_reg)
         };
         false -> {
-            bare_fn: string <- bare_name_from_term(term.name);
-            case type_name_is_function(term.type_name) and bare_qualifies_as_fn_pointer_asm_symbol(bare_fn) of {
+            bare_fn: string <- bare_name_from_term(sir_term_root_node(term).name);
+            case type_name_is_function(sir_term_root_node(term).type_name) and bare_qualifies_as_fn_pointer_asm_symbol(bare_fn) of {
                 true -> {
                     pct: string <- find_sp_binding_percent_param(outer_reg, bare_fn);
                     base: string <- base_reg_of(outer_reg);
@@ -633,15 +661,15 @@ fn emit_fn_symbol_adrp_add(dest: string, bare: string) -> string {
 // AArch64 symbol (e.g. a free function like `worker`), emit ADRP/ADD so function-valued identifiers
 // in record/tuple literals (child_spec.start) materialize as the symbol address. Without this the
 // emitter fell through to `MOV X9, %worker` (invalid token).
-fn emit_var_outer(term: SIRTerm, dest: string, outer_reg: string) -> string {
-    bare: string <- bare_name_from_term(term.name);
+fn emit_var_outer(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, outer_reg: string) -> string {
+    bare: string <- bare_name_from_term(sir_term_root_node(term).name);
     case bare_qualifies_as_fn_pointer_asm_symbol(bare) of {
         true -> emit_fn_symbol_adrp_add(dest, linkage_asm_symbol_for_named_fn_ref(outer_reg, bare));
-        false -> concat(concat(concat("    MOV ", dest), ", "), term.name)
+        false -> concat(concat(concat("    MOV ", dest), ", "), sir_term_root_node(term).name)
     }
 }
 
-fn emit_var(term: SIRTerm, dest: string) -> string {
+fn emit_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
     emit_var_outer(term, dest, "")
 }
 
@@ -661,16 +689,16 @@ fn strip_mov_x2_x1_then_x1_x2(s: string) -> string {
 // Phase E (task e2b): if `reg` is actually a %-prefixed SIR name (e.g. `%worker`) rather than an AArch64
 // register, treat it as a function-symbol reference and emit ADRP/ADD so child_spec.start captures the
 // function address. Without this the emitter produced `MOV X9, %worker` which the assembler rejects.
-fn emit_var_reg_outer(term: SIRTerm, dest: string, reg: string, outer_reg: string) -> string {
-    bare_fn: string <- bare_name_from_term(term.name);
-    reg_effective: string <- case spurious_non_gpr_binding_for_fn_param(reg, term.type_name) of {
+fn emit_var_reg_outer(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, reg: string, outer_reg: string) -> string {
+    bare_fn: string <- bare_name_from_term(sir_term_root_node(term).name);
+    reg_effective: string <- case spurious_non_gpr_binding_for_fn_param(reg, sir_term_root_node(term).type_name) of {
         true -> {
             pct: string <- find_sp_binding_bare_or_percent_param(outer_reg, bare_fn);
             case len(pct) > 0 of { true -> pct; false -> reg }
         };
         false -> reg
     };
-    case type_name_is_function(term.type_name) and bare_qualifies_as_fn_pointer_asm_symbol(bare_fn) of {
+    case type_name_is_function(sir_term_root_node(term).type_name) and bare_qualifies_as_fn_pointer_asm_symbol(bare_fn) of {
         true -> case binding_is_physical_int_reg(reg_effective) of {
             true -> emit_var_reg_core(term, dest, reg_effective);
             false -> emit_fn_symbol_adrp_add(dest, linkage_asm_symbol_for_named_fn_ref(outer_reg, bare_fn));
@@ -688,11 +716,11 @@ fn emit_var_reg_outer(term: SIRTerm, dest: string, reg: string, outer_reg: strin
     }
 }
 
-fn emit_var_reg(term: SIRTerm, dest: string, reg: string) -> string {
+fn emit_var_reg(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, reg: string) -> string {
     emit_var_reg_outer(term, dest, reg, "")
 }
 
-fn emit_var_reg_core(term: SIRTerm, dest: string, reg: string) -> string {
+fn emit_var_reg_core(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, reg: string) -> string {
     case dest == reg of {
         true -> "";
         false -> {

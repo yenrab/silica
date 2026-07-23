@@ -18,11 +18,39 @@
 // float32 prim emission: add, sub, mul, div, lt, gt, le, ge, eq, ne
 // S registers, FADD/FSUB/FMUL/FDIV, FCMP+CSET for comparison
 
-use sir_ast;
 use arithmetic;
 use comparison;
 
 export emit_prim_op/2;
+
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
 
 fn dest_to_s_reg(dest: string) -> string {
     case dest of {
@@ -43,10 +71,10 @@ fn pred_bool_dest(dest: string) -> string {
     }
 }
 
-fn emit_prim_op(term: SIRTerm, dest: string) -> string {
+fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
     dest_reg: string <- dest_to_s_reg(dest);
     bdest: string <- pred_bool_dest(dest);
-    case term.name of {
+    case sir_term_root_node(term).name of {
         "neg" -> arithmetic@emit_fneg_s_op(dest_reg);
         "add" -> arithmetic@emit_fadd_s_op(dest_reg);
         "sub" -> arithmetic@emit_fsub_s_op(dest_reg);
@@ -61,6 +89,6 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "is_nan" -> concat("    FCMP S1, S1\n    CSET ", concat(bdest, ", VS"));
         "is_inf" -> concat("    FABS S16, S1\n    MOV W8, #0\n    MOVK W8, #0x7F80, LSL #16\n    FMOV S17, W8\n    FCMP S16, S17\n    CSET ", concat(bdest, ", EQ"));
         "is_finite" -> concat("    FABS S16, S1\n    MOV W8, #0\n    MOVK W8, #0x7F80, LSL #16\n    FMOV S17, W8\n    FCMP S16, S17\n    CSET ", concat(bdest, ", MI"));
-        _: string -> concat("    ; unsupported float32 prim: ", term.name)
+        _: string -> concat("    ; unsupported float32 prim: ", sir_term_root_node(term).name)
     }
 }

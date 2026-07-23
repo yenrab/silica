@@ -1,0 +1,491 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Compare/bitwise/logic compound prims (open-recursive via emit_child).
+// Separate unit for process reclaim (exit 75) between typecheck chunks.
+
+use prims;
+use term_sir_helpers;
+
+export emit_kind_compound_compare/4;
+
+fn emit_kind_compound_compare(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }, emit_child: fn({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, string, { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string) -> string {
+// Comparisons (lt, gt, le, ge, eq, nq) have result type "bool" but operands determine reg size
+                        is_cmp: bool <- term_sir_helpers@sir_term_root_node(term).type_name == "bool" and (term_sir_helpers@sir_term_root_node(term).name == "lt" or term_sir_helpers@sir_term_root_node(term).name == "gt" or term_sir_helpers@sir_term_root_node(term).name == "le" or term_sir_helpers@sir_term_root_node(term).name == "ge" or term_sir_helpers@sir_term_root_node(term).name == "eq" or term_sir_helpers@sir_term_root_node(term).name == "nq" or term_sir_helpers@sir_term_root_node(term).name == "is_nan" or term_sir_helpers@sir_term_root_node(term).name == "is_inf" or term_sir_helpers@sir_term_root_node(term).name == "is_finite");
+                        prim_type: string <- case is_cmp of { true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name; false -> term_sir_helpers@sir_term_root_node(term).type_name };
+                        is_float64: bool <- prim_type == "float64";
+                        is_float32: bool <- prim_type == "float32";
+                        is_float16: bool <- prim_type == "float16";
+                        is_narrow: bool <- prim_type == "int32" or prim_type == "int16" or prim_type == "int8" or prim_type == "uint32" or prim_type == "uint16" or prim_type == "uint8";
+                        is_string_prim: bool <- prim_type == "string" and term_sir_helpers@sir_term_root_node(term).name == "string_concat";
+                        reg_prefix: string <- case is_float64 of {
+                            true -> "D";
+                            false -> case is_float32 of {
+                                true -> "S";
+                                false -> case is_float16 of {
+                                    true -> "H";
+                                    false -> case is_narrow of {
+                                        true -> "W";
+                                        false -> "X"
+                                    }
+                                }
+                            }
+                        };
+                        left_reg: string <- case is_string_prim of { true -> "X0"; false -> case is_float64 or is_float32 or is_float16 of { true -> concat(reg_prefix, "1"); false -> concat(reg_prefix, "9") } };
+                        right_reg: string <- case is_string_prim of { true -> "X1"; false -> case is_float64 or is_float32 or is_float16 of { true -> concat(reg_prefix, "2"); false -> concat(reg_prefix, "10") } };
+                        is_unary_prim: bool <- term_sir_helpers@sir_term_root_node(term).name == "neg" or term_sir_helpers@sir_term_root_node(term).name == "bnot" or term_sir_helpers@sir_term_root_node(term).name == "is_nan" or term_sir_helpers@sir_term_root_node(term).name == "is_inf" or term_sir_helpers@sir_term_root_node(term).name == "is_finite";
+                        case is_unary_prim of {
+                            true -> {
+                                // Unary negate_* / prim neg: operand in left_reg only (right_expr is dummy)
+                                // Float neg must write back to left_reg (S1/D1/H1) so a following FCMP still sees the result in r1.
+                                arg_asm: string <- case bound.debug of {
+                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                };
+                                // Float FNEG is emitted as FNEG <dest>, <r1> (see arithmetic.emit_fneg_*): operand stays in r1 (S1/D1/H1).
+                                // Caller dest may be S0/D0 for print_float32/64; must not force dest=r1 or the helper reads the wrong reg.
+                                op_asm: string <- prims@emit_prim_op(term, dest);
+                                concat(concat(arg_asm, "\n"), op_asm)
+                            };
+                            false -> case bound.bound_name == "" of {
+                            true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 6 of {
+                                true -> {
+                                    // Both operands are prims: left prim loads into reg 0, right prim may use reg 0 (calls use X0 for args/result).
+                                    // Must save left to stack before right eval; right can overwrite temp_reg (X0/D0/S0) via calls or nested prims.
+                                    // Arithmetic expects left in r1, right in r2. For non-string: put right in right_reg, restore left to left_reg.
+                                    // String concat expects X0=left, X1=right; keep original layout for is_string_prim.
+                                    // Important: avoid using X0 as a scratch reg for integer prims because tuple_proj may use X0
+                                    // as the tuple base pointer (function param), and clobbering it breaks subsequent projections.
+                                    temp_reg: string <- case is_string_prim or is_float64 or is_float32 or is_float16 of {
+                                        true -> concat(reg_prefix, "0");
+                                        false -> left_reg
+                                    };
+                                    left_asm: string <- case bound.debug of {
+                                        true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), temp_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                        false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), temp_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                    };
+                                    save_left: string <- case is_string_prim of {
+                                        true -> "    STR X0, [SP, #-16]!\n";
+                                        false -> case is_float64 or is_float32 or is_float16 of {
+                                            true -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n");
+                                            false -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n")
+                                        }
+                                    };
+                                    right_asm: string <- case is_string_prim of {
+                                        true -> case bound.debug of {
+                                            true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                            false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                        };
+                                        false -> case bound.debug of {
+                                            true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                            false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                        }
+                                    };
+                                    restore_left: string <- case is_string_prim of {
+                                        true -> "    LDR X0, [SP], #16\n";
+                                        false -> case is_float64 or is_float32 or is_float16 of {
+                                            true -> concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                            false -> concat(concat("    LDR ", left_reg), ", [SP], #16\n")
+                                        }
+                                    };
+                                    op_asm: string <- prims@emit_prim_op(term, dest);
+                                    part1: string <- concat(left_asm, "\n");
+                                    part2: string <- concat(part1, save_left);
+                                    part3: string <- concat(part2, right_asm);
+                                    part4: string <- concat(part3, "\n");
+                                    part5: string <- concat(part4, restore_left);
+                                    concat(part5, op_asm)
+                                };
+                                false -> {
+                                    left_is_prim: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6;
+                                    right_is_prim: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 6;
+                                                                        args_pair_first: { first: string, second: string } <- case left_is_prim of {
+                                        true -> {
+                                            // Left is prim, right is var. Arithmetic expects left in r1, right in r2. For non-string: right to right_reg, left to left_reg (save/restore).
+                                            right_asm: string <- case is_string_prim of {
+                                                true -> case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                };
+                                                false -> case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                }
+                                            };
+                                            save_right: string <- concat(concat(concat("    STR ", right_reg), ", [SP, #-16]!\n"), "");
+                                            left_asm: string <- case is_string_prim of {
+                                                true -> case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                };
+                                                false -> case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                }
+                                            };
+                                            restore_right: string <- concat(concat(concat("    LDR ", right_reg), ", [SP], #16\n"), "");
+                                            combined: string <- concat(concat(concat(concat(concat(concat(right_asm, "\n"), save_right), left_asm), "\n"), restore_right), "");
+                                            { first: combined, second: "" }
+                                        };
+                                        false -> case right_is_prim of {
+                                            true -> {
+                                                // Left is var/call, right is prim. Arithmetic expects left in r1, right in r2.
+                                                // Save left to stack; right to right_reg; restore left to left_reg.
+                                                temp_reg: string <- concat(reg_prefix, "0");
+                                                left_asm: string <- case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), temp_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), temp_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                };
+                                                save_left: string <- case is_string_prim of {
+                                                    true -> "    STR X0, [SP, #-16]!\n";
+                                                    false -> case is_float64 or is_float32 or is_float16 of {
+                                                        true -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n");
+                                                        false -> "    STR X0, [SP, #-16]!\n"
+                                                    }
+                                                };
+                                                right_asm: string <- case is_string_prim of {
+                                                    true -> case bound.debug of {
+                                                        true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                        false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                    };
+                                                    false -> case bound.debug of {
+                                                        true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                        false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                    }
+                                                };
+                                                restore_left: string <- case is_string_prim of {
+                                                    true -> "    LDR X0, [SP], #16\n";
+                                                    false -> case is_float64 or is_float32 or is_float16 of {
+                                                        true -> concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                                        false -> concat(concat("    LDR ", left_reg), ", [SP], #16\n")
+                                                    }
+                                                };
+                                                combined: string <- concat(concat(concat(concat(concat(concat(left_asm, "\n"), save_left), right_asm), "\n"), restore_left), "");
+                                                { first: combined, second: "" }
+                                            };
+                                            false -> case (term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 0 or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1) and (term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 0 or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 1) of {
+                                                true -> {
+                                                    // Both operands are simple (var or const). Calls (kind 4) overwrite X9/X10; must use save/restore.
+                                                    // Arithmetic expects left in r1, right in r2 (same as add/mul).
+                                                    l: string <- case bound.debug of {
+                                                        true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                        false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                    };
+                                                    r: string <- case bound.debug of {
+                                                        true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                        false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                    };
+                                                    // For float32/float64: emit right before left. Left writes to S1/D1 (left_reg),
+                                                    // which may be the source register for the right var (if bound to S1/D1).
+                                                    // Emitting right first preserves the right operand before left clobbers its source.
+                                                    // For string_prim with left=const: loading literal into X0 (left_reg) clobbers right var if right is in X0.
+                                                    // Emit right first (MOV X1, X0) to save right before loading left literal into X0.
+                                                    case is_float32 or is_float64 or is_float16 or (is_string_prim and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 0) of {
+                                                        true -> { first: concat(concat(concat(r, "\n"), l), "\n"), second: "" };
+                                                        false -> { first: concat(concat(concat(l, "\n"), r), "\n"), second: "" }
+                                                    }
+                                                };
+                                                false -> {
+                                                    // Arithmetic expects left in r1, right in r2 (same as add/mul). For non-string: left to left_reg, right to right_reg.
+                                                    // String concat expects X0=left, X1=right; keep original layout.
+                                                    l: string <- case is_string_prim of {
+                                                        true -> case bound.debug of {
+                                                            true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                            false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                        };
+                                                        false -> case bound.debug of {
+                                                            true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                            false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                        }
+                                                    };
+                                                    r: string <- case is_string_prim of {
+                                                        true -> case bound.debug of {
+                                                            true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                            false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                        };
+                                                        false -> case bound.debug of {
+                                                            true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                            false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                        }
+                                                    };
+                                                    identity_moves: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 0 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 0 and (term_sir_helpers@sir_term_root_node(term).name == "and" or term_sir_helpers@sir_term_root_node(term).name == "or") of {
+                                                        true -> case is_float64 or is_float32 or is_float16 of {
+                                                            true -> concat(concat(concat(concat("    FMOV ", right_reg), ", "), concat(right_reg, "\n")), concat(concat(concat(concat("    FMOV ", left_reg), ", "), left_reg), ""));
+                                                            false -> concat(concat(concat(concat("    MOV ", right_reg), ", "), concat(right_reg, "\n")), concat(concat(concat(concat("    MOV ", left_reg), ", "), left_reg), ""))
+                                                        };
+                                                        false -> ""
+                                                    };
+                                                    second_with_id: string <- case len(identity_moves) > 0 of {
+                                                        true -> concat(concat(r, "\n"), identity_moves);
+                                                        false -> r
+                                                    };
+                                                    // Left may be a call (kind 4): emit right first, save right_reg, then left, restore (right survives left's clobbers).
+                                                    // If both operands are calls (e.g. fib(n-1)+fib(n-2)), right eval runs first and BLR leaves X0 = fib(n-2), not n — spill X0 before right, LDR X0 before left so fib(n-1) sees n.
+                                                    // Right-only call: emit left first, then right; spill left_reg across BLR (AAPCS64 volatiles). See factorial n * factorial(n-1).
+                                                    left_is_call: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 4;
+                                                    right_is_call: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 4;
+                                                    save_x0_before_right_when_both_calls: string <- case left_is_call and right_is_call of {
+                                                        true -> case is_float64 or is_float32 or is_float16 of {
+                                                            true -> "";
+                                                            false -> case is_string_prim of {
+                                                                true -> "    STR X0, [SP, #-16]!\n";
+                                                                false -> "    STR X0, [SP, #-16]!\n"
+                                                            }
+                                                        };
+                                                        false -> ""
+                                                    };
+                                                    restore_x0_before_left_when_both_calls: string <- case left_is_call and right_is_call of {
+                                                        true -> case is_float64 or is_float32 or is_float16 of {
+                                                            true -> "";
+                                                            false -> case is_string_prim of {
+                                                                true -> "    LDR X0, [SP], #16\n";
+                                                                false -> "    LDR X0, [SP], #16\n"
+                                                            }
+                                                        };
+                                                        false -> ""
+                                                    };
+                                                    save_right_after_restore_x0_both_calls: string <- case left_is_call and right_is_call of {
+                                                        true -> case is_string_prim of {
+                                                            true -> "    STR X1, [SP, #-16]!\n";
+                                                            false -> concat(concat("    STR ", right_reg), ", [SP, #-16]!\n")
+                                                        };
+                                                        false -> ""
+                                                    };
+                                                    save_left_across_right_call: string <- case right_is_call of {
+                                                        true -> case is_string_prim of {
+                                                            true -> "    STR X0, [SP, #-16]!\n";
+                                                            false -> concat(concat("    STR ", left_reg), ", [SP, #-16]!\n")
+                                                        };
+                                                        false -> ""
+                                                    };
+                                                    restore_left_across_right_call: string <- case right_is_call of {
+                                                        true -> case is_string_prim of {
+                                                            true -> "    LDR X0, [SP], #16\n";
+                                                            false -> concat(concat("    LDR ", left_reg), ", [SP], #16\n")
+                                                        };
+                                                        false -> ""
+                                                    };
+                                                    save_right: string <- case left_is_call of {
+                                                        true -> case left_is_call and right_is_call of {
+                                                            true -> "";
+                                                            false -> case is_string_prim of {
+                                                                true -> "    STR X1, [SP, #-16]!\n";
+                                                                false -> concat(concat("    STR ", right_reg), ", [SP, #-16]!\n")
+                                                            }
+                                                        };
+                                                        false -> ""
+                                                    };
+                                                    restore_right: string <- case left_is_call of {
+                                                        true -> case is_string_prim of {
+                                                            true -> "    LDR X1, [SP], #16\n";
+                                                            false -> concat(concat("    LDR ", right_reg), ", [SP], #16\n")
+                                                        };
+                                                        false -> ""
+                                                    };
+                                                    first_combined: string <- case left_is_call of {
+                                                        true -> {
+                                                            fc0: string <- concat(save_x0_before_right_when_both_calls, second_with_id);
+                                                            fc1: string <- concat(concat(concat(concat(concat(concat(fc0, "\n"), restore_x0_before_left_when_both_calls), "\n"), save_right_after_restore_x0_both_calls), "\n"), save_right);
+                                                            concat(concat(concat(concat(fc1, l), "\n"), restore_right), "")
+                                                        };
+                                                        false -> case right_is_call of {
+                                                            true -> concat(concat(concat(concat(concat(concat(l, "\n"), save_left_across_right_call), second_with_id), "\n"), restore_left_across_right_call), "");
+                                                            false -> concat(concat(second_with_id, "\n"), l)
+                                                        }
+                                                    };
+                                                    { first: first_combined, second: "" }
+                                                }
+                                            }
+                                        }
+                                    };
+                                    first_asm: string <- args_pair_first.first;
+                                    second_asm: string <- args_pair_first.second;
+op_asm: string <- prims@emit_prim_op(term, dest);
+                                    concat(concat(concat(first_asm, "\n"), concat(second_asm, "\n")), op_asm)
+                                }
+                            };
+                            false -> {
+                                // bound.bound_name != "": inside let/function body. Use same layout as bound.bound_name=="": left->r1, right->r2.
+                                // String concat expects X0=left, X1=right; keep original layout for is_string_prim.
+                                left_is_prim: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6;
+                                right_is_prim: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 6;
+                                bool_and_or_two_prims: bool <- right_is_prim and term_sir_helpers@sir_term_root_node(term).type_name == "bool" and (term_sir_helpers@sir_term_root_node(term).name == "and" or term_sir_helpers@sir_term_root_node(term).name == "or") and is_string_prim == false and is_float64 == false and is_float32 == false and is_float16 == false;
+                                                                args_pair_left: { first: string, second: string } <- case left_is_prim of {
+                                    true -> case bool_and_or_two_prims of {
+                                        true -> {
+                                            temp_reg: string <- left_reg;
+                                            left_inner: string <- case bound.debug of {
+                                                true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), temp_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), temp_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                            };
+                                            save_left: string <- concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n");
+                                            right_inner: string <- case bound.debug of {
+                                                true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                            };
+                                            restore_left: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                            combined: string <- concat(concat(concat(concat(concat(concat(left_inner, "\n"), save_left), right_inner), "\n"), restore_left), "");
+                                            { first: combined, second: "" }
+                                        };
+                                        false -> case right_is_prim and is_string_prim == false and is_float64 == false and is_float32 == false and is_float16 == false of {
+                                            true -> {
+                                                temp_reg2: string <- left_reg;
+                                                left_2p: string <- case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), temp_reg2, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), temp_reg2, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                };
+                                                save_l2: string <- concat(concat("    STR ", temp_reg2), ", [SP, #-16]!\n");
+                                                right_2p: string <- case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                };
+                                                restore_l2: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                                comb_2p: string <- concat(concat(concat(concat(concat(concat(left_2p, "\n"), save_l2), right_2p), "\n"), restore_l2), "");
+                                                { first: comb_2p, second: "" }
+                                            };
+                                            false -> {
+                                                l: string <- case is_string_prim of {
+                                                    true -> case bound.debug of {
+                                                        true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                        false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                    };
+                                                    false -> case bound.debug of {
+                                                        true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                        false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                    }
+                                                };
+                                                r: string <- case is_string_prim of {
+                                                    true -> case bound.debug of {
+                                                        true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                        false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                    };
+                                                    false -> case bound.debug of {
+                                                        true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                        false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                    }
+                                                };
+                                                right_simple_for_left_prim: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 0 or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 1;
+                                                preserve_left_for_right: bool <- right_simple_for_left_prim == false and is_string_prim == false and is_float64 == false and is_float32 == false and is_float16 == false;
+                                                case preserve_left_for_right of {
+                                                    true -> {
+                                                        save_left_np: string <- concat(concat("    STR ", left_reg), ", [SP, #-16]!\n");
+                                                        restore_left_np: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                                        combined_np: string <- concat(concat(concat(concat(concat(concat(l, "\n"), save_left_np), r), "\n"), restore_left_np), "");
+                                                        { first: combined_np, second: "" }
+                                                    };
+                                                    false -> { first: l, second: r }
+                                                }
+                                            }
+                                        }
+                                    };
+                                    false -> case right_is_prim of {
+                                        true -> {
+                                            temp_reg: string <- concat(reg_prefix, "0");
+                                            l: string <- case bound.debug of {
+                                                true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), temp_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), temp_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                            };
+                                            save: string <- case is_string_prim of {
+                                                true -> "    STR X0, [SP, #-16]!\n";
+                                                false -> case is_float64 or is_float32 or is_float16 of {
+                                                    true -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n");
+                                                    false -> "    STR X0, [SP, #-16]!\n"
+                                                }
+                                            };
+                                            r: string <- case is_string_prim of {
+                                                true -> case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                };
+                                                false -> case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                }
+                                            };
+                                            restore: string <- case is_string_prim of {
+                                                true -> "    LDR X0, [SP], #16\n";
+                                                false -> case is_float64 or is_float32 or is_float16 of {
+                                                    true -> concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                                    false -> concat(concat("    LDR ", left_reg), ", [SP], #16\n")
+                                                }
+                                            };
+                                            left_combined: string <- concat(concat(concat(concat(concat(concat(l, "\n"), save), r), "\n"), restore), "");
+                                            { first: left_combined, second: "" }
+                                        };
+                                        false -> {
+                                            // left->left_reg, right->right_reg (same as bound.bound_name=="") for arithmetic.
+                                            l: string <- case is_string_prim of {
+                                                true -> case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                };
+                                                false -> case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), left_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                }
+                                            };
+                                            r: string <- case is_string_prim of {
+                                                true -> case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                };
+                                                false -> case bound.debug of {
+                                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), right_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                                }
+                                            };
+                                            // For float32/float64: emit right before left. Left writes to S1/D1 (left_reg),
+                                            // which may be the source register for the right var. Emit right first to preserve it.
+                                            // For string_prim with left=const: loading literal into X0 (left_reg) clobbers right var if right is in X0.
+                                            // Emit right first (MOV X1, X0) to save right before loading left literal into X0.
+                                            // When right operand is a call (kind 4), save/restore left_reg across it (AAPCS64: X9-X15 are caller-saved).
+                                            left_is_call: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 4;
+                                            right_is_call: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 4;
+                                            case right_is_call and is_string_prim == false of {
+                                                true -> {
+                                                    save_left: string <- concat(concat("    STR ", left_reg), ", [SP, #-16]!\n");
+                                                    restore_left: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                                    combined: string <- concat(concat(concat(concat(concat(concat(l, "\n"), save_left), r), "\n"), restore_left), "");
+                                                    { first: combined, second: "" }
+                                                };
+                                                false -> case left_is_call and is_string_prim == false of {
+                                                    true -> {
+                                                        save_right: string <- concat(concat("    STR ", right_reg), ", [SP, #-16]!\n");
+                                                        restore_right: string <- concat(concat("    LDR ", right_reg), ", [SP], #16\n");
+                                                        combined: string <- concat(concat(concat(concat(concat(concat(r, "\n"), save_right), l), "\n"), restore_right), "");
+                                                        { first: combined, second: "" }
+                                                    };
+                                                    false -> case is_float32 or is_float64 or is_float16 or (is_string_prim and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 0) of {
+                                                        true -> { first: r, second: l };
+                                                        false -> { first: l, second: r }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                };
+                                left_asm: string <- args_pair_left.first;
+                                right_asm: string <- args_pair_left.second;
+                                op_asm: string <- prims@emit_prim_op(term, dest);
+                                case len(right_asm) > 0 of {
+                                    true -> concat(concat(concat(left_asm, "\n"), concat(right_asm, "\n")), op_asm);
+                                    false -> concat(concat(left_asm, "\n"), op_asm)
+                                }
+                            }
+                        }
+                        }
+}

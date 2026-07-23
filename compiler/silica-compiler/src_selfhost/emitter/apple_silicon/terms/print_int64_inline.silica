@@ -19,7 +19,6 @@
 // Const arg: emit write(2) with L_pi_N label from int_rodata. Var arg: BL L_pi_helper or L_pu_helper.
 // Uses int_rodata for const label lookup.
 
-use sir_ast;
 use atom_table;
 use int_rodata;
 use emitter_effects;
@@ -32,35 +31,64 @@ export emit_print_uint64_var/3;
 export emit_print_int64_helper/0;
 export emit_print_uint64_helper/0;
 
-fn is_print_int64_const_arg(term: SIRTerm, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> bool {
-    case term.name == "main.print_int64" of {
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
+
+fn is_print_int64_const_arg(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> bool {
+    case sir_term_root_node(term).name == "main.print_int64" of {
         false -> false;
-        true -> case term.inner.kind of {
-            0 -> term.inner.type_name == "int64";
+        true -> case sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).kind of {
+            0 -> sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name == "int64";
             _: int64 -> false
         }
     }
 }
 
-fn is_print_uint64_const_arg(term: SIRTerm, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> bool {
-    case term.name == "main.print_uint64" of {
+fn is_print_uint64_const_arg(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> bool {
+    case sir_term_root_node(term).name == "main.print_uint64" of {
         false -> false;
-        true -> case term.inner.kind of {
-            0 -> term.inner.type_name == "uint64";
+        true -> case sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).kind of {
+            0 -> sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name == "uint64";
             _: int64 -> false
         }
     }
 }
 
-fn emit_print_int64_inline(term: SIRTerm, dest: string, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }) -> string {
-    value: string <- term.inner.value;
+fn emit_print_int64_inline(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }) -> string {
+    value: string <- sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).value;
     index: int64 <- int_rodata@int64_value_to_index(int64_table, value);
     index_str: string <- atom_table@int64_to_decimal_string(index);
     lp: string <- concat("L_pi", "_");
     label: string <- concat(lp, index_str);
     length: int64 <- len(value);
     length_str: string <- atom_table@int64_to_decimal_string(length);
-    call_effects: string <- term.value;
+    call_effects: string <- sir_term_root_node(term).value;
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
@@ -88,8 +116,8 @@ fn emit_print_int64_inline(term: SIRTerm, dest: string, table: { is_empty: boole
     with_pre
 }
 
-fn emit_print_int64_var(term: SIRTerm, dest: string, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> string {
-    call_effects: string <- term.value;
+fn emit_print_int64_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> string {
+    call_effects: string <- sir_term_root_node(term).value;
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
@@ -112,8 +140,8 @@ fn emit_print_int64_var(term: SIRTerm, dest: string, table: { is_empty: boolean,
     with_pre
 }
 
-fn emit_print_uint64_var(term: SIRTerm, dest: string, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> string {
-    call_effects: string <- term.value;
+fn emit_print_uint64_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> string {
+    call_effects: string <- sir_term_root_node(term).value;
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     post_barrier: string <- emitter_effects@barrier_after_call(call_effects);

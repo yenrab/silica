@@ -58,6 +58,8 @@ lib-sources:
 	done
 
 # Canonical batch list (§12). Seed reads the basename `silica.config`.
+# Append constraint_extract_* impl units in dependency order so plain sort does
+# not place them before parser_tuples / other parser deps.
 silica.config.compiler: lib-sources
 	@echo "Regenerating silica.config.compiler (TARGET=$(TARGET))..."
 	@cd "$(THIS_DIR)" && { \
@@ -68,23 +70,46 @@ silica.config.compiler: lib-sources
 	} | sed 's|^\./||' \
 	  | grep -v '_struct_parse_test' \
 	  | grep -v 'btree_set_nodeid\.silica' \
-	  | sort -u > silica.config.compiler
+	  | sort -u > silica.config.compiler.raw
+	@cd "$(THIS_DIR)" && \
+	  grep -v '^parser/constraint_extract_' silica.config.compiler.raw > silica.config.compiler && \
+	  for u in \
+	    parser/constraint_extract_slots.silica \
+	    parser/constraint_extract_params.silica \
+	    parser/constraint_extract_expr.silica \
+	    parser/constraint_extract_decls.silica \
+	    parser/constraint_extract_lambda_lift.silica \
+	    parser/constraint_extract_hof_wrap.silica \
+	    parser/constraint_extract_validate.silica \
+	  ; do \
+	    grep -qx "$$u" silica.config.compiler.raw && echo "$$u" >> silica.config.compiler; \
+	  done && \
+	  rm -f silica.config.compiler.raw
 	@test -s "$(THIS_DIR)silica.config.compiler" || (echo "FAIL: silica.config.compiler empty"; exit 1)
 	@echo "  $$(wc -l < "$(THIS_DIR)silica.config.compiler" | tr -d ' ') units"
 
 silica.config: silica.config.compiler
 	@cp "$(THIS_DIR)silica.config.compiler" "$(THIS_DIR)silica.config"
 
-# Stage 1: seed reads silica.config → .sams (and optional __silica_runtime.sams / silica.link)
+# Stage 1: seed reads silica.config → .sams (and optional __silica_runtime.sams / silica.link).
+# Multi-unit batches use process-per-unit hygiene: seed exits 75 between units so the OS
+# reclaims host heap (required for large modules such as lib/wbt_map.silica).
 assembly: check-seed silica.config
 	@cd "$(THIS_DIR)" && \
 	  find . -name '*.sams' -print | while read -r f; do rm -f "$$f"; done; \
-	  rm -f __silica_runtime.sams silica.link; \
+	  rm -f __silica_runtime.sams silica.link silica.compile.order silica.needs_runtime; \
 	  echo "Compiling with seed host: $(SILICA_COMPILER)"; \
-	  if ! "$(SILICA_COMPILER)"; then \
-	    echo "FAIL: seed compilation failed"; \
+	  while true; do \
+	    "$(SILICA_COMPILER)"; \
+	    ec=$$?; \
+	    if [ $$ec -eq 0 ]; then break; fi; \
+	    if [ $$ec -eq 75 ]; then \
+	      echo "  (reclaiming memory; continuing next unit)"; \
+	      continue; \
+	    fi; \
+	    echo "FAIL: seed compilation failed (exit $$ec)"; \
 	    exit 1; \
-	  fi; \
+	  done; \
 	  echo "✅ Assembly generated (.sams)"
 
 # Stage 2: .sams → .o (clang assembler), including nested paths and lib/

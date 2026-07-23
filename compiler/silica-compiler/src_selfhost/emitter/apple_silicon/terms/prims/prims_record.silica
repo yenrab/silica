@@ -18,7 +18,6 @@
 // Inline record struct layout for AArch64 emitter (silica-spec §3.3.7 / §3.4.2, sir_design_spec §7.6).
 // record_make / record_proj mirror tuple flat stack layout: field order matches `{ f1: T1, ... }`.
 
-use sir_ast;
 use reg_conventions;
 
 export record_type_starts/1;
@@ -36,6 +35,35 @@ export record_type_flat_stack_bytes/1;
 export record_type_has_only_scalar_fields/1;
 export record_type_value_flat_byte_size/1;
 export record_type_list_cons_payload_bytes/1;
+
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
 
 fn record_type_has_only_scalar_fields(record_str: string) -> bool {
     t: string <- strip_spaces_rt(record_str);
@@ -446,11 +474,11 @@ fn offset_bytes_before_field(record_str: string, field: string) -> int64 {
     }
 }
 
-fn count_record_chain(term: SIRTerm) -> int64 {
-    case term.kind == 6 and term.name == "record_make" of {
-        true -> case term.right_expr.kind < 0 of {
+fn count_record_chain(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
+    case sir_term_root_node(term).kind == 6 and sir_term_root_node(term).name == "record_make" of {
+        true -> case sir_term_at(term, sir_term_root_node(term).right_expr).root < 0 of {
             true -> 1;
-            false -> 1 + count_record_chain(term.right_expr)
+            false -> 1 + count_record_chain(sir_term_at(term, sir_term_root_node(term).right_expr))
         };
         false -> 0
     }

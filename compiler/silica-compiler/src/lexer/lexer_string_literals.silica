@@ -118,24 +118,22 @@ fn advance_past_string_escape(lexer: Lexer) -> (Lexer, bool) {
 fn read_string_literal(lexer: Lexer) -> (Token, Lexer) {
     start_location: SourceLocation <- lexer_core@current_location(lexer);
     start_pos: int64 <- lexer.position;
-    kinds: TokenKinds <- lexer_token_kind@token_kinds();
-
     // Advance past opening quote
     after_open: Lexer <- lexer_core@advance(lexer);
 
     // Read string content (recursive)
-    (final_lexer: Lexer, ok: bool) <- read_string_content(after_open, start_pos, kinds, start_location);
+    (final_lexer: Lexer, ok: bool) <- read_string_content(after_open, start_pos, start_location);
 
     case ok of {
         true -> do
             lexeme: string <- lexer_core@extract_lexeme(final_lexer, start_pos);
-            token: Token <- lexer_core@make_token(kinds.string_literal, lexeme, start_location);
+            token: Token <- lexer_core@make_token(lexer_token_kind@token_kind_string_literal(), lexeme, start_location);
             (token, final_lexer)
         end;
         false -> do
             // On error, return error token (unknown_char) so tokenize can continue
             error_lexeme: string <- lexer_core@extract_lexeme(final_lexer, start_pos);
-            error_token: Token <- lexer_core@make_token(kinds.unknown_char, error_lexeme, start_location);
+            error_token: Token <- lexer_core@make_token(lexer_token_kind@token_kind_unknown_char(), error_lexeme, start_location);
             (error_token, final_lexer)
         end
     }
@@ -146,7 +144,7 @@ fn read_string_literal(lexer: Lexer) -> (Token, Lexer) {
 - Recursively reads string content: normal chars, escape sequences, or closing quote.
 - Returns (lexer, ok). ok is false on unterminated string or invalid escape.
 -}
-fn read_string_content(lexer: Lexer, start_pos: int64, kinds: TokenKinds, start_location: SourceLocation) -> (Lexer, bool) {
+fn read_string_content(lexer: Lexer, start_pos: int64, start_location: SourceLocation) -> (Lexer, bool) {
     current: string <- lexer_core@peek_char(lexer);
 
     case current of {
@@ -161,14 +159,14 @@ fn read_string_content(lexer: Lexer, start_pos: int64, kinds: TokenKinds, start_
             after_backslash: Lexer <- lexer_core@advance(lexer);
             (after_escape: Lexer, ok_escape: bool) <- advance_past_string_escape(after_backslash);
             case ok_escape of {
-                true -> read_string_content(after_escape, start_pos, kinds, start_location);
+                true -> read_string_content(after_escape, start_pos, start_location);
                 false -> (after_backslash, false)
             }
         end;
         _: string -> do
             // Normal character (including Unicode) - advance by full UTF-8 sequence and continue
             advanced: Lexer <- advance_utf8_char(lexer);
-            read_string_content(advanced, start_pos, kinds, start_location)
+            read_string_content(advanced, start_pos, start_location)
         end
     }
 }
@@ -186,21 +184,19 @@ fn read_string_content(lexer: Lexer, start_pos: int64, kinds: TokenKinds, start_
 fn read_char_literal(lexer: Lexer) -> (Token, Lexer) {
     start_location: SourceLocation <- lexer_core@current_location(lexer);
     start_pos: int64 <- lexer.position;
-    kinds: TokenKinds <- lexer_token_kind@token_kinds();
-
     // Advance past opening quote
     after_open: Lexer <- lexer_core@advance(lexer);
     current: string <- lexer_core@peek_char(after_open);
 
     case current of {
         "" -> do
-            error_token: Token <- lexer_core@make_token(kinds.unknown_char, "", start_location);
+            error_token: Token <- lexer_core@make_token(lexer_token_kind@token_kind_unknown_char(), "", start_location);
             (error_token, after_open)
         end;
         "'" -> do
             // Empty char or closing quote too soon - error
             error_lexeme: string <- lexer_core@extract_lexeme(after_open, start_pos);
-            error_token: Token <- lexer_core@make_token(kinds.unknown_char, error_lexeme, start_location);
+            error_token: Token <- lexer_core@make_token(lexer_token_kind@token_kind_unknown_char(), error_lexeme, start_location);
             (error_token, after_open)
         end;
         "\\" -> do
@@ -214,19 +210,19 @@ fn read_char_literal(lexer: Lexer) -> (Token, Lexer) {
                         "'" -> do
                             after_close: Lexer <- lexer_core@advance(after_escape);
                             lexeme: string <- lexer_core@extract_lexeme(after_close, start_pos);
-                            token: Token <- lexer_core@make_token(kinds.char_literal, lexeme, start_location);
+                            token: Token <- lexer_core@make_token(lexer_token_kind@token_kind_char_literal(), lexeme, start_location);
                             (token, after_close)
                         end;
                         _: string -> do
                             error_lexeme: string <- lexer_core@extract_lexeme(after_escape, start_pos);
-                            error_token: Token <- lexer_core@make_token(kinds.unknown_char, error_lexeme, start_location);
+                            error_token: Token <- lexer_core@make_token(lexer_token_kind@token_kind_unknown_char(), error_lexeme, start_location);
                             (error_token, after_escape)
                         end
                     }
                 end;
                 false -> do
                     error_lexeme: string <- lexer_core@extract_lexeme(after_backslash, start_pos);
-                    error_token: Token <- lexer_core@make_token(kinds.unknown_char, error_lexeme, start_location);
+                    error_token: Token <- lexer_core@make_token(lexer_token_kind@token_kind_unknown_char(), error_lexeme, start_location);
                     (error_token, after_backslash)
                 end
             }
@@ -239,12 +235,12 @@ fn read_char_literal(lexer: Lexer) -> (Token, Lexer) {
                 "'" -> do
                     after_close: Lexer <- lexer_core@advance(after_char);
                     lexeme: string <- lexer_core@extract_lexeme(after_close, start_pos);
-                    token: Token <- lexer_core@make_token(kinds.char_literal, lexeme, start_location);
+                    token: Token <- lexer_core@make_token(lexer_token_kind@token_kind_char_literal(), lexeme, start_location);
                     (token, after_close)
                 end;
                 _: string -> do
                     error_lexeme: string <- lexer_core@extract_lexeme(after_char, start_pos);
-                    error_token: Token <- lexer_core@make_token(kinds.unknown_char, error_lexeme, start_location);
+                    error_token: Token <- lexer_core@make_token(lexer_token_kind@token_kind_unknown_char(), error_lexeme, start_location);
                     (error_token, after_char)
                 end
             }

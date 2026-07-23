@@ -31,7 +31,8 @@ POSITIVE_SILICA := $(sort $(patsubst $(THIS_DIR)%,%,$(filter-out $(_EXCLUDED_SIL
 
 # Remove stale assembly/link artifacts before compile (used inline — not via `clean` prerequisite).
 INTEGRATE_PRE_CLEAN = cd "$(THIS_DIR)" && \
-	rm -f .integrate_counts *.sams lib/*.sams *.o lib/*.o __silica_runtime.o *.sout && \
+	rm -f .integrate_counts *.sams lib/*.sams *.o lib/*.o __silica_runtime.o *.sout \
+		silica.compile.order silica.needs_runtime silica.link && \
 	for s in *.sams; do \
 		[ -f "$$s" ] || continue; \
 		rm -f "$${s%.sams}"; \
@@ -58,7 +59,7 @@ assembly: silica.config
 	@$(ENSURE_SILICA_COMPILER)
 	@$(INTEGRATE_PRE_CLEAN)
 	@echo "Compiling with silica-compiler..."
-	@cd "$(THIS_DIR)" && "$(SILICA_COMPILER)"
+	@cd "$(THIS_DIR)" && $(RUN_SILICA_COMPILER)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
 objects: assembly
@@ -114,8 +115,9 @@ positive-integrate: silica.config
 	fi; \
 	$(ENSURE_SILICA_COMPILER); \
 	echo "Compiling with silica-compiler..."; \
-	if ! "$(SILICA_COMPILER)"; then \
-		ec=$$?; \
+	ec=0; \
+	{ $(RUN_SILICA_COMPILER); } || ec=$$?; \
+	if [ "$$ec" -ne 0 ]; then \
 		if [ "$$ec" -eq 137 ] || [ "$$ec" -eq 9 ]; then \
 			echo "❌❌ $(MSG_PREFIX)compilation killed (exit $$ec; likely OOM while compiling large silica.config)"; \
 		else \
@@ -225,7 +227,7 @@ record-positive-golden: silica.config
 	@echo "$(MSG_PREFIX)record-positive-golden: starting..."
 	@$(ENSURE_SILICA_COMPILER)
 	@$(INTEGRATE_PRE_CLEAN)
-	@cd "$(THIS_DIR)" && "$(SILICA_COMPILER)"
+	@cd "$(THIS_DIR)" && $(RUN_SILICA_COMPILER)
 	@cd "$(THIS_DIR)" && for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
@@ -284,7 +286,7 @@ clean:
 		[ -f "$$s" ] || continue; \
 		rm -f "$${s%.sams}"; \
 	done
-	@cd "$(THIS_DIR)" && rm -f *.sams lib/*.sams *.o lib/*.o __silica_runtime.o smoke_harness_ready *.sout silica.config .integrate_counts
+	@cd "$(THIS_DIR)" && rm -f *.sams lib/*.sams *.o lib/*.o __silica_runtime.o smoke_harness_ready *.sout silica.config .integrate_counts silica.compile.order silica.needs_runtime silica.link
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:

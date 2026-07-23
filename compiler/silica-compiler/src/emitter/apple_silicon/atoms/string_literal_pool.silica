@@ -86,6 +86,89 @@ fn string_literal_value_to_index(table: StringLiteralTable, value: string) -> in
     }
 }
 
+fn pool_flip_bool(b: bool) -> bool {
+    case b of { true -> false; false -> true }
+}
+
+fn pool_tuple_pat_comma(s: string, i: int64, in_string: bool, pdepth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) == "\"" of {
+            true -> pool_tuple_pat_comma(s, i + 1, pool_flip_bool(in_string), pdepth);
+            false -> case in_string of {
+                true -> pool_tuple_pat_comma(s, i + 1, true, pdepth);
+                false -> case substring(s, i, i + 1) of {
+                    "(" -> pool_tuple_pat_comma(s, i + 1, false, pdepth + 1);
+                    ")" -> pool_tuple_pat_comma(s, i + 1, false, case pdepth > 0 of { true -> pdepth - 1; false -> 0 });
+                    "," -> case pdepth == 0 of { true -> i; false -> pool_tuple_pat_comma(s, i + 1, false, pdepth) };
+                    _: string -> pool_tuple_pat_comma(s, i + 1, false, pdepth)
+                }
+            }
+        }
+    }
+}
+
+fn pool_strip_spaces_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> pool_strip_spaces_from(s, i + 1, acc);
+            false -> pool_strip_spaces_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn pool_strip_spaces(s: string) -> string {
+    pool_strip_spaces_from(s, 0, "")
+}
+
+fn pool_close_quote(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "\"" of {
+            true -> i;
+            false -> pool_close_quote(s, i + 1)
+        }
+    }
+}
+
+fn collect_string_lits_from_tuple_pat_inner(inner: string, table: StringLiteralTable, next_index: int64) -> (StringLiteralTable, int64) {
+    case len(pool_strip_spaces(inner)) == 0 of {
+        true -> (table, next_index);
+        false -> do
+            c: int64 <- pool_tuple_pat_comma(inner, 0, false, 0);
+            el: string <- pool_strip_spaces(substring(inner, 0, c));
+            (t1: StringLiteralTable, i1: int64) <- case len(el) >= 2 and substring(el, 0, 1) == "\"" of {
+                true -> do
+                    cq: int64 <- pool_close_quote(el, 1);
+                    case cq < 0 of {
+                        true -> (table, next_index);
+                        false -> do
+                            content: string <- substring(el, 1, cq);
+                            (tbl: StringLiteralTable, idx: int64) <- add_str_value(table, content, next_index);
+                            new_next: int64 <- case idx == next_index of { true -> next_index + 1; false -> next_index };
+                            (tbl, new_next)
+                        end
+                    }
+                end;
+                false -> (table, next_index)
+            };
+            case c >= len(inner) of {
+                true -> (t1, i1);
+                false -> collect_string_lits_from_tuple_pat_inner(substring(inner, c + 1, len(inner)), t1, i1)
+            }
+        end
+    }
+}
+
+fn collect_string_lits_from_tuple_pat(raw: string, table: StringLiteralTable, next_index: int64) -> (StringLiteralTable, int64) {
+    t: string <- pool_strip_spaces(raw);
+    case len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
+        false -> (table, next_index);
+        true -> collect_string_lits_from_tuple_pat_inner(substring(t, 1, len(t) - 1), table, next_index)
+    }
+}
+
 // Case branch (kind 8): add string pattern text to pool; collect guard and body.
 fn collect_string_literal_from_case_branch(branch: SIRTerm, table: StringLiteralTable, next_index: int64) -> (StringLiteralTable, int64) {
     case branch.kind < 0 of {
@@ -98,7 +181,10 @@ fn collect_string_literal_from_case_branch(branch: SIRTerm, table: StringLiteral
                         new_next: int64 <- case idx == next_index of { true -> next_index + 1; false -> next_index };
                         (tbl, new_next)
                     end;
-                    false -> (table, next_index)
+                    false -> case branch.value == "tuple" of {
+                        true -> collect_string_lits_from_tuple_pat(branch.name, table, next_index);
+                        false -> (table, next_index)
+                    }
                 };
                 (t2: StringLiteralTable, i2: int64) <- collect_string_literal_from_term(branch.inner, t1, i1);
                 collect_string_literal_from_term(branch.right_expr, t2, i2)

@@ -30,12 +30,24 @@ while IFS= read -r trial || [ -n "$trial" ]; do
 	{ cat .compile_libs.list; echo "$trial"; } > silica.config
 	units=$(wc -l < silica.config | tr -d ' ')
 	echo "Compiling trial ${trial} (${units} units: lib + 1 trial)..."
-	set +e
-	"${SILICA_COMPILER}"
-	ec=$?
-	set -e
-	if [ "$ec" -ne 0 ]; then
+	rm -f silica.compile.order silica.needs_runtime
+	# Seed exits 75 between multi-unit batches so the OS reclaims host heap.
+	while true; do
+		set +e
+		"${SILICA_COMPILER}"
+		ec=$?
+		set -e
+		if [ "$ec" -eq 0 ]; then
+			break
+		fi
+		if [ "$ec" -eq 75 ]; then
+			echo "  (reclaiming memory; continuing next unit)"
+			continue
+		fi
 		fail_ec=$ec
+		break
+	done
+	if [ "$fail_ec" -ne 0 ]; then
 		break
 	fi
 	done_count=$((done_count + 1))

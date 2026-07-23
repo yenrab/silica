@@ -21,7 +21,7 @@ integrate:
 	@$(MAKE) -f "$(THIS_DIR)Makefile" check
 
 check: silica.config
-	@cd "$(THIS_DIR)" && $(COMPILER) > main_use_camelcase_qualifier.cur_fail 2>&1 || true
+	@cd "$(THIS_DIR)" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,$(COMPILER)); } > main_use_camelcase_qualifier.cur_fail 2>&1 || true
 	@if diff -q "$(THIS_DIR)main_use_camelcase_qualifier.cur_fail" "$(THIS_DIR)main_use_camelcase_qualifier.golden_fail" > /dev/null 2>&1; then \
 		echo "✅✅ $(MSG_PREFIX)qualified_call_module_name_case_mismatch_trial"; \
 		printf '%d %d\n' 1 0 > "$(THIS_DIR).integrate_counts"; \

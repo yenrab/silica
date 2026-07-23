@@ -2492,6 +2492,8 @@ fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: Type
                                                                     };
                                                                     false -> case expr.name == "print_string" of {
                                                                         true -> check_print_call(expr, "string", expected_type, context, world);
+                                                                        false -> case expr.name == "print" of {
+                                                                        true -> check_print_call(expr, "string", expected_type, context, world);
                                                                         false -> case expr.name == "println" of {
                                                                         true -> check_print_call(expr, "string", expected_type, context, world);
                                                                         false -> case expr.name == "print_string_stderr" of {
@@ -2606,6 +2608,7 @@ fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: Type
         }
         }
         }
+    }
     }
     }
     }
@@ -4070,28 +4073,34 @@ fn check_collection_trait_let(expr: Expr, expected_type: string, context: TypeCo
 // Let binding: name: type <- rhs; body. Check rhs has declared type, add to env, check body.
 // Reject unit for named variables; allow _ : unit <- expr (discard pattern for expression statements).
 // Memory region types (ref, region, buf) are validated before type checking.
+// Untyped `name <- rhs` (empty annotation) is a type error (E2018), not a parse defect.
 fn check_let(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     bind_type: string <- expr.value;
-    list_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_lists@validate_list_type_declaration(bind_type, expr.location);
-    case list_result.is_ok of {
-        false -> list_result;
-        true -> {
-            col_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_collections@validate_collection_type_declaration(bind_type, expr.location);
-            case col_result.is_ok of {
-                false -> col_result;
+    case len(bind_type) == 0 of {
+        true -> type_checker_core@type_check_err("E2018", expr.location, concat(concat("variable binding '", expr.name), "' must have an explicit type annotation; write 'name: <type> <- ...'"), "sect8.3.1");
+        false -> {
+            list_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_lists@validate_list_type_declaration(bind_type, expr.location);
+            case list_result.is_ok of {
+                false -> list_result;
                 true -> {
-                    result_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_collections@validate_collection_result_type_declaration(bind_type, expr.location);
-                    case result_result.is_ok of {
-                        false -> result_result;
+                    col_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_collections@validate_collection_type_declaration(bind_type, expr.location);
+                    case col_result.is_ok of {
+                        false -> col_result;
                         true -> {
-                            rec_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_recursive_tuples@validate_recursive_type_declaration(bind_type, expr.location);
-                            case rec_result.is_ok of {
-                                false -> rec_result;
-                                true -> case type_checker_memory_regions@is_memory_region_type(bind_type) of {
-                                    true -> check_let_memory_region(expr, expected_type, context, bind_type, world);
-                                    false -> case type_checker_collections@is_collection_trait_type(bind_type) of {
-                                        true -> check_collection_trait_let(expr, expected_type, context, bind_type, world);
-                                        false -> check_let_after_validation(expr, expected_type, context, bind_type, world)
+                            result_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_collections@validate_collection_result_type_declaration(bind_type, expr.location);
+                            case result_result.is_ok of {
+                                false -> result_result;
+                                true -> {
+                                    rec_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_recursive_tuples@validate_recursive_type_declaration(bind_type, expr.location);
+                                    case rec_result.is_ok of {
+                                        false -> rec_result;
+                                        true -> case type_checker_memory_regions@is_memory_region_type(bind_type) of {
+                                            true -> check_let_memory_region(expr, expected_type, context, bind_type, world);
+                                            false -> case type_checker_collections@is_collection_trait_type(bind_type) of {
+                                                true -> check_collection_trait_let(expr, expected_type, context, bind_type, world);
+                                                false -> check_let_after_validation(expr, expected_type, context, bind_type, world)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -4928,35 +4937,23 @@ fn check_struct_literal_expr(expr: Expr, expected_type: string, context: TypeCon
     }
 }
 
-fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    base_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
-    case len(base_t) == 0 of {
-        true -> type_checker_core@type_check_err("E2005", expr.location, "cannot infer type of field access base", "sect3");
-        false -> {
-            exp_base: string <- type_checker_record_types@expand_named_topology_type(base_t);
-            rec_base: string <- case len(exp_base) > 0 of { true -> exp_base; false -> base_t };
-            case type_checker_record_types@record_type_starts(rec_base) of {
-                false -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("field access base must be record or topology type (cpu_topology, core_info, ...), got ", base_t), ""), "sect3");
-                true -> {
-                    ft: string <- type_checker_record_types@find_field_type_in_record(rec_base, expr.name);
-                    case len(ft) == 0 of {
-                        true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("no field ", expr.name), " on record type"), "sect3");
-                        false -> {
-                            rbase: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_expr(expr.inner, base_t, context, world);
-                            case rbase.is_ok of {
-                                false -> rbase;
-                                true -> case expected_type == "discard" of {
+fn check_field_access_field_type(expr: Expr, base_t: string, ft: string, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
+    sequence proc[DeviceIO]
+        result: TypeCheckResult <- case len(ft) == 0 of {
+            true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("no field ", expr.name), " on this type"), "sect3");
+            false -> {
+                rbase: TypeCheckResult <- check_expr(expr.inner, base_t, context, world);
+                case rbase.is_ok of {
+                    false -> rbase;
+                    true -> case expected_type == "discard" of {
+                        true -> type_checker_core@type_check_ok();
+                        false -> case type_checker_tuple_decompose_helpers@types_equal(ft, expected_type) of {
+                            true -> type_checker_core@type_check_ok();
+                            false -> case type_checker_expressions_identifiers@function_types_compatible(ft, expected_type) of {
+                                true -> type_checker_core@type_check_ok();
+                                false -> case type_checker_lists@formal_type_accepts_actual(ft, expected_type, world) of {
                                     true -> type_checker_core@type_check_ok();
-                                    false -> case type_checker_tuple_decompose_helpers@types_equal(ft, expected_type) of {
-                                        true -> type_checker_core@type_check_ok();
-                                        false -> case type_checker_expressions_identifiers@function_types_compatible(ft, expected_type) of {
-                                            true -> type_checker_core@type_check_ok();
-                                            false -> case type_checker_lists@formal_type_accepts_actual(ft, expected_type, world) of {
-                                                true -> type_checker_core@type_check_ok();
-                                                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("field has type ", ft), ", expected "), expected_type), ""), "sect3")
-                                            }
-                                        }
-                                    }
+                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("field has type ", ft), ", expected "), expected_type), ""), "sect3")
                                 }
                             }
                         }
@@ -4964,7 +4961,34 @@ fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeConte
                 }
             }
         }
-    }
+    produces
+        pure result
+    end
+}
+
+fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
+    sequence proc[DeviceIO]
+        base_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+        result: TypeCheckResult <- case len(base_t) == 0 of {
+            true -> type_checker_core@type_check_err("E2005", expr.location, "cannot infer type of field access base", "sect3");
+            false -> {
+                exp_base: string <- type_checker_record_types@expand_named_topology_type(base_t);
+                rec_base: string <- case len(exp_base) > 0 of { true -> exp_base; false -> base_t };
+                case type_checker_record_types@record_type_starts(rec_base) of {
+                    true -> check_field_access_field_type(expr, base_t, type_checker_record_types@find_field_type_in_record(rec_base, expr.name), expected_type, context, world);
+                    false -> {
+                        list_ft: string <- type_checker_lists@list_field_access_type(rec_base, expr.name);
+                        case len(list_ft) == 0 of {
+                            true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("field access base must be record, List[T, S], or topology type (cpu_topology, core_info, ...), got ", base_t), ""), "sect3");
+                            false -> check_field_access_field_type(expr, base_t, list_ft, expected_type, context, world)
+                        }
+                    }
+                }
+            }
+        }
+    produces
+        pure result
+    end
 }
 
 // Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal, 12=unary minus (forbidden); 20=list literal; 21=struct literal; 22=field access; 991=lambda

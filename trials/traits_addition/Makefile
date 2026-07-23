@@ -33,9 +33,9 @@ silica.config:
 
 compile: clean silica.config
 	@cd "$(THIS_DIR)" && \
-	rm -f *.sams traits/*.sams && \
+	rm -f *.sams silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams traits/*.sams && \
 	echo "Compiling with silica-compiler..." && \
-	if ! "$(SILICA_COMPILER)"; then \
+	if ! { $(RUN_SILICA_COMPILER); }; then \
 		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
 		exit 1; \
 	fi && \
@@ -215,7 +215,7 @@ clean:
 		base=$${line%.silica}; \
 		rm -f "$$base" "$$base.o"; \
 	done && \
-	rm -f silica.config .integrate_counts && \
+	rm -f silica.config .integrate_counts silica.compile.order silica.needs_runtime silica.link && \
 	echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:

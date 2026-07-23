@@ -27,7 +27,7 @@ integrate: fixtures clean
 		ln -sf "$(FFI_FIXTURES_LIB)" "$$tmpdir/dangerous_exposure_source/lib"; \
 		echo "$$trial.silica" > "$$tmpdir/silica.config"; \
 		out="$$tmpdir/out.txt"; \
-		(cd "$$tmpdir" && "$(SILICA_COMPILER)") > "$$out" 2>&1; status=$$?; \
+		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$$out" 2>&1; status=$$?; \
 		if [ "$$status" -ne 0 ]; then \
 			echo "❌❌ warning_enforcement_addition/$$trial: compilation failed"; \
 			cat "$$out"; \

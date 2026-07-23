@@ -1,0 +1,427 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Let-kind term emission (open-recursive via emit_child).
+// Open recursion: child emission via emit_child (breaks static SCC with term_emitter).
+
+use atom_table;
+use var;
+use prims_tuple;
+use prims_record;
+use string_parse;
+use let_dispatcher;
+use reg_conventions;
+use term_aggregate_helpers;
+use term_case_patterns;
+use term_reg_spill;
+use term_sir_helpers;
+
+export emit_kind_let/4;
+
+
+fn emit_kind_let(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }, emit_child: fn({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, string, { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string) -> string {
+    case len(bound.bound_name) > 0 and len(bound.bound_reg) > 0 of {
+                        true -> {
+                            clean_bound: string <- var@base_reg_of(bound.bound_reg);
+                            clean_outer: string <- var@base_reg_of(bound.outer_reg);
+                            base_rhs: string <- let_dispatcher@compute_rhs_reg_in_let(term, dest, bound.bound_name, clean_bound, bound.outer_reg);
+                            rhs_reg: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_make" of {
+                                true -> "X0";
+                                false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 0 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name == "int64" and dest == "X0" and clean_bound == "X1" of {
+                                    true -> "X2";
+                                    false -> base_rhs
+                                }
+                            };
+                            outer_rhs_b: string <- term_reg_spill@outer_for_aggregate_let_rhs(term, bound.outer_reg);
+                            rhs_asm: string <- case term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner).root < 0 of {
+                                true -> "";
+                                false -> case bound.debug of {
+                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), rhs_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_rhs_b, debug: true }) };
+                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), rhs_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_rhs_b, debug: false })
+                                }
+                            };
+                            spill_reg_b: string <- term_reg_spill@compute_let_rhs_spill_reg(term, rhs_reg, bound.outer_reg);
+                            spill_b: bool <- len(spill_reg_b) > 0;
+                            rhs_bind_b: string <- case spill_b of { true -> spill_reg_b; false -> rhs_reg };
+                            mov_spill_b: string <- case spill_b of { true -> term_reg_spill@mov_spill_from_rhs(rhs_reg, spill_reg_b); false -> "" };
+                            adj_str_b: string <- var@find_sp_binding(bound.outer_reg, "_adj");
+                            sp_adj_b: int64 <- case len(adj_str_b) > 0 of { true -> string_parse@string_to_int64(adj_str_b); false -> 0 };
+                            tm_adj: int64 <- case term_reg_spill@is_aggregate_make(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of {
+                                false -> sp_adj_b;
+                                true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make" of {
+                                    true -> term_aggregate_helpers@flat_tuple_nested_alloc(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), prims_tuple@count_flat_elements(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)), 0);
+                                    false -> term_aggregate_helpers@flat_record_sum_nested_inners(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))
+                                }
+                            };
+                            adj_binding: string <- case tm_adj > 0 of {
+                                true -> concat("|_adj=", atom_table@int64_to_decimal_string(tm_adj));
+                                false -> ""
+                            };
+                            iap_b: string <- case term_reg_spill@is_aggregate_make(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of {
+                                true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make" of {
+                                    true -> {
+                                        ic_b: int64 <- prims_tuple@count_flat_elements(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                                        it_b: int64 <- term_aggregate_helpers@flat_tuple_nested_alloc(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), ic_b, 0);
+                                        term_aggregate_helpers@compute_inner_adj_bindings(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), 0, ic_b, 0, it_b)
+                                    };
+                                    false -> {
+                                        icr_b: int64 <- prims_record@count_record_fields(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name);
+                                        itr_b: int64 <- term_aggregate_helpers@flat_record_sum_nested_inners(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                                        term_aggregate_helpers@compute_inner_adj_bindings_record(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), 0, icr_b, 0, itr_b)
+                                    }
+                                };
+                                false -> ""
+                            };
+                            va_b_tm: string <- case term_reg_spill@is_aggregate_make(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of {
+                                true -> concat("|_va.", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", atom_table@int64_to_decimal_string(tm_adj))));
+                                false -> ""
+                            };
+                            tp_pi_b: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_proj" and len(va_b_tm) == 0 of {
+                                true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).right_expr)).value;
+                                false -> ""
+                            };
+                            tp_eas_b: string <- case len(tp_pi_b) > 0 and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name) of {
+                                true -> var@find_sp_binding(bound.outer_reg, concat("_adj.", tp_pi_b));
+                                false -> ""
+                            };
+                            va_b_tp: string <- case len(tp_pi_b) > 0 and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name) of {
+                                true -> case len(tp_eas_b) > 0 of {
+                                    true -> concat("|_va.", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", tp_eas_b)));
+                                    false -> ""
+                                };
+                                false -> ""
+                            };
+                            vr_svk_b: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 and (reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name) or reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(term).type_name)) and len(va_b_tm) == 0 and len(va_b_tp) == 0 of {
+                                true -> concat("_va.", term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name);
+                                false -> ""
+                            };
+                            vr_svs_b: string <- case len(vr_svk_b) > 0 of { true -> var@find_sp_binding(bound.outer_reg, vr_svk_b); false -> "" };
+                            vr_adj_fb: string <- case len(vr_svs_b) == 0 and len(vr_svk_b) > 0 of {
+                                true -> var@find_sp_binding(bound.outer_reg, "_adj");
+                                false -> vr_svs_b
+                            };
+                            va_b_vr: string <- case len(vr_svk_b) > 0 of {
+                                true -> case len(vr_adj_fb) > 0 of {
+                                    true -> concat("|_va.", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", vr_adj_fb)));
+                                    false -> ""
+                                };
+                                false -> ""
+                            };
+                            va_b: string <- concat(va_b_tm, concat(va_b_tp, va_b_vr));
+                            proj_tpv: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_proj" of {
+                                true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).inner)).kind == 1 of { true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).inner)).name; false -> "" };
+                                false -> ""
+                            };
+                            proj_tvs: string <- case len(proj_tpv) > 0 of { true -> var@find_sp_binding(bound.outer_reg, concat("_va.", proj_tpv)); false -> "" };
+                            proj_sp_adj: int64 <- case len(proj_tvs) > 0 of { true -> string_parse@string_to_int64(proj_tvs); false -> sp_adj_b };
+                            tp_proj_var_b: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_proj" and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).inner)).kind == 1 of { true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).inner)).name; false -> "" };
+                            tp_ptr_reg_b: string <- case len(tp_proj_var_b) > 0 of {
+                                true -> {
+                                    from_outer: string <- var@find_sp_binding(bound.outer_reg, concat("_ptr.", tp_proj_var_b));
+                                    case len(from_outer) > 0 of {
+                                        true -> from_outer;
+                                        false -> case tp_proj_var_b == bound.bound_name and len(bound.bound_reg) > 0 and substring(bound.bound_reg, 0, 1) != "[" of {
+                                            true -> bound.bound_reg;
+                                            false -> ""
+                                        }
+                                    }
+                                };
+                                false -> ""
+                            };
+                            tuple_root_gpr_b: string <- case len(tp_proj_var_b) > 0 of {
+                                true -> var@find_sp_binding(bound.outer_reg, tp_proj_var_b);
+                                false -> ""
+                            };
+                            rhs_bind_fp_prefix: string <- case len(rhs_bind_b) > 0 of {
+                                true -> substring(rhs_bind_b, 0, 1);
+                                false -> ""
+                            };
+                            rhs_is_fp_scalar_reg: bool <- rhs_bind_fp_prefix == "S" or rhs_bind_fp_prefix == "D" or rhs_bind_fp_prefix == "H";
+                            has_gpr_tuple_root_b: bool <- len(tuple_root_gpr_b) > 0 and var@is_memory_ref(tuple_root_gpr_b) == false and rhs_is_fp_scalar_reg;
+                            tp_is_reg_b: bool <- len(tp_ptr_reg_b) > 0 or has_gpr_tuple_root_b;
+                            body_bound: string <- case tp_is_reg_b of {
+                                true -> rhs_reg;
+                                false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_proj" and len(proj_tvs) > 0 of {
+                                    true -> {
+                                        pix_b: int64 <- string_parse@string_to_int64(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).right_expr)).value);
+                                        byte_b: int64 <- prims_tuple@tuple_field_start_byte_offset(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).inner)).type_name, pix_b);
+                                        var@sp_offset_for_byte_adj(byte_b, proj_sp_adj)
+                                    };
+                                    false -> rhs_bind_b
+                                }
+                            };
+                            tuple_elem_count_b: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(term).type_name) of { true -> prims_tuple@count_type_elements(term_sir_helpers@sir_term_root_node(term).type_name); false -> 0 };
+                            ptr_binding_inner: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(term).type_name) and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
+                                true -> case tuple_elem_count_b > 2 of {
+                                    true -> concat("|_ptr.", concat(term_sir_helpers@sir_term_root_node(term).name, "=X12"));
+                                    false -> concat("|_ptr.", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", rhs_bind_b)))
+                                };
+                                false -> ""
+                            };
+                            save_base_b: string <- case tuple_elem_count_b > 2 and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
+                                true -> concat("    MOV X12, ", concat(rhs_bind_b, "\n"));
+                                false -> ""
+                            };
+                            reg_binding_inner: string <- case tp_is_reg_b of {
+                                true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_proj" and len(proj_tvs) > 0 of {
+                                    true -> {
+                                        pix_r: int64 <- string_parse@string_to_int64(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).right_expr)).value);
+                                        byte_r: int64 <- prims_tuple@tuple_field_start_byte_offset(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).inner)).type_name, pix_r);
+                                        concat("|", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", var@sp_offset_for_byte_adj(byte_r, proj_sp_adj))))
+                                    };
+                                    false -> concat("|", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", rhs_bind_b)))
+                                };
+                                false -> ""
+                            };
+                            new_outer_raw: string <- case tp_is_reg_b of {
+                                true -> {
+                                    nob_r: string <- var@base_reg_of(bound.outer_reg);
+                                    nosp_r: string <- var@extract_sp_bindings(bound.outer_reg);
+                                    concat(nob_r, concat(nosp_r, reg_binding_inner))
+                                };
+                                false -> var@build_outer_with_sp(bound.bound_name, bound.bound_reg, bound.outer_reg, term_sir_helpers@sir_term_root_node(term).name, term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), proj_sp_adj, rhs_bind_b)
+                            };
+                            nob: string <- var@base_reg_of(new_outer_raw);
+                            nosp: string <- var@extract_sp_bindings(new_outer_raw);
+                            new_outer: string <- concat(nob, concat(va_b, concat(adj_binding, concat(iap_b, concat(nosp, ptr_binding_inner)))));
+                            outer_for_body: string <- term_reg_spill@outer_append_id_ret_tuple_sret(term, concat(new_outer, term_case_patterns@list_cons_tail_rebind_suffix(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))), bound.outer_reg);
+                            body_asm: string <- case bound.debug of {
+                                true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), dest, { bound_name: term_sir_helpers@sir_term_root_node(term).name, bound_reg: body_bound, outer_reg: outer_for_body, debug: true }) };
+                                false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), dest, { bound_name: term_sir_helpers@sir_term_root_node(term).name, bound_reg: body_bound, outer_reg: outer_for_body, debug: false })
+                            };
+                            tuple_sret_outer_n: string <- var@find_sp_binding(outer_for_body, "_tuple_sret");
+                            // Phase E e4b: record_make always SUBs SP (see record_make emit comment ~line 1872) and is never written
+                            // directly into the actor-reply SRET buffer. So even when _tuple_sret is set on the outer (e.g. behavior
+                            // functions with an X20 reply buffer), an intermediate `spec <- { ... }` binding still needs ADD SP at
+                            // body-end. Without this, a behavior fn that builds a record literal (e.g. start_child(spec)) leaves SP
+                            // 48–112 B too low, corrupting the LDP that restores callee-saved registers on return.
+                            base_stack_n: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_make" of {
+                                true -> term_aggregate_helpers@aggregate_callee_return_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                                false -> case len(tuple_sret_outer_n) > 0 of {
+                                    true -> 0;
+                                    false -> {
+                                        agg_n: int64 <- term_aggregate_helpers@aggregate_callee_return_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                                        case agg_n > 0 of {
+                                            true -> agg_n;
+                                            false -> term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))
+                                        }
+                                    }
+                                }
+                            };
+                            base_stack_eff_n: int64 <- case term_aggregate_helpers@let_suppress_base_stack_overlay_rec_flat(term, base_stack_n) of {
+                                true -> term_aggregate_helpers@let_suppressed_base_stack_fixup(term);
+                                false -> base_stack_n
+                            };
+                            tail_stack_raw_n: int64 <- term_aggregate_helpers@let_tail_aggregate_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
+                            tail_stack_n: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 2 of {
+                                true -> 0;
+                                false -> case len(tuple_sret_outer_n) > 0 of {
+                                    true -> 0;
+                                    false -> case base_stack_eff_n > 0 and tail_stack_raw_n == base_stack_eff_n of {
+                                        true -> 0;
+                                        false -> tail_stack_raw_n
+                                    }
+                                }
+                            };
+                            dealloc_bytes: int64 <- base_stack_eff_n + tail_stack_n;
+                            dealloc: string <- case dealloc_bytes > 0 of {
+                                true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(dealloc_bytes), "\n"));
+                                false -> ""
+                            };
+                            id_ret_n: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 1 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).name == term_sir_helpers@sir_term_root_node(term).name and reg_conventions@is_aggregate_struct_or_tuple_return_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name);
+                            tail_ret_n: bool <- tail_stack_n > 0;
+                            promote_nbytes_n: int64 <- case tail_ret_n of {
+                                true -> tail_stack_n;
+                                false -> case id_ret_n of {
+                                    true -> term_aggregate_helpers@aggregate_callee_return_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                                    false -> 0
+                                }
+                            };
+                            promote_asm: string <- case dest == "X0" and promote_nbytes_n > 0 and (id_ret_n or tail_ret_n) and len(tuple_sret_outer_n) == 0 of {
+                                true -> term_aggregate_helpers@aggregate_return_heap_promote_x0(promote_nbytes_n);
+                                false -> ""
+                            };
+                            rhs_sep: string <- case len(rhs_asm) > 0 and substring(rhs_asm, len(rhs_asm) - 1, len(rhs_asm)) == "\n" of {
+                                true -> "";
+                                false -> "\n"
+                            };
+                            let_combined: string <- concat(concat(concat(concat(rhs_asm, rhs_sep), mov_spill_b), save_base_b), case len(dealloc) > 0 of {
+                                true -> case len(promote_asm) > 0 of {
+                                    true -> concat(concat(concat(body_asm, "\n"), promote_asm), dealloc);
+                                    false -> concat(concat(body_asm, "\n"), dealloc)
+                                };
+                                false -> body_asm
+                            });
+                            case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "buf_store" of {
+                                true -> var@strip_mov_x2_x1_then_x1_x2(let_combined);
+                                false -> let_combined
+                            }
+                        };
+                        false -> {
+                            base_rhs: string <- let_dispatcher@compute_rhs_reg_top_level(term, bound.bound_reg, dest);
+                            rhs_reg: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_make" of {
+                                true -> "X0";
+                                false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 0 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name == "int64" and dest == "X0" and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind != 4 of {
+                                    true -> "X1";
+                                    false -> base_rhs
+                                }
+                            };
+                            outer_rhs_tl: string <- term_reg_spill@outer_for_aggregate_let_rhs(term, bound.outer_reg);
+                            rhs_asm: string <- case term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner).root < 0 of {
+                                true -> "";
+                                false -> case bound.debug of {
+                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), rhs_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_rhs_tl, debug: true }) };
+                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), rhs_reg, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_rhs_tl, debug: false })
+                                }
+                            };
+                            tm_adj_tl: int64 <- case term_reg_spill@is_aggregate_make(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of {
+                                false -> 0;
+                                true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make" of {
+                                    true -> term_aggregate_helpers@flat_tuple_nested_alloc(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), prims_tuple@count_flat_elements(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)), 0);
+                                    false -> term_aggregate_helpers@flat_record_sum_nested_inners(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))
+                                }
+                            };
+                            adj_binding_tl: string <- case tm_adj_tl > 0 of {
+                                true -> concat("|_adj=", atom_table@int64_to_decimal_string(tm_adj_tl));
+                                false -> ""
+                            };
+                            iap_tl: string <- case term_reg_spill@is_aggregate_make(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of {
+                                true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make" of {
+                                    true -> {
+                                        ic_tl: int64 <- prims_tuple@count_flat_elements(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                                        it_tl: int64 <- term_aggregate_helpers@flat_tuple_nested_alloc(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), ic_tl, 0);
+                                        term_aggregate_helpers@compute_inner_adj_bindings(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), 0, ic_tl, 0, it_tl)
+                                    };
+                                    false -> {
+                                        icr_tl: int64 <- prims_record@count_record_fields(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name);
+                                        itr_tl: int64 <- term_aggregate_helpers@flat_record_sum_nested_inners(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                                        term_aggregate_helpers@compute_inner_adj_bindings_record(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), 0, icr_tl, 0, itr_tl)
+                                    }
+                                };
+                                false -> ""
+                            };
+                            vab_tl: string <- case term_reg_spill@is_aggregate_make(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of {
+                                true -> concat("|_va.", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", atom_table@int64_to_decimal_string(tm_adj_tl))));
+                                false -> ""
+                            };
+                            spill_reg_tl: string <- term_reg_spill@compute_let_rhs_spill_reg(term, rhs_reg, bound.outer_reg);
+                            spill_tl: bool <- len(spill_reg_tl) > 0;
+                            rhs_bind_tl: string <- case spill_tl of { true -> spill_reg_tl; false -> rhs_reg };
+                            mov_spill_tl: string <- case spill_tl of { true -> term_reg_spill@mov_spill_from_rhs(rhs_reg, spill_reg_tl); false -> "" };
+                            is_simple_tuple_make: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make" and tm_adj_tl == 0;
+                            // Simple tuple_make leaves the value on the stack and captures its address in
+                            // rhs_bind_tl (spill GPR). Bind the name to that stable pointer — never to SP.
+                            // Binding to SP made later SUB SP slots invalidate the name, reused the same
+                            // spill GPR for every tuple in a sequence, and made list_cons copy the wrong
+                            // head (List[(K,V)] corruption across from_sorted helpers).
+                            body_bound_tl: string <- rhs_bind_tl;
+                            tp_binding_tl: string <- var@new_tp_binding(term_sir_helpers@sir_term_root_node(term).name, term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), 0);
+                            reg_binding_tl: string <- case is_simple_tuple_make of {
+                                true -> concat("|", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", rhs_bind_tl)));
+                                false -> var@reg_binding(term_sir_helpers@sir_term_root_node(term).name, rhs_bind_tl)
+                            };
+                            tuple_elem_count_tl: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(term).type_name) of { true -> prims_tuple@count_type_elements(term_sir_helpers@sir_term_root_node(term).type_name); false -> 0 };
+                            ptr_binding_tl: string <- case is_simple_tuple_make and len(rhs_bind_tl) > 0 and substring(rhs_bind_tl, 0, 1) != "[" of {
+                                true -> concat("|_ptr.", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", rhs_bind_tl)));
+                                false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(term).type_name) and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
+                                    true -> case tuple_elem_count_tl > 2 of {
+                                        true -> concat("|_ptr.", concat(term_sir_helpers@sir_term_root_node(term).name, "=X12"));
+                                        false -> concat("|_ptr.", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", rhs_bind_tl)))
+                                    };
+                                    false -> ""
+                                }
+                            };
+                            save_base_tl: string <- case tuple_elem_count_tl > 2 and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
+                                true -> concat("    MOV X12, ", concat(rhs_bind_tl, "\n"));
+                                false -> ""
+                            };
+                            // Top-level let: keep enclosing bindings (e.g. |%s=X19) so later prims still resolve params after rhs_reg holds the new let.
+                            nob_tl: string <- case is_simple_tuple_make of {
+                                true -> "SP";
+                                false -> var@base_reg_of(bound.outer_reg)
+                            };
+                            inherit_sp_tl: string <- var@extract_sp_bindings(bound.outer_reg);
+                            new_outer_tl: string <- concat(nob_tl, concat(inherit_sp_tl, concat(tp_binding_tl, concat(reg_binding_tl, concat(adj_binding_tl, concat(iap_tl, concat(vab_tl, ptr_binding_tl)))))));
+                            outer_for_body_tl: string <- term_reg_spill@outer_append_id_ret_tuple_sret(term, concat(new_outer_tl, term_case_patterns@list_cons_tail_rebind_suffix(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))), bound.outer_reg);
+                            body_asm: string <- case bound.debug of {
+                                true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), dest, { bound_name: term_sir_helpers@sir_term_root_node(term).name, bound_reg: body_bound_tl, outer_reg: outer_for_body_tl, debug: true }) };
+                                false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), dest, { bound_name: term_sir_helpers@sir_term_root_node(term).name, bound_reg: body_bound_tl, outer_reg: outer_for_body_tl, debug: false })
+                            };
+                            tuple_sret_outer_tl: string <- var@find_sp_binding(outer_for_body_tl, "_tuple_sret");
+                            // Phase E e4b (mirror of base_stack_n above): record_make never writes into SRET, so its SUB SP must
+                            // always be balanced even when _tuple_sret is set on the outer (behavior reply path).
+                            base_stack_tl: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_make" of {
+                                true -> term_aggregate_helpers@aggregate_callee_return_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                                false -> case len(tuple_sret_outer_tl) > 0 of {
+                                    true -> 0;
+                                    false -> {
+                                        agg_tl: int64 <- term_aggregate_helpers@aggregate_callee_return_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                                        case agg_tl > 0 of {
+                                            true -> agg_tl;
+                                            false -> term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))
+                                        }
+                                    }
+                                }
+                            };
+                            base_stack_eff_tl: int64 <- case term_aggregate_helpers@let_suppress_base_stack_overlay_rec_flat(term, base_stack_tl) of {
+                                true -> term_aggregate_helpers@let_suppressed_base_stack_fixup(term);
+                                false -> base_stack_tl
+                            };
+                            tail_stack_raw_tl: int64 <- term_aggregate_helpers@let_tail_aggregate_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
+                            tail_stack_tl: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 2 of {
+                                true -> 0;
+                                false -> case len(tuple_sret_outer_tl) > 0 of {
+                                    true -> 0;
+                                    false -> case base_stack_eff_tl > 0 and tail_stack_raw_tl == base_stack_eff_tl of {
+                                        true -> 0;
+                                        false -> tail_stack_raw_tl
+                                    }
+                                }
+                            };
+                            dealloc_bytes_tl: int64 <- base_stack_eff_tl + tail_stack_tl;
+                            dealloc: string <- case dealloc_bytes_tl > 0 of {
+                                true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(dealloc_bytes_tl), "\n"));
+                                false -> ""
+                            };
+                            id_ret_tl: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 1 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).name == term_sir_helpers@sir_term_root_node(term).name and reg_conventions@is_aggregate_struct_or_tuple_return_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name);
+                            tail_ret_tl: bool <- tail_stack_tl > 0;
+                            promote_nbytes_tl: int64 <- case tail_ret_tl of {
+                                true -> tail_stack_tl;
+                                false -> case id_ret_tl of {
+                                    true -> term_aggregate_helpers@aggregate_callee_return_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                                    false -> 0
+                                }
+                            };
+                            promote_asm_tl: string <- case dest == "X0" and promote_nbytes_tl > 0 and (id_ret_tl or tail_ret_tl) and len(tuple_sret_outer_tl) == 0 of {
+                                true -> term_aggregate_helpers@aggregate_return_heap_promote_x0(promote_nbytes_tl);
+                                false -> ""
+                            };
+                            rhs_sep: string <- case len(rhs_asm) > 0 and substring(rhs_asm, len(rhs_asm) - 1, len(rhs_asm)) == "\n" of {
+                                true -> "";
+                                false -> "\n"
+                            };
+                            concat(concat(concat(concat(rhs_asm, rhs_sep), mov_spill_tl), save_base_tl), case len(dealloc) > 0 of {
+                                true -> case len(promote_asm_tl) > 0 of {
+                                    true -> concat(concat(concat(body_asm, "\n"), promote_asm_tl), dealloc);
+                                    false -> concat(concat(body_asm, "\n"), dealloc)
+                                };
+                                false -> body_asm
+                            })
+                        }
+                    }
+}
+

@@ -21,7 +21,6 @@
 // SIR chain: tuple_make(e0, tuple_make(e1, ... tuple_make(eN-2, eN-1)))
 // Emitter flattens this chain into one contiguous allocation.
 
-use sir_ast;
 use reg_conventions;
 use atom_table;
 use string_parse;
@@ -39,6 +38,35 @@ export index_to_offset/1;
 export ldr_prefix_for_type/1;
 export tuple_field_start_byte_offset/2;
 export tuple_type_uses_boxed_float32/1;
+
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
 
 fn strip_ty_leading(s: string) -> string {
     case len(s) == 0 of {
@@ -195,17 +223,17 @@ fn tuple_type_uses_boxed_float32(type_name: string) -> bool {
     }
 }
 
-fn count_flat_elements(term: SIRTerm) -> int64 {
-    type_count: int64 <- count_type_elements(term.type_name);
-    case type_count < 2 and term.kind == 6 and term.name == "tuple_make" of {
+fn count_flat_elements(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
+    type_count: int64 <- count_type_elements(sir_term_root_node(term).type_name);
+    case type_count < 2 and sir_term_root_node(term).kind == 6 and sir_term_root_node(term).name == "tuple_make" of {
         true -> count_chain_elements(term);
         false -> type_count
     }
 }
 
-fn count_chain_elements(term: SIRTerm) -> int64 {
-    case term.kind == 6 and term.name == "tuple_make" of {
-        true -> 1 + count_chain_elements(term.right_expr);
+fn count_chain_elements(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
+    case sir_term_root_node(term).kind == 6 and sir_term_root_node(term).name == "tuple_make" of {
+        true -> 1 + count_chain_elements(sir_term_at(term, sir_term_root_node(term).right_expr));
         false -> 1
     }
 }
@@ -249,8 +277,8 @@ fn flat_alloc_size_str(count: int64) -> string {
 }
 
 // Flat layout: one allocation per tuple chain
-fn count_tuple_allocations(term: SIRTerm) -> int64 {
-    case term.kind == 6 and term.name == "tuple_make" of {
+fn count_tuple_allocations(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
+    case sir_term_root_node(term).kind == 6 and sir_term_root_node(term).name == "tuple_make" of {
         true -> 1;
         false -> 0
     }
@@ -307,9 +335,9 @@ fn ldr_prefix_for_type(type_name: string) -> string {
     }
 }
 
-fn emit_tuple_proj(term: SIRTerm, dest: string) -> string {
-    offset_str: string <- index_to_offset(term.right_expr.value);
-    prefix: string <- ldr_prefix_for_type(term.type_name);
+fn emit_tuple_proj(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
+    offset_str: string <- index_to_offset(sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).value);
+    prefix: string <- ldr_prefix_for_type(sir_term_root_node(term).type_name);
     dest_num: string <- case len(dest) > 0 of {
         true -> substring(dest, 1, len(dest));
         false -> "0"
@@ -318,9 +346,9 @@ fn emit_tuple_proj(term: SIRTerm, dest: string) -> string {
     concat(concat(concat(concat("    LDR ", ldr_reg), ", [SP, "), offset_str), "]")
 }
 
-fn emit_prim_op(term: SIRTerm, dest: string) -> string {
-    case term.name of {
+fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
+    case sir_term_root_node(term).name of {
         "tuple_proj" -> emit_tuple_proj(term, dest);
-        _: string -> concat(concat("    ; unsupported tuple prim: ", term.name), "")
+        _: string -> concat(concat("    ; unsupported tuple prim: ", sir_term_root_node(term).name), "")
     }
 }

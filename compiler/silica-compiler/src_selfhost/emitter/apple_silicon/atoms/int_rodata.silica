@@ -19,7 +19,6 @@
 // Emit .rodata section with L_pi_N, L_pi32_N, L_pi16_N, L_pi8_N labels for inline write(2) emission
 // Uses .byte to avoid bootstrap compiler issues with escaped quotes in strings
 
-use sir_ast;
 use compiler_maps;
 use atom_table;
 
@@ -50,6 +49,35 @@ export module_uses_uint8_print_var/1;
 export module_uses_signed_print_var/1;
 export debug_int64_table_lookups/1;
 export emit_one_value_string/3;
+
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
 
 fn nil_values() -> List[string, mem(normal)] {
     sequence proc[mem(normal)]
@@ -98,21 +126,17 @@ fn empty_int8_table() -> { is_empty: boolean, index_map: { root: ref?(L, normal,
     empty_work_table()
 }
 
-fn add_value(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }, value: string) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
-    sequence proc[mem(normal)]
-        r: { map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, index: int64, inserted: boolean } <- compiler_maps@map_insert_or_get_index(table.index_map, value, table.next_index);
-        new_values: List[string, mem(normal)] <- case r.inserted of {
-            true -> cons_value(value, table.values);
-            false -> table.values
-        };
-        new_next: int64 <- case r.inserted of {
-            true -> table.next_index + 1;
-            false -> table.next_index
-        };
-        result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- { is_empty: false, index_map: r.map, values: new_values, next_index: new_next }
-    produces
-        pure result
-    end
+fn add_value(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }, value: string) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } proc[mem(normal)] {
+    r: { map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, index: int64, inserted: boolean } <- compiler_maps@map_insert_or_get_index(table.index_map, value, table.next_index);
+    new_values: List[string, mem(normal)] <- case r.inserted of {
+        true -> cons_value(value, table.values);
+        false -> table.values
+    };
+    new_next: int64 <- case r.inserted of {
+        true -> table.next_index + 1;
+        false -> table.next_index
+    };
+    { is_empty: false, index_map: r.map, values: new_values, next_index: new_next }
 }
 
 fn add_value_int64(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }, value: string) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
@@ -315,46 +339,49 @@ fn emit_int64_values_rodata(values: List[string, mem(normal)], index: int64, lab
     end
 }
 
-fn collect_int64_from_term(term: SIRTerm, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_int64_from_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     sequence proc[mem(normal)]
         result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }
-            <- case term.kind < 0 of {
+            <- case term.root < 0 of {
             true -> table;
-            false -> case term.kind of {
+            false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
                 2 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_term(term.inner, table);
-                    collect_int64_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_term(sir_term_at(term, node.inner), table);
+                    collect_int64_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 3 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_term(term.inner, table);
-                    collect_int64_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_term(sir_term_at(term, node.inner), table);
+                    collect_int64_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 7 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_term(term.inner, table);
-                    collect_int64_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_term(sir_term_at(term, node.inner), table);
+                    collect_int64_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 8 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_term(term.inner, table);
-                    collect_int64_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_term(sir_term_at(term, node.inner), table);
+                    collect_int64_from_term(sir_term_at(term, node.right_expr), t1)
                 };
-                4 -> case term.name == "main.print_int64" or term.name == "main.print_uint64" of {
-                    true -> case term.inner.kind == 0 of {
-                        true -> case term.inner.type_name == "int64" or term.inner.type_name == "uint64" of {
+                4 -> case node.name == "main.print_int64" or node.name == "main.print_uint64" of {
+                    true -> case sir_term_root_node(sir_term_at(term, node.inner)).kind == 0 of {
+                        true -> case sir_term_root_node(sir_term_at(term, node.inner)).type_name == "int64" or sir_term_root_node(sir_term_at(term, node.inner)).type_name == "uint64" of {
                             true -> {
-                                t: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- add_value_int64(table, term.inner.value);
-                                collect_int64_from_term(term.inner, t)
+                                t: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- add_value_int64(table, sir_term_root_node(sir_term_at(term, node.inner)).value);
+                                collect_int64_from_term(sir_term_at(term, node.inner), t)
                             };
-                            false -> collect_int64_from_term(term.inner, table)
+                            false -> collect_int64_from_term(sir_term_at(term, node.inner), table)
                         };
-                        false -> collect_int64_from_term(term.inner, table)
+                        false -> collect_int64_from_term(sir_term_at(term, node.inner), table)
                     };
-                    false -> collect_int64_from_term(term.inner, table)
+                    false -> collect_int64_from_term(sir_term_at(term, node.inner), table)
                 };
                 6 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_term(term.inner, table);
-                    collect_int64_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_term(sir_term_at(term, node.inner), table);
+                    collect_int64_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 _: int64 -> table
+            }
             }
         }
     produces
@@ -362,46 +389,49 @@ fn collect_int64_from_term(term: SIRTerm, table: { is_empty: boolean, index_map:
     end
 }
 
-fn collect_int32_from_term(term: SIRTerm, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_int32_from_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     sequence proc[mem(normal)]
         result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }
-            <- case term.kind < 0 of {
+            <- case term.root < 0 of {
             true -> table;
-            false -> case term.kind of {
+            false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
                 2 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_term(term.inner, table);
-                    collect_int32_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_term(sir_term_at(term, node.inner), table);
+                    collect_int32_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 3 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_term(term.inner, table);
-                    collect_int32_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_term(sir_term_at(term, node.inner), table);
+                    collect_int32_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 7 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_term(term.inner, table);
-                    collect_int32_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_term(sir_term_at(term, node.inner), table);
+                    collect_int32_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 8 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_term(term.inner, table);
-                    collect_int32_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_term(sir_term_at(term, node.inner), table);
+                    collect_int32_from_term(sir_term_at(term, node.right_expr), t1)
                 };
-                4 -> case term.name == "main.print_int32" or term.name == "main.print_uint32" of {
-                    true -> case term.inner.kind == 0 of {
-                        true -> case term.inner.type_name == "int32" or term.inner.type_name == "uint32" of {
+                4 -> case node.name == "main.print_int32" or node.name == "main.print_uint32" of {
+                    true -> case sir_term_root_node(sir_term_at(term, node.inner)).kind == 0 of {
+                        true -> case sir_term_root_node(sir_term_at(term, node.inner)).type_name == "int32" or sir_term_root_node(sir_term_at(term, node.inner)).type_name == "uint32" of {
                             true -> {
-                                t: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- add_value_int32(table, term.inner.value);
-                                collect_int32_from_term(term.inner, t)
+                                t: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- add_value_int32(table, sir_term_root_node(sir_term_at(term, node.inner)).value);
+                                collect_int32_from_term(sir_term_at(term, node.inner), t)
                             };
-                            false -> collect_int32_from_term(term.inner, table)
+                            false -> collect_int32_from_term(sir_term_at(term, node.inner), table)
                         };
-                        false -> collect_int32_from_term(term.inner, table)
+                        false -> collect_int32_from_term(sir_term_at(term, node.inner), table)
                     };
-                    false -> collect_int32_from_term(term.inner, table)
+                    false -> collect_int32_from_term(sir_term_at(term, node.inner), table)
                 };
                 6 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_term(term.inner, table);
-                    collect_int32_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_term(sir_term_at(term, node.inner), table);
+                    collect_int32_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 _: int64 -> table
+            }
             }
         }
     produces
@@ -409,46 +439,49 @@ fn collect_int32_from_term(term: SIRTerm, table: { is_empty: boolean, index_map:
     end
 }
 
-fn collect_int16_from_term(term: SIRTerm, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_int16_from_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     sequence proc[mem(normal)]
         result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }
-            <- case term.kind < 0 of {
+            <- case term.root < 0 of {
             true -> table;
-            false -> case term.kind of {
+            false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
                 2 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_term(term.inner, table);
-                    collect_int16_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_term(sir_term_at(term, node.inner), table);
+                    collect_int16_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 3 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_term(term.inner, table);
-                    collect_int16_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_term(sir_term_at(term, node.inner), table);
+                    collect_int16_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 7 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_term(term.inner, table);
-                    collect_int16_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_term(sir_term_at(term, node.inner), table);
+                    collect_int16_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 8 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_term(term.inner, table);
-                    collect_int16_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_term(sir_term_at(term, node.inner), table);
+                    collect_int16_from_term(sir_term_at(term, node.right_expr), t1)
                 };
-                4 -> case term.name == "main.print_int16" or term.name == "main.print_uint16" of {
-                    true -> case term.inner.kind == 0 of {
-                        true -> case term.inner.type_name == "int16" or term.inner.type_name == "uint16" of {
+                4 -> case node.name == "main.print_int16" or node.name == "main.print_uint16" of {
+                    true -> case sir_term_root_node(sir_term_at(term, node.inner)).kind == 0 of {
+                        true -> case sir_term_root_node(sir_term_at(term, node.inner)).type_name == "int16" or sir_term_root_node(sir_term_at(term, node.inner)).type_name == "uint16" of {
                             true -> {
-                                t: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- add_value_int16(table, term.inner.value);
-                                collect_int16_from_term(term.inner, t)
+                                t: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- add_value_int16(table, sir_term_root_node(sir_term_at(term, node.inner)).value);
+                                collect_int16_from_term(sir_term_at(term, node.inner), t)
                             };
-                            false -> collect_int16_from_term(term.inner, table)
+                            false -> collect_int16_from_term(sir_term_at(term, node.inner), table)
                         };
-                        false -> collect_int16_from_term(term.inner, table)
+                        false -> collect_int16_from_term(sir_term_at(term, node.inner), table)
                     };
-                    false -> collect_int16_from_term(term.inner, table)
+                    false -> collect_int16_from_term(sir_term_at(term, node.inner), table)
                 };
                 6 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_term(term.inner, table);
-                    collect_int16_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_term(sir_term_at(term, node.inner), table);
+                    collect_int16_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 _: int64 -> table
+            }
             }
         }
     produces
@@ -456,46 +489,49 @@ fn collect_int16_from_term(term: SIRTerm, table: { is_empty: boolean, index_map:
     end
 }
 
-fn collect_int8_from_term(term: SIRTerm, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_int8_from_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     sequence proc[mem(normal)]
         result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }
-            <- case term.kind < 0 of {
+            <- case term.root < 0 of {
             true -> table;
-            false -> case term.kind of {
+            false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
                 2 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_term(term.inner, table);
-                    collect_int8_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_term(sir_term_at(term, node.inner), table);
+                    collect_int8_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 3 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_term(term.inner, table);
-                    collect_int8_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_term(sir_term_at(term, node.inner), table);
+                    collect_int8_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 7 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_term(term.inner, table);
-                    collect_int8_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_term(sir_term_at(term, node.inner), table);
+                    collect_int8_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 8 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_term(term.inner, table);
-                    collect_int8_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_term(sir_term_at(term, node.inner), table);
+                    collect_int8_from_term(sir_term_at(term, node.right_expr), t1)
                 };
-                4 -> case term.name == "main.print_int8" or term.name == "main.print_uint8" of {
-                    true -> case term.inner.kind == 0 of {
-                        true -> case term.inner.type_name == "int8" or term.inner.type_name == "uint8" of {
+                4 -> case node.name == "main.print_int8" or node.name == "main.print_uint8" of {
+                    true -> case sir_term_root_node(sir_term_at(term, node.inner)).kind == 0 of {
+                        true -> case sir_term_root_node(sir_term_at(term, node.inner)).type_name == "int8" or sir_term_root_node(sir_term_at(term, node.inner)).type_name == "uint8" of {
                             true -> {
-                                t: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- add_value_int8(table, term.inner.value);
-                                collect_int8_from_term(term.inner, t)
+                                t: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- add_value_int8(table, sir_term_root_node(sir_term_at(term, node.inner)).value);
+                                collect_int8_from_term(sir_term_at(term, node.inner), t)
                             };
-                            false -> collect_int8_from_term(term.inner, table)
+                            false -> collect_int8_from_term(sir_term_at(term, node.inner), table)
                         };
-                        false -> collect_int8_from_term(term.inner, table)
+                        false -> collect_int8_from_term(sir_term_at(term, node.inner), table)
                     };
-                    false -> collect_int8_from_term(term.inner, table)
+                    false -> collect_int8_from_term(sir_term_at(term, node.inner), table)
                 };
                 6 -> {
-                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_term(term.inner, table);
-                    collect_int8_from_term(term.right_expr, t1)
+                    t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_term(sir_term_at(term, node.inner), table);
+                    collect_int8_from_term(sir_term_at(term, node.right_expr), t1)
                 };
                 _: int64 -> table
+            }
             }
         }
     produces
@@ -503,7 +539,7 @@ fn collect_int8_from_term(term: SIRTerm, table: { is_empty: boolean, index_map: 
     end
 }
 
-fn collect_int64_from_functions_cons(fns: ListSIRFunction, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_int64_from_functions_cons(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     sequence proc[mem(normal)]
         t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_term(fns.head.body, table);
         result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_functions(fns.tail, t1)
@@ -512,14 +548,14 @@ fn collect_int64_from_functions_cons(fns: ListSIRFunction, table: { is_empty: bo
     end
 }
 
-fn collect_int64_from_functions(fns: ListSIRFunction, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_int64_from_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     case fns.is_nil of {
         true -> table;
         false -> collect_int64_from_functions_cons(fns, table)
     }
 }
 
-fn collect_int32_from_functions_cons(fns: ListSIRFunction, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_int32_from_functions_cons(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     sequence proc[mem(normal)]
         t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_term(fns.head.body, table);
         result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_functions(fns.tail, t1)
@@ -528,14 +564,14 @@ fn collect_int32_from_functions_cons(fns: ListSIRFunction, table: { is_empty: bo
     end
 }
 
-fn collect_int32_from_functions(fns: ListSIRFunction, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_int32_from_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     case fns.is_nil of {
         true -> table;
         false -> collect_int32_from_functions_cons(fns, table)
     }
 }
 
-fn collect_int16_from_functions_cons(fns: ListSIRFunction, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_int16_from_functions_cons(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     sequence proc[mem(normal)]
         t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_term(fns.head.body, table);
         result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_functions(fns.tail, t1)
@@ -544,14 +580,14 @@ fn collect_int16_from_functions_cons(fns: ListSIRFunction, table: { is_empty: bo
     end
 }
 
-fn collect_int16_from_functions(fns: ListSIRFunction, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_int16_from_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     case fns.is_nil of {
         true -> table;
         false -> collect_int16_from_functions_cons(fns, table)
     }
 }
 
-fn collect_int8_from_functions_cons(fns: ListSIRFunction, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_int8_from_functions_cons(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     sequence proc[mem(normal)]
         t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_term(fns.head.body, table);
         result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_functions(fns.tail, t1)
@@ -560,14 +596,14 @@ fn collect_int8_from_functions_cons(fns: ListSIRFunction, table: { is_empty: boo
     end
 }
 
-fn collect_int8_from_functions(fns: ListSIRFunction, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_int8_from_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     case fns.is_nil of {
         true -> table;
         false -> collect_int8_from_functions_cons(fns, table)
     }
 }
 
-fn build_int64_print_table(sir_module: SIRModule) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } {
+fn build_int64_print_table(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } {
     sequence proc[mem(normal)]
         empty: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- empty_int64_table();
         collected: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_from_functions(sir_module.functions, empty);
@@ -577,7 +613,7 @@ fn build_int64_print_table(sir_module: SIRModule) -> { is_empty: boolean, index_
     end
 }
 
-fn build_int32_print_table(sir_module: SIRModule) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } {
+fn build_int32_print_table(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } {
     sequence proc[mem(normal)]
         empty: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- empty_int32_table();
         collected: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int32_from_functions(sir_module.functions, empty);
@@ -587,7 +623,7 @@ fn build_int32_print_table(sir_module: SIRModule) -> { is_empty: boolean, index_
     end
 }
 
-fn build_int16_print_table(sir_module: SIRModule) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } {
+fn build_int16_print_table(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } {
     sequence proc[mem(normal)]
         empty: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- empty_int16_table();
         collected: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int16_from_functions(sir_module.functions, empty);
@@ -597,7 +633,7 @@ fn build_int16_print_table(sir_module: SIRModule) -> { is_empty: boolean, index_
     end
 }
 
-fn build_int8_print_table(sir_module: SIRModule) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } {
+fn build_int8_print_table(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] } {
     sequence proc[mem(normal)]
         empty: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- empty_int8_table();
         collected: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int8_from_functions(sir_module.functions, empty);
@@ -679,397 +715,433 @@ fn emit_int8_rodata_section(table: { is_empty: boolean, index_map: { root: ref?(
     }
 }
 
-fn term_has_int64_print(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_int64_print(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> term.name == "main.print_int64" or term.name == "main.print_uint64";
-            2 -> case term_has_int64_print(term.inner) of {
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> node.name == "main.print_int64" or node.name == "main.print_uint64";
+            2 -> case term_has_int64_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_print(term.right_expr)
+                false -> term_has_int64_print(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_int64_print(term.inner) of {
+            3 -> case term_has_int64_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_print(term.right_expr)
+                false -> term_has_int64_print(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_int64_print(term.inner) of {
+            7 -> case term_has_int64_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_print(term.right_expr)
+                false -> term_has_int64_print(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_int64_print(term.inner) of {
+            8 -> case term_has_int64_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_print(term.right_expr)
+                false -> term_has_int64_print(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_int64_print(term.inner) of {
+            6 -> case term_has_int64_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_print(term.right_expr)
+                false -> term_has_int64_print(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_int64_print_var(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_int64_print_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> case term.name == "main.print_int64" or term.name == "main.print_uint64" of {
-                true -> term.inner.kind != 0;
-                false -> case term_has_int64_print_var(term.inner) of {
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> case node.name == "main.print_int64" or node.name == "main.print_uint64" of {
+                true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
+                false -> case term_has_int64_print_var(sir_term_at(term, node.inner)) of {
                     true -> true;
                     false -> false
                 }
             };
-            2 -> case term_has_int64_print_var(term.inner) of {
+            2 -> case term_has_int64_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_print_var(term.right_expr)
+                false -> term_has_int64_print_var(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_int64_print_var(term.inner) of {
+            3 -> case term_has_int64_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_print_var(term.right_expr)
+                false -> term_has_int64_print_var(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_int64_print_var(term.inner) of {
+            7 -> case term_has_int64_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_print_var(term.right_expr)
+                false -> term_has_int64_print_var(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_int64_print_var(term.inner) of {
+            8 -> case term_has_int64_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_print_var(term.right_expr)
+                false -> term_has_int64_print_var(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_int64_print_var(term.inner) of {
+            6 -> case term_has_int64_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_print_var(term.right_expr)
+                false -> term_has_int64_print_var(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_int32_print(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_int32_print(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> term.name == "main.print_int32" or term.name == "main.print_uint32";
-            2 -> case term_has_int32_print(term.inner) of {
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> node.name == "main.print_int32" or node.name == "main.print_uint32";
+            2 -> case term_has_int32_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_print(term.right_expr)
+                false -> term_has_int32_print(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_int32_print(term.inner) of {
+            3 -> case term_has_int32_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_print(term.right_expr)
+                false -> term_has_int32_print(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_int32_print(term.inner) of {
+            7 -> case term_has_int32_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_print(term.right_expr)
+                false -> term_has_int32_print(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_int32_print(term.inner) of {
+            8 -> case term_has_int32_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_print(term.right_expr)
+                false -> term_has_int32_print(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_int32_print(term.inner) of {
+            6 -> case term_has_int32_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_print(term.right_expr)
+                false -> term_has_int32_print(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_int32_print_var(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_int32_print_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> case term.name == "main.print_int32" or term.name == "main.print_uint32" of {
-                true -> term.inner.kind != 0;
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> case node.name == "main.print_int32" or node.name == "main.print_uint32" of {
+                true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
                 false -> false
             };
-            2 -> case term_has_int32_print_var(term.inner) of {
+            2 -> case term_has_int32_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_print_var(term.right_expr)
+                false -> term_has_int32_print_var(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_int32_print_var(term.inner) of {
+            3 -> case term_has_int32_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_print_var(term.right_expr)
+                false -> term_has_int32_print_var(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_int32_print_var(term.inner) of {
+            7 -> case term_has_int32_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_print_var(term.right_expr)
+                false -> term_has_int32_print_var(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_int32_print_var(term.inner) of {
+            8 -> case term_has_int32_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_print_var(term.right_expr)
+                false -> term_has_int32_print_var(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_int32_print_var(term.inner) of {
+            6 -> case term_has_int32_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_print_var(term.right_expr)
+                false -> term_has_int32_print_var(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_int16_print(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_int16_print(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> term.name == "main.print_int16" or term.name == "main.print_uint16";
-            2 -> case term_has_int16_print(term.inner) of {
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> node.name == "main.print_int16" or node.name == "main.print_uint16";
+            2 -> case term_has_int16_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_print(term.right_expr)
+                false -> term_has_int16_print(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_int16_print(term.inner) of {
+            3 -> case term_has_int16_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_print(term.right_expr)
+                false -> term_has_int16_print(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_int16_print(term.inner) of {
+            7 -> case term_has_int16_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_print(term.right_expr)
+                false -> term_has_int16_print(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_int16_print(term.inner) of {
+            8 -> case term_has_int16_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_print(term.right_expr)
+                false -> term_has_int16_print(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_int16_print(term.inner) of {
+            6 -> case term_has_int16_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_print(term.right_expr)
+                false -> term_has_int16_print(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_int16_print_var(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_int16_print_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> case term.name == "main.print_int16" or term.name == "main.print_uint16" of {
-                true -> term.inner.kind != 0;
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> case node.name == "main.print_int16" or node.name == "main.print_uint16" of {
+                true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
                 false -> false
             };
-            2 -> case term_has_int16_print_var(term.inner) of {
+            2 -> case term_has_int16_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_print_var(term.right_expr)
+                false -> term_has_int16_print_var(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_int16_print_var(term.inner) of {
+            3 -> case term_has_int16_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_print_var(term.right_expr)
+                false -> term_has_int16_print_var(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_int16_print_var(term.inner) of {
+            7 -> case term_has_int16_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_print_var(term.right_expr)
+                false -> term_has_int16_print_var(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_int16_print_var(term.inner) of {
+            8 -> case term_has_int16_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_print_var(term.right_expr)
+                false -> term_has_int16_print_var(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_int16_print_var(term.inner) of {
+            6 -> case term_has_int16_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_print_var(term.right_expr)
+                false -> term_has_int16_print_var(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_int8_print(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_int8_print(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> term.name == "main.print_int8" or term.name == "main.print_uint8";
-            2 -> case term_has_int8_print(term.inner) of {
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> node.name == "main.print_int8" or node.name == "main.print_uint8";
+            2 -> case term_has_int8_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_print(term.right_expr)
+                false -> term_has_int8_print(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_int8_print(term.inner) of {
+            3 -> case term_has_int8_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_print(term.right_expr)
+                false -> term_has_int8_print(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_int8_print(term.inner) of {
+            7 -> case term_has_int8_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_print(term.right_expr)
+                false -> term_has_int8_print(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_int8_print(term.inner) of {
+            8 -> case term_has_int8_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_print(term.right_expr)
+                false -> term_has_int8_print(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_int8_print(term.inner) of {
+            6 -> case term_has_int8_print(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_print(term.right_expr)
+                false -> term_has_int8_print(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_int8_print_var(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_int8_print_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> case term.name == "main.print_int8" or term.name == "main.print_uint8" of {
-                true -> term.inner.kind != 0;
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> case node.name == "main.print_int8" or node.name == "main.print_uint8" of {
+                true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
                 false -> false
             };
-            2 -> case term_has_int8_print_var(term.inner) of {
+            2 -> case term_has_int8_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_print_var(term.right_expr)
+                false -> term_has_int8_print_var(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_int8_print_var(term.inner) of {
+            3 -> case term_has_int8_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_print_var(term.right_expr)
+                false -> term_has_int8_print_var(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_int8_print_var(term.inner) of {
+            7 -> case term_has_int8_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_print_var(term.right_expr)
+                false -> term_has_int8_print_var(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_int8_print_var(term.inner) of {
+            8 -> case term_has_int8_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_print_var(term.right_expr)
+                false -> term_has_int8_print_var(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_int8_print_var(term.inner) of {
+            6 -> case term_has_int8_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_print_var(term.right_expr)
+                false -> term_has_int8_print_var(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_uint64_print_var(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_uint64_print_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> case term.name == "main.print_uint64" of {
-                true -> term.inner.kind != 0;
-                false -> case term_has_uint64_print_var(term.inner) of {
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> case node.name == "main.print_uint64" of {
+                true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
+                false -> case term_has_uint64_print_var(sir_term_at(term, node.inner)) of {
                     true -> true;
                     false -> false
                 }
             };
-            2 -> case term_has_uint64_print_var(term.inner) of {
+            2 -> case term_has_uint64_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint64_print_var(term.right_expr)
+                false -> term_has_uint64_print_var(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_uint64_print_var(term.inner) of {
+            3 -> case term_has_uint64_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint64_print_var(term.right_expr)
+                false -> term_has_uint64_print_var(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_uint64_print_var(term.inner) of {
+            7 -> case term_has_uint64_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint64_print_var(term.right_expr)
+                false -> term_has_uint64_print_var(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_uint64_print_var(term.inner) of {
+            8 -> case term_has_uint64_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint64_print_var(term.right_expr)
+                false -> term_has_uint64_print_var(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_uint64_print_var(term.inner) of {
+            6 -> case term_has_uint64_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint64_print_var(term.right_expr)
+                false -> term_has_uint64_print_var(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_uint32_print_var(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_uint32_print_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> case term.name == "main.print_uint32" of {
-                true -> term.inner.kind != 0;
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> case node.name == "main.print_uint32" of {
+                true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
                 false -> false
             };
-            2 -> case term_has_uint32_print_var(term.inner) of {
+            2 -> case term_has_uint32_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint32_print_var(term.right_expr)
+                false -> term_has_uint32_print_var(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_uint32_print_var(term.inner) of {
+            3 -> case term_has_uint32_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint32_print_var(term.right_expr)
+                false -> term_has_uint32_print_var(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_uint32_print_var(term.inner) of {
+            7 -> case term_has_uint32_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint32_print_var(term.right_expr)
+                false -> term_has_uint32_print_var(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_uint32_print_var(term.inner) of {
+            8 -> case term_has_uint32_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint32_print_var(term.right_expr)
+                false -> term_has_uint32_print_var(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_uint32_print_var(term.inner) of {
+            6 -> case term_has_uint32_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint32_print_var(term.right_expr)
+                false -> term_has_uint32_print_var(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_uint16_print_var(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_uint16_print_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> case term.name == "main.print_uint16" of {
-                true -> term.inner.kind != 0;
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> case node.name == "main.print_uint16" of {
+                true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
                 false -> false
             };
-            2 -> case term_has_uint16_print_var(term.inner) of {
+            2 -> case term_has_uint16_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint16_print_var(term.right_expr)
+                false -> term_has_uint16_print_var(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_uint16_print_var(term.inner) of {
+            3 -> case term_has_uint16_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint16_print_var(term.right_expr)
+                false -> term_has_uint16_print_var(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_uint16_print_var(term.inner) of {
+            7 -> case term_has_uint16_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint16_print_var(term.right_expr)
+                false -> term_has_uint16_print_var(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_uint16_print_var(term.inner) of {
+            8 -> case term_has_uint16_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint16_print_var(term.right_expr)
+                false -> term_has_uint16_print_var(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_uint16_print_var(term.inner) of {
+            6 -> case term_has_uint16_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint16_print_var(term.right_expr)
+                false -> term_has_uint16_print_var(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_uint8_print_var(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_uint8_print_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> case term.name == "main.print_uint8" of {
-                true -> term.inner.kind != 0;
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> case node.name == "main.print_uint8" of {
+                true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
                 false -> false
             };
-            2 -> case term_has_uint8_print_var(term.inner) of {
+            2 -> case term_has_uint8_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint8_print_var(term.right_expr)
+                false -> term_has_uint8_print_var(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_uint8_print_var(term.inner) of {
+            3 -> case term_has_uint8_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint8_print_var(term.right_expr)
+                false -> term_has_uint8_print_var(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_uint8_print_var(term.inner) of {
+            7 -> case term_has_uint8_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint8_print_var(term.right_expr)
+                false -> term_has_uint8_print_var(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_uint8_print_var(term.inner) of {
+            8 -> case term_has_uint8_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint8_print_var(term.right_expr)
+                false -> term_has_uint8_print_var(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_uint8_print_var(term.inner) of {
+            6 -> case term_has_uint8_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_uint8_print_var(term.right_expr)
+                false -> term_has_uint8_print_var(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn int64_print_in_functions(fns: ListSIRFunction) -> bool {
+fn int64_print_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_int64_print(fns.head.body) of {
@@ -1079,7 +1151,7 @@ fn int64_print_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn int64_print_var_in_functions(fns: ListSIRFunction) -> bool {
+fn int64_print_var_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_int64_print_var(fns.head.body) of {
@@ -1089,7 +1161,7 @@ fn int64_print_var_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn int32_print_in_functions(fns: ListSIRFunction) -> bool {
+fn int32_print_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_int32_print(fns.head.body) of {
@@ -1099,7 +1171,7 @@ fn int32_print_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn int32_print_var_in_functions(fns: ListSIRFunction) -> bool {
+fn int32_print_var_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_int32_print_var(fns.head.body) of {
@@ -1109,7 +1181,7 @@ fn int32_print_var_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn int16_print_in_functions(fns: ListSIRFunction) -> bool {
+fn int16_print_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_int16_print(fns.head.body) of {
@@ -1119,7 +1191,7 @@ fn int16_print_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn int16_print_var_in_functions(fns: ListSIRFunction) -> bool {
+fn int16_print_var_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_int16_print_var(fns.head.body) of {
@@ -1129,7 +1201,7 @@ fn int16_print_var_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn int8_print_in_functions(fns: ListSIRFunction) -> bool {
+fn int8_print_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_int8_print(fns.head.body) of {
@@ -1139,7 +1211,7 @@ fn int8_print_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn int8_print_var_in_functions(fns: ListSIRFunction) -> bool {
+fn int8_print_var_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_int8_print_var(fns.head.body) of {
@@ -1149,7 +1221,7 @@ fn int8_print_var_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn uint64_print_var_in_functions(fns: ListSIRFunction) -> bool {
+fn uint64_print_var_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_uint64_print_var(fns.head.body) of {
@@ -1159,7 +1231,7 @@ fn uint64_print_var_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn uint32_print_var_in_functions(fns: ListSIRFunction) -> bool {
+fn uint32_print_var_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_uint32_print_var(fns.head.body) of {
@@ -1169,7 +1241,7 @@ fn uint32_print_var_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn uint16_print_var_in_functions(fns: ListSIRFunction) -> bool {
+fn uint16_print_var_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_uint16_print_var(fns.head.body) of {
@@ -1179,7 +1251,7 @@ fn uint16_print_var_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn uint8_print_var_in_functions(fns: ListSIRFunction) -> bool {
+fn uint8_print_var_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_uint8_print_var(fns.head.body) of {
@@ -1189,190 +1261,202 @@ fn uint8_print_var_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn module_uses_int64_print(sir_module: SIRModule) -> bool {
+fn module_uses_int64_print(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     int64_print_in_functions(sir_module.functions)
 }
 
-fn module_uses_int32_print(sir_module: SIRModule) -> bool {
+fn module_uses_int32_print(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     int32_print_in_functions(sir_module.functions)
 }
 
-fn module_uses_int16_print(sir_module: SIRModule) -> bool {
+fn module_uses_int16_print(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     int16_print_in_functions(sir_module.functions)
 }
 
-fn module_uses_int8_print(sir_module: SIRModule) -> bool {
+fn module_uses_int8_print(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     int8_print_in_functions(sir_module.functions)
 }
 
-fn module_uses_int64_print_var(sir_module: SIRModule) -> bool {
+fn module_uses_int64_print_var(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     int64_print_var_in_functions(sir_module.functions)
 }
 
-fn module_uses_int32_print_var(sir_module: SIRModule) -> bool {
+fn module_uses_int32_print_var(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     int32_print_var_in_functions(sir_module.functions)
 }
 
-fn module_uses_int16_print_var(sir_module: SIRModule) -> bool {
+fn module_uses_int16_print_var(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     int16_print_var_in_functions(sir_module.functions)
 }
 
-fn module_uses_int8_print_var(sir_module: SIRModule) -> bool {
+fn module_uses_int8_print_var(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     int8_print_var_in_functions(sir_module.functions)
 }
 
-fn module_uses_uint64_print_var(sir_module: SIRModule) -> bool {
+fn module_uses_uint64_print_var(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     uint64_print_var_in_functions(sir_module.functions)
 }
 
-fn module_uses_uint32_print_var(sir_module: SIRModule) -> bool {
+fn module_uses_uint32_print_var(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     uint32_print_var_in_functions(sir_module.functions)
 }
 
-fn module_uses_uint16_print_var(sir_module: SIRModule) -> bool {
+fn module_uses_uint16_print_var(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     uint16_print_var_in_functions(sir_module.functions)
 }
 
-fn module_uses_uint8_print_var(sir_module: SIRModule) -> bool {
+fn module_uses_uint8_print_var(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     uint8_print_var_in_functions(sir_module.functions)
 }
 
-fn term_has_int64_signed_print_var(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_int64_signed_print_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> case term.name == "main.print_int64" of {
-                true -> term.inner.kind != 0;
-                false -> case term_has_int64_signed_print_var(term.inner) of {
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> case node.name == "main.print_int64" of {
+                true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
+                false -> case term_has_int64_signed_print_var(sir_term_at(term, node.inner)) of {
                     true -> true;
                     false -> false
                 }
             };
-            2 -> case term_has_int64_signed_print_var(term.inner) of {
+            2 -> case term_has_int64_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_signed_print_var(term.right_expr)
+                false -> term_has_int64_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_int64_signed_print_var(term.inner) of {
+            3 -> case term_has_int64_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_signed_print_var(term.right_expr)
+                false -> term_has_int64_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_int64_signed_print_var(term.inner) of {
+            7 -> case term_has_int64_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_signed_print_var(term.right_expr)
+                false -> term_has_int64_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_int64_signed_print_var(term.inner) of {
+            8 -> case term_has_int64_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_signed_print_var(term.right_expr)
+                false -> term_has_int64_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_int64_signed_print_var(term.inner) of {
+            6 -> case term_has_int64_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int64_signed_print_var(term.right_expr)
+                false -> term_has_int64_signed_print_var(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_int32_signed_print_var(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_int32_signed_print_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> case term.name == "main.print_int32" of {
-                true -> term.inner.kind != 0;
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> case node.name == "main.print_int32" of {
+                true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
                 false -> false
             };
-            2 -> case term_has_int32_signed_print_var(term.inner) of {
+            2 -> case term_has_int32_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_signed_print_var(term.right_expr)
+                false -> term_has_int32_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_int32_signed_print_var(term.inner) of {
+            3 -> case term_has_int32_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_signed_print_var(term.right_expr)
+                false -> term_has_int32_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_int32_signed_print_var(term.inner) of {
+            7 -> case term_has_int32_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_signed_print_var(term.right_expr)
+                false -> term_has_int32_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_int32_signed_print_var(term.inner) of {
+            8 -> case term_has_int32_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_signed_print_var(term.right_expr)
+                false -> term_has_int32_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_int32_signed_print_var(term.inner) of {
+            6 -> case term_has_int32_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int32_signed_print_var(term.right_expr)
+                false -> term_has_int32_signed_print_var(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_int16_signed_print_var(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_int16_signed_print_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> case term.name == "main.print_int16" of {
-                true -> term.inner.kind != 0;
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> case node.name == "main.print_int16" of {
+                true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
                 false -> false
             };
-            2 -> case term_has_int16_signed_print_var(term.inner) of {
+            2 -> case term_has_int16_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_signed_print_var(term.right_expr)
+                false -> term_has_int16_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_int16_signed_print_var(term.inner) of {
+            3 -> case term_has_int16_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_signed_print_var(term.right_expr)
+                false -> term_has_int16_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_int16_signed_print_var(term.inner) of {
+            7 -> case term_has_int16_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_signed_print_var(term.right_expr)
+                false -> term_has_int16_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_int16_signed_print_var(term.inner) of {
+            8 -> case term_has_int16_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_signed_print_var(term.right_expr)
+                false -> term_has_int16_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_int16_signed_print_var(term.inner) of {
+            6 -> case term_has_int16_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int16_signed_print_var(term.right_expr)
+                false -> term_has_int16_signed_print_var(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn term_has_int8_signed_print_var(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+fn term_has_int8_signed_print_var(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
-            4 -> case term.name == "main.print_int8" of {
-                true -> term.inner.kind != 0;
+        false -> {
+            node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case node.kind of {
+            4 -> case node.name == "main.print_int8" of {
+                true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
                 false -> false
             };
-            2 -> case term_has_int8_signed_print_var(term.inner) of {
+            2 -> case term_has_int8_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_signed_print_var(term.right_expr)
+                false -> term_has_int8_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            3 -> case term_has_int8_signed_print_var(term.inner) of {
+            3 -> case term_has_int8_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_signed_print_var(term.right_expr)
+                false -> term_has_int8_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            7 -> case term_has_int8_signed_print_var(term.inner) of {
+            7 -> case term_has_int8_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_signed_print_var(term.right_expr)
+                false -> term_has_int8_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            8 -> case term_has_int8_signed_print_var(term.inner) of {
+            8 -> case term_has_int8_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_signed_print_var(term.right_expr)
+                false -> term_has_int8_signed_print_var(sir_term_at(term, node.right_expr))
             };
-            6 -> case term_has_int8_signed_print_var(term.inner) of {
+            6 -> case term_has_int8_signed_print_var(sir_term_at(term, node.inner)) of {
                 true -> true;
-                false -> term_has_int8_signed_print_var(term.right_expr)
+                false -> term_has_int8_signed_print_var(sir_term_at(term, node.right_expr))
             };
             _: int64 -> false
+            }
         }
     }
 }
 
-fn signed_print_var_in_functions(fns: ListSIRFunction) -> bool {
+fn signed_print_var_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_int64_signed_print_var(fns.head.body) of {
@@ -1391,6 +1475,6 @@ fn signed_print_var_in_functions(fns: ListSIRFunction) -> bool {
     }
 }
 
-fn module_uses_signed_print_var(sir_module: SIRModule) -> bool {
+fn module_uses_signed_print_var(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
     signed_print_var_in_functions(sir_module.functions)
 }

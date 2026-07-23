@@ -192,11 +192,12 @@ fn extract_region_type_inner(type_str: string) -> (boolean, string) {
 }
 
 // Extract Space from alloc_region's first argument. alloc_region(Space) - Space is identifier.
-// first_arg: Expr for the first argument. For identifier (kind 1), use name.
-fn space_from_alloc_region_arg(first_arg: Expr) -> (boolean, string) {
-    case first_arg.kind == 1 of {
+// first_arg: Expr handle; for identifier (kind 1), use the root node's name.
+fn space_from_alloc_region_arg(first_arg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> (boolean, string) {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(first_arg);
+    case node.kind == 1 of {
         true -> {
-            space: string <- first_arg.name;
+            space: string <- node.name;
             case is_valid_memory_space(space) of {
                 true -> (true, space);
                 false -> (false, "")
@@ -212,11 +213,11 @@ fn space_from_alloc_region_arg(first_arg: Expr) -> (boolean, string) {
    alloc_ref, alloc_buf, alloc_rec, build: Space from binding_type (result type); if Space is atomic, also atomic (§17.1.2).
    read_ref, write_ref, read_buf, write_buf, buf_load, buf_store: Space from first_arg_type if ref/buf; else binding_type if ref/buf; else mem(normal).
    Returns (true, effects) if handled, (false, empty) if not a region op or Space unknown. -}
-fn get_region_call_effects(fn_name: string, first_arg: Expr, first_arg_type: string, binding_type: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> (boolean, ListEffectName) {
-    sequence proc[mem(normal)]
+fn get_region_call_effects(fn_name: string, first_arg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, first_arg_type: string, binding_type: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> (boolean, List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) {
+    sequence
         zero: { file: string, line: int64, column: int64, offset: int64 } <- parser_ast@zero_location();
         loc: { file: string, line: int64, column: int64, offset: int64 } <- case len(location.file) > 0 of { true -> location; false -> zero };
-        result: (boolean, ListEffectName) <- case fn_name == "alloc_region" of {
+        result: (boolean, List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) <- case fn_name == "alloc_region" of {
             true -> {
                 (ok: boolean, space: string) <- space_from_alloc_region_arg(first_arg);
                 space_to_use: string <- case ok of { true -> space; false -> "normal" };

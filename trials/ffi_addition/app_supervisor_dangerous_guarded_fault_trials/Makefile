@@ -38,13 +38,13 @@ fixtures: ffi-wrapper-archives
 integrate: fixtures
 	@ln -sf "$(FIXTURES_DIR)/dangerous_exposure_source" "$(APP_TRIAL_DIR)/dangerous_exposure_source"
 	@test -f "$(FFI_LEGACY_ARCHIVE)" || { echo "  ❌ $(APP_LABEL): missing legacy archive"; exit 1; }
-	@cd "$(APP_TRIAL_DIR)" && rm -f *.sams *.o $(APP_EXECUTABLES) silica.config silica.link .integrate_counts
+	@cd "$(APP_TRIAL_DIR)" && rm -f *.sams *.o $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime
 	@cd "$(APP_TRIAL_DIR)" && { \
 		find "$(APP_TRIAL_DIR)" -maxdepth 1 -name '*.silica' | sed "s|^$(APP_TRIAL_DIR)/||" | sort; \
 		echo "../../../compiler/silica-compiler/stdlib/Supervisor.silica"; \
 	} > silica.config
 	@$(ENSURE_SILICA_COMPILER)
-	@cd "$(APP_TRIAL_DIR)" && if ! "$(SILICA_COMPILER)"; then echo "❌❌ $(APP_LABEL): compilation failed"; printf '%d %d\n' 0 1 > .integrate_counts; exit 1; fi
+	@cd "$(APP_TRIAL_DIR)" && if ! { $(RUN_SILICA_COMPILER); }; then echo "❌❌ $(APP_LABEL): compilation failed"; printf '%d %d\n' 0 1 > .integrate_counts; exit 1; fi
 	@failed=0; ok=0; ko=0; \
 	cd "$(APP_TRIAL_DIR)"; \
 	link_archives=$$("$(SILICA_LINK_SH)" .); \
@@ -132,4 +132,4 @@ integrate: fixtures
 	exit $$failed
 
 clean:
-	@cd "$(THIS_DIR)" && rm -f *.sams *.o $(APP_EXECUTABLES) silica.config silica.link .integrate_counts *.sout dangerous_exposure_source
+	@cd "$(THIS_DIR)" && rm -f *.sams *.o $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime *.sout dangerous_exposure_source

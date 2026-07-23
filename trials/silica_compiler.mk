@@ -52,3 +52,42 @@ assembly: ensure-silica-compiler
 # So prerequisites like `integrate: $(SILICA_COMPILER)` create the binaries/ link if needed.
 $(SILICA_COMPILER):
 	@$(ENSURE_SILICA_COMPILER)
+
+# Multi-unit batches use process-per-unit hygiene: the seed exits 75 (EX_TEMPFAIL)
+# between units so the OS reclaims host heap. Recipes must re-invoke until exit 0
+# (or a hard failure). Usage inside a recipe (same cwd as silica.config):
+#   $(RUN_SILICA_COMPILER)
+# Optional override of the binary path:
+#   $(call RUN_SILICA_COMPILER_WITH,$(abspath $(SILICA_COMPILER)))
+# Quiet variant (no reclaim chatter) for golden-output capture:
+#   $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)")
+define RUN_SILICA_COMPILER_WITH
+	while true; do \
+		$(1); \
+		ec=$$?; \
+		if [ $$ec -eq 0 ]; then break; fi; \
+		if [ $$ec -eq 75 ]; then \
+			echo "  (reclaiming memory; continuing next unit)"; \
+			continue; \
+		fi; \
+		exit $$ec; \
+	done
+endef
+
+define RUN_SILICA_COMPILER_QUIET_WITH
+	while true; do \
+		$(1); \
+		ec=$$?; \
+		if [ $$ec -eq 0 ]; then break; fi; \
+		if [ $$ec -eq 75 ]; then continue; fi; \
+		exit $$ec; \
+	done
+endef
+
+define RUN_SILICA_COMPILER
+	$(call RUN_SILICA_COMPILER_WITH,"$(SILICA_COMPILER)")
+endef
+
+define RUN_SILICA_COMPILER_QUIET
+	$(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)")
+endef

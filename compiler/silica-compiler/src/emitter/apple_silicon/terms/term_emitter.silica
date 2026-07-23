@@ -1057,7 +1057,10 @@ fn emit_case_pattern_check_inner(branch: SIRTerm, scrut_t: string, scrut_reg: st
                                         bne_ln: string <- concat(cmp_full, "    B.NE ");
                                         concat(concat(bne_ln, fail_l), "\n")
                                     end;
-                                    false -> concat(concat("    B ", fail_l), "\n")
+                                    false -> case pk == "tuple" of {
+                                        true -> emit_tuple_case_pattern_check(branch, scrut_t, scrut_reg, lit_reg, fail_l, table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, outer_const);
+                                        false -> concat(concat("    B ", fail_l), "\n")
+                                    }
                                 }
                             }
                         }
@@ -1065,6 +1068,138 @@ fn emit_case_pattern_check_inner(branch: SIRTerm, scrut_t: string, scrut_reg: st
                 }
             }
         }
+    }
+}
+
+// Tuple case pattern (pk == "tuple"): branch.name is raw "(p0, p1, …)"; check each element against flat tuple slots.
+fn emit_flip_bool(b: bool) -> bool {
+    case b of { true -> false; false -> true }
+}
+
+fn emit_tuple_pat_comma(s: string, i: int64, in_string: bool, pdepth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) == "\"" of {
+            true -> emit_tuple_pat_comma(s, i + 1, emit_flip_bool(in_string), pdepth);
+            false -> case in_string of {
+                true -> emit_tuple_pat_comma(s, i + 1, true, pdepth);
+                false -> case substring(s, i, i + 1) of {
+                    "(" -> emit_tuple_pat_comma(s, i + 1, false, pdepth + 1);
+                    ")" -> emit_tuple_pat_comma(s, i + 1, false, case pdepth > 0 of { true -> pdepth - 1; false -> 0 });
+                    "," -> case pdepth == 0 of { true -> i; false -> emit_tuple_pat_comma(s, i + 1, false, pdepth) };
+                    _: string -> emit_tuple_pat_comma(s, i + 1, false, pdepth)
+                }
+            }
+        }
+    }
+}
+
+fn emit_strip_spaces(s: string) -> string {
+    emit_strip_spaces_from(s, 0, "")
+}
+
+fn emit_strip_spaces_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> emit_strip_spaces_from(s, i + 1, acc);
+            false -> emit_strip_spaces_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn emit_tuple_pat_elem_at(inner: string, idx: int64) -> string {
+    case idx == 0 of {
+        true -> do
+            c: int64 <- emit_tuple_pat_comma(inner, 0, false, 0);
+            emit_strip_spaces(substring(inner, 0, c))
+        end;
+        false -> do
+            c: int64 <- emit_tuple_pat_comma(inner, 0, false, 0);
+            rest: string <- case c < len(inner) of { true -> substring(inner, c + 1, len(inner)); false -> "" };
+            emit_tuple_pat_elem_at(rest, idx - 1)
+        end
+    }
+}
+
+fn emit_tuple_pat_count_from(inner: string, i: int64, acc: int64) -> int64 {
+    case i >= len(inner) of {
+        true -> acc;
+        false -> do
+            c: int64 <- emit_tuple_pat_comma(inner, i, false, 0);
+            case c >= len(inner) of {
+                true -> acc + 1;
+                false -> emit_tuple_pat_count_from(inner, c + 1, acc + 1)
+            }
+        end
+    }
+}
+
+fn emit_tuple_pat_count(inner: string) -> int64 {
+    case len(emit_strip_spaces(inner)) == 0 of {
+        true -> 0;
+        false -> emit_tuple_pat_count_from(inner, 0, 0)
+    }
+}
+
+fn emit_string_lit_pat_content(pat: string) -> string {
+    case len(pat) >= 2 and substring(pat, 0, 1) == "\"" of {
+        true -> do
+            cq: int64 <- case_close_quote_index_emit(pat, 1);
+            case cq < 0 of { true -> ""; false -> substring(pat, 1, cq) }
+        end;
+        false -> ""
+    }
+}
+
+fn emit_tuple_elem_string_check(elem_content: string, scrut_reg: string, byte_off: int64, lit_reg: string, fail_l: string, string_literal_table: StringLiteralTable) -> string {
+    syn: SIRTerm <- SIRTerm { kind: 0, type_name: "string", value: elem_content, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+    off_s: string <- atom_table@int64_to_decimal_string(byte_off);
+    ld_elem: string <- concat(concat(concat(concat("    LDR X9, [", scrut_reg), ", #"), off_s), "]\n");
+    ld: string <- emit_string_const(syn, lit_reg, string_literal_table);
+    str_save: string <- concat(concat(concat("    STR ", scrut_reg), ", [SP, #-16]!\n"), concat(ld, "\n"));
+    mov_x0_ln: string <- "    MOV X0, X9\n";
+    mov_x1_ln: string <- concat(concat("    MOV X1, ", lit_reg), "\n");
+    bl_ln: string <- "    BL L_string_eq_helper\n";
+    mov_bl: string <- concat(concat(mov_x0_ln, mov_x1_ln), bl_ln);
+    cmp_bne: string <- concat(concat(concat("    CMP W12, #0\n", "    B.EQ "), fail_l), "\n");
+    tail: string <- concat(concat(concat("    MOV W12, W0\n    LDR ", scrut_reg), ", [SP], #16\n"), cmp_bne);
+    concat(concat(ld_elem, str_save), concat(mov_bl, tail))
+}
+
+fn emit_tuple_case_elems_check(inner: string, scrut_t: string, scrut_reg: string, lit_reg: string, fail_l: string, idx: int64, n: int64, string_literal_table: StringLiteralTable) -> string {
+    case idx >= n of {
+        true -> "";
+        false -> do
+            pel: string <- emit_tuple_pat_elem_at(inner, idx);
+            content: string <- emit_string_lit_pat_content(pel);
+            one: string <- case len(content) > 0 or (len(pel) >= 2 and substring(pel, 0, 1) == "\"" and substring(pel, len(pel) - 1, len(pel)) == "\"") of {
+                true -> do
+                    byte_off: int64 <- prims_tuple@tuple_field_start_byte_offset(scrut_t, idx);
+                    emit_tuple_elem_string_check(content, scrut_reg, byte_off, lit_reg, fail_l, string_literal_table)
+                end;
+                false -> case pel == "_" or (len(pel) >= 2 and substring(pel, 0, 2) == "_:") of {
+                    true -> "";
+                    false -> concat(concat("    B ", fail_l), "\n")
+                }
+            };
+            concat(one, emit_tuple_case_elems_check(inner, scrut_t, scrut_reg, lit_reg, fail_l, idx + 1, n, string_literal_table))
+        end
+    }
+}
+
+fn emit_tuple_case_pattern_check(branch: SIRTerm, scrut_t: string, scrut_reg: string, lit_reg: string, fail_l: string, table: AtomTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, outer_const: string) -> string {
+    raw: string <- emit_strip_spaces(branch.name);
+    case len(raw) >= 2 and substring(raw, 0, 1) == "(" and substring(raw, len(raw) - 1, len(raw)) == ")" of {
+        false -> concat(concat("    B ", fail_l), "\n");
+        true -> do
+            inner: string <- substring(raw, 1, len(raw) - 1);
+            n: int64 <- emit_tuple_pat_count(inner);
+            case n < 1 of {
+                true -> concat(concat("    B ", fail_l), "\n");
+                false -> emit_tuple_case_elems_check(inner, scrut_t, scrut_reg, lit_reg, fail_l, 0, n, string_literal_table)
+            }
+        end
     }
 }
 

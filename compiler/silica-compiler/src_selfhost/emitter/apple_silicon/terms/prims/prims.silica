@@ -15,11 +15,10 @@
    limitations under the License.
 -}
 
-// Prim dispatcher: case term.type_name -> type-specific emit_prim_op
+// Prim dispatcher: case sir_term_root_node(term).type_name -> type-specific emit_prim_op
 // term_emitter emits subterms to r1, r2 before calling this
 // Converts dest (X0/X1/X2) to D/S/W form for float/narrow types
 
-use sir_ast;
 use prims_float64;
 use prims_float32;
 use prims_float16;
@@ -36,6 +35,35 @@ use prims_ordering_identity;
 use reg_conventions;
 
 export emit_prim_op/2;
+
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
 
 fn dest_for_type(dest: string, type_name: string) -> string {
     case reg_conventions@is_float64_type(type_name) of {
@@ -93,27 +121,27 @@ fn is_comparison_prim(name: string) -> bool {
     name == "lt" or name == "gt" or name == "le" or name == "ge"
 }
 
-fn bool_result_compare_prim(term: SIRTerm) -> bool {
-    term.type_name == "bool" and (is_comparison_prim(term.name) or term.name == "eq" or term.name == "nq" or term.name == "is_nan" or term.name == "is_inf" or term.name == "is_finite")
+fn bool_result_compare_prim(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    sir_term_root_node(term).type_name == "bool" and (is_comparison_prim(sir_term_root_node(term).name) or sir_term_root_node(term).name == "eq" or sir_term_root_node(term).name == "nq" or sir_term_root_node(term).name == "is_nan" or sir_term_root_node(term).name == "is_inf" or sir_term_root_node(term).name == "is_finite")
 }
 
-fn emit_prim_op(term: SIRTerm, dest: string) -> string {
+fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
     // Tuple projection dispatches to prims_tuple (tuple_make handled by term_emitter flat layout).
     // Check before narrow/float so "(int16,...)" etc. don't match "int16".
-    case term.name == "tuple_proj" of {
+    case sir_term_root_node(term).name == "tuple_proj" of {
         true -> prims_tuple@emit_prim_op(term, dest);
-        false -> case prims_list@is_list_prim(term.name) of {
+        false -> case prims_list@is_list_prim(sir_term_root_node(term).name) of {
             true -> prims_list@emit_prim_op(term, dest);
-            false -> case prims_memory@is_memory_prim(term.name) of {
+            false -> case prims_memory@is_memory_prim(sir_term_root_node(term).name) of {
             true -> prims_memory@emit_prim_op(term, dest);
-            false -> case prims_ordering_identity@is_ordering_identity_prim(term.name) of {
+            false -> case prims_ordering_identity@is_ordering_identity_prim(sir_term_root_node(term).name) of {
             true -> prims_ordering_identity@emit_prim_op(term, dest);
-            false -> case prims_string@is_string_predicate_prim(term.name) of {
+            false -> case prims_string@is_string_predicate_prim(sir_term_root_node(term).name) of {
             true -> prims_string@emit_prim_op(term, dest);
             false -> {
     dispatch_type: string <- case bool_result_compare_prim(term) of {
-        true -> term.inner.type_name;
-        false -> term.type_name
+        true -> sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name;
+        false -> sir_term_root_node(term).type_name
     };
     dest_reg: string <- case bool_result_compare_prim(term) of {
         true -> dest;

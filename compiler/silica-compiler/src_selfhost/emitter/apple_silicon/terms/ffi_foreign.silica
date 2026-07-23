@@ -17,7 +17,6 @@
 
 // Phase 8: lower foreign c_wrapper calls to direct AAPCS64 BL symbols; string in/out marshaling.
 
-use sir_ast;
 use var;
 use emitter_effects;
 use reg_conventions;
@@ -35,6 +34,36 @@ export emit_foreign_sret_setup/1;
 export emit_foreign_scratch_setup_string_in_only/0;
 export foreign_call_uses_heap_scratch/3;
 export needs_string_in_marshal/2;
+export emit_foreign_tail_call/4;
+
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
 
 fn binding_field_sep() -> string {
     "~"
@@ -67,7 +96,7 @@ fn param_types_for_outer_encoding(param_types: string) -> string {
     replace_pipe_with_comma_loop(param_types, 0, "")
 }
 
-fn encode_one_binding(b: SIRForeignBinding) -> string {
+fn encode_one_binding(b: { local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }) -> string {
     pt_enc: string <- param_types_for_outer_encoding(b.param_types);
     concat(
         concat(
@@ -81,7 +110,7 @@ fn encode_one_binding(b: SIRForeignBinding) -> string {
     )
 }
 
-fn encode_bindings_loop(bindings: ListSIRForeignBinding, acc: string) -> string {
+fn encode_bindings_loop(bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], acc: string) -> string {
     case bindings.is_nil of {
         true -> acc;
         false -> case len(acc) == 0 of {
@@ -91,7 +120,7 @@ fn encode_bindings_loop(bindings: ListSIRForeignBinding, acc: string) -> string 
     }
 }
 
-fn encode_bindings_for_outer(bindings: ListSIRForeignBinding) -> string {
+fn encode_bindings_for_outer(bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)]) -> string {
     encode_bindings_loop(bindings, "")
 }
 
@@ -179,20 +208,20 @@ fn emit_one_extern(c_symbol: string) -> string {
     concat(concat(".extern ", mach_o_c_symbol(c_symbol)), "\n")
 }
 
-fn emit_extern_loop(bindings: ListSIRForeignBinding, acc: string) -> string {
+fn emit_extern_loop(bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], acc: string) -> string {
     case bindings.is_nil of {
         true -> acc;
         false -> emit_extern_loop(bindings.tail, concat(acc, emit_one_extern(bindings.head.c_symbol)))
     }
 }
 
-fn emit_extern_directives(bindings: ListSIRForeignBinding) -> string {
+fn emit_extern_directives(bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)]) -> string {
     guarded: string <- ".extern _silica_rt_ffi_guarded_enter\n.extern _silica_rt_ffi_guarded_exit\n.extern _silica_rt_ffi_guarded_setjmp\n.extern _silica_rt_ffi_guarded_fault_finish\n";
     arena: string <- ".extern _silica_rt_ffi_arena_bump\n";
     concat(concat(guarded, arena), emit_extern_loop(bindings, ""))
 }
 
-fn module_uses_foreign_calls(bindings: ListSIRForeignBinding) -> bool {
+fn module_uses_foreign_calls(bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)]) -> bool {
     case bindings.is_nil of {
         true -> false;
         false -> true
@@ -263,9 +292,9 @@ fn needs_string_out_unmarshal(return_type: string, expected_type: string) -> boo
     expected_type == "string" and return_type_has_ptr_len_out_fields(return_type)
 }
 
-fn foreign_call_expects_string(term: SIRTerm, return_type: string, outer_reg: string) -> bool {
+fn foreign_call_expects_string(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, return_type: string, outer_reg: string) -> bool {
     fn_ret: string <- var@find_sp_binding(outer_reg, "_fnret");
-    case needs_string_out_unmarshal(return_type, term.type_name) of {
+    case needs_string_out_unmarshal(return_type, sir_term_root_node(term).type_name) of {
         true -> true;
         false -> needs_string_out_unmarshal(return_type, fn_ret)
     }
@@ -351,7 +380,7 @@ fn foreign_call_uses_heap_scratch(param_types: string, return_type: string, arg1
 }
 
 fn emit_foreign_user_call(
-    term: SIRTerm,
+    term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 },
     dest: string,
     ctx: { call_effects: string, c_symbol: string, param_types: string, return_type: string, arg1_type: string, sret_setup: string, sret_bytes: int64, outer_reg: string }
 ) -> string {

@@ -465,7 +465,7 @@ fn mem_effects_from_case_pattern(pattern_text: string, location: { file: string,
 }
 
 {- First mem(...) parameter in an expanded effect list (SEQUENCE block). -}
-fn first_mem_space_from_effects(effects: ListEffectName) -> string {
+fn first_mem_space_from_effects(effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> string {
     case effects.is_nil of {
         true -> "";
         false -> case effects.head.name == "mem" of {
@@ -482,39 +482,40 @@ fn pattern_text_may_contain_list(pat: string) -> boolean {
     contains_list_prefix(pat)
 }
 
-fn check_alignment_at_expr(expr: Expr, expected_space: string) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+fn check_alignment_at_expr(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, expected_space: string) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     case len(expected_space) == 0 of {
         true -> effect_checker_core@effect_check_ok();
         false -> {
-            case expr.kind == 20 of {
+            node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+            case node.kind == 20 of {
                 true -> {
-                    (ok: bool, sp: string) <- extract_space_from_list_type_str(expr.value);
+                    (ok: boolean, sp: string) <- extract_space_from_list_type_str(node.value);
                     case ok of {
                         false -> effect_checker_core@effect_check_ok();
                         true -> case sp == expected_space of {
                             true -> effect_checker_core@effect_check_ok();
                             false -> effect_checker_core@effect_check_err(
                                 "E3011",
-                                expr.location,
+                                node.location,
                                 concat("List[T,S] memory space S mismatch: list type uses ", concat(sp, concat(" but sequence declares mem(", concat(expected_space, ") (list_implementation_design 9.8)")))),
                                 "sect9.8"
                             )
                         }
                     }
                 };
-                false -> case expr.kind == 6 of {
+                false -> case node.kind == 6 of {
                     true -> {
-                        case contains_list_prefix(expr.value) of {
+                        case contains_list_prefix(node.value) of {
                             false -> effect_checker_core@effect_check_ok();
                             true -> {
-                                (ok2: bool, sp2: string) <- extract_space_from_list_type_str(expr.value);
+                                (ok2: boolean, sp2: string) <- extract_space_from_list_type_str(node.value);
                                 case ok2 of {
                                     false -> effect_checker_core@effect_check_ok();
                                     true -> case sp2 == expected_space of {
                                         true -> effect_checker_core@effect_check_ok();
                                         false -> effect_checker_core@effect_check_err(
                                             "E3011",
-                                            expr.location,
+                                            node.location,
                                             concat("List memory space mismatch: binding type uses space ", concat(sp2, concat(" but sequence declares mem(", concat(expected_space, ")")))),
                                             "sect9.8"
                                         )
@@ -523,20 +524,20 @@ fn check_alignment_at_expr(expr: Expr, expected_space: string) -> { is_ok: boole
                             }
                         }
                     };
-                    false -> case expr.kind == 4 of {
+                    false -> case node.kind == 4 of {
                         true -> {
-                            case is_list_primitive_fn(expr.name) of {
+                            case is_list_primitive_fn(node.name) of {
                                 false -> effect_checker_core@effect_check_ok();
                                 true -> {
-                                    (ok3: bool, sp3: string) <- extract_space_from_generic_instantiation(expr.value);
+                                    (ok3: boolean, sp3: string) <- extract_space_from_generic_instantiation(node.value);
                                     case ok3 of {
                                         false -> effect_checker_core@effect_check_ok();
                                         true -> case sp3 == expected_space of {
                                             true -> effect_checker_core@effect_check_ok();
                                             false -> effect_checker_core@effect_check_err(
                                                 "E3011",
-                                                expr.location,
-                                                concat("List primitive effect space mismatch for ", expr.name),
+                                                node.location,
+                                                concat("List primitive effect space mismatch for ", node.name),
                                                 "sect9.8"
                                             )
                                         }
@@ -544,19 +545,19 @@ fn check_alignment_at_expr(expr: Expr, expected_space: string) -> { is_ok: boole
                                 }
                             }
                         };
-                        false -> case expr.kind == 18 of {
+                        false -> case node.kind == 18 of {
                             true -> {
-                                case pattern_text_may_contain_list(expr.value) of {
+                                case pattern_text_may_contain_list(node.value) of {
                                     false -> effect_checker_core@effect_check_ok();
                                     true -> {
-                                        (ok4: bool, sp4: string) <- extract_space_from_list_type_str(expr.value);
+                                        (ok4: boolean, sp4: string) <- extract_space_from_list_type_str(node.value);
                                         case ok4 of {
                                             false -> effect_checker_core@effect_check_ok();
                                             true -> case sp4 == expected_space of {
                                                 true -> effect_checker_core@effect_check_ok();
                                                 false -> effect_checker_core@effect_check_err(
                                                     "E3011",
-                                                    expr.location,
+                                                    node.location,
                                                     concat("Case pattern list type memory space mismatch: ", concat(sp4, concat(" vs sequence mem(", concat(expected_space, ")")))),
                                                     "sect9.8"
                                                 )
@@ -574,14 +575,15 @@ fn check_alignment_at_expr(expr: Expr, expected_space: string) -> { is_ok: boole
     }
 }
 
-fn check_list_mem_alignment_in_sequence(seq_expr: Expr, expanded_declared: ListEffectName) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+fn check_list_mem_alignment_in_sequence(seq_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, expanded_declared: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     expected: string <- first_mem_space_from_effects(expanded_declared);
     check_list_mem_alignment_walk(seq_expr, expected)
 }
 
 {- Walk body + PRODUCES of a SEQUENCE; skip nested kind 11 (checked separately). -}
-fn check_list_mem_alignment_walk(expr: Expr, expected_space: string) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    case expr.kind == 11 of {
+fn check_list_mem_alignment_walk(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, expected_space: string) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    case node.kind == 11 of {
         true -> effect_checker_core@effect_check_ok();
         false -> {
             at: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_alignment_at_expr(expr, expected_space);
@@ -593,60 +595,63 @@ fn check_list_mem_alignment_walk(expr: Expr, expected_space: string) -> { is_ok:
     }
 }
 
-fn check_list_mem_alignment_children(expr: Expr, expected_space: string) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    case expr.kind == 4 of {
+fn check_list_mem_alignment_children(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, expected_space: string) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    inner_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.inner);
+    right_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.right_expr);
+    case node.kind == 4 of {
         true -> {
-            r1: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(expr.inner, expected_space);
+            r1: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(inner_e, expected_space);
             case r1.is_ok of {
                 false -> r1;
-                true -> check_list_mem_alignment_walk(expr.right_expr, expected_space)
+                true -> check_list_mem_alignment_walk(right_e, expected_space)
             }
         };
-        false -> case expr.kind == 3 of {
+        false -> case node.kind == 3 of {
             true -> {
-                l3: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(expr.inner, expected_space);
+                l3: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(inner_e, expected_space);
                 case l3.is_ok of {
                     false -> l3;
-                    true -> check_list_mem_alignment_walk(expr.right_expr, expected_space)
+                    true -> check_list_mem_alignment_walk(right_e, expected_space)
                 }
             };
-            false -> case expr.kind == 6 of {
+            false -> case node.kind == 6 of {
                 true -> {
-                    r_in: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(expr.inner, expected_space);
+                    r_in: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(inner_e, expected_space);
                     case r_in.is_ok of {
                         false -> r_in;
-                        true -> check_list_mem_alignment_walk(expr.right_expr, expected_space)
+                        true -> check_list_mem_alignment_walk(right_e, expected_space)
                     }
                 };
-                false -> case expr.kind == 2 of {
-                    true -> check_list_mem_alignment_walk(expr.inner, expected_space);
-                    false -> case expr.kind == 10 of {
+                false -> case node.kind == 2 of {
+                    true -> check_list_mem_alignment_walk(inner_e, expected_space);
+                    false -> case node.kind == 10 of {
                         true -> {
-                            t1: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(expr.inner, expected_space);
+                            t1: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(inner_e, expected_space);
                             case t1.is_ok of {
                                 false -> t1;
-                                true -> check_list_mem_alignment_walk(expr.right_expr, expected_space)
+                                true -> check_list_mem_alignment_walk(right_e, expected_space)
                             }
                         };
-                        false -> case expr.kind == 13 of {
+                        false -> case node.kind == 13 of {
                             true -> {
-                                cs: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(expr.inner, expected_space);
+                                cs: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(inner_e, expected_space);
                                 case cs.is_ok of {
                                     false -> cs;
-                                    true -> check_case_branch_list_alignment(expr.right_expr, expected_space)
+                                    true -> check_case_branch_list_alignment(right_e, expected_space)
                                 }
                             };
-                            false -> case expr.kind == 19 of {
+                            false -> case node.kind == 19 of {
                                 true -> {
-                                    i19: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(expr.inner, expected_space);
+                                    i19: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(inner_e, expected_space);
                                     case i19.is_ok of {
                                         false -> i19;
-                                        true -> check_list_mem_alignment_walk(expr.right_expr, expected_space)
+                                        true -> check_list_mem_alignment_walk(right_e, expected_space)
                                     }
                                 };
-                                false -> case expr.kind == 20 of {
-                                    true -> check_list_mem_alignment_walk(expr.inner, expected_space);
-                                    false -> case expr.kind == 9 of {
+                                false -> case node.kind == 20 of {
+                                    true -> check_list_mem_alignment_walk(inner_e, expected_space);
+                                    false -> case node.kind == 9 of {
                                         true -> check_list_literal_chain_alignment(expr, expected_space);
                                         false -> effect_checker_core@effect_check_ok()
                                     }
@@ -661,21 +666,24 @@ fn check_list_mem_alignment_children(expr: Expr, expected_space: string) -> { is
 }
 
 {- Right-nested tuple/list literal chain (kind 9 or 20 nodes). -}
-fn check_list_literal_chain_alignment(expr: Expr, expected_space: string) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    case expr.kind == 20 of {
+fn check_list_literal_chain_alignment(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, expected_space: string) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    inner_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.inner);
+    right_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.right_expr);
+    case node.kind == 20 of {
         true -> {
             at: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_alignment_at_expr(expr, expected_space);
             case at.is_ok of {
                 false -> at;
-                true -> check_list_mem_alignment_walk(expr.inner, expected_space)
+                true -> check_list_mem_alignment_walk(inner_e, expected_space)
             }
         };
-        false -> case expr.kind == 9 of {
+        false -> case node.kind == 9 of {
             true -> {
-                a1: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(expr.inner, expected_space);
+                a1: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(inner_e, expected_space);
                 case a1.is_ok of {
                     false -> a1;
-                    true -> check_list_literal_chain_alignment(expr.right_expr, expected_space)
+                    true -> check_list_literal_chain_alignment(right_e, expected_space)
                 }
             };
             false -> check_list_mem_alignment_walk(expr, expected_space)
@@ -684,18 +692,26 @@ fn check_list_literal_chain_alignment(expr: Expr, expected_space: string) -> { i
 }
 
 {- kind 17: branch list; inner = kind 18; right_expr = next 17 or dummy. -}
-fn check_case_branch_list_alignment(branches: Expr, expected_space: string) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    case branches.kind == -1 of {
+fn check_case_branch_list_alignment(branches: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, expected_space: string) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    case branches.root < 0 of {
         true -> effect_checker_core@effect_check_ok();
-        false -> case branches.kind == 17 of {
-            true -> {
-                one: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(branches.inner, expected_space);
-                case one.is_ok of {
-                    false -> one;
-                    true -> check_case_branch_list_alignment(branches.right_expr, expected_space)
+        false -> {
+            node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(branches);
+            inner_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(branches, node.inner);
+            right_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(branches, node.right_expr);
+            case node.kind == -1 of {
+                true -> effect_checker_core@effect_check_ok();
+                false -> case node.kind == 17 of {
+                    true -> {
+                        one: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_list_mem_alignment_walk(inner_e, expected_space);
+                        case one.is_ok of {
+                            false -> one;
+                            true -> check_case_branch_list_alignment(right_e, expected_space)
+                        }
+                    };
+                    false -> check_list_mem_alignment_walk(branches, expected_space)
                 }
-            };
-            false -> check_list_mem_alignment_walk(branches, expected_space)
+            }
         }
     }
 }

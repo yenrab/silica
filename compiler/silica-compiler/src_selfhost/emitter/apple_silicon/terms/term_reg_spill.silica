@@ -1,0 +1,502 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Register spill selection and let-RHS spill helpers for Apple Silicon term emission.
+
+use atom_table;
+use var;
+use prims_record;
+use prims_actors;
+use string_parse;
+use reg_conventions;
+use term_sir_helpers;
+
+export spill_reg_chain_from_outer/1;
+export type_name_is_list_like/1;
+export outer_for_aggregate_let_rhs/2;
+export outer_append_id_ret_tuple_sret/3;
+export compute_let_rhs_spill_reg/3;
+export mov_spill_from_rhs/2;
+export is_aggregate_make/1;
+
+fn spill_reg_chain_from_outer(outer_reg: string) -> string {
+    case var@is_reg_bound(outer_reg, "X19") of {
+        false -> "X19";
+        true -> case var@is_reg_bound(outer_reg, "X20") of {
+            false -> "X20";
+            true -> case var@is_reg_bound(outer_reg, "X21") of {
+                false -> "X21";
+                true -> case var@is_reg_bound(outer_reg, "X22") of {
+                    false -> "X22";
+                    true -> case var@is_reg_bound(outer_reg, "X23") of {
+                        false -> "X23";
+                        true -> case var@is_reg_bound(outer_reg, "X24") of {
+                            false -> "X24";
+                            true -> case var@is_reg_bound(outer_reg, "X25") of {
+                                false -> "X25";
+                                true -> case var@is_reg_bound(outer_reg, "X26") of {
+                                    false -> "X26";
+                                    true -> case var@is_reg_bound(outer_reg, "X27") of {
+                                        false -> "X27";
+                                        true -> case var@is_reg_bound(outer_reg, "X28") of {
+                                            false -> "X28";
+                                        true -> ""
+                                    }
+                                }
+                            }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn binding_name_matches_ref(binding_name: string, ref_name: string) -> bool {
+    case binding_name == ref_name of {
+        true -> true;
+        false -> case len(binding_name) > 0 and substring(binding_name, 0, 1) == "%" of {
+            true -> substring(binding_name, 1, len(binding_name)) == ref_name;
+            false -> case len(ref_name) > 0 and substring(ref_name, 0, 1) == "%" of {
+                true -> binding_name == substring(ref_name, 1, len(ref_name));
+                false -> false
+            }
+        }
+    }
+}
+
+fn sir_term_references_binding(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, binding_name: string) -> bool {
+    case term.root < 0 of {
+        true -> false;
+        false -> {
+            local_ref: bool <- case term_sir_helpers@sir_term_root_node(term).kind of {
+                1 -> binding_name_matches_ref(binding_name, term_sir_helpers@sir_term_root_node(term).name);
+                0 -> case term_sir_helpers@sir_term_root_node(term).type_name == "fn_ptr" of {
+                    true -> binding_name_matches_ref(binding_name, term_sir_helpers@sir_term_root_node(term).value);
+                    false -> false
+                };
+                _: int64 -> false
+            };
+            case local_ref of {
+                true -> true;
+                false -> case sir_term_references_binding(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), binding_name) of {
+                    true -> true;
+                    false -> sir_term_references_binding(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), binding_name)
+                }
+            }
+        }
+    }
+}
+
+fn find_equals_from_binding(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "=" of {
+            true -> i;
+            false -> find_equals_from_binding(s, i + 1)
+        }
+    }
+}
+
+fn outer_reg_has_live_binding_from(outer_reg: string, reg: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, start: int64) -> bool {
+    pipe: int64 <- var@find_pipe_from(outer_reg, start);
+    case pipe < 0 of {
+        true -> false;
+        false -> {
+            seg_start: int64 <- pipe + 1;
+            next_pipe: int64 <- var@find_pipe_from(outer_reg, seg_start);
+            seg_end: int64 <- case next_pipe < 0 of { true -> len(outer_reg); false -> next_pipe };
+            segment: string <- substring(outer_reg, seg_start, seg_end);
+            eq: int64 <- find_equals_from_binding(segment, 0);
+            live_here: bool <- case eq < 1 of {
+                true -> false;
+                false -> {
+                    binding_name: string <- substring(segment, 0, eq);
+                    binding_value: string <- substring(segment, eq + 1, len(segment));
+                    binding_value == reg
+                        and var@find_last_sp_binding(outer_reg, binding_name) == binding_value
+                        and sir_term_references_binding(body, binding_name)
+                }
+            };
+            case live_here of {
+                true -> true;
+                false -> case next_pipe < 0 of {
+                    true -> false;
+                    false -> outer_reg_has_live_binding_from(outer_reg, reg, body, next_pipe)
+                }
+            }
+        }
+    }
+}
+
+fn outer_reg_has_live_binding(outer_reg: string, reg: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    outer_reg_has_live_binding_from(outer_reg, reg, body, 0)
+}
+
+fn spill_reg_unavailable_for_body(outer_reg: string, reg: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    var@reg_reserved_as_sret_buffer(outer_reg, reg)
+        or outer_reg_has_live_binding(outer_reg, reg, body)
+}
+
+fn spill_reg_chain_for_body(outer_reg: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    case spill_reg_unavailable_for_body(outer_reg, "X19", body) of {
+        false -> "X19";
+        true -> case spill_reg_unavailable_for_body(outer_reg, "X20", body) of {
+            false -> "X20";
+            true -> case spill_reg_unavailable_for_body(outer_reg, "X21", body) of {
+                false -> "X21";
+                true -> case spill_reg_unavailable_for_body(outer_reg, "X22", body) of {
+                    false -> "X22";
+                    true -> case spill_reg_unavailable_for_body(outer_reg, "X23", body) of {
+                        false -> "X23";
+                        true -> case spill_reg_unavailable_for_body(outer_reg, "X24", body) of {
+                            false -> "X24";
+                            true -> case spill_reg_unavailable_for_body(outer_reg, "X25", body) of {
+                                false -> "X25";
+                                true -> case spill_reg_unavailable_for_body(outer_reg, "X26", body) of {
+                                    false -> "X26";
+                                    true -> case spill_reg_unavailable_for_body(outer_reg, "X27", body) of {
+                                        false -> "X27";
+                                        true -> case spill_reg_unavailable_for_body(outer_reg, "X28", body) of {
+                                            false -> "X28";
+                                        true -> ""
+                                    }
+                                }
+                            }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn is_float_scalar_type(type_name: string) -> bool {
+    type_name == "float64" or type_name == "float32" or type_name == "float16"
+}
+
+fn fp_prefix_for_type(type_name: string) -> string {
+    case type_name == "float64" of {
+        true -> "D";
+        false -> case type_name == "float32" of {
+            true -> "S";
+            false -> "H"
+        }
+    }
+}
+
+fn fp_reg_for_type_index(type_name: string, idx: int64) -> string {
+    concat(fp_prefix_for_type(type_name), atom_table@int64_to_decimal_string(idx))
+}
+
+fn fp_v_index_bound(outer_reg: string, idx: int64) -> bool {
+    s: string <- atom_table@int64_to_decimal_string(idx);
+    var@is_reg_bound(outer_reg, concat("D", s)) or var@is_reg_bound(outer_reg, concat("S", s)) or var@is_reg_bound(outer_reg, concat("H", s))
+}
+
+fn fp_spill_reg_chain_from_outer(type_name: string, outer_reg: string) -> string {
+    case fp_v_index_bound(outer_reg, 8) of {
+        false -> fp_reg_for_type_index(type_name, 8);
+        true -> case fp_v_index_bound(outer_reg, 9) of {
+            false -> fp_reg_for_type_index(type_name, 9);
+            true -> case fp_v_index_bound(outer_reg, 10) of {
+                false -> fp_reg_for_type_index(type_name, 10);
+                true -> case fp_v_index_bound(outer_reg, 11) of {
+                    false -> fp_reg_for_type_index(type_name, 11);
+                    true -> case fp_v_index_bound(outer_reg, 12) of {
+                        false -> fp_reg_for_type_index(type_name, 12);
+                        true -> case fp_v_index_bound(outer_reg, 13) of {
+                            false -> fp_reg_for_type_index(type_name, 13);
+                            true -> case fp_v_index_bound(outer_reg, 14) of {
+                                false -> fp_reg_for_type_index(type_name, 14);
+                                true -> case fp_v_index_bound(outer_reg, 15) of {
+                                    false -> fp_reg_for_type_index(type_name, 15);
+                                    true -> ""
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn is_caller_saved_fp(reg: string) -> bool {
+    case len(reg) < 2 of {
+        true -> false;
+        false -> {
+            p: string <- substring(reg, 0, 1);
+            case p == "D" or p == "S" or p == "H" of {
+                false -> false;
+                true -> {
+                    n: int64 <- string_parse@string_to_int64(substring(reg, 1, len(reg)));
+                    n >= 0 and n <= 7
+                }
+            }
+        }
+    }
+}
+
+// Parser joins list types with spaces (e.g. "List [int64, normal]"), not only "List[int64, normal]".
+
+fn type_name_is_list_like(type_name: string) -> bool {
+    case len(type_name) >= 5 and substring(type_name, 0, 5) == "List[" of {
+        true -> true;
+        false -> case len(type_name) >= 6 and substring(type_name, 0, 6) == "List [" of {
+            true -> true;
+            false -> false
+        }
+    }
+}
+
+fn type_name_is_memory_handle_like(type_name: string) -> bool {
+    t: string <- prims_record@strip_spaces_rt(type_name);
+    case len(t) >= 7 and substring(t, 0, 7) == "region(" of {
+        true -> true;
+        false -> case len(t) >= 4 and substring(t, 0, 4) == "buf(" of {
+            true -> true;
+            false -> case len(t) >= 4 and substring(t, 0, 4) == "ref(" of {
+                true -> true;
+                false -> case len(t) >= 5 and substring(t, 0, 5) == "ref?(" of {
+                    true -> true;
+                    false -> case len(t) >= 10 and substring(t, 0, 10) == ":none|ref(" of {
+                        true -> true;
+                        false -> len(t) >= 11 and substring(t, 0, 11) == "atomic_ref("
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Let tail `name` after binding aggregate tuple/record to `name`; caller passes X8 = sret (|_callee_sret=X8 on outer).
+
+fn id_ret_aggregate_let(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 1 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).name == term_sir_helpers@sir_term_root_node(term).name and reg_conventions@is_aggregate_struct_or_tuple_return_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name)
+}
+
+// RHS of the let (term_sir_helpers@sir_term_at(term, sir_term_root_node(term).inner)): tuple_make can use |_tuple_sret=X8 (caller buffer survives RET).
+// record_make must use callee stack + promote — X8 is not preserved across BL before the make (structs_addition/07).
+
+fn aggregate_let_rhs_is_tuple_make(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make"
+}
+
+fn outer_for_aggregate_let_rhs(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, outer_reg: string) -> string {
+    case id_ret_aggregate_let(term) and len(var@find_sp_binding(outer_reg, "_callee_sret")) > 0 and len(var@find_sp_binding(outer_reg, "_tuple_sret")) == 0 and aggregate_let_rhs_is_tuple_make(term) of {
+        true -> concat(outer_reg, "|_tuple_sret=X8");
+        false -> outer_reg
+    }
+}
+
+fn outer_append_id_ret_tuple_sret(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, partial_outer: string, closure_outer: string) -> string {
+    case id_ret_aggregate_let(term) and len(var@find_sp_binding(closure_outer, "_callee_sret")) > 0 and aggregate_let_rhs_is_tuple_make(term) of {
+        true -> concat(partial_outer, "|_tuple_sret=X8");
+        false -> partial_outer
+    }
+}
+
+// Types whose let RHS is a single GPR that must survive across device_io / BL (lists, strings, aggregates).
+// Atom union types like `:less | :equal | :greater` have type_names starting with `:` and must also
+// be spilled: they are returned in X0 (caller-saved) and can be clobbered by subsequent BL calls in
+// the same sequence body.
+
+fn let_rhs_type_spills_across_io(type_name: string) -> bool {
+    case type_name of {
+        "int64" -> true;
+        "i64" -> true;
+        "uint64" -> true;
+        "u64" -> true;
+        "int32" -> true;
+        "i32" -> true;
+        "uint32" -> true;
+        "u32" -> true;
+        "int16" -> true;
+        "i16" -> true;
+        "uint16" -> true;
+        "u16" -> true;
+        "int8" -> true;
+        "i8" -> true;
+        "uint8" -> true;
+        "u8" -> true;
+        "char" -> true;
+        "boolean" -> true;
+        "bool" -> true;
+        "i1" -> true;
+        "atom" -> true;
+        "actor_ref" -> true;
+        "supervisor_ref" -> true;
+        "string" -> true;
+        "fn_ptr" -> true;
+        _: string -> case var@type_name_is_function(type_name) of {
+            true -> true;
+            false -> case type_name_is_list_like(type_name) of {
+            true -> true;
+            false -> case reg_conventions@is_tuple_type(type_name) of {
+                true -> true;
+                false -> case len(type_name) >= 1 and substring(type_name, 0, 1) == "{" of {
+                    true -> true;
+                    false -> case len(type_name) >= 1 and substring(type_name, 0, 1) == ":" of {
+                        true -> true;
+                        false -> case type_name_is_memory_handle_like(type_name) of {
+                            true -> true;
+                            // Compiler-instantiated library type parameters use an uppercase
+                            // identifier (ItemType, KeyType, AccType, ActorState, ...). They can
+                            // specialize to any single-GPR value. Treating one as disposable
+                            // scratch lets a later tuple/record projection overwrite it.
+                            // Do not extend this rule to every unknown internal type: lifetime
+                            // and other bookkeeping lets must not consume the finite X19-X28
+                            // spill set.
+                            false -> type_name_starts_uppercase(type_name)
+                        }
+                    }
+                }
+            }
+            }
+        }
+    }
+}
+
+fn type_name_starts_uppercase(type_name: string) -> bool {
+    case len(type_name) == 0 of {
+        true -> false;
+        false -> case substring(type_name, 0, 1) of {
+            "A" -> true; "B" -> true; "C" -> true; "D" -> true; "E" -> true;
+            "F" -> true; "G" -> true; "H" -> true; "I" -> true; "J" -> true;
+            "K" -> true; "L" -> true; "M" -> true; "N" -> true; "O" -> true;
+            "P" -> true; "Q" -> true; "R" -> true; "S" -> true; "T" -> true;
+            "U" -> true; "V" -> true; "W" -> true; "X" -> true; "Y" -> true;
+            "Z" -> true;
+            _: string -> false
+        }
+    }
+}
+
+fn is_caller_saved_gpr(reg: string) -> bool {
+    xreg: string <- case len(reg) > 1 and substring(reg, 0, 1) == "W" of {
+        true -> concat("X", substring(reg, 1, len(reg)));
+        false -> reg
+    };
+    case xreg == "X0" or xreg == "X1" or xreg == "X2" or xreg == "X3" of {
+        true -> true;
+        false -> case xreg == "X4" or xreg == "X5" or xreg == "X6" or xreg == "X7" of {
+            true -> true;
+            false -> case xreg == "X9" or xreg == "X10" or xreg == "X11" of {
+                true -> true;
+                false -> xreg == "X13" or xreg == "X14" or xreg == "X15"
+            }
+        }
+    }
+}
+
+fn frame_spill_ref(spill_ref: string) -> bool {
+    len(spill_ref) > 7 and substring(spill_ref, 0, 7) == "[X29, #"
+}
+
+fn frame_spill_binding_count_from(outer_reg: string, start: int64) -> int64 {
+    pipe: int64 <- var@find_pipe_from(outer_reg, start);
+    case pipe < 0 of {
+        true -> 0;
+        false -> {
+            seg_start: int64 <- pipe + 1;
+            next_pipe: int64 <- var@find_pipe_from(outer_reg, seg_start);
+            seg_end: int64 <- case next_pipe < 0 of { true -> len(outer_reg); false -> next_pipe };
+            segment: string <- substring(outer_reg, seg_start, seg_end);
+            eq: int64 <- find_equals_from_binding(segment, 0);
+            here: int64 <- case eq < 1 of {
+                true -> 0;
+                false -> case frame_spill_ref(substring(segment, eq + 1, len(segment))) of {
+                    true -> 1;
+                    false -> 0
+                }
+            };
+            rest: int64 <- case next_pipe < 0 of {
+                true -> 0;
+                false -> frame_spill_binding_count_from(outer_reg, next_pipe)
+            };
+            here + rest
+        }
+    }
+}
+
+fn next_frame_spill_slot(outer_reg: string) -> string {
+    n: int64 <- frame_spill_binding_count_from(outer_reg, 0) + 1;
+    concat("[X29, #-", concat(atom_table@int64_to_decimal_string(n * 16), "]"))
+}
+
+fn compute_let_rhs_spill_reg(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, rhs_reg: string, outer_reg: string) -> string {
+    case is_float_scalar_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name) of {
+        true -> case is_caller_saved_fp(rhs_reg) of {
+            true -> fp_spill_reg_chain_from_outer(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name, outer_reg);
+            false -> ""
+        };
+        false -> case is_caller_saved_gpr(rhs_reg) of {
+            false -> "";
+            true -> case let_rhs_type_spills_across_io(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name) of {
+                true -> {
+                    unused: string <- spill_reg_chain_from_outer(outer_reg);
+                    case len(unused) > 0 of {
+                        true -> unused;
+                        false -> {
+                            body_spill: string <- spill_reg_chain_for_body(outer_reg, term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
+                            case len(body_spill) > 0 of {
+                                true -> body_spill;
+                                false -> next_frame_spill_slot(outer_reg)
+                            }
+                        }
+                    }
+                };
+                false -> ""
+            }
+        }
+    }
+}
+
+fn mov_spill_from_rhs(rhs_reg: string, spill_reg: string) -> string {
+    rhs_p: string <- case len(rhs_reg) > 0 of { true -> substring(rhs_reg, 0, 1); false -> "" };
+    spill_p: string <- case len(spill_reg) > 0 of { true -> substring(spill_reg, 0, 1); false -> "" };
+    case spill_p == "[" of {
+        true -> {
+            src_mem: string <- case rhs_p == "D" or rhs_p == "S" or rhs_p == "H" of {
+                true -> rhs_reg;
+                false -> prims_actors@gpr_x_view(rhs_reg)
+            };
+            concat(concat(concat("    STR ", src_mem), ", "), concat(spill_reg, "\n"))
+        };
+        false -> case rhs_p == "D" or rhs_p == "S" or rhs_p == "H" or spill_p == "D" or spill_p == "S" or spill_p == "H" of {
+            true -> concat(concat(concat("    FMOV ", spill_reg), ", "), concat(rhs_reg, "\n"));
+            false -> {
+                src: string <- prims_actors@gpr_x_view(rhs_reg);
+                concat(concat(concat("    MOV ", spill_reg), ", "), concat(src, "\n"))
+            }
+        }
+    }
+}
+
+// Total stack bytes to deallocate for tuple-constructed call arguments.
+// tuple_make allocates on SP; callers must restore SP after the call returns.
+
+fn is_aggregate_make(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term_sir_helpers@sir_term_root_node(t).kind == 6 of {
+        false -> false;
+        true -> term_sir_helpers@sir_term_root_node(t).name == "tuple_make" or term_sir_helpers@sir_term_root_node(t).name == "record_make"
+    }
+}
+

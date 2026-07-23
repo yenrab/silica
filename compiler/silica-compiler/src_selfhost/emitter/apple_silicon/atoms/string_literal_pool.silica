@@ -21,13 +21,40 @@
 // List-based deduplication with string equality (not BST) so Unicode/UTF-8 works correctly.
 // Seed-legal: no named structs. Work tables carry next_index; export tables omit it.
 
-use sir_ast;
 use atom_table;
 
 export build_string_literal_table/1;
 export string_literal_value_to_index/2;
 export emit_string_literal_rodata_section/1;
 export module_uses_string_literal_pool/1;
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
 
 fn nil_str_literal_values() -> List[string, mem(normal)] {
     sequence proc[mem(normal)]
@@ -74,20 +101,16 @@ fn find_index_in_list(list: List[string, mem(normal)], value: string, pos: int64
     end
 }
 
-fn add_str_value(table: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }, value: string) -> { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } {
-    sequence proc[mem(normal)]
-        in_order: List[string, mem(normal)] <- reverse_str_values(table.values);
-        existing: int64 <- find_index_in_list(in_order, value, 0);
-        result: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- case existing >= 0 of {
-            true -> table;
-            false -> {
-                new_values: List[string, mem(normal)] <- cons_str_literal_value(value, table.values);
-                { is_empty: false, values: new_values, next_index: table.next_index + 1 }
-            }
+fn add_str_value(table: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }, value: string) -> { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } proc[mem(normal)] {
+    in_order: List[string, mem(normal)] <- reverse_str_values(table.values);
+    existing: int64 <- find_index_in_list(in_order, value, 0);
+    case existing >= 0 of {
+        true -> table;
+        false -> {
+            new_values: List[string, mem(normal)] <- cons_str_literal_value(value, table.values);
+            { is_empty: false, values: new_values, next_index: table.next_index + 1 }
         }
-    produces
-        pure result
-    end
+    }
 }
 
 fn string_literal_value_to_index(table: { is_empty: boolean, values: List[string, mem(normal)] }, value: string) -> int64 {
@@ -104,84 +127,65 @@ fn string_literal_value_to_index(table: { is_empty: boolean, values: List[string
     end
 }
 
-fn collect_string_literal_from_term(term: SIRTerm, table: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_string_literal_from_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, table: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } {
     sequence proc[mem(normal)]
         result: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }
-            <- case term.kind < 0 of {
+            <- case term.root < 0 of {
             true -> table;
-            false -> case term.kind of {
-                0 -> case term.type_name == "string" of {
-                    true -> add_str_value(table, term.value);
-                    false -> table
-                };
-                1 -> table;
-                2 -> {
-                    t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(term.inner, table);
-                    collect_string_literal_from_term(term.right_expr, t1)
-                };
-                3 -> {
-                    t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(term.inner, table);
-                    collect_string_literal_from_case_branch_list(term.right_expr, t1)
-                };
-                4 -> case term.name == "main.println" of {
-                    true -> {
-                        t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(term.inner, table);
-                        add_str_value(t1, "\n")
-                    };
-                    false -> case term.name == "main.println_stderr" of {
-                        true -> {
-                            t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(term.inner, table);
-                            add_str_value(t1, "\n")
-                        };
-                        false -> {
-                            t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(term.inner, table);
-                            collect_string_literal_from_term(term.right_expr, t1)
-                        }
-                    }
-                };
-                5 -> case term.name == "main.println" of {
-                    true -> {
-                        t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(term.inner, table);
-                        add_str_value(t1, "\n")
-                    };
-                    false -> case term.name == "main.println_stderr" of {
-                        true -> {
-                            t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(term.inner, table);
-                            add_str_value(t1, "\n")
-                        };
-                        false -> {
-                            t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(term.inner, table);
-                            collect_string_literal_from_term(term.right_expr, t1)
-                        }
-                    }
-                };
-                6 -> {
-                    t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(term.inner, table);
-                    collect_string_literal_from_term(term.right_expr, t1)
-                };
-                _: int64 -> table
-            }
-        }
-    produces
-        pure result
-    end
-}
-
-fn collect_string_literal_from_case_branch(branch: SIRTerm, table: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } {
-    sequence proc[mem(normal)]
-        result: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }
-            <- case branch.kind < 0 of {
-            true -> table;
-            false -> case branch.kind == 8 of {
-                true -> {
-                    t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- case branch.value == "string" of {
-                        true -> add_str_value(table, branch.name);
+            false -> {
+                node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+                case node.kind of {
+                    0 -> case node.type_name == "string" of {
+                        true -> add_str_value(table, node.value);
                         false -> table
                     };
-                    t2: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(branch.inner, t1);
-                    collect_string_literal_from_term(branch.right_expr, t2)
-                };
-                false -> collect_string_literal_from_term(branch, table)
+                    1 -> table;
+                    2 -> {
+                        t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(sir_term_at(term, node.inner), table);
+                        collect_string_literal_from_term(sir_term_at(term, node.right_expr), t1)
+                    };
+                    3 -> {
+                        t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(sir_term_at(term, node.inner), table);
+                        collect_string_literal_from_case_branch_list(sir_term_at(term, node.right_expr), t1)
+                    };
+                    4 -> case node.name == "main.println" of {
+                        true -> {
+                            t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(sir_term_at(term, node.inner), table);
+                            add_str_value(t1, "\n")
+                        };
+                        false -> case node.name == "main.println_stderr" of {
+                            true -> {
+                                t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(sir_term_at(term, node.inner), table);
+                                add_str_value(t1, "\n")
+                            };
+                            false -> {
+                                t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(sir_term_at(term, node.inner), table);
+                                collect_string_literal_from_term(sir_term_at(term, node.right_expr), t1)
+                            }
+                        }
+                    };
+                    5 -> case node.name == "main.println" of {
+                        true -> {
+                            t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(sir_term_at(term, node.inner), table);
+                            add_str_value(t1, "\n")
+                        };
+                        false -> case node.name == "main.println_stderr" of {
+                            true -> {
+                                t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(sir_term_at(term, node.inner), table);
+                                add_str_value(t1, "\n")
+                            };
+                            false -> {
+                                t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(sir_term_at(term, node.inner), table);
+                                collect_string_literal_from_term(sir_term_at(term, node.right_expr), t1)
+                            }
+                        }
+                    };
+                    6 -> {
+                        t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(sir_term_at(term, node.inner), table);
+                        collect_string_literal_from_term(sir_term_at(term, node.right_expr), t1)
+                    };
+                    _: int64 -> table
+                }
             }
         }
     produces
@@ -189,17 +193,24 @@ fn collect_string_literal_from_case_branch(branch: SIRTerm, table: { is_empty: b
     end
 }
 
-fn collect_string_literal_from_case_branch_list(seq: SIRTerm, table: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_string_literal_from_case_branch(branch: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, table: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } {
     sequence proc[mem(normal)]
         result: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }
-            <- case seq.kind < 0 of {
+            <- case branch.root < 0 of {
             true -> table;
-            false -> case seq.kind == 7 of {
-                true -> {
-                    t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_case_branch(seq.inner, table);
-                    collect_string_literal_from_case_branch_list(seq.right_expr, t1)
-                };
-                false -> table
+            false -> {
+                node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(branch);
+                case node.kind == 8 of {
+                    true -> {
+                        t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- case node.value == "string" of {
+                            true -> add_str_value(table, node.name);
+                            false -> table
+                        };
+                        t2: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(sir_term_at(branch, node.inner), t1);
+                        collect_string_literal_from_term(sir_term_at(branch, node.right_expr), t2)
+                    };
+                    false -> collect_string_literal_from_term(branch, table)
+                }
             }
         }
     produces
@@ -207,7 +218,28 @@ fn collect_string_literal_from_case_branch_list(seq: SIRTerm, table: { is_empty:
     end
 }
 
-fn collect_string_literal_from_functions_cons(fns: ListSIRFunction, table: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_string_literal_from_case_branch_list(seq: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, table: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } {
+    sequence proc[mem(normal)]
+        result: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }
+            <- case seq.root < 0 of {
+            true -> table;
+            false -> {
+                node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(seq);
+                case node.kind == 7 of {
+                    true -> {
+                        t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_case_branch(sir_term_at(seq, node.inner), table);
+                        collect_string_literal_from_case_branch_list(sir_term_at(seq, node.right_expr), t1)
+                    };
+                    false -> table
+                }
+            }
+        }
+    produces
+        pure result
+    end
+}
+
+fn collect_string_literal_from_functions_cons(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], table: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } {
     sequence proc[mem(normal)]
         t1: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_term(fns.head.body, table);
         result: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_functions(fns.tail, t1)
@@ -216,14 +248,14 @@ fn collect_string_literal_from_functions_cons(fns: ListSIRFunction, table: { is_
     end
 }
 
-fn collect_string_literal_from_functions(fns: ListSIRFunction, table: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } {
+fn collect_string_literal_from_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], table: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } {
     case fns.is_nil of {
         true -> table;
         false -> collect_string_literal_from_functions_cons(fns, table)
     }
 }
 
-fn build_string_literal_table(sir_module: SIRModule) -> { is_empty: boolean, values: List[string, mem(normal)] } {
+fn build_string_literal_table(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> { is_empty: boolean, values: List[string, mem(normal)] } {
     sequence proc[mem(normal)]
         empty: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- empty_str_work_table();
         collected: { is_empty: boolean, values: List[string, mem(normal)], next_index: int64 } <- collect_string_literal_from_functions(sir_module.functions, empty);
@@ -320,10 +352,10 @@ fn emit_string_literal_rodata_section(table: { is_empty: boolean, values: List[s
     }
 }
 
-fn module_uses_string_literal_pool(sir_module: SIRModule) -> bool {
+fn module_uses_string_literal_pool(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> boolean {
     sequence proc[mem(normal)]
         table: { is_empty: boolean, values: List[string, mem(normal)] } <- build_string_literal_table(sir_module);
-        result: bool <- case table.is_empty of {
+        result: boolean <- case table.is_empty of {
             true -> false;
             false -> true
         }

@@ -27,7 +27,7 @@ use parser_ast;
 export cleanup_program_before_sir/1;
 export cleanup_named_program_list_before_sir/1;
 
-fn cleanup_string_contains_from(haystack: string, needle: string, i: int64, nlen: int64) -> bool {
+fn cleanup_string_contains_from(haystack: string, needle: string, i: int64, nlen: int64) -> boolean {
     case i + nlen > len(haystack) of {
         true -> false;
         false -> case substring(haystack, i, i + nlen) == needle of {
@@ -37,7 +37,7 @@ fn cleanup_string_contains_from(haystack: string, needle: string, i: int64, nlen
     }
 }
 
-fn cleanup_string_contains(haystack: string, needle: string) -> bool {
+fn cleanup_string_contains(haystack: string, needle: string) -> boolean {
     nlen: int64 <- len(needle);
     case nlen == 0 of {
         true -> true;
@@ -70,47 +70,60 @@ fn strip_compile_only_type_fields(s: string) -> string {
     cleanup_remove_all(c, ",flavor: :plain | :dangerous")
 }
 
-fn cleanup_param_list(params: ListParam) -> ListParam {
-    case params.is_nil of {
-        true -> parser_ast@nil_list_param();
-        false -> parser_ast@cons_param(
-            parser_ast@rebuild_param(params.head.name, strip_compile_only_type_fields(params.head.type_name), params.head.location),
-            cleanup_param_list(params.tail)
-        )
-    }
+fn cleanup_param_list(params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
+    sequence
+        result: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- case params.is_nil of {
+            true -> parser_ast@nil_list_param();
+            false -> parser_ast@cons_param(
+                parser_ast@rebuild_param(params.head.name, strip_compile_only_type_fields(params.head.type_name), params.head.location),
+                cleanup_param_list(params.tail)
+            )
+        }
+    produces
+        pure result
+    end
 }
 
-fn cleanup_effect_list(effects: ListEffectName) -> ListEffectName {
-    case effects.is_nil of {
-        true -> parser_ast@empty_effect_name_list();
-        false -> parser_ast@cons_effect_name(
-            parser_ast@rebuild_effect_name(effects.head.name, effects.head.parameter, effects.head.location),
-            cleanup_effect_list(effects.tail)
-        )
-    }
+fn cleanup_effect_list(effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
+    sequence
+        result: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- case effects.is_nil of {
+            true -> parser_ast@empty_effect_name_list();
+            false -> parser_ast@cons_effect_name(
+                parser_ast@rebuild_effect_name(effects.head.name, effects.head.parameter, effects.head.location),
+                cleanup_effect_list(effects.tail)
+            )
+        }
+    produces
+        pure result
+    end
 }
 
-fn cleanup_tuple_bindings(bindings: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
-    case bindings.is_nil of {
-        true -> parser_ast@nil_tuple_decompose_bindings();
-        false -> parser_ast@cons_tuple_decompose_binding(
-            parser_ast@make_tuple_decompose_binding(bindings.head.name, bindings.head.path, strip_compile_only_type_fields(bindings.head.type_str)),
-            cleanup_tuple_bindings(bindings.tail)
-        )
-    }
+fn cleanup_tuple_bindings(bindings: List[{ name: string, path: string, type_str: string }, mem(normal)]) -> List[{ name: string, path: string, type_str: string }, mem(normal)] {
+    sequence
+        result: List[{ name: string, path: string, type_str: string }, mem(normal)] <- case bindings.is_nil of {
+            true -> parser_ast@nil_tuple_decompose_bindings();
+            false -> parser_ast@cons_tuple_decompose_binding(
+                parser_ast@make_tuple_decompose_binding(bindings.head.name, bindings.head.path, strip_compile_only_type_fields(bindings.head.type_str)),
+                cleanup_tuple_bindings(bindings.tail)
+            )
+        }
+    produces
+        pure result
+    end
 }
 
-fn record_chain_has_field(chain: Expr, field_name: string) -> bool {
-    case chain.kind == 21 of {
+fn record_chain_has_field(chain: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, field_name: string) -> boolean {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(chain);
+    case node.kind == 21 of {
         false -> false;
-        true -> case chain.name == field_name of {
+        true -> case node.name == field_name of {
             true -> true;
-            false -> record_chain_has_field(chain.right_expr, field_name)
+            false -> record_chain_has_field(parser_ast@expr_at(chain, node.right_expr), field_name)
         }
     }
 }
 
-fn is_supervisor_child_spec_record_chain(chain: Expr) -> bool {
+fn is_supervisor_child_spec_record_chain(chain: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> boolean {
     record_chain_has_field(chain, "id")
         and record_chain_has_field(chain, "agent_type")
         and record_chain_has_field(chain, "initial_state")
@@ -120,49 +133,64 @@ fn is_supervisor_child_spec_record_chain(chain: Expr) -> bool {
         and record_chain_has_field(chain, "flavor")
 }
 
-fn cleanup_record_chain(chain: Expr, strip_flavor_here: bool) -> Expr {
-    case chain.kind == 21 of {
-        false -> cleanup_expr(chain);
-        true -> {
-            tail_clean: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- cleanup_record_chain(chain.right_expr, strip_flavor_here);
-            case strip_flavor_here and chain.name == "flavor" of {
-                true -> tail_clean;
-                false -> {
-                    kind: chain.kind,
-                    value: strip_compile_only_type_fields(chain.value),
-                    name: chain.name,
-                    location: chain.location,
-                    inner: cleanup_expr(chain.inner),
-                    right_expr: tail_clean,
-                    pattern_bindings: cleanup_tuple_bindings(chain.pattern_bindings),
-                    sequence_effects: cleanup_effect_list(chain.sequence_effects)
+fn cleanup_record_chain(chain: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, strip_flavor_here: boolean) -> { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } {
+    sequence proc[mem(normal)]
+        node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(chain);
+        result: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- case node.kind == 21 of {
+            false -> cleanup_expr(chain);
+            true -> {
+                tail_clean: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- cleanup_record_chain(parser_ast@expr_at(chain, node.right_expr), strip_flavor_here);
+                case strip_flavor_here and node.name == "flavor" of {
+                    true -> tail_clean;
+                    false -> parser_ast@make_expr(
+                        node.kind,
+                        strip_compile_only_type_fields(node.value),
+                        node.name,
+                        node.location,
+                        cleanup_expr(parser_ast@expr_at(chain, node.inner)),
+                        tail_clean,
+                        cleanup_tuple_bindings(node.pattern_bindings),
+                        cleanup_effect_list(node.sequence_effects)
+                    )
                 }
             }
         }
-    }
+    produces
+        pure result
+    end
 }
 
-fn cleanup_expr(expr: Expr) -> Expr {
-    case expr.kind < 0 of {
-        true -> parser_ast@dummy_expr();
-        false -> case expr.kind == 21 of {
-            true -> cleanup_record_chain(expr, is_supervisor_child_spec_record_chain(expr));
+fn cleanup_expr(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } {
+    sequence proc[mem(normal)]
+        result: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- case expr.root < 0 of {
+            true -> parser_ast@dummy_expr();
             false -> {
-                kind: expr.kind,
-                value: strip_compile_only_type_fields(expr.value),
-                name: expr.name,
-                location: expr.location,
-                inner: cleanup_expr(expr.inner),
-                right_expr: cleanup_expr(expr.right_expr),
-                pattern_bindings: cleanup_tuple_bindings(expr.pattern_bindings),
-                sequence_effects: cleanup_effect_list(expr.sequence_effects)
+                node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+                case node.kind < 0 of {
+                    true -> parser_ast@dummy_expr();
+                    false -> case node.kind == 21 of {
+                        true -> cleanup_record_chain(expr, is_supervisor_child_spec_record_chain(expr));
+                        false -> parser_ast@make_expr(
+                            node.kind,
+                            strip_compile_only_type_fields(node.value),
+                            node.name,
+                            node.location,
+                            cleanup_expr(parser_ast@expr_at(expr, node.inner)),
+                            cleanup_expr(parser_ast@expr_at(expr, node.right_expr)),
+                            cleanup_tuple_bindings(node.pattern_bindings),
+                            cleanup_effect_list(node.sequence_effects)
+                        )
+                    }
+                }
             }
         }
-    }
+    produces
+        pure result
+    end
 }
 
-fn cleanup_declaration(decl: Declaration) -> Declaration {
-    sequence
+fn cleanup_declaration(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) -> { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } {
+    sequence proc[mem(normal)]
         result: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- {
             tag: decl.tag,
             name: decl.name,
@@ -178,28 +206,32 @@ fn cleanup_declaration(decl: Declaration) -> Declaration {
     end
 }
 
-fn cleanup_declarations(decls: ListDeclaration) -> ListDeclaration {
+fn cleanup_declarations(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)] {
     case decls.is_nil of {
         true -> parser_ast@empty_list_decl();
         false -> parser_ast@cons_declaration(cleanup_declaration(decls.head), cleanup_declarations(decls.tail))
     }
 }
 
-fn cleanup_program_before_sir(program: Program) -> Program {
-    sequence
+fn cleanup_program_before_sir(program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) -> { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } {
+    sequence proc[mem(normal)]
         result: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } <- { declarations: cleanup_declarations(program.declarations), location: program.location }
     produces
         pure result
     end
 }
 
-fn cleanup_named_program_list_before_sir(world: ListNamedProgram) -> ListNamedProgram {
-    case world.is_nil of {
-        true -> parser_ast@empty_named_program_list();
-        false -> parser_ast@cons_named_program(
-            world.head.module_name,
-            cleanup_program_before_sir(world.head.program),
-            cleanup_named_program_list_before_sir(world.tail)
-        )
-    }
+fn cleanup_named_program_list_before_sir(world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] {
+    sequence
+        result: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] <- case world.is_nil of {
+            true -> parser_ast@empty_named_program_list();
+            false -> parser_ast@cons_named_program(
+                world.head.module_name,
+                cleanup_program_before_sir(world.head.program),
+                cleanup_named_program_list_before_sir(world.tail)
+            )
+        }
+    produces
+        pure result
+    end
 }

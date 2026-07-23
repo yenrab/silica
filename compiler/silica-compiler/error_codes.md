@@ -37,6 +37,7 @@ Per silica-error-code-scheme.jsonld and silica-specification.md §1.6.
 - E1007 WildcardRequiresTypeAnnotation
 - E1008 UnsupportedSyntax
 - E1040 MissingStatementTerminator — expected `;` after a statement before the next statement
+- E1065 UnclosedFunctionParameterList — function body `{` began before `)` closed the parameter list
 
 ### Type checker (E2000-E2999)
 - E2000 TypeErrorDefault
@@ -52,6 +53,12 @@ Per silica-error-code-scheme.jsonld and silica-specification.md §1.6.
 - E2010 TypeInferenceNotImplemented
 - E2011 FunctionLiteralMissingEffectDeclaration
 - E2012 TupleDecomposeBindingOverflow
+- E2013 UnaryMinusNotAllowed
+- E2014 CaseGuardDoesNotDependOnBindings
+- E2015 CollectionMissingMemorySpace
+- E2016 EmptyListRequiresTypedBinding
+- E2017 CollectionConstructorTypeError
+- E2018 BindingMissingTypeAnnotation
 
 ### Effect checker (E3000-E3999)
 - E3000 EffectErrorDefault

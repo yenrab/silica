@@ -19,7 +19,7 @@ integrate:
 	@$(MAKE) -f "$(THIS_DIR)Makefile" check
 
 check: silica.config
-	@cd "$(THIS_DIR)" && $(COMPILER) > supervisor_agent_type_invalid_atom_trial.cur_fail 2>&1 || true
+	@cd "$(THIS_DIR)" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,$(COMPILER)); } > supervisor_agent_type_invalid_atom_trial.cur_fail 2>&1 || true
 	@if diff -q "$(THIS_DIR)supervisor_agent_type_invalid_atom_trial.cur_fail" "$(THIS_DIR)supervisor_agent_type_invalid_atom_trial.golden_fail" > /dev/null 2>&1; then \
 		echo "✅✅ $(MSG_PREFIX)supervisor_agent_type_invalid_atom_trial"; \
 		printf '%d %d\n' 1 0 > "$(THIS_DIR).integrate_counts"; \

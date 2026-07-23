@@ -44,23 +44,135 @@ use ffi_taint_checker;
 use ffi_abi_checker;
 use ffi_link_manifest;
 
-fn build_module_world(all: ListParsedFile, exclude_path: string) -> ListNamedProgram {
+// --- Memory hygiene (multi-unit silica.config) --------------------------------
+// Host allocations are not reclaimed when locals drop. Cut retained work between units:
+//   * module world = transitive `use` closure only (not every config AST)
+//   * specialize lazily into a process cache (once per module; never re-specialize)
+//   * write __silica_runtime.sams once at end of the batch
+//   * process-scoped free: one topo unit per process via silica.compile.order + exit 75
+
+fn compile_order_path() -> string {
+     "silica.compile.order" 
+}
+
+fn needs_runtime_marker_path() -> string {
+     "silica.needs_runtime" 
+}
+
+fn continue_exit_code() -> int64 {
+     75 
+}
+
+fn list_string_contains_hygiene(lst: ListString, s: string) -> bool {
+    case lst.is_nil of {
+        true -> false;
+        false -> case lst.head == s of {
+            true -> true;
+            false -> list_string_contains_hygiene(lst.tail, s)
+        }
+    }
+}
+
+fn list_string_cons_unique(s: string, lst: ListString) -> ListString {
+    case list_string_contains_hygiene(lst, s) of {
+        true -> lst;
+        false -> module_checker_core@cons_string(s, lst)
+    }
+}
+
+fn append_list_string_hygiene(a: ListString, b: ListString) -> ListString {
+    case a.is_nil of {
+        true -> b;
+        false -> module_checker_core@cons_string(a.head, append_list_string_hygiene(a.tail, b))
+    }
+}
+
+fn find_parsed_path_for_module(mod_name: string, parsed: ListParsedFile) -> string {
+    case parsed.is_nil of {
+        true -> "";
+        false -> case module_checker_core@module_from_path(parsed.head.path) == mod_name of {
+            true -> parsed.head.path;
+            false -> find_parsed_path_for_module(mod_name, parsed.tail)
+        }
+    }
+}
+
+fn transitive_use_names_work(work: ListString, parsed: ListParsedFile, acc: ListString) -> ListString {
+    case work.is_nil of {
+        true -> acc;
+        false -> case list_string_contains_hygiene(acc, work.head) of {
+            true -> transitive_use_names_work(work.tail, parsed, acc);
+            false -> {
+                path: string <- find_parsed_path_for_module(work.head, parsed);
+                case len(path) == 0 of {
+                    true -> transitive_use_names_work(work.tail, parsed, list_string_cons_unique(work.head, acc));
+                    false -> {
+                        (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, path);
+                        direct: ListString <- case found of {
+                            true -> extract_use_modules_from_program(prog);
+                            false -> module_checker_core@empty_list_string()
+                        };
+                        with_name: ListString <- list_string_cons_unique(work.head, acc);
+                        transitive_use_names_work(append_list_string_hygiene(direct, work.tail), parsed, with_name)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn transitive_use_names_for_program(program: Program, parsed: ListParsedFile) -> ListString {
+    transitive_use_names_work(extract_use_modules_from_program(program), parsed, module_checker_core@empty_list_string())
+}
+
+fn build_module_world_named(all: ListParsedFile, exclude_path: string, names: ListString) -> ListNamedProgram {
     case all.is_nil of {
         true -> type_checker_modules@empty_named_program_list();
         false -> case all.head.path == exclude_path of {
-            true -> build_module_world(all.tail, exclude_path);
+            true -> build_module_world_named(all.tail, exclude_path, names);
+            false -> {
+                mod_name: string <- module_checker_core@module_from_path(all.head.path);
+                case list_string_contains_hygiene(names, mod_name) of {
+                    true -> type_checker_modules@cons_named_program(
+                        mod_name,
+                        all.head.program,
+                        build_module_world_named(all.tail, exclude_path, names)
+                    );
+                    false -> build_module_world_named(all.tail, exclude_path, names)
+                }
+            }
+        }
+    }
+}
+
+fn build_module_world_full(all: ListParsedFile, exclude_path: string) -> ListNamedProgram {
+    case all.is_nil of {
+        true -> type_checker_modules@empty_named_program_list();
+        false -> case all.head.path == exclude_path of {
+            true -> build_module_world_full(all.tail, exclude_path);
             false -> type_checker_modules@cons_named_program(
                 module_checker_core@module_from_path(all.head.path),
                 all.head.program,
-                build_module_world(all.tail, exclude_path)
+                build_module_world_full(all.tail, exclude_path)
             )
         }
     }
 }
 
-// Trait-specialize every parsed module once per process. Incremental multi-unit
-// compiles must reuse this list — re-running specialize_named_program_list per
-// unit re-clones huge libs (wbt_map/wbt_set) and OOMs on large silica.config.
+fn build_module_world(all: ListParsedFile, exclude_path: string) -> ListNamedProgram {
+    (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(all, exclude_path);
+    case found of {
+        false -> build_module_world_full(all, exclude_path);
+        true -> {
+            names: ListString <- transitive_use_names_for_program(prog, all);
+            case names.is_nil of {
+                true -> type_checker_modules@empty_named_program_list();
+                false -> build_module_world_named(all, exclude_path, names)
+            }
+        }
+    }
+}
+
 fn specialize_all_parsed(parsed: ListParsedFile) -> ListNamedProgram {
     case parsed.is_nil of {
         true -> type_checker_modules@empty_named_program_list();
@@ -72,12 +184,263 @@ fn specialize_all_parsed(parsed: ListParsedFile) -> ListNamedProgram {
     }
 }
 
+fn ensure_specialized_module(mod_name: string, program: Program, cache: ListNamedProgram) -> (Program, ListNamedProgram) {
+    (found: bool, prog: Program) <- parser_ast@find_named_program(mod_name, cache);
+    case found of {
+        true -> (prog, cache);
+        false -> {
+            specialized: Program <- trait_specialization@specialize_program(program);
+            (specialized, type_checker_modules@cons_named_program(mod_name, specialized, cache))
+        }
+    }
+}
+
+fn ensure_specialized_path(path: string, parsed: ListParsedFile, cache: ListNamedProgram) -> ListNamedProgram {
+    (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, path);
+    case found of {
+        false -> cache;
+        true -> {
+            mod_name: string <- module_checker_core@module_from_path(path);
+            (_p: Program, next: ListNamedProgram) <- ensure_specialized_module(mod_name, prog, cache);
+            next
+        }
+    }
+}
+
+fn ensure_specialized_names(names: ListString, parsed: ListParsedFile, cache: ListNamedProgram) -> ListNamedProgram {
+    case names.is_nil of {
+        true -> cache;
+        false -> {
+            path: string <- find_parsed_path_for_module(names.head, parsed);
+            case len(path) == 0 of {
+                true -> ensure_specialized_names(names.tail, parsed, cache);
+                false -> ensure_specialized_names(names.tail, parsed, ensure_specialized_path(path, parsed, cache))
+            }
+        }
+    }
+}
+
+fn filter_specialized_to_names(cache: ListNamedProgram, names: ListString) -> ListNamedProgram {
+    case cache.is_nil of {
+        true -> type_checker_modules@empty_named_program_list();
+        false -> case list_string_contains_hygiene(names, cache.head.module_name) of {
+            true -> type_checker_modules@cons_named_program(
+                cache.head.module_name,
+                cache.head.program,
+                filter_specialized_to_names(cache.tail, names)
+            );
+            false -> filter_specialized_to_names(cache.tail, names)
+        }
+    }
+}
+
+fn union_use_names_for_paths(paths: ListString, parsed: ListParsedFile, acc: ListString) -> ListString {
+    case paths.is_nil of {
+        true -> acc;
+        false -> {
+            (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, paths.head);
+            case found of {
+                false -> union_use_names_for_paths(paths.tail, parsed, acc);
+                true -> {
+                    mod_name: string <- module_checker_core@module_from_path(paths.head);
+                    with_self: ListString <- list_string_cons_unique(mod_name, acc);
+                    uses: ListString <- transitive_use_names_for_program(prog, parsed);
+                    merged: ListString <- append_list_string_hygiene(uses, with_self);
+                    union_use_names_for_paths(paths.tail, parsed, merged)
+                }
+            }
+        }
+    }
+}
+
+fn trim_specialized_cache(cache: ListNamedProgram, remaining_paths: ListString, parsed: ListParsedFile) -> ListNamedProgram {
+    needed: ListString <- union_use_names_for_paths(remaining_paths, parsed, module_checker_core@empty_list_string());
+    filter_specialized_to_names(cache, needed)
+}
+
 fn specialized_program_for_module(mod_name: string, program: Program, specialized_all: ListNamedProgram) -> Program {
     (found: bool, prog: Program) <- parser_ast@find_named_program(mod_name, specialized_all);
     case found of {
         true -> prog;
         false -> trait_specialization@specialize_program(program)
     }
+}
+
+fn maybe_write_runtime_assembly(any_needs_runtime: bool) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- {
+        case any_needs_runtime of {
+            true -> build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module_with_atom_table(atom_table@empty_atom_table()));
+            false -> 0
+        }
+        }
+    produces
+        pure result
+    end
+}
+
+fn write_paths_file_rec(path: string, paths: ListString) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- {
+        case paths.is_nil of {
+            true -> 0;
+            false -> {
+                _: bool <- append_file(path, concat(paths.head, "\n"));
+                write_paths_file_rec(path, paths.tail)
+            }
+        }
+        }
+    produces
+        pure result
+    end
+}
+
+fn write_paths_file(path: string, paths: ListString) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- {
+        delete_file(path);
+        write_paths_file_rec(path, paths)
+        }
+    produces
+        pure result
+    end
+}
+
+fn mark_needs_runtime_if(needs: bool) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- {
+        case needs of {
+            false -> 0;
+            true -> {
+                _: bool <- append_file(needs_runtime_marker_path(), "1\n");
+                0
+            }
+        }
+        }
+    produces
+        pure result
+    end
+}
+
+fn finish_batch_artifacts() -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- {
+        needs_rt: bool <- file_exists(needs_runtime_marker_path());
+        _: int64 <- maybe_write_runtime_assembly(needs_rt);
+        delete_file(compile_order_path());
+        delete_file(needs_runtime_marker_path());
+        println("Compilation complete.");
+        0
+        }
+    produces
+        pure result
+    end
+}
+
+fn parsed_contains_path(parsed: ListParsedFile, path: string) -> bool {
+    case parsed.is_nil of {
+        true -> false;
+        false -> case parsed.head.path == path of {
+            true -> true;
+            false -> parsed_contains_path(parsed.tail, path)
+        }
+    }
+}
+
+fn path_for_module_in_config(mod_name: string, config: ListString) -> string {
+    case config.is_nil of {
+        true -> "";
+        false -> case module_checker_core@module_from_path(config.head) == mod_name of {
+            true -> config.head;
+            false -> path_for_module_in_config(mod_name, config.tail)
+        }
+    }
+}
+
+fn resolve_use_names_to_config_paths(uses: ListString, config: ListString, acc: ListString) -> ListString {
+    case uses.is_nil of {
+        true -> acc;
+        false -> {
+            p: string <- path_for_module_in_config(uses.head, config);
+            next_acc: ListString <- case len(p) == 0 of {
+                true -> acc;
+                false -> list_string_cons_unique(p, acc)
+            };
+            resolve_use_names_to_config_paths(uses.tail, config, next_acc)
+        }
+    }
+}
+
+fn parse_use_closure_work(work: ListString, config: ListString, acc: ListParsedFile) -> (bool, ListParsedFile) {
+    sequence proc[DeviceIO]
+        result: (bool, ListParsedFile) <- {
+        case work.is_nil of {
+            true -> (true, reverse_parsed_files(acc, empty_parsed_files()));
+            false -> case parsed_contains_path(acc, work.head) of {
+                true -> parse_use_closure_work(work.tail, config, acc);
+                false -> {
+                    println("Parsing ");
+                    print(work.head);
+                    println("...");
+                    println("  Lexing...");
+                    tokens: ListToken <- lexer_runner@lexer_runner(work.head);
+                    println("  Parsing...");
+                    parse_result: ParseResult <- parser_runner@parse_program(tokens);
+                    case parse_result.is_ok of {
+                        false -> {
+                            error_code: string <- case parse_result.error_code == "" of {
+                                true -> "E1001";
+                                false -> parse_result.error_code
+                            };
+                            spec_section: string <- case parse_result.spec_section == "" of {
+                                true -> "sect3";
+                                false -> parse_result.spec_section
+                            };
+                            diagnostics_core@print_compiler_error("ParseError", error_code, parse_result.error_location, parse_result.error_message, spec_section);
+                            (false, empty_parsed_files())
+                        };
+                        true -> {
+                            uses: ListString <- extract_use_modules_from_program(parse_result.program);
+                            use_paths: ListString <- resolve_use_names_to_config_paths(uses, config, module_checker_core@empty_list_string());
+                            next_work: ListString <- append_list_string_hygiene(use_paths, work.tail);
+                            parse_use_closure_work(next_work, config, cons_parsed_file(work.head, parse_result.program, acc))
+                        }
+                    }
+                }
+            }
+        }
+        }
+    produces
+        pure result
+    end
+}
+
+fn compile_one_sorted_unit(path: string, parsed: ListParsedFile, all_config_files: ListString) -> (int64, bool) {
+    sequence proc[DeviceIO]
+        result: (int64, bool) <- {
+        (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, path);
+        case found of {
+            false -> {
+                println("Error: internal parse table missing file");
+                print(path);
+                (1, false)
+            };
+            true -> {
+                mod_name: string <- module_checker_core@module_from_path(path);
+                use_names: ListString <- transitive_use_names_for_program(prog, parsed);
+                empty_cache: ListNamedProgram <- type_checker_modules@empty_named_program_list();
+                cache_uses: ListNamedProgram <- ensure_specialized_names(use_names, parsed, empty_cache);
+                cache_self: ListNamedProgram <- ensure_specialized_path(path, parsed, cache_uses);
+                world: ListNamedProgram <- build_module_world(parsed, path);
+                mangle_names: ListString <- list_string_cons_unique(mod_name, use_names);
+                specialized_for_unit: ListNamedProgram <- filter_specialized_to_names(cache_self, mangle_names);
+                compile_parsed_unit(path, prog, world, all_config_files, parsed, specialized_for_unit)
+            }
+        }
+        }
+    produces
+        pure result
+    end
 }
 
 fn parse_all_files_recursive(files: ListString, acc: ListParsedFile) -> (bool, ListParsedFile) proc[DeviceIO] {
@@ -676,11 +1039,11 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
 }
 
 // Module-check, type-check, trait-check, effect-check, SIR, emit for one unit; module_world is other parsed units (spec §19).
-fn compile_parsed_unit(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile, specialized_all: ListNamedProgram) -> int64 {
+fn compile_parsed_unit(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile, specialized_all: ListNamedProgram) -> (int64, bool) {
     sequence proc[DeviceIO]
         (sir_code: int64, sir_module: SIRModule) <- compile_to_sir_module(filename, program, module_world, config_files, all_parsed, specialized_all);
-        result: int64 <- case sir_code != 0 of {
-            true -> sir_code;
+        result: (int64, bool) <- case sir_code != 0 of {
+            true -> (sir_code, false);
             false -> {
                 _: int8 <- println("  Emitting...");
                 asm: string <- case debug_compile(filename) of {
@@ -688,8 +1051,8 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
                     false -> emitter_core@emit_module(sir_module)
                 };
                 _: int8 <- build_output@write_assembly(filename, asm);
-                _: int64 <- build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module(sir_module));
-                announce_compiled_file(filename)
+                _: int64 <- announce_compiled_file(filename);
+                (0, emitter_core@module_needs_actor_runtime(sir_module))
             }
         }
     produces
@@ -792,24 +1155,44 @@ fn compile_multi_unit_with_merged_atoms(sorted_topo: ListString, parsed_all: Lis
     end
 }
 
-fn compile_parsed_list_incremental(sorted: ListString, parsed: ListParsedFile, all_config_files: ListString, specialized_all: ListNamedProgram) -> int64 {
+
+fn after_unit_compiled(rest: ListString, unit_rt: bool) -> int64 {
     sequence proc[DeviceIO]
-        result: int64 <- case sorted.is_nil of {
-            true -> 0;
-            false -> {
-                (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, sorted.head);
-                world: ListNamedProgram <- build_module_world(parsed, sorted.head);
-                case found of {
-                    false -> {
-                        _: int8 <- println("Error: internal parse table missing file");
-                        _: int8 <- print(sorted.head);
-                        1
-                    };
-                    true -> {
-                        code: int64 <- compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed, specialized_all);
-                        case code != 0 of {
-                            true -> code;
-                            false -> compile_parsed_list_incremental(sorted.tail, parsed, all_config_files, specialized_all)
+        result: int64 <- {
+            _: int64 <- mark_needs_runtime_if(unit_rt);
+            case rest.is_nil of {
+                true -> finish_batch_artifacts();
+                false -> {
+                    _: int64 <- write_paths_file(compile_order_path(), rest);
+                    _: int8 <- println("Unit compiled; exiting to reclaim memory before next unit...");
+                    continue_exit_code()
+                }
+            }
+        }
+    produces
+        pure result
+    end
+}
+
+fn prepare_compile_order(sorted_files: ListString, parsed_all: ListParsedFile, all_config_files: ListString) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- {
+            case sorted_files.is_nil of {
+                true -> finish_batch_artifacts();
+                false -> {
+                    _: int64 <- ffi_link_manifest@write_link_manifest_for_parsed(parsed_all);
+                    case sorted_files.tail.is_nil of {
+                        true -> {
+                            (code: int64, unit_rt: bool) <- compile_one_sorted_unit(sorted_files.head, parsed_all, all_config_files);
+                            case code != 0 of {
+                                true -> code;
+                                false -> after_unit_compiled(module_checker_core@empty_list_string(), unit_rt)
+                            }
+                        };
+                        false -> {
+                            _: int64 <- write_paths_file(compile_order_path(), sorted_files);
+                            _: int8 <- println("Compile order ready; exiting to reclaim memory before unit compiles...");
+                            continue_exit_code()
                         }
                     }
                 }
@@ -820,26 +1203,28 @@ fn compile_parsed_list_incremental(sorted: ListString, parsed: ListParsedFile, a
     end
 }
 
-// all_config_files: every path from silica.config (not the recursive suffix) — needed for `use` / module@ validation per unit.
-fn compile_parsed_list(sorted: ListString, parsed: ListParsedFile, all_config_files: ListString) -> int64 {
+fn resume_compile_order(order: ListString, all_config_files: ListString) -> int64 {
     sequence proc[DeviceIO]
-        specialized_all: ListNamedProgram <- specialize_all_parsed(parsed);
-        result: int64 <- case sorted.is_nil of {
-            true -> 0;
-            false -> case sorted.tail.is_nil of {
-                true -> {
-                    (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, sorted.head);
-                    world: ListNamedProgram <- build_module_world(parsed, sorted.head);
-                    case found of {
-                        false -> {
-                            _: int8 <- println("Error: internal parse table missing file");
-                            _: int8 <- print(sorted.head);
-                            1
-                        };
-                        true -> compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed, specialized_all)
+        result: int64 <- {
+            case order.is_nil of {
+                true -> finish_batch_artifacts();
+                false -> {
+                    (ok: bool, parsed: ListParsedFile) <- parse_use_closure_work(
+                        module_checker_core@cons_string(order.head, module_checker_core@empty_list_string()),
+                        all_config_files,
+                        empty_parsed_files()
+                    );
+                    case ok of {
+                        false -> 1;
+                        true -> {
+                            (code: int64, unit_rt: bool) <- compile_one_sorted_unit(order.head, parsed, all_config_files);
+                            case code != 0 of {
+                                true -> code;
+                                false -> after_unit_compiled(order.tail, unit_rt)
+                            }
+                        }
                     }
-                };
-                false -> compile_parsed_list_incremental(sorted, parsed, all_config_files, specialized_all)
+                }
             }
         }
     produces
@@ -855,23 +1240,22 @@ fn compile_file(filename: string) -> int64 {
         _: int8 <- println("...");
         _: int8 <- println("  Lexing...");
         tokens: ListToken <- lexer_runner@lexer_runner(filename);
-        _: int64 <- case debug_compile(filename) of {
-            true -> 0;
-            false -> 0
-        };
         _: int8 <- println("  Parsing...");
         parse_result: ParseResult <- parser_runner@parse_program(tokens);
-        _: int64 <- case debug_compile(filename) of {
-            true -> 0;
-            false -> 0
-        };
         result: int64 <- case parse_result.is_ok of {
             true -> {
                 mod_nm: string <- module_checker_core@module_from_path(filename);
                 world_one: ListNamedProgram <- parser_ast@cons_named_program(mod_nm, parse_result.program, type_checker_modules@empty_named_program_list());
                 parsed_one: ListParsedFile <- cons_parsed_file(filename, parse_result.program, empty_parsed_files());
                 specialized_one: ListNamedProgram <- specialize_all_parsed(parsed_one);
-                compile_parsed_unit(filename, parse_result.program, world_one, cons_string(filename, empty_list_string()), parsed_one, specialized_one)
+                (cf_code: int64, cf_rt: bool) <- compile_parsed_unit(filename, parse_result.program, world_one, cons_string(filename, empty_list_string()), parsed_one, specialized_one);
+                case cf_code != 0 of {
+                    true -> cf_code;
+                    false -> {
+                        _: int64 <- maybe_write_runtime_assembly(cf_rt);
+                        0
+                    }
+                }
             };
             false -> {
                 error_code: string <- case parse_result.error_code == "" of {
@@ -891,29 +1275,7 @@ fn compile_file(filename: string) -> int64 {
     end
 }
 
-// Compile already-parsed units in dependency order (spec §19). Caller parses once before sorting.
-fn compile_all_parsed(sorted_files: ListString, parsed_all: ListParsedFile) -> int64 {
-    sequence proc[DeviceIO]
-        result: int64 <- case sorted_files.is_nil of {
-            true -> 0;
-            false -> {
-                compile_code: int64 <- compile_parsed_list(sorted_files, parsed_all, sorted_files);
-                case compile_code != 0 of {
-                    true -> compile_code;
-                    false -> {
-                        _: int64 <- ffi_link_manifest@write_link_manifest_for_parsed(parsed_all);
-                        _: int8 <- println("Compilation complete.");
-                        0
-                    }
-                }
-            }
-        }
-    produces
-        pure result
-    end
-}
-
-// Main: read config, parse, sort by deps, compile
+// Main: read config; multi-unit uses process-per-unit hygiene (silica.compile.order + exit 75).
 fn main() -> int64 {
     sequence proc[DeviceIO]
         config_path: string <- "silica.config";
@@ -937,20 +1299,37 @@ fn main() -> int64 {
                 case validation != 0 of {
                     true -> 1;
                     false -> {
-                        _: int8 <- println("Files to compile: ");
-                        _: int8 <- print_int64(list_string_length(files));
-                        _: int8 <- println("");
-                        (ok_parse: bool, parsed_all: ListParsedFile) <- parse_all_files_recursive(files, empty_parsed_files());
-                        case ok_parse of {
-                            false -> 1;
+                        order_exists: bool <- file_exists(compile_order_path());
+                        case order_exists of {
                             true -> {
-                                (sort_ok: bool, sorted_files: ListString) <- topological_sort_from_parsed(files, parsed_all);
-                                case sort_ok of {
-                                    false -> {
-                                        _: int8 <- println("Error: cyclic module dependencies among files in silica.config");
-                                        1
-                                    };
-                                    true -> compile_all_parsed(sorted_files, parsed_all)
+                                order_content: string <- read_lines(compile_order_path());
+                                order_rev: ListString <- case len(order_content) > 0 of {
+                                    true -> parse_config_lines(order_content, 0, empty_list_string());
+                                    false -> empty_list_string()
+                                };
+                                order: ListString <- reverse_list_string(order_rev);
+                                _: int8 <- println("Resuming compile order; units left: ");
+                                _: int8 <- print_int64(list_string_length(order));
+                                _: int8 <- println("");
+                                resume_compile_order(order, files)
+                            };
+                            false -> {
+                                _: int8 <- println("Files to compile: ");
+                                _: int8 <- print_int64(list_string_length(files));
+                                _: int8 <- println("");
+                                (ok_parse: bool, parsed_all: ListParsedFile) <- parse_all_files_recursive(files, empty_parsed_files());
+                                case ok_parse of {
+                                    false -> 1;
+                                    true -> {
+                                        (sort_ok: bool, sorted_files: ListString) <- topological_sort_from_parsed(files, parsed_all);
+                                        case sort_ok of {
+                                            false -> {
+                                                _: int8 <- println("Error: cyclic module dependencies among files in silica.config");
+                                                1
+                                            };
+                                            true -> prepare_compile_order(sorted_files, parsed_all, files)
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -18,25 +18,53 @@
 // int64/uint64 let: rhs_reg computation for RHS type int64 or uint64
 // X registers
 
-use sir_ast;
 use var;
 
 export compute_rhs_reg_in_let/5;
 export compute_rhs_reg_top_level/3;
 
-fn compute_rhs_reg_in_let(term: SIRTerm, dest: string, bound_name: string, bound_reg: string, outer_reg: string) -> string {
-    case term.name == "%_" of {
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
+
+fn compute_rhs_reg_in_let(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, bound_name: string, bound_reg: string, outer_reg: string) -> string {
+    case sir_term_root_node(term).name == "%_" of {
         true -> "X0";
-        false -> case term.inner.kind != 0 and (term.right_expr.kind == 4 or (term.right_expr.kind == 1 and term.right_expr.name == term.name)) of {
+        false -> case sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).kind != 0 and (sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).kind == 4 or (sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).kind == 1 and sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).name == sir_term_root_node(term).name)) of {
             true -> dest;
             false -> case len(bound_reg) == 0 of {
             // bound_reg empty: treat like top-level (e.g. body of let reached from top-level branch)
-            true -> case term.inner.kind == 0 of { true -> dest; false -> dest };
-                false -> case bound_name == "%_" and bound_reg == "X0" and term.name != "%_" of {
+            true -> case sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).kind == 0 of { true -> dest; false -> dest };
+                false -> case bound_name == "%_" and bound_reg == "X0" and sir_term_root_node(term).name != "%_" of {
                 // Body of let %_ = X in (let %a = ...): use X1 for const to avoid clobbering, enable X2 for next let
-                true -> case term.inner.kind == 0 and dest == "X0" of { true -> "X1"; false -> dest };
+                true -> case sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).kind == 0 and dest == "X0" of { true -> "X1"; false -> dest };
                 false -> case bound_reg == "X0" of {
-                    true -> case term.name == "%_" of {
+                    true -> case sir_term_root_node(term).name == "%_" of {
                         true -> "X0";
                         false -> case var@is_reg_bound(outer_reg, "X1") of {
                             true -> var@next_free_int_reg(outer_reg);
@@ -54,13 +82,13 @@ fn compute_rhs_reg_in_let(term: SIRTerm, dest: string, bound_name: string, bound
                                 false -> "X3"
                             };
                             false -> case bound_reg == "W0" of {
-                            true -> case term.name == "%_" of {
+                            true -> case sir_term_root_node(term).name == "%_" of {
                                 true -> "W0";
                                 false -> "W1"
                             };
                             false -> case bound_reg == "W1" of {
                                 true -> "W2";
-                                false -> case term.inner.kind == 0 of {
+                                false -> case sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).kind == 0 of {
                                     true -> case var@is_reg_bound(outer_reg, "X1") of {
                                         true -> var@next_free_int_reg(outer_reg);
                                         false -> "X1"
@@ -81,8 +109,8 @@ fn compute_rhs_reg_in_let(term: SIRTerm, dest: string, bound_name: string, bound
     }
 }
 
-fn compute_rhs_reg_top_level(term: SIRTerm, bound_reg: string, dest: string) -> string {
-    case dest == "X0" and term.inner.kind == 0 and term.right_expr.kind != 4 of {
+fn compute_rhs_reg_top_level(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, bound_reg: string, dest: string) -> string {
+    case dest == "X0" and sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).kind == 0 and sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).kind != 4 of {
         true -> "X1";
         false -> dest
     }

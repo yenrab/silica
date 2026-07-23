@@ -20,6 +20,9 @@
 
 use sir_ast;
 use term_emitter;
+use term_reg_spill;
+use term_record_layout;
+use term_aggregate_helpers;
 use control;
 use emitter_effects;
 use atom_table;
@@ -65,8 +68,37 @@ export emit_module_with_atom_and_debug/3;
 export module_needs_actor_runtime/1;
 export emit_actor_runtime_module/1;
 
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
+
 fn aggregate_return_heap_stub_fn(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
         false -> reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type)
     }
@@ -87,20 +119,20 @@ fn module_needs_aggregate_return_heap_stub(sir_module: { module_name: string, us
 }
 
 fn term_has_aggregate_stack_let(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
-    case term.kind < 0 of {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
+        false -> case sir_term_root_node(term).kind of {
             //2 -> {
             2 -> {
-                rhs_agg: bool <- term.inner.kind == 6 and (term.inner.name == "record_make" or term.inner.name == "tuple_make");
-                rhs_agg or term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr)
+                rhs_agg: bool <- sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).kind == 6 and (sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).name == "record_make" or sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).name == "tuple_make");
+                rhs_agg or term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).inner)) or term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).right_expr))
             };
-            3 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
-            4 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
-            5 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
-            6 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
-            7 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
-            8 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
+            3 -> term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).inner)) or term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).right_expr));
+            4 -> term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).inner)) or term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).right_expr));
+            5 -> term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).inner)) or term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).right_expr));
+            6 -> term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).inner)) or term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).right_expr));
+            7 -> term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).inner)) or term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).right_expr));
+            8 -> term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).inner)) or term_has_aggregate_stack_let(sir_term_at(term, sir_term_root_node(term).right_expr));
             _: int64 -> false
         }
     }
@@ -553,7 +585,7 @@ fn param_type_at_index(param_types: string, idx: int64) -> string {
 
 fn bind_reg_for_param(param_types: string, idx: int64, ptype: string, string_shadow: bool, second_param_shadow: bool, aggregate_first_shadow: bool) -> string {
     reg: string <- param_reg_for_index(param_types, idx, ptype);
-    first_in_x19: bool <- string_shadow and idx == 0 and (ptype == "string" or term_emitter@type_name_is_list_like(ptype));
+    first_in_x19: bool <- string_shadow and idx == 0 and (ptype == "string" or term_reg_spill@type_name_is_list_like(ptype));
     case first_in_x19 of {
         true -> "X19";
         false -> case second_param_shadow and idx == 1 of {
@@ -705,36 +737,36 @@ fn emit_int64_abi_shadow_moves(param_types: string, reply_sret_second_uses_x21: 
 // True when the body contains a call-like or caller-saved-clobbering primitive.
 // These clobber X0-X18 so any live value in caller-saved regs must be spilled to callee-saved regs.
 fn body_has_bl_producing_prim(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
-    case term.kind < 0 of {
+    case term.root < 0 of {
         true -> false;
-        false -> case term.kind of {
+        false -> case sir_term_root_node(term).kind of {
             4 -> true;
-            6 -> case prims_actors@is_actor_prim(term.name) or prims_memory@is_memory_prim(term.name) or term.name == "list_length" or term.name == "list_cons" of {
+            6 -> case prims_actors@is_actor_prim(sir_term_root_node(term).name) or prims_memory@is_memory_prim(sir_term_root_node(term).name) or sir_term_root_node(term).name == "list_length" or sir_term_root_node(term).name == "list_cons" of {
                 true -> true;
-                false -> case body_has_bl_producing_prim(term.inner) of {
+                false -> case body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
                     true -> true;
-                    false -> body_has_bl_producing_prim(term.right_expr)
+                    false -> body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
                 }
             };
-            2 -> case body_has_bl_producing_prim(term.inner) of {
+            2 -> case body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
                 true -> true;
-                false -> body_has_bl_producing_prim(term.right_expr)
+                false -> body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
             };
-            3 -> case body_has_bl_producing_prim(term.inner) of {
+            3 -> case body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
                 true -> true;
-                false -> body_has_bl_producing_prim(term.right_expr)
+                false -> body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
             };
-            5 -> case body_has_bl_producing_prim(term.inner) of {
+            5 -> case body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
                 true -> true;
-                false -> body_has_bl_producing_prim(term.right_expr)
+                false -> body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
             };
-            7 -> case body_has_bl_producing_prim(term.inner) of {
+            7 -> case body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
                 true -> true;
-                false -> body_has_bl_producing_prim(term.right_expr)
+                false -> body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
             };
-            8 -> case body_has_bl_producing_prim(term.inner) of {
+            8 -> case body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
                 true -> true;
-                false -> body_has_bl_producing_prim(term.right_expr)
+                false -> body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
             };
             _: int64 -> false
         }
@@ -744,9 +776,9 @@ fn body_has_bl_producing_prim(term: { nodes: List[{ kind: int64, type_name: stri
 // True when we must copy ABI GPR args from X0/X1 into callee-saved regs before device_io / BL.
 // Requires the first parameter to be int64/uint64 so X0 is that value; otherwise X0 may be struct/string/etc.
 fn needs_int64_abi_entry_shadow(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
-        false -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
+        false -> case first_param_x0_shadow_enabled(fn_val.param_types, sir_term_root_node(fn_val.body).kind) of {
             true -> false;
             false -> {
                 c: int64 <- count_gpr64_params(fn_val.param_types);
@@ -787,9 +819,9 @@ fn second_param_is_non_float(param_types: string) -> bool {
 // First param int64 in X0 (shadowed to X19); second param in X1 (struct/actor_ref/etc.) but only one GPR64 —
 // BL clobbers X1. Copy X1→X21 and bind the second param to X21 (X20 may hold temps after prims; forwarder cast).
 fn needs_second_param_x21_bl_survival(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
-        false -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
+        false -> case first_param_x0_shadow_enabled(fn_val.param_types, sir_term_root_node(fn_val.body).kind) of {
             true -> false;
             false -> case first_param_is_gpr64(fn_val.param_types) of {
                 false -> false;
@@ -851,21 +883,21 @@ fn behavior_return_uses_actor_sret_tuple(return_type: string) -> bool {
 
 // Strip a spine of SIR let (kind 2) nodes to the first non-let subexpression.
 fn sir_strip_lets_to_tail(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    case term.kind == 2 of {
-        true -> sir_strip_lets_to_tail(term.right_expr);
+    case sir_term_root_node(term).kind == 2 of {
+        true -> sir_strip_lets_to_tail(sir_term_at(term, sir_term_root_node(term).right_expr));
         false -> term
     }
 }
 
 fn sir_tail_is_aggregate_tuple_or_record_make(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
-    term.kind == 6 and (term.name == "tuple_make" or term.name == "record_make")
-        and reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name)
+    sir_term_root_node(term).kind == 6 and (sir_term_root_node(term).name == "tuple_make" or sir_term_root_node(term).name == "record_make")
+        and reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(term).type_name)
 }
 
 // Let tail with aggregate tuple/record return uses aggregate_return_heap_promote_x0 + ADD SP in term_emitter;
 // epilogue tuple_ret_dealloc would pop again and corrupt the frame (e.g. main.forwarder / actor_behavior_forward_cast).
 fn tuple_return_stack_already_freed_in_body(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
-    case body.kind == 2 of {
+    case sir_term_root_node(body).kind == 2 of {
         true -> sir_tail_is_aggregate_tuple_or_record_make(sir_strip_lets_to_tail(body));
         false -> false
     }
@@ -874,11 +906,11 @@ fn tuple_return_stack_already_freed_in_body(body: { nodes: List[{ kind: int64, t
 // `let r = aggregate_make ...; r` (possibly nested in a let spine) — body already heap-promoted /
 // freed the stack slot; skip epilogue promote + ADD SP.
 fn tuple_return_id_ret_aggregate_var(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
-    case body.kind == 2 of {
+    case sir_term_root_node(body).kind == 2 of {
         false -> false;
-        true -> case body.right_expr.kind == 1 and body.right_expr.name == body.name and reg_conventions@is_aggregate_struct_or_tuple_return_type(body.inner.type_name) of {
+        true -> case sir_term_root_node(sir_term_at(body, sir_term_root_node(body).right_expr)).kind == 1 and sir_term_root_node(sir_term_at(body, sir_term_root_node(body).right_expr)).name == sir_term_root_node(body).name and reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(sir_term_at(body, sir_term_root_node(body).inner)).type_name) of {
             true -> true;
-            false -> tuple_return_id_ret_aggregate_var(body.right_expr)
+            false -> tuple_return_id_ret_aggregate_var(sir_term_at(body, sir_term_root_node(body).right_expr))
         }
     }
 }
@@ -889,7 +921,7 @@ fn tuple_return_id_ret_aggregate_var(body: { nodes: List[{ kind: int64, type_nam
 fn record_callee_skips_ret_promote_dealloc(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case tuple_return_stack_already_freed_in_body(body) of {
         true -> true;
-        false -> case body.kind == 6 and body.name == "record_make" and reg_conventions@is_inline_struct_type(body.type_name) of {
+        false -> case sir_term_root_node(body).kind == 6 and sir_term_root_node(body).name == "record_make" and reg_conventions@is_inline_struct_type(sir_term_root_node(body).type_name) of {
             true -> false;
             false -> true
         }
@@ -906,7 +938,7 @@ fn tuple_callee_skips_tuple_ret_dealloc(body: { nodes: List[{ kind: int64, type_
         true -> true;
         false -> case tuple_return_id_ret_aggregate_var(body) of {
             true -> true;
-            false -> case body.kind == 6 of {
+            false -> case sir_term_root_node(body).kind == 6 of {
                 // Direct `(…)` body root gets |_tuple_sret=X8 in body_outer_root; let-chain tails do not.
                 true -> tuple_return_tail_aggregate_make(body);
                 false -> false
@@ -917,11 +949,11 @@ fn tuple_callee_skips_tuple_ret_dealloc(body: { nodes: List[{ kind: int64, type_
 
 // Actor runtime passes X2 = sret pointer; store reply tuple there (not callee stack). Skip when first param uses X19 shadow (string or list; X20 may hold second param shadow).
 fn use_actor_reply_sret_buffer(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
         false -> case behavior_return_uses_actor_sret_tuple(fn_val.return_type) of {
             false -> false;
-            true -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
+            true -> case first_param_x0_shadow_enabled(fn_val.param_types, sir_term_root_node(fn_val.body).kind) of {
                 true -> false;
                 false -> true
             }
@@ -1004,7 +1036,7 @@ fn first_param_aggregate_needs_x11_base(fn_val: { name: string, return_type: str
             p0: string <- param_type_at_index(fn_val.param_types, 0);
             case reg_conventions@is_aggregate_struct_or_tuple_return_type(p0) of {
                 false -> false;
-                true -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
+                true -> case first_param_x0_shadow_enabled(fn_val.param_types, sir_term_root_node(fn_val.body).kind) of {
                     true -> false;
                     false -> case needs_int64_abi_entry_shadow(fn_val) of {
                         true -> false;
@@ -1032,7 +1064,7 @@ fn first_param_x0_shadow_enabled(param_types: string, body_kind: int64) -> bool 
             true -> false;
             false -> {
                 p0: string <- param_type_at_index(param_types, 0);
-                p0 == "string" or term_emitter@type_name_is_list_like(p0)
+                p0 == "string" or term_reg_spill@type_name_is_list_like(p0)
             }
         }
     }
@@ -1075,22 +1107,22 @@ fn list_cons_pattern_tail_nonwild(name: string) -> int64 {
 }
 
 fn list_cons_pattern_head_aggregate_nonwild(branch: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
-    case branch.value == "list_cons" of {
+    case sir_term_root_node(branch).value == "list_cons" of {
         false -> 0;
         true -> {
-            pipe_n: int64 <- var@find_pipe_from(branch.name, 0);
+            pipe_n: int64 <- var@find_pipe_from(sir_term_root_node(branch).name, 0);
             case pipe_n < 0 of {
                 true -> 0;
                 false -> {
-                    left_pat: string <- substring(branch.name, 0, pipe_n);
+                    left_pat: string <- substring(sir_term_root_node(branch).name, 0, pipe_n);
                     case left_pat == "_" of {
                         true -> 0;
                         false -> {
-                            pipe_t: int64 <- var@find_pipe_from(branch.type_name, 0);
+                            pipe_t: int64 <- var@find_pipe_from(sir_term_root_node(branch).type_name, 0);
                             case pipe_t < 0 of {
                                 true -> 0;
                                 false -> {
-                                    head_t: string <- substring(branch.type_name, 0, pipe_t);
+                                    head_t: string <- substring(sir_term_root_node(branch).type_name, 0, pipe_t);
                                     case reg_conventions@is_aggregate_struct_or_tuple_return_type(head_t) of {
                                         true -> 1;
                                         false -> 0
@@ -1106,38 +1138,38 @@ fn list_cons_pattern_head_aggregate_nonwild(branch: { nodes: List[{ kind: int64,
 }
 
 fn count_list_cons_nonwild_tail_bindings(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
-    case term.kind < 0 of {
+    case term.root < 0 of {
         true -> 0;
-        false -> case term.kind of {
+        false -> case sir_term_root_node(term).kind of {
             8 -> {
-                extra: int64 <- case term.value == "list_cons" of {
-                    true -> list_cons_pattern_tail_nonwild(term.name);
+                extra: int64 <- case sir_term_root_node(term).value == "list_cons" of {
+                    true -> list_cons_pattern_tail_nonwild(sir_term_root_node(term).name);
                     false -> 0
                 };
-                extra + count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr)
+                extra + count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).inner)) + count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).right_expr))
             };
-            2 -> count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr);
-            3 -> count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr);
-            4 -> count_list_cons_nonwild_tail_bindings(term.inner);
-            5 -> count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr);
-            6 -> count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr);
-            7 -> count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr);
+            2 -> count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).inner)) + count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).right_expr));
+            3 -> count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).inner)) + count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).right_expr));
+            4 -> count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).inner));
+            5 -> count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).inner)) + count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).right_expr));
+            6 -> count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).inner)) + count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).right_expr));
+            7 -> count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).inner)) + count_list_cons_nonwild_tail_bindings(sir_term_at(term, sir_term_root_node(term).right_expr));
             _: int64 -> 0
         }
     }
 }
 
 fn count_list_cons_aggregate_head_nonwild_bindings(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
-    case term.kind < 0 of {
+    case term.root < 0 of {
         true -> 0;
-        false -> case term.kind of {
-            8 -> list_cons_pattern_head_aggregate_nonwild(term) + count_list_cons_aggregate_head_nonwild_bindings(term.inner) + count_list_cons_aggregate_head_nonwild_bindings(term.right_expr);
-            2 -> count_list_cons_aggregate_head_nonwild_bindings(term.inner) + count_list_cons_aggregate_head_nonwild_bindings(term.right_expr);
-            3 -> count_list_cons_aggregate_head_nonwild_bindings(term.inner) + count_list_cons_aggregate_head_nonwild_bindings(term.right_expr);
-            4 -> count_list_cons_aggregate_head_nonwild_bindings(term.inner);
-            5 -> count_list_cons_aggregate_head_nonwild_bindings(term.inner) + count_list_cons_aggregate_head_nonwild_bindings(term.right_expr);
-            6 -> count_list_cons_aggregate_head_nonwild_bindings(term.inner) + count_list_cons_aggregate_head_nonwild_bindings(term.right_expr);
-            7 -> count_list_cons_aggregate_head_nonwild_bindings(term.inner) + count_list_cons_aggregate_head_nonwild_bindings(term.right_expr);
+        false -> case sir_term_root_node(term).kind of {
+            8 -> list_cons_pattern_head_aggregate_nonwild(term) + count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).inner)) + count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).right_expr));
+            2 -> count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).inner)) + count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).right_expr));
+            3 -> count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).inner)) + count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).right_expr));
+            4 -> count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).inner));
+            5 -> count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).inner)) + count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).right_expr));
+            6 -> count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).inner)) + count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).right_expr));
+            7 -> count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).inner)) + count_list_cons_aggregate_head_nonwild_bindings(sir_term_at(term, sir_term_root_node(term).right_expr));
             _: int64 -> 0
         }
     }
@@ -1155,44 +1187,44 @@ fn term_type_is_float_scalar(type_name: string) -> bool {
 // Used to decide how many callee-saved register pairs (X19–X28) to save in the prologue.
 // Overcounting is harmless (a few extra STP/LDP instructions); undercounting corrupts the caller's callee-saved state.
 fn count_spill_eligible_lets_in_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
-    case term.kind < 0 of {
+    case term.root < 0 of {
         true -> 0;
-        false -> case term.kind of {
+        false -> case sir_term_root_node(term).kind of {
             2 -> {
-                c: int64 <- case term.name != "%_" and term.name != "_" and term.type_name != "float64" and term.type_name != "float32" and term.type_name != "float16" and term.type_name != "unit" of {
+                c: int64 <- case sir_term_root_node(term).name != "%_" and sir_term_root_node(term).name != "_" and sir_term_root_node(term).type_name != "float64" and sir_term_root_node(term).type_name != "float32" and sir_term_root_node(term).type_name != "float16" and sir_term_root_node(term).type_name != "unit" of {
                     true -> 1;
                     false -> 0
                 };
-                c + count_spill_eligible_lets_in_term(term.inner) + count_spill_eligible_lets_in_term(term.right_expr)
+                c + count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner)) + count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).right_expr))
             };
-            3 -> count_spill_eligible_lets_in_term(term.inner) + count_spill_eligible_lets_in_term(term.right_expr);
-            4 -> count_spill_eligible_lets_in_term(term.inner);
-            5 -> count_spill_eligible_lets_in_term(term.inner) + count_spill_eligible_lets_in_term(term.right_expr);
-            6 -> count_spill_eligible_lets_in_term(term.inner) + count_spill_eligible_lets_in_term(term.right_expr);
-            7 -> count_spill_eligible_lets_in_term(term.inner) + count_spill_eligible_lets_in_term(term.right_expr);
-            8 -> count_spill_eligible_lets_in_term(term.inner) + count_spill_eligible_lets_in_term(term.right_expr);
+            3 -> count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner)) + count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).right_expr));
+            4 -> count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner));
+            5 -> count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner)) + count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).right_expr));
+            6 -> count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner)) + count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).right_expr));
+            7 -> count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner)) + count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).right_expr));
+            8 -> count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner)) + count_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).right_expr));
             _: int64 -> 0
         }
     }
 }
 
 fn count_float_spill_eligible_lets_in_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
-    case term.kind < 0 of {
+    case term.root < 0 of {
         true -> 0;
-        false -> case term.kind of {
+        false -> case sir_term_root_node(term).kind of {
             2 -> {
-                c: int64 <- case term.name != "%_" and term.name != "_" and term_type_is_float_scalar(term.type_name) of {
+                c: int64 <- case sir_term_root_node(term).name != "%_" and sir_term_root_node(term).name != "_" and term_type_is_float_scalar(sir_term_root_node(term).type_name) of {
                     true -> 1;
                     false -> 0
                 };
-                c + count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr)
+                c + count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner)) + count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).right_expr))
             };
-            3 -> count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr);
-            4 -> count_float_spill_eligible_lets_in_term(term.inner);
-            5 -> count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr);
-            6 -> count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr);
-            7 -> count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr);
-            8 -> count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr);
+            3 -> count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner)) + count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).right_expr));
+            4 -> count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner));
+            5 -> count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner)) + count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).right_expr));
+            6 -> count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner)) + count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).right_expr));
+            7 -> count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner)) + count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).right_expr));
+            8 -> count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).inner)) + count_float_spill_eligible_lets_in_term(sir_term_at(term, sir_term_root_node(term).right_expr));
             _: int64 -> 0
         }
     }
@@ -1217,16 +1249,16 @@ fn count_float_spill_eligible_lets_in_term(term: { nodes: List[{ kind: int64, ty
 
 // True when subtree contains a user call (kind 4). Mirrors term_emitter@term_subterm_has_user_call.
 fn fs_subtree_has_user_call(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
-    case t.kind < 0 of {
+    case t.root < 0 of {
         true -> false;
-        false -> case t.kind of {
+        false -> case sir_term_root_node(t).kind of {
             4 -> true;
-            2 -> case fs_subtree_has_user_call(t.inner) of { true -> true; false -> fs_subtree_has_user_call(t.right_expr) };
-            3 -> case fs_subtree_has_user_call(t.inner) of { true -> true; false -> fs_subtree_has_user_call(t.right_expr) };
-            5 -> case fs_subtree_has_user_call(t.inner) of { true -> true; false -> fs_subtree_has_user_call(t.right_expr) };
-            6 -> case fs_subtree_has_user_call(t.inner) of { true -> true; false -> fs_subtree_has_user_call(t.right_expr) };
-            7 -> case fs_subtree_has_user_call(t.inner) of { true -> true; false -> fs_subtree_has_user_call(t.right_expr) };
-            8 -> case fs_subtree_has_user_call(t.inner) of { true -> true; false -> fs_subtree_has_user_call(t.right_expr) };
+            2 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            3 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            5 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            6 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            7 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            8 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) };
             _: int64 -> false
         }
     }
@@ -1234,35 +1266,35 @@ fn fs_subtree_has_user_call(t: { nodes: List[{ kind: int64, type_name: string, v
 
 // True when the term tree contains a `case` (kind 3) whose scrutinee (inner) performs a user call.
 fn fs_term_has_hazard(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
-    case t.kind < 0 of {
+    case t.root < 0 of {
         true -> false;
-        false -> case t.kind of {
-            3 -> case fs_subtree_has_user_call(t.inner) of {
+        false -> case sir_term_root_node(t).kind of {
+            3 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of {
                 true -> true;
-                false -> case fs_term_has_hazard(t.inner) of { true -> true; false -> fs_term_has_hazard(t.right_expr) }
+                false -> case fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).right_expr)) }
             };
-            2 -> case fs_term_has_hazard(t.inner) of { true -> true; false -> fs_term_has_hazard(t.right_expr) };
-            4 -> fs_term_has_hazard(t.inner);
-            5 -> case fs_term_has_hazard(t.inner) of { true -> true; false -> fs_term_has_hazard(t.right_expr) };
-            6 -> case fs_term_has_hazard(t.inner) of { true -> true; false -> fs_term_has_hazard(t.right_expr) };
-            7 -> case fs_term_has_hazard(t.inner) of { true -> true; false -> fs_term_has_hazard(t.right_expr) };
-            8 -> case fs_term_has_hazard(t.inner) of { true -> true; false -> fs_term_has_hazard(t.right_expr) };
+            2 -> case fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            4 -> fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).inner));
+            5 -> case fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            6 -> case fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            7 -> case fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            8 -> case fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_hazard(sir_term_at(t, sir_term_root_node(t).right_expr)) };
             _: int64 -> false
         }
     }
 }
 
 fn fs_term_has_case(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
-    case t.kind < 0 of {
+    case t.root < 0 of {
         true -> false;
-        false -> case t.kind of {
+        false -> case sir_term_root_node(t).kind of {
             3 -> true;
-            2 -> case fs_term_has_case(t.inner) of { true -> true; false -> fs_term_has_case(t.right_expr) };
-            4 -> fs_term_has_case(t.inner);
-            5 -> case fs_term_has_case(t.inner) of { true -> true; false -> fs_term_has_case(t.right_expr) };
-            6 -> case fs_term_has_case(t.inner) of { true -> true; false -> fs_term_has_case(t.right_expr) };
-            7 -> case fs_term_has_case(t.inner) of { true -> true; false -> fs_term_has_case(t.right_expr) };
-            8 -> case fs_term_has_case(t.inner) of { true -> true; false -> fs_term_has_case(t.right_expr) };
+            2 -> case fs_term_has_case(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_case(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            4 -> fs_term_has_case(sir_term_at(t, sir_term_root_node(t).inner));
+            5 -> case fs_term_has_case(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_case(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            6 -> case fs_term_has_case(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_case(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            7 -> case fs_term_has_case(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_case(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            8 -> case fs_term_has_case(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_case(sir_term_at(t, sir_term_root_node(t).right_expr)) };
             _: int64 -> false
         }
     }
@@ -1325,7 +1357,7 @@ fn fs_is_program_main_name(name: string) -> bool {
 // callee-saved parameter shadows; excluding them leaves parameters vulnerable while a
 // helper call constructs the aggregate result.
 fn use_full_param_shadow(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
         false -> case fs_is_program_main_name(fn_val.name) of {
             true -> false;
@@ -1424,7 +1456,7 @@ fn fs_build_param_outer(param_names: string, n: int64) -> string {
 
 // STP/LDP X21,X22 when spill pressure (lets + weighted list-cons tails) reaches 2, or when X21 holds the second GPR parameter (actor reply sret + int64 shadow).
 fn needs_actor_ref_x21_x22_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
         false -> case actor_reply_sret_second_param_uses_x21(fn_val) of {
             true -> true;
@@ -1440,7 +1472,7 @@ fn needs_actor_ref_x21_x22_frame(fn_val: { name: string, return_type: string, ef
 // bindings beyond the source-level let count. Keep the frame thresholds four
 // registers ahead of the nominal pressure so emitted X23-X29 uses obey AAPCS64.
 fn needs_callee_x23_x24_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
         false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2
     }
@@ -1448,7 +1480,7 @@ fn needs_callee_x23_x24_frame(fn_val: { name: string, return_type: string, effec
 
 // STP/LDP X25,X26 when pressure reaches 6.
 fn needs_callee_x25_x26_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
         false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2
     }
@@ -1456,7 +1488,7 @@ fn needs_callee_x25_x26_frame(fn_val: { name: string, return_type: string, effec
 
 // STP/LDP X27,X28 when pressure reaches 8.
 fn needs_callee_x27_x28_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
         false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 4
     }
@@ -1480,28 +1512,28 @@ fn frame_spill_bytes(fn_val: { name: string, return_type: string, effects: strin
 }
 
 fn needs_callee_d8_d9_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
         false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 1
     }
 }
 
 fn needs_callee_d10_d11_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
         false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 3
     }
 }
 
 fn needs_callee_d12_d13_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
         false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 5
     }
 }
 
 fn needs_callee_d14_d15_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
         false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 7
     }
@@ -1513,9 +1545,9 @@ fn needs_callee_d14_d15_frame(fn_val: { name: string, return_type: string, effec
 // Save them for every non-tail function unless the string/list shadow prologue
 // already emits this exact pair.
 fn function_needs_callee_saved_x19_x20_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case fn_val.body.kind == 5 of {
+    case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
-        false -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
+        false -> case first_param_x0_shadow_enabled(fn_val.param_types, sir_term_root_node(fn_val.body).kind) of {
             true -> false;
             false -> true
         }
@@ -1542,7 +1574,7 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
         };
         full_shadow: bool <- use_full_param_shadow(fn_val);
         full_shadow_n: int64 <- fs_count_params(fn_val.param_names);
-        string_shadow: bool <- first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind);
+        string_shadow: bool <- first_param_x0_shadow_enabled(fn_val.param_types, sir_term_root_node(fn_val.body).kind);
         second_param_shadow: bool <- second_param_shadow_enabled(fn_val.param_types, string_shadow);
         aggregate_first_shadow: bool <- first_param_aggregate_needs_x11_base(fn_val);
         param_outer: string <- build_param_outer_reg(fn_val.param_names, fn_val.param_types, string_shadow, aggregate_first_shadow);
@@ -1662,7 +1694,7 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
             };
             false -> ""
         };
-        kind5_tail_returns_directly: bool <- fn_val.body.kind == 5 and main_kind5_no_tail == false;
+        kind5_tail_returns_directly: bool <- sir_term_root_node(fn_val.body).kind == 5 and main_kind5_no_tail == false;
         // Inject _silica_pid_registry_init at the start of every program entry-point. The routine
         // (prims_actors_runtime_asm.silica) spawns the global primitive PID registry behavior and
         // stores the actor_ref in _silica_pid_registry_ref.
@@ -1673,20 +1705,20 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
         };
         // Direct body: tuple_make may use |_tuple_sret=X8 (no BL inside the make). record_make always uses stack
         // in term_emitter; do not tag X8 here so epilogue/dealloc paths stay consistent.
-        body_outer_root: string <- case fn_val.body.kind == 6 and (fn_val.body.name == "tuple_make" or fn_val.body.name == "record_make") and reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) of {
+        body_outer_root: string <- case sir_term_root_node(fn_val.body).kind == 6 and (sir_term_root_node(fn_val.body).name == "tuple_make" or sir_term_root_node(fn_val.body).name == "record_make") and reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) of {
             true -> case use_actor_reply_sret_buffer(fn_val) of {
                 true -> param_outer_emit_fnret;
-                false -> case fn_val.body.name == "tuple_make" of {
+                false -> case sir_term_root_node(fn_val.body).name == "tuple_make" of {
                     true -> concat(param_outer_emit_fnret, "|_tuple_sret=X8");
                     false -> param_outer_emit_fnret
                 }
             };
             false -> param_outer_emit_fnret
         };
-        body: string <- case fn_val.body.kind == 5 of {
+        body: string <- case sir_term_root_node(fn_val.body).kind == 5 of {
             true -> case main_kind5_no_tail of {
-                true -> term_emitter@emit_function_non_tail_user_call_root(fn_val.body, dest_reg, ctx.table, ctx.int64_table, ctx.int32_table, ctx.int16_table, ctx.int8_table, ctx.literal_table, ctx.float64_literal_table, ctx.float32_literal_table, ctx.string_literal_table, param_outer_emit_fnret, fn_val.effects, ctx.debug, main_k5_asm_line_before_call);
-                false -> term_emitter@emit_function_tail_user_call_root(fn_val.body, dest_reg, ctx.table, ctx.int64_table, ctx.int32_table, ctx.int16_table, ctx.int8_table, ctx.literal_table, ctx.float64_literal_table, ctx.float32_literal_table, ctx.string_literal_table, param_outer_emit_fnret, fn_val.effects, ctx.debug)
+                true -> term_emitter@emit_function_non_tail_user_call_root(fn_val.body, dest_reg, { table: ctx.table, int64_table: ctx.int64_table, int32_table: ctx.int32_table, int16_table: ctx.int16_table, int8_table: ctx.int8_table, literal_table: ctx.literal_table, float64_literal_table: ctx.float64_literal_table, float32_literal_table: ctx.float32_literal_table, string_literal_table: ctx.string_literal_table }, param_outer_emit_fnret, fn_val.effects, ctx.debug, main_k5_asm_line_before_call);
+                false -> term_emitter@emit_function_tail_user_call_root(fn_val.body, dest_reg, { table: ctx.table, int64_table: ctx.int64_table, int32_table: ctx.int32_table, int16_table: ctx.int16_table, int8_table: ctx.int8_table, literal_table: ctx.literal_table, float64_literal_table: ctx.float64_literal_table, float32_literal_table: ctx.float32_literal_table, string_literal_table: ctx.string_literal_table }, param_outer_emit_fnret, fn_val.effects, ctx.debug)
             };
             false -> term_emitter@term_to_asm_debug_with_outer(fn_val.body, dest_reg, { table: ctx.table, int64_table: ctx.int64_table, int32_table: ctx.int32_table, int16_table: ctx.int16_table, int8_table: ctx.int8_table, literal_table: ctx.literal_table, float64_literal_table: ctx.float64_literal_table, float32_literal_table: ctx.float32_literal_table, string_literal_table: ctx.string_literal_table }, body_outer_root, ctx.debug)
         };
@@ -1713,7 +1745,7 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
                         false -> {
                             tc: int64 <- prims_tuple@count_type_elements(fn_val.return_type);
                             ts: int64 <- prims_tuple@flat_alloc_size(tc);
-                            term_emitter@aggregate_return_heap_promote_x0(ts)
+                            term_aggregate_helpers@aggregate_return_heap_promote_x0(ts)
                         }
                     }
                 };
@@ -1723,8 +1755,8 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
                         false -> case record_callee_skips_ret_promote_dealloc(fn_val.body) of {
                             true -> "";
                             false -> {
-                                rs: int64 <- term_emitter@record_make_stack_alloc_size(fn_val.return_type);
-                                term_emitter@aggregate_return_heap_promote_x0(rs)
+                                rs: int64 <- term_record_layout@record_make_stack_alloc_size(fn_val.return_type);
+                                term_aggregate_helpers@aggregate_return_heap_promote_x0(rs)
                             }
                         }
                     };
@@ -1752,7 +1784,7 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
                         false -> case record_callee_skips_ret_promote_dealloc(fn_val.body) of {
                             true -> "";
                             false -> {
-                                rs: int64 <- term_emitter@record_make_stack_alloc_size(fn_val.return_type);
+                                rs: int64 <- term_record_layout@record_make_stack_alloc_size(fn_val.return_type);
                                 concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(rs), "\n"))
                             }
                         }

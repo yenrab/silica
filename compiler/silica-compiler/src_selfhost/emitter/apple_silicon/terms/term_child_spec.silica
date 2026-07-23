@@ -1,0 +1,173 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Supervisor child_spec / trampoline helpers for record emission.
+
+use prims_record;
+use term_sir_helpers;
+
+export is_child_spec_record_type/1;
+export is_supervisor_reply_record_type/1;
+export emit_child_spec_hidden_trampoline_store/2;
+export child_spec_field_abi_offset/1;
+
+fn first_at_in_fn_label(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "@" of {
+            true -> i;
+            false -> first_at_in_fn_label(s, i + 1)
+        }
+    }
+}
+
+fn child_spec_supervisor_trampoline_symbol_from_label(label: string) -> string {
+    clean_label: string <- case len(label) > 0 and substring(label, 0, 1) == "%" of {
+        true -> substring(label, 1, len(label));
+        false -> label
+    };
+    at: int64 <- first_at_in_fn_label(clean_label, 0);
+    case at < 0 of {
+        true -> {
+            suffix: string <- "_child_start";
+            suffix_len: int64 <- len(suffix);
+            label_len: int64 <- len(clean_label);
+            case label_len > suffix_len and substring(clean_label, label_len - suffix_len, label_len) == suffix of {
+                true -> concat("_silica_supervisor_start_", substring(clean_label, 0, label_len - suffix_len));
+                false -> ""
+            }
+        };
+        false -> concat("_silica_supervisor_start_", substring(clean_label, 0, at))
+    }
+}
+
+fn child_spec_fn_label_from_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    case term_sir_helpers@sir_term_root_node(term).kind == 0 and term_sir_helpers@sir_term_root_node(term).type_name == "fn_ptr" of {
+        true -> term_sir_helpers@sir_term_root_node(term).value;
+        false -> case term_sir_helpers@sir_term_root_node(term).kind == 1 of {
+            true -> term_sir_helpers@sir_term_root_node(term).name;
+            false -> ""
+        }
+    }
+}
+
+fn child_spec_start_fn_label(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    case term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "record_make" of {
+        false -> "";
+        true -> case term_sir_helpers@sir_term_root_node(term).value == "start" and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make" of {
+            true -> {
+                e1w: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).right_expr);
+                e1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case term_sir_helpers@sir_term_root_node(e1w).kind == 6 and term_sir_helpers@sir_term_root_node(e1w).name == "tuple_make" of {
+                    true -> term_sir_helpers@sir_term_at(e1w, term_sir_helpers@sir_term_root_node(e1w).inner);
+                    false -> e1w
+                };
+                child_spec_fn_label_from_term(e1)
+            };
+            false -> case term_sir_helpers@sir_term_root_node(term).value == "behavior" of {
+                true -> {
+                    label: string <- child_spec_fn_label_from_term(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                    case len(label) > 0 of {
+                        true -> label;
+                        false -> child_spec_start_fn_label(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr))
+                    }
+                };
+                false -> child_spec_start_fn_label(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr))
+            }
+        }
+    }
+}
+
+fn child_spec_agent_type_atom(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    case term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "record_make" of {
+        false -> "";
+        true -> case term_sir_helpers@sir_term_root_node(term).value == "agent_type" and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 0 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name == "atom" of {
+            true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).value;
+            false -> child_spec_agent_type_atom(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr))
+        }
+    }
+}
+
+fn is_child_spec_record_type(R: string) -> bool {
+    len(prims_record@find_field_type_in_record(R, "id")) > 0
+        and len(prims_record@find_field_type_in_record(R, "agent_type")) > 0
+        and (len(prims_record@find_field_type_in_record(R, "start")) > 0
+            or (len(prims_record@find_field_type_in_record(R, "initial_state")) > 0
+                and len(prims_record@find_field_type_in_record(R, "behavior")) > 0))
+        and len(prims_record@find_field_type_in_record(R, "restart")) > 0
+        and len(prims_record@find_field_type_in_record(R, "shutdown")) > 0
+}
+
+fn is_supervisor_reply_record_type(R: string) -> bool {
+    len(prims_record@find_field_type_in_record(R, "tag")) > 0
+        and len(prims_record@find_field_type_in_record(R, "child")) > 0
+        and len(prims_record@find_field_type_in_record(R, "status")) > 0
+        and len(prims_record@find_field_type_in_record(R, "children")) > 0
+        and len(prims_record@find_field_type_in_record(R, "count")) > 0
+        and len(prims_record@find_field_type_in_record(R, "child_info")) > 0
+        and len(prims_record@find_field_type_in_record(R, "error")) > 0
+}
+
+fn emit_child_spec_hidden_trampoline_store(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, R: string) -> string {
+    case is_child_spec_record_type(R) of {
+        false -> "";
+        true -> {
+            // Agent role is explicit in child_spec.agent_type (:worker | :supervisor).
+            // Do not infer role from child record shape or behavior naming.
+            agent_atom: string <- child_spec_agent_type_atom(term);
+            case agent_atom == ":supervisor" of {
+                false -> "    STR XZR, [SP, #56]";
+                true -> {
+                    label: string <- child_spec_start_fn_label(term);
+                    sym: string <- child_spec_supervisor_trampoline_symbol_from_label(label);
+                    case len(sym) == 0 of {
+                        true -> "    STR XZR, [SP, #56]";
+                        false -> concat(concat(concat(concat("    ADRP X9, ", sym), "@PAGE\n    ADD X9, X9, "), sym), "@PAGEOFF\n    STR X9, [SP, #56]")
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn child_spec_field_abi_offset(fname: string) -> int64 {
+    case fname == "id" of {
+        true -> 0;
+        false -> case fname == "agent_type" of {
+            true -> 8;
+            false -> case fname == "initial_state" of {
+                true -> 16;
+                false -> case fname == "behavior" of {
+                    true -> 24;
+                    false -> case fname == "start" of {
+                        true -> 16;
+                        false -> case fname == "restart" of {
+                            true -> 32;
+                            false -> case fname == "shutdown" of {
+                                true -> 40;
+                                false -> case fname == "flavor" of {
+                                    true -> 48;
+                                    false -> -1
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

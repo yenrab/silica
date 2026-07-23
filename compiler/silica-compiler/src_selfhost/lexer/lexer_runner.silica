@@ -32,6 +32,9 @@ use lexer_comments;
 
 // Export module function
 export lexer_runner/1;
+export cons_token/2;
+export tokenize/2;
+export empty_token_list/0;
 
 fn skip_whitespace_and_line_comments(lexer: { source: string, position: int64, line: int64, column: int64, file: string }) -> { source: string, position: int64, line: int64, column: int64, file: string } {
     skipped: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@skip_whitespace(lexer);
@@ -73,7 +76,7 @@ fn cons_token(head: { kind: int64, lexeme: string, location: { file: string, lin
 - Last-modified-by: Lee S. Barney
 -}
 fn tokenize(lexer: { source: string, position: int64, line: int64, column: int64, file: string }, tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
-    sequence proc[DeviceIO]
+    sequence proc[mem(normal)]
         // Skip whitespace and comments
         after_comments: { source: string, position: int64, line: int64, column: int64, file: string } <- skip_whitespace_and_line_comments(lexer);
 
@@ -92,9 +95,8 @@ fn tokenize(lexer: { source: string, position: int64, line: int64, column: int64
         is_empty: bool <- len(current) == 0;
         result: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- case is_empty of {
             true -> {
-                kinds: TokenKinds <- lexer_token_kind@token_kinds();
-                eof_location: { file: string, line: int64, column: int64, offset: int64 } <- lexer_core@current_location(after_comments);
-                eof_token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- lexer_core@make_token(kinds.eof, "", eof_location);
+                                eof_location: { file: string, line: int64, column: int64, offset: int64 } <- lexer_core@current_location(after_comments);
+                eof_token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- lexer_core@make_token(lexer_token_kind@token_kind_eof(), "", eof_location);
                 cons_token(eof_token, tokens )
             };
             false -> case current of {
@@ -145,9 +147,8 @@ fn tokenize(lexer: { source: string, position: int64, line: int64, column: int64
                                 "=" -> lexer_operators@read_equal(after_comments);
                                 "!" -> lexer_operators@read_bang_equal(after_comments);
                                 _: string -> {
-                                    kinds: TokenKinds <- lexer_token_kind@token_kinds();
-                                    error_location: { file: string, line: int64, column: int64, offset: int64 } <- lexer_core@current_location(after_comments);
-                                    error_token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- lexer_core@make_token(kinds.unknown_char, current, error_location);
+                                                                        error_location: { file: string, line: int64, column: int64, offset: int64 } <- lexer_core@current_location(after_comments);
+                                    error_token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- lexer_core@make_token(lexer_token_kind@token_kind_unknown_char(), current, error_location);
                                     (error_token, lexer_core@advance(after_comments))
                                 }
                             }
@@ -194,33 +195,13 @@ fn empty_token_list() -> List[{ kind: int64, lexeme: string, location: { file: s
 - Last-date-modified: 2025-02-10
 - Last-modified-by: Lee S. Barney
 -}
-fn lexer_runner(filename: string) -> List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] proc[DeviceIO] {
-        // Read file content
-        //         print("Reading file: ");
-        //         println(filename);
-        //         println("");
-        //
+fn lexer_runner(filename: string) -> List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
+    sequence proc[mem(normal), DeviceIO]
         source: string <- read_lines(filename);
-        //         print("source: ");
-        //         println(source);
-        //         println("");
-        //
-        // Create lexer
         lexer: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@new_lexer(source, filename);
-        
-        // DEBUG: Print lexer source
-        //         print("lexer source: ");
-        //         println(lexer.source);
-        //         println("");
-        //         println("DEBUG lexer source length=");
-        //         print_int64(len(lexer.source));
-        //         println("");
-        //
-        
-        // Start with empty token list
         initial_tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- empty_token_list();
-        
-        // Tokenize entire source (tokenize returns proc[DeviceIO], so we invoke it)
-        result_tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- tokenize(lexer, initial_tokens);
-        result_tokens
+        result_tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- tokenize(lexer, initial_tokens)
+    produces
+        pure result_tokens
+    end
 }

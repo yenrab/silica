@@ -118,10 +118,10 @@ fn param_types_from_list_lexical(params: ListParam) -> string {
     param_types_from_list_loop(params, "")
 }
 
-// Build SIRFunction for a Declaration (tag 0)
+// Build { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string } for a Declaration (tag 0)
 // Uses decl.body when present (kind >= 0); otherwise placeholder for empty body
 // Adds parameters to context so body can reference param names
-fn emit_function(decl: Declaration, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, all_decls: ListDeclaration) -> { name: string, return_type: string, effects: string, body: SIRTerm, param_names: string, param_types: string } proc[mem(normal)] {
+fn emit_function(decl: Declaration, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, all_decls: ListDeclaration) -> { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string } proc[mem(normal)] {
     case decl.tag of {
         0 -> {
             fn_name: string <- overload_mangle@sir_fn_link_name(decl, all_decls);
@@ -131,7 +131,7 @@ fn emit_function(decl: Declaration, context: { env: List[{ name: string, type_na
                 false -> effect_serializer@serialize_effects(decl.declared_effects)
             };
             context_with_params: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- add_params_to_context(decl, context);
-            body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case decl.body.kind >= 0 of {
+            body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case sir_ast@sir_term_root_node(decl.body).kind >= 0 of {
                 true -> terms@expr_to_sir_function_body(context_with_params, decl.body, decl.return_type_name);
                 false -> placeholder_body(decl.return_type_name)
             };
@@ -159,7 +159,7 @@ fn qual_name(name: string) -> string {
 }
 
 // Placeholder body when Declaration has no body (per formalization spec §4.2)
-fn placeholder_body(return_type_name: string) -> { kind: int64, type_name: string, value: string, name: string, inner: SIRTerm, right_expr: SIRTerm } {
+fn placeholder_body(return_type_name: string) -> { kind: int64, type_name: string, value: string, name: string, inner: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, right_expr: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } } {
     sir_type: string <- types@type_name_to_sir(return_type_name);
     case return_type_name of {
         "unit" -> { kind: 0, type_name: "unit", value: "()", name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };

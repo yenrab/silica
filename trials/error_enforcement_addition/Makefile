@@ -52,7 +52,7 @@ all: | clean
 		mkdir -p "$$tmpdir/$$(dirname "$$silica")"; \
 		ln -s "$(THIS_DIR)$$silica" "$$tmpdir/$$silica"; \
 		echo "$$silica" > "$$tmpdir/silica.config"; \
-		(cd "$$tmpdir" && $(SILICA_COMPILER)) > "$(THIS_DIR)$$base.cur_fail" 2>&1 || true; \
+		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,$(SILICA_COMPILER)); }) > "$(THIS_DIR)$$base.cur_fail" 2>&1 || true; \
 		rm -rf "$$tmpdir"; \
 		if diff -q "$(THIS_DIR)$$base.cur_fail" "$(THIS_DIR)$$base.golden_fail" > /dev/null 2>&1; then \
 			echo "✅✅ $(MSG_PREFIX)$$base"; \

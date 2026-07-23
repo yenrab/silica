@@ -55,7 +55,7 @@ integrate:
 		else \
 			echo "$$trial.silica" > "$$tmpdir/silica.config"; \
 		fi; \
-		(cd "$$tmpdir" && "$(SILICA_COMPILER)") > "$(THIS_DIR)$$trial.cur_fail" 2>&1 || true; \
+		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$(THIS_DIR)$$trial.cur_fail" 2>&1 || true; \
 		rm -rf "$$tmpdir"; \
 		if diff -q "$(THIS_DIR)$$trial.cur_fail" "$(THIS_DIR)$$trial.golden_fail" > /dev/null 2>&1; then \
 			echo "✅✅ $(MSG_PREFIX)$$trial"; \
@@ -85,7 +85,7 @@ record-golden:
 		else \
 			echo "$$trial.silica" > "$$tmpdir/silica.config"; \
 		fi; \
-		(cd "$$tmpdir" && "$(SILICA_COMPILER)") > "$(THIS_DIR)$$trial.golden_fail" 2>&1 || true; \
+		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$(THIS_DIR)$$trial.golden_fail" 2>&1 || true; \
 		rm -rf "$$tmpdir"; \
 		echo "Recorded $$trial.golden_fail"; \
 	done

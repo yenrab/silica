@@ -15,7 +15,7 @@
    limitations under the License.
 -}
 
-// call term emission (SIRTerm kind 4)
+// call term emission ({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } kind 4)
 // sir_emitter_pattern_spec §7.4: call -> BLR callee; result in X0
 // Effect-aware: barriers before/after effectful calls per spec §9.1.1 Effect-to-Barrier Mapping
 //   device_io: no barriers (syscall-based; kernel handles ordering)
@@ -23,7 +23,6 @@
 //   mem(atomic): DMB ISH before and after (cross-core visibility)
 // term_emitter emits arg to X0 before calling; this emits barriers + BLR
 
-use sir_ast;
 use emitter_effects;
 use control;
 use module_linkage;
@@ -36,6 +35,35 @@ export emit_call_body_with_callee/3;
 export emit_tail_call_body/4;
 export sir_call_targets_bound_callee/2;
 export emit_indirect_callee_address_to_x17/2;
+
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
 
 fn sir_call_targets_bound_callee(outer_reg: string, sir_callee: string) -> bool {
     (qmod: string, qfn: string) <- module_linkage@split_qualified_callee(sir_callee);
@@ -67,7 +95,7 @@ fn emit_indirect_callee_address_to_x17(outer_reg: string, sir_callee: string) ->
     }
 }
 
-fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string, outer_reg: string, indirect_via_x9: bool) -> string {
+fn emit_call_body_effects(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, effect_value: string, outer_reg: string, indirect_via_x9: bool) -> string {
     call_effects: string <- effect_value;
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
@@ -75,7 +103,7 @@ fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string, out
     adrp_line: string <- case indirect_via_x9 of {
         true -> "    BLR X17";
         false -> {
-            callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.name);
+            callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, sir_term_root_node(term).name);
             adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
             add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
             concat(concat(adrp_part, add_part), "    BLR X9")
@@ -85,7 +113,7 @@ fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string, out
     // unless it is already the corresponding return register. Earlier code treated any
     // W-/D-/S-/H-prefixed dest as "already in place", which corrupted every call whose
     // result had to flow into a non-zero register (e.g. W9 for a binary-op left operand).
-    aggregate_return: bool <- reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name);
+    aggregate_return: bool <- reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(term).type_name);
     effective_dest: string <- case aggregate_return and len(dest) > 0 and substring(dest, 0, 1) == "W" of {
         true -> concat("X", substring(dest, 1, len(dest)));
         false -> dest
@@ -129,20 +157,20 @@ fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string, out
     concat(with_post, result_mov)
 }
 
-fn emit_call_body(term: SIRTerm, dest: string, outer_reg: string) -> string {
-    emit_call_body_effects(term, dest, term.value, outer_reg, false)
+fn emit_call_body(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, outer_reg: string) -> string {
+    emit_call_body_effects(term, dest, sir_term_root_node(term).value, outer_reg, false)
 }
 
-// Tail call (SIRTerm kind 5): args already in registers — release frame, then BR (no BLR / no return to this frame).
+// Tail call ({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } kind 5): args already in registers — release frame, then BR (no BLR / no return to this frame).
 // recursion_implementation.md Phase 5: native tail transfer; fn_effects controls DMB+LDP like epilogue (atomic release).
-fn emit_tail_call_body(term: SIRTerm, fn_effects: string, outer_reg: string, indirect_via_x9: bool) -> string {
-    call_effects: string <- term.value;
+fn emit_tail_call_body(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fn_effects: string, outer_reg: string, indirect_via_x9: bool) -> string {
+    call_effects: string <- sir_term_root_node(term).value;
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
     br_line: string <- case indirect_via_x9 of {
         true -> "    BR X17";
         false -> {
-            callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.name);
+            callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, sir_term_root_node(term).name);
             adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
             add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
             concat(concat(adrp_part, add_part), "    BR X9")
@@ -161,8 +189,8 @@ fn emit_tail_call_body(term: SIRTerm, fn_effects: string, outer_reg: string, ind
 }
 
 // Emit call with explicit callee symbol (e.g. silica_print_float64 for print_float64).
-fn emit_call_body_with_callee(term: SIRTerm, dest: string, callee: string) -> string {
-    call_effects: string <- term.value;
+fn emit_call_body_with_callee(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, callee: string) -> string {
+    call_effects: string <- sir_term_root_node(term).value;
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
@@ -170,7 +198,7 @@ fn emit_call_body_with_callee(term: SIRTerm, dest: string, callee: string) -> st
     add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
     adrp_line: string <- concat(concat(adrp_part, add_part), "    BLR X9");
     // No move when result already in dest: X0/W0 (int), D0/S0/H0 (float)
-    aggregate_return: bool <- reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name);
+    aggregate_return: bool <- reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(term).type_name);
     effective_dest: string <- case aggregate_return and len(dest) > 0 and substring(dest, 0, 1) == "W" of {
         true -> concat("X", substring(dest, 1, len(dest)));
         false -> dest

@@ -32,7 +32,7 @@ integrate: fixtures $(SILICA_COMPILER)
 		ln -s "$(FIXTURES_DIR)/dangerous_exposure_source" "$$tmpdir/dangerous_exposure_source"; \
 		echo "$$base.silica" > "$$tmpdir/silica.config"; \
 		out="$$tmpdir/out.txt"; \
-		(cd "$$tmpdir" && "$(SILICA_COMPILER)") > "$$out" 2>&1 || true; \
+		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$$out" 2>&1 || true; \
 		if grep -qE '❌|Error error|ParseError|TypeError|EffectError|ModuleError' "$$out"; then \
 			echo "  ❌ abi_addition/$$silica: expected compile success"; cat "$$out"; rm -rf "$$tmpdir"; ko=$$((ko + 1)); failed=1; \
 		elif ! grep -q "Type checking..." "$$out"; then \

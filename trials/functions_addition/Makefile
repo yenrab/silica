@@ -44,7 +44,8 @@ all: executables
 # Stage 1: silica-compiler generates .sams (reads silica.config internally)
 assembly: clean silica.config
 	@echo "Compiling with silica-compiler..."
-	@cd "$(THIS_DIR)" && $(SILICA_COMPILER)
+	@cd "$(THIS_DIR)" && rm -f *.sams silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams; \
+	$(RUN_SILICA_COMPILER)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
 # Stage 2: Assemble .sams -> .o (no Rust code, clang assembler only)
@@ -82,9 +83,9 @@ integrate:
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
-	rm -f *.sams; \
+	rm -f *.sams silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams; \
 	echo "Compiling with silica-compiler..."; \
-	if ! $(abspath $(SILICA_COMPILER)); then \
+	if ! { $(call RUN_SILICA_COMPILER_WITH,$(abspath $(SILICA_COMPILER))); }; then \
 		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
@@ -166,7 +167,7 @@ clean:
 		[ -f "$$s" ] || continue; \
 		rm -f $${s%.sams}; \
 	done
-	@cd "$(THIS_DIR)" && rm -f *.sams *.o silica.config .integrate_counts
+	@cd "$(THIS_DIR)" && rm -f *.sams *.o silica.config silica.compile.order silica.needs_runtime silica.link .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
