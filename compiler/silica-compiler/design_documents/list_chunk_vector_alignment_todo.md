@@ -7,7 +7,7 @@
 | Document | Purpose |
 |----------|---------|
 | [list_implementation_design.md](list_implementation_design.md) | Canonical list representation goals; **§4.5** describes current emitter vs doc |
-| `emitter/apple_silicon/terms/prims/prims_list.silica` | **`chunk_data_bytes`**, helpers **`L_list_prepend_helper`** / **`L_list_tail_helper`**, scalar emits |
+| `emitter/apple_silicon_mac/terms/prims/prims_list.silica` | **`chunk_data_bytes`**, helpers **`L_list_prepend_helper`** / **`L_list_tail_helper`**, scalar emits |
 | [silica-compiler-code-organization.md](silica-compiler-code-organization.md) | Where emitter modules live |
 
 ## Current gap (short)

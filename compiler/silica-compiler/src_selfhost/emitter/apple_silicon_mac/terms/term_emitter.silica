@@ -1,0 +1,211 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Term dispatcher. SCC is term_to_asm_opt_bound <-> make_term_emit_child only.
+// Case/call/prim/let/compound are open-recursive kind modules.
+
+use atom_table;
+use let_dispatcher;
+use term_emit_const;
+use term_emit_var;
+use term_emit_kind_let;
+use term_emit_kind_compound;
+use term_emit_kind_case;
+use term_emit_kind_call;
+use term_emit_kind_prim;
+use term_sir_helpers;
+
+export emit_function_tail_user_call_root/6;
+export emit_function_non_tail_user_call_root/7;
+export term_to_asm/3;
+export term_to_asm_debug/4;
+export term_to_asm_debug_with_outer/5;
+
+// Emit AArch64 assembly for a SIR term. dest is the virtual register for the result.
+// Tables: int64, int32, int16, int8 for print_X const label lookup; pools.literal_table for large int64 const; pools.float64_literal_table for float64 const; pools.string_literal_table for string const
+fn term_to_asm(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }) -> string {
+    term_to_asm_opt_bound(term, dest, pools, { bound_name: "", bound_reg: "", outer_reg: "", debug: false })
+}
+
+// Debug variant: when debug is true, prints branch/register info for let and var cases
+
+// Debug variant: when debug is true, prints branch/register info for let and var cases
+fn term_to_asm_debug(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, debug: bool) -> string {
+    sequence proc[DeviceIO]
+        result: string <- term_to_asm_opt_bound_debug(term, dest, pools, { bound_name: "", bound_reg: "", outer_reg: "", debug: debug })
+    produces
+        pure result
+    end
+}
+
+// Variant with initial outer_reg (for function param bindings: %x=X0, %y=X1, etc.)
+
+// Variant with initial outer_reg (for function param bindings: %x=X0, %y=X1, etc.)
+fn term_to_asm_debug_with_outer(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, outer_reg: string, debug: bool) -> string {
+    sequence proc[DeviceIO]
+        result: string <- term_to_asm_opt_bound_debug(term, dest, pools, { bound_name: "", bound_reg: "", outer_reg: outer_reg, debug: debug })
+    produces
+        pure result
+    end
+}
+
+fn term_to_asm_opt_bound(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string {
+    case term_sir_helpers@sir_term_root_node(term).kind - 3 == 0 of {
+        true -> term_emit_kind_case@emit_case_expression(term, dest, { table: pools.table, literal_table: pools.literal_table, float64_literal_table: pools.float64_literal_table, float32_literal_table: pools.float32_literal_table, string_literal_table: pools.string_literal_table }, bound, make_term_emit_child(pools));
+        false -> case term_sir_helpers@sir_term_root_node(term).kind + 1 < 2 of {
+            true -> term_emit_const@emit_const_term(term, dest, { table: pools.table, literal_table: pools.literal_table, float64_literal_table: pools.float64_literal_table, float32_literal_table: pools.float32_literal_table, string_literal_table: pools.string_literal_table }, bound.outer_reg);
+            false -> case term_sir_helpers@sir_term_root_node(term).kind of {
+                1 -> term_emit_var@emit_var_term(term, dest, { table: pools.table, literal_table: pools.literal_table, float64_literal_table: pools.float64_literal_table, float32_literal_table: pools.float32_literal_table, string_literal_table: pools.string_literal_table }, bound);
+                2 -> term_emit_kind_let@emit_kind_let(term, dest, bound, make_term_emit_child(pools));
+                4 -> term_emit_kind_prim@emit_kind_prim(term, dest, pools, bound, make_term_emit_child(pools));
+                5 -> term_emit_kind_call@emit_generic_user_call_asm_inner(term, dest, bound, make_term_emit_child(pools), true, "[]", "", "");
+                6 -> term_emit_kind_compound@emit_kind_compound(term, dest, bound, pools.table, make_term_emit_child(pools));
+                _ -> concat("    ; unsupported term kind (dummy k)", "?")
+            }
+        }
+    }
+}
+
+// Capture pools for open-recursive kind emitters. Child fn type stays Bound-only
+// so signatures do not nest the full pools record inside emit_child.
+
+// Capture pools for open-recursive kind emitters. Child fn type stays Bound-only
+// so signatures do not nest the full pools record inside emit_child.
+fn make_term_emit_child(pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }) -> fn({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, string, { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string {
+    fn(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string {
+        term_to_asm_opt_bound(term, dest, pools, bound)
+    }
+}
+
+
+// Debug variant: prints bound.bound_name, bound.bound_reg, term structure for let and var at each recursion
+// When bound.debug and let: traces rhs_reg (from compute_rhs_reg_top_level or compute_rhs_reg_in_let)
+
+// Debug variant: prints bound.bound_name, bound.bound_reg, term structure for let and var at each recursion
+// When bound.debug and let: traces rhs_reg (from compute_rhs_reg_top_level or compute_rhs_reg_in_let)
+fn term_to_asm_opt_bound_debug(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string {
+    sequence proc[DeviceIO]
+        rhs_reg_trace: string <- case bound.debug and term_sir_helpers@sir_term_root_node(term).kind == 2 of {
+            true -> {
+                rhs_reg: string <- case len(bound.bound_name) > 0 and len(bound.bound_reg) > 0 of {
+                    true -> let_dispatcher@compute_rhs_reg_in_let(term, dest, bound.bound_name, bound.bound_reg, bound.outer_reg);
+                    false -> let_dispatcher@compute_rhs_reg_top_level(term, bound.bound_reg, dest)
+                };
+                branch: string <- case len(bound.bound_name) > 0 and len(bound.bound_reg) > 0 of { true -> "in_let"; false -> "top_level" };
+                p1: string <- concat("  [TRACE let] rhs_reg=", rhs_reg);
+                p2: string <- concat(p1, " branch=");
+                p3: string <- concat(p2, branch);
+                p4: string <- concat(p3, " bound.bound_name=");
+                p5: string <- concat(p4, bound.bound_name);
+                p6: string <- concat(p5, " term_sir_helpers@sir_term_root_node(term).name=");
+                p7: string <- concat(p6, term_sir_helpers@sir_term_root_node(term).name);
+                p8: string <- concat(p7, " bound.bound_reg=");
+                p9: string <- concat(p8, bound.bound_reg);
+                p10: string <- concat(p9, " term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind=");
+                kind_str: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 0 of { true -> "0(const)"; false -> "non-0" };
+                concat(p10, kind_str)
+            };
+            false -> ""
+        };
+        _: int64 <- case len(rhs_reg_trace) > 0 of {
+            true -> { println(rhs_reg_trace); 0 };
+            false -> 0
+        };
+        msg: string <- case len(rhs_reg_trace) == 0 and bound.debug and term_sir_helpers@sir_term_root_node(term).kind == 2 of {
+            true -> {
+                p1: string <- concat("  [EMITTER let] bound.bound_name=", bound.bound_name);
+                p2: string <- concat(p1, " bound.bound_reg=");
+                p3: string <- concat(p2, bound.bound_reg);
+                concat(p3, concat(" term_sir_helpers@sir_term_root_node(term).name=", term_sir_helpers@sir_term_root_node(term).name))
+            };
+            false -> case bound.debug and term_sir_helpers@sir_term_root_node(term).kind == 1 of {
+                true -> {
+                    v1: string <- concat("  [EMITTER var] term_sir_helpers@sir_term_root_node(term).name=", term_sir_helpers@sir_term_root_node(term).name);
+                    v2: string <- concat(v1, " dest=");
+                    v3: string <- concat(v2, dest);
+                    v4: string <- concat(v3, " bound.bound_name=");
+                    v5: string <- concat(v4, bound.bound_name);
+                    v6: string <- concat(v5, " bound.bound_reg=");
+                    v7: string <- concat(v6, bound.bound_reg);
+                    concat(v7, concat(" bound.outer_reg=", bound.outer_reg))
+                };
+                false -> ""
+            }
+        };
+        _: int64 <- case len(msg) > 0 of {
+            true -> { println(msg); 0 };
+            false -> 0
+        };
+        prim_msg: string <- case bound.debug and term_sir_helpers@sir_term_root_node(term).kind == 6 of {
+            true -> {
+                p1: string <- concat("  [TRACE prim] ", term_sir_helpers@sir_term_root_node(term).name);
+                p2: string <- concat(p1, " dest=");
+                p3: string <- concat(p2, dest);
+                p4: string <- concat(p3, " bound.bound_name=");
+                p5: string <- concat(p4, bound.bound_name);
+                p6: string <- concat(p5, " bound.bound_reg=");
+                p7: string <- concat(p6, bound.bound_reg);
+                left_is_prim: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6;
+                right_is_prim: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 6;
+                bound_empty: bool <- len(bound.bound_name) == 0;
+                sub_branch: string <- case left_is_prim of {
+                    true -> case right_is_prim of { true -> "both_prims"; false -> "left_prim_right_var" };
+                    false -> case right_is_prim of { true -> "left_var_right_prim"; false -> "both_vars" }
+                };
+                top_or_let: string <- case bound_empty of { true -> "top"; false -> "in_let" };
+                p8: string <- concat(p7, " branch=");
+                p9: string <- concat(p8, top_or_let);
+                p10: string <- concat(p9, " sub=");
+                p11: string <- concat(p10, sub_branch);
+                p12: string <- concat(p11, " Lkind=");
+                lk: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 of { true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name; false -> "prim" };
+                p13: string <- concat(p12, lk);
+                p14: string <- concat(p13, " Rkind=");
+                rk: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 1 of { true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).name; false -> "prim" };
+                concat(p14, rk)
+            };
+            false -> ""
+        };
+        _: int64 <- case len(prim_msg) > 0 of {
+            true -> { println(prim_msg); 0 };
+            false -> 0
+        };
+        const_msg: string <- case bound.debug and term_sir_helpers@sir_term_root_node(term).kind == 0 of {
+            true -> {
+                p1: string <- concat("  [TRACE const] dest=", dest);
+                p2: string <- concat(p1, " value=");
+                concat(p2, term_sir_helpers@sir_term_root_node(term).value)
+            };
+            false -> ""
+        };
+        _: int64 <- case len(const_msg) > 0 of {
+            true -> { println(const_msg); 0 };
+            false -> 0
+        };
+        result: string <- term_to_asm_opt_bound(term, dest, pools, bound)
+    produces
+        pure result
+    end
+}
+
+fn emit_function_tail_user_call_root(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, outer_reg: string, fn_effects: string, debug: bool) -> string {
+    term_emit_kind_call@emit_function_tail_user_call_root(term, dest, outer_reg, fn_effects, debug, make_term_emit_child(pools))
+}
+
+fn emit_function_non_tail_user_call_root(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, outer_reg: string, fn_effects: string, debug: bool, line_before_call_asm: string) -> string {
+    term_emit_kind_call@emit_function_non_tail_user_call_root(term, dest, outer_reg, fn_effects, debug, line_before_call_asm, make_term_emit_child(pools))
+}

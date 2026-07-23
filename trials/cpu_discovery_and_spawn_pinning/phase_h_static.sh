@@ -5,7 +5,7 @@
 # for proc[concurrency] sequence blocks — see cpu_topology_runtime_queries.sams).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-ASM="$ROOT/src/emitter/apple_silicon/terms/prims/prims_actors_runtime_asm.silica"
+ASM="$ROOT/src/emitter/apple_silicon_mac/terms/prims/prims_actors_runtime_asm.silica"
 if [[ ! -f "$ASM" ]]; then
   echo "Phase H: missing $ASM" >&2
   exit 1

@@ -144,7 +144,7 @@ Hands-on guides in `[compiler/silica-compiler/tutorials_and_howtos/](compiler/si
 
 Instructions below follow the **roadmap tracks** described earlier (**Track 1** = language and compiler work in flight and the self-hosted toolchain; **Track 2** = runtime platform, including **foreign interoperability** and **brokered IPC**). They do **not** refer to the numbered **bootstrap pipeline phases** inside [build-plan.md](compiler/silica-compiler/design_documents/build-plan.md).
 
-**Platform notice (temporary):** The build and link path is **validated on Apple Silicon (arm64 macOS)** only. Other chips are not supported end-to-end yet. **Early contribution opportunity:** help bring additional targets online by adding or completing an **emitter backend** under `[compiler/silica-compiler/src/emitter/](compiler/silica-compiler/src/emitter/)` (see existing `apple_silicon/`), wiring `TARGET=…` in the `[Makefile](compiler/silica-compiler/src/Makefile)`, and extending toolchain/triple notes in the [build plan](compiler/silica-compiler/design_documents/build-plan.md) as needed. That work is a concrete way to support new CPUs and boards before **Track 2** runtime pieces land.
+**Platform notice (temporary):** The build and link path is **validated on Apple Silicon (arm64 macOS)** only. Other chips are not supported end-to-end yet. **Early contribution opportunity:** help bring additional targets online by adding or completing an **emitter backend** under `[compiler/silica-compiler/src/emitter/](compiler/silica-compiler/src/emitter/)` (see existing `apple_silicon_mac/`), wiring `TARGET=…` in the `[Makefile](compiler/silica-compiler/src/Makefile)`, and extending toolchain/triple notes in the [build plan](compiler/silica-compiler/design_documents/build-plan.md) as needed. That work is a concrete way to support new CPUs and boards before **Track 2** runtime pieces land.
 
 ### Current build: bootstrap compiler + self-hosted `silica-compiler` (Track 1 toolchain)
 
@@ -185,7 +185,7 @@ Artifacts used by the next step include `target/release/silica-boot` and `target
 
 **3. Build the self-hosted compiler (Silica sources + link)**
 
-By default, `make` builds for **Apple Silicon** (`TARGET=apple_silicon`, the `emitter/apple_silicon` backend). That is currently the **only** emitter tree shipped for a full build; see the platform notice above for supporting more chips.
+By default, `make` builds for **Apple Silicon** (`TARGET=apple_silicon_mac`, the `emitter/apple_silicon_mac` backend). That is currently the **only** emitter tree shipped for a full build; see the platform notice above for supporting more chips.
 
 ```bash
 cd compiler/silica-compiler/src

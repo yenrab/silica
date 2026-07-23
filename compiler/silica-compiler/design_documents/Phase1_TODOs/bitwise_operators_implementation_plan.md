@@ -372,7 +372,7 @@ Follow the same pipeline order as [cpu_topology_implementation_plan.md](cpu_topo
 
 **Tasks**
 
-1. Add `src/emitter/apple_silicon/terms/prims/bitwise.silica`:
+1. Add `src/emitter/apple_silicon_mac/terms/prims/bitwise.silica`:
    - `emit_bor_op(dest, reg_prefix)` → `ORR`
    - `emit_band_op(dest, reg_prefix)` → `AND`
    - `emit_bnot_op(dest, reg_prefix)` → `MVN` alias or `ORN dest, XZR, src`
@@ -394,8 +394,8 @@ Follow the same pipeline order as [cpu_topology_implementation_plan.md](cpu_topo
 
 **Files**
 
-- `src/emitter/apple_silicon/terms/prims/bitwise.silica` (new)
-- `src/emitter/apple_silicon/terms/prims/prims_uint64.silica`
+- `src/emitter/apple_silicon_mac/terms/prims/bitwise.silica` (new)
+- `src/emitter/apple_silicon_mac/terms/prims/prims_uint64.silica`
 - Emitter module Makefile / `silica.config` entries
 
 **Tooling**: `compiler-building-tools/silica-emitter_builder.jsonld`

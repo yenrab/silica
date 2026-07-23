@@ -2,14 +2,18 @@
 # Config-driven like trials/: generate silica.config, run seed host (no argv),
 # then .sams → .o → link. Does not use silica-boot for Silica→assembly.
 #
+# Emit target (TARGET) selects emitter/<TARGET>/ for silica.config and writes
+# silica.target. Defaults to the current host platform when unset.
+#
 # Usage:
+#   make help                   # descriptive help (project --help equivalent)
 #   make                        # assembly + objects + link silica-compiler
 #   make assembly               # seed compile only (.sams)
-#   make TARGET=apple_silicon   # which emitter/* tree to include in the config
-
-TARGET ?= apple_silicon
+#   make TARGET=apple_silicon_mac   # explicit emit / emitter backend
 
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+include $(THIS_DIR)emit_target.mk
+
 BINARIES_DIR := $(abspath $(THIS_DIR)../../../binaries)
 SILICA_COMPILER ?= $(BINARIES_DIR)/silica-compiler
 UPDATE_SILICA_COMPILER_LINK := $(BINARIES_DIR)/update_silica_compiler_link.bash
@@ -32,8 +36,8 @@ LIB_STDLIB_MODULES := wbt_map OrderedMap
 .DEFAULT_GOAL := build
 
 .PHONY: all clean build assembly objects executables lib-sources \
-	silica.config silica.config.compiler assembly-selfhost build-selfhost help \
-	check-seed
+	silica.config silica.config.compiler assembly-selfhost build-selfhost \
+	help --help all-targets check-seed
 
 all: clean build
 
@@ -60,7 +64,7 @@ lib-sources:
 # Canonical batch list (§12). Seed reads the basename `silica.config`.
 # Append constraint_extract_* impl units in dependency order so plain sort does
 # not place them before parser_tuples / other parser deps.
-silica.config.compiler: lib-sources
+silica.config.compiler: check-target silica.target lib-sources
 	@echo "Regenerating silica.config.compiler (TARGET=$(TARGET))..."
 	@cd "$(THIS_DIR)" && { \
 		find . \( -path './_wd_probe' -o -path './emitter' \) -prune -o -type f -name '*.silica' -print; \
@@ -86,7 +90,9 @@ silica.config.compiler: lib-sources
 	  done && \
 	  rm -f silica.config.compiler.raw
 	@test -s "$(THIS_DIR)silica.config.compiler" || (echo "FAIL: silica.config.compiler empty"; exit 1)
-	@echo "  $$(wc -l < "$(THIS_DIR)silica.config.compiler" | tr -d ' ') units"
+	@test -n "$$(find "$(THIS_DIR)emitter/$(TARGET)" -type f -name '*.silica' 2>/dev/null | head -n 1)" \
+		|| (echo "FAIL: no .silica files under emitter/$(TARGET)/"; exit 1)
+	@echo "  $$(wc -l < "$(THIS_DIR)silica.config.compiler" | tr -d ' ') units (emit target: $(TARGET))"
 
 silica.config: silica.config.compiler
 	@cp "$(THIS_DIR)silica.config.compiler" "$(THIS_DIR)silica.config"
@@ -99,6 +105,7 @@ assembly: check-seed silica.config
 	  find . -name '*.sams' -print | while read -r f; do rm -f "$$f"; done; \
 	  rm -f __silica_runtime.sams silica.link silica.compile.order silica.needs_runtime; \
 	  echo "Compiling with seed host: $(SILICA_COMPILER)"; \
+	  echo "Emit target: $(TARGET) (see silica.target)"; \
 	  while true; do \
 	    "$(SILICA_COMPILER)"; \
 	    ec=$$?; \
@@ -150,21 +157,81 @@ build: executables
 assembly-selfhost: assembly
 build-selfhost: build
 
+# Build once per allowable emit target (distinct binaries). Requires an
+# emitter/<name>/ tree for each entry in ALLOWED_TARGETS.
+all-targets:
+	@if [ -z "$(ALLOWED_TARGETS)" ]; then \
+		echo "FAIL: no emitter/*/ targets found"; \
+		exit 1; \
+	fi
+	@for t in $(ALLOWED_TARGETS); do \
+		echo ""; \
+		echo "======== all-targets: TARGET=$$t ========"; \
+		$(MAKE) -C "$(THIS_DIR)" clean build TARGET=$$t EXECUTABLE=silica-compiler-$$t || exit 1; \
+	done
+	@echo ""
+	@echo "✅ all-targets complete: $(ALLOWED_TARGETS)"
+
 clean:
 	@echo "Cleaning generated files..."
 	@cd "$(THIS_DIR)" && \
 	  find . \( -name '*.sams' -o -name '*.o' -o -name '*.ll' -o -name '*.bc' \) ! -path './_wd_probe/*' -delete; \
-	  rm -f $(EXECUTABLE) silica.config silica.config.compiler silica.link __silica_runtime.sams __silica_runtime.o; \
+	  rm -f $(EXECUTABLE) silica.config silica.config.compiler silica.target silica.link \
+	    __silica_runtime.sams __silica_runtime.o; \
+	  rm -f silica-compiler-* 2>/dev/null || true; \
 	  rm -f lib/wbt_map.silica lib/OrderedMap.silica lib/wbt_map.sams lib/OrderedMap.sams lib/*.o 2>/dev/null || true
 	@echo "✅ Clean complete"
 
+# Project help. Prefer: make help
+# Note: plain `make --help` is GNU Make's own help; use `make help` or `make -- --help`.
+--help: help
 help:
-	@echo "src_selfhost — config-driven seed build"
-	@echo "  Seed: $(SILICA_COMPILER)"
-	@echo "  TARGET=$(TARGET) (emitter subtree included in silica.config.compiler)"
+	@echo "src_selfhost — config-driven seed build for silica-compiler"
 	@echo ""
-	@echo "  make / build     - silica.config → seed → .sams → .o → $(EXECUTABLE)"
-	@echo "  assembly         - seed compile only"
-	@echo "  objects          - assemble .sams"
-	@echo "  clean            - remove generated artifacts"
-	@echo "  silica.config.compiler - regenerate unit list"
+	@echo "Usage:"
+	@echo "  make [target] [TARGET=<emit-target>] [EXECUTABLE=<name>]"
+	@echo "  make help"
+	@echo "  make -- --help"
+	@echo ""
+	@echo "Emit target (TARGET)"
+	@echo "  Selects which emitter/<TARGET>/ backend is included in silica.config"
+	@echo "  and writes ./silica.target (emit_target: <TARGET>)."
+	@echo "  This is the code-generation / emit backend baked into this build —"
+	@echo "  not a runtime cross-compile switch inside an already-built binary."
+	@echo "  It is also not the local host binary tag used by binaries/"
+	@echo "  (e.g. macos-applesilicon); those name where the compiler runs."
+	@echo ""
+	@echo "  Default: current host platform when TARGET is unset."
+	@echo "  Host:    $(HOST_UNAME_S) $(HOST_UNAME_M)"
+	@echo "  Active:  TARGET=$(TARGET)  (source: $(TARGET_ORIGIN))"
+	@echo "  File:    silica.target → emit_target: $(TARGET)"
+	@echo ""
+	@echo "  Allowable emit targets (from emitter/*/):"
+	@for t in $(ALLOWED_TARGETS); do \
+		if [ "$$t" = "$(TARGET)" ]; then echo "    * $$t  (selected)"; \
+		else echo "      $$t"; fi; \
+	done
+	@if [ -z "$(ALLOWED_TARGETS)" ]; then echo "      (none found)"; fi
+	@echo ""
+	@echo "  Examples:"
+	@echo "    make                          # host-default TARGET + full build"
+	@echo "    make TARGET=apple_silicon_mac     # explicit emit backend"
+	@echo "    make assembly TARGET=apple_silicon_mac"
+	@echo "    make all-targets              # loop clean/build for each allowable TARGET"
+	@echo ""
+	@echo "Build targets"
+	@echo "  make / build              silica.config → seed → .sams → .o → $(EXECUTABLE)"
+	@echo "  assembly                  seed compile only (.sams)"
+	@echo "  objects                   assemble .sams → .o"
+	@echo "  executables               link $(EXECUTABLE)"
+	@echo "  silica.config.compiler    regenerate unit list for TARGET"
+	@echo "  silica.target             rewrite emit_target declaration"
+	@echo "  all-targets               build silica-compiler-<TARGET> for each allowable TARGET"
+	@echo "  clean                     remove generated artifacts (including silica.target)"
+	@echo "  check-target              validate TARGET against emitter/*/"
+	@echo "  check-seed                ensure binaries/silica-compiler exists"
+	@echo ""
+	@echo "Paths"
+	@echo "  Seed compiler:  $(SILICA_COMPILER)"
+	@echo "  Emitter root:   $(EMITTER_ROOT)"
+	@echo "  This tree:      $(THIS_DIR)"

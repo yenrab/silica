@@ -113,8 +113,8 @@ Inspect **`init:`** chunk in **`phase_e4a_permanent_one_for_one.sams`** until **
 
 | Area | File(s) |
 |------|---------|
-| Tuple stack alloc / **`flat_tuple_total_alloc`** | `compiler/silica-compiler/src/emitter/apple_silicon/terms/term_emitter.silica` |
-| **`flat_alloc_size`** formula | `compiler/silica-compiler/src/emitter/apple_silicon/terms/prims/prims_tuple.silica` |
+| Tuple stack alloc / **`flat_tuple_total_alloc`** | `compiler/silica-compiler/src/emitter/apple_silicon_mac/terms/term_emitter.silica` |
+| **`flat_alloc_size`** formula | `compiler/silica-compiler/src/emitter/apple_silicon_mac/terms/prims/prims_tuple.silica` |
 | **`rec_flat`** memcpy path | **`emit_flat_tuple_stores`** in `term_emitter.silica` |
 | **`_silica_rt_region_alloc`** / TLS getters | Embedded runtime in **`prims_actors_runtime_asm.silica`** (+ trial **`.sams`**) |
 | Sequence → let lowering | **`sir_generator/terms/terms.silica`** (**`lower_sequence_body_to_lets`**) |

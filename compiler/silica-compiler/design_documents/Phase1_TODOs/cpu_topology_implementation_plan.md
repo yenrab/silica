@@ -53,7 +53,7 @@ Deliver **end-to-end compiler and runtime support** for **structured CPU topolog
 
 ## Runtime contract (Apple Silicon + macOS, emitter)
 
-The following is implemented in `src/emitter/apple_silicon/terms/prims/prims_actors_runtime_asm.silica` and related atom table code. It is the reference for user code and later spec text.
+The following is implemented in `src/emitter/apple_silicon_mac/terms/prims/prims_actors_runtime_asm.silica` and related atom table code. It is the reference for user code and later spec text.
 
 **Scope.** Only **Apple Silicon** hosts running **macOS** use this sysctl-based path. Other CPUs or OSes are **out of scope** for the current implementation (no behavioral guarantee; not a build matrix expansion).
 
@@ -162,7 +162,7 @@ The following is implemented in `src/emitter/apple_silicon/terms/prims/prims_act
 
 **Follow-up (not Phase G)**: Fill **`frequency_mhz`** from **IOKit** (or similar) if desired while keeping sysctl **`capabilities`**; add non-Apple emitters if needed without changing Makefiles ad hoc.
 
-**Files (typical)**: `src/emitter/apple_silicon/terms/prims/prims_actors_runtime_asm.silica`, `prims_actors.silica`, `src/emitter/apple_silicon/atoms/atom_table.silica`
+**Files (typical)**: `src/emitter/apple_silicon_mac/terms/prims/prims_actors_runtime_asm.silica`, `prims_actors.silica`, `src/emitter/apple_silicon_mac/atoms/atom_table.silica`
 
 **AALang tool**: [`../../compiler-building-tools/silica-emitter_builder.jsonld`](../../compiler-building-tools/silica-emitter_builder.jsonld)
 

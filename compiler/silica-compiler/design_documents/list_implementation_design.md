@@ -83,7 +83,7 @@ The **authoritative** surface syntax and typing rules remain in [silica-specific
 
 Sections **§2** (“**Vector chunks (day 1)**”) and **§4.1** describe chunks as **aligned to vector width on the target** (with **AArch64 examples** such as **128-bit** or **256-bit**), **packing** multiple elements per chunk when **`sizeof`**/**alignment** permit. That wording is **normative for representation goals**—slabs should eventually support **straightforward SIMD** traversal where the ISA allows.
 
-The **living Apple Silicon emitter** (`emitter/apple_silicon/terms/prims/prims_list.silica`) implements a **narrower**, **partial** slice of that intent:
+The **living Apple Silicon emitter** (`emitter/apple_silicon_mac/terms/prims/prims_list.silica`) implements a **narrower**, **partial** slice of that intent:
 
 | Concern | In this document | In the emitter today |
 |--------|---------------------|----------------------|

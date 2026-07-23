@@ -3,12 +3,12 @@
 # Emitter: SIR -> target-specific assembly
 #
 # Usage:
-#   make                        # builds for default target (apple_silicon)
+#   make                        # builds for default target (apple_silicon_mac)
 #   make TARGET=esp32-s3        # builds for ESP32-S3
-#   make TARGET=apple_silicon   # builds for Apple Silicon
+#   make TARGET=apple_silicon_mac   # builds for Apple Silicon
 
 # Target chip directory under emitter/ (override from parent or command line)
-TARGET ?= apple_silicon
+TARGET ?= apple_silicon_mac
 
 # Validate that the target directory exists
 ifeq ($(wildcard $(TARGET)/),)
@@ -68,7 +68,7 @@ help:
 	@echo "Depends on sir_generator (sir_ast)"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make                        # default target (apple_silicon)"
+	@echo "  make                        # default target (apple_silicon_mac)"
 	@echo "  make TARGET=esp32-s3        # build for ESP32-S3"
 	@echo ""
 	@echo "Available targets: $(patsubst %/,%,$(wildcard */))"

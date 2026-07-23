@@ -1,0 +1,605 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Actor / concurrency prim emission (silica-specification §4.5, §15–16; sir_generator actor_calls.silica).
+// Supervisors Phase B (supervisors_implementation_development_plan.md §15.4.9, §16.2.7): ingress vs standard
+// mailbox drain ordering for recv; runtime implements dequeue.
+// Supervisors Phase G (same plan §15.4.8.4–§15.4.8.7): link, monitor, demonitor lower here — silica-specification
+// §15.4.8.5 (link, idempotent; dead target → immediate exit path), §15.4.8.6 (DOWN only to standard mailbox);
+// SIR `value` tags [concurrency] vs [concurrency, mailbox] from sir_generator match send/cast.
+// Supervisors Phase C (§15.4.10–§15.4.11, §16.2.7): recv → _silica_rt_actor_recv (ingress before standard; stub in runtime chunk).
+// Supervisors Phase D (same plan §15.4.13): impl_supervisor metadata is emitted in module_linkage (not here).
+// Phase E e3b: SIR `value` may be \"[concurrency]|e3b:<StateT>\" (sir_generator) → store _silica_supervisor_start_<T> to child ACB #280.
+// Lowers SIR kind-6 prims to BL of compiler-bundled runtime (_silica_rt_*), appended by emitter_core
+// from prims_actors_runtime_asm.silica (AArch64 assembly strings, compiler-owned).
+// Operands: binary prims expect inner -> X9, right_expr -> X10 (same as arithmetic).
+// spawn 3-arg form: right_expr is tuple_make(behavior, placement); X10 points at flat pair.
+// Structured returns (cpu_topology, core_info, List[...]): runtime passes a heap pointer in X0 per AAPCS; Phase G fills layout in prims_actors_runtime_asm.silica.
+
+use reg_conventions;
+use atom_table;
+use prims_record;
+use prims_tuple;
+
+export is_actor_prim/1;
+export actor_prim_is_nullary/1;
+export actor_prim_is_unary/1;
+export actor_prim_is_ternary/1;
+export emit_prim_op/2;
+export module_uses_actor_prims/1;
+export module_uses_link_monitor_prims/1;
+export gpr_x_view/1;
+
+
+// Local SIRTerm arena helpers (sir_ast node accessors are not exported).
+fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
+    case nodes.is_nil of {
+        true -> 0;
+        false -> 1 + sir_term_nodes_len(nodes.tail)
+    }
+}
+
+fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    case idx <= 0 of {
+        true -> nodes.head;
+        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    }
+}
+
+fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    n: int64 <- sir_term_nodes_len(nodes);
+    sir_term_node_at_from_head(nodes, n - 1 - idx)
+}
+
+fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
+    sir_term_node_at(term.nodes, term.root)
+}
+
+fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    { nodes: term.nodes, root: idx }
+}
+
+fn term_has_actor_prim(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
+        true -> false;
+        false -> case sir_term_root_node(term).kind of {
+            6 -> is_actor_prim(sir_term_root_node(term).name);
+            2 -> case term_has_actor_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_actor_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            3 -> case term_has_actor_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_actor_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            4 -> case term_has_actor_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_actor_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            5 -> case term_has_actor_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_actor_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            7 -> case term_has_actor_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_actor_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            8 -> case term_has_actor_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_actor_prim(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn actor_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_actor_prim(fns.head.body) of {
+            true -> true;
+            false -> actor_in_functions(fns.tail)
+        }
+    }
+}
+
+fn module_uses_actor_prims(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
+    actor_in_functions(sir_module.functions)
+}
+
+fn term_has_link_monitor_demonitor(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    case term.root < 0 of {
+        true -> false;
+        false -> case sir_term_root_node(term).kind of {
+            6 -> sir_term_root_node(term).name == "link" or sir_term_root_node(term).name == "monitor" or sir_term_root_node(term).name == "demonitor";
+            2 -> case term_has_link_monitor_demonitor(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_link_monitor_demonitor(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            3 -> case term_has_link_monitor_demonitor(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_link_monitor_demonitor(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            4 -> case term_has_link_monitor_demonitor(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_link_monitor_demonitor(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            5 -> case term_has_link_monitor_demonitor(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_link_monitor_demonitor(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            7 -> case term_has_link_monitor_demonitor(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_link_monitor_demonitor(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            8 -> case term_has_link_monitor_demonitor(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_link_monitor_demonitor(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn link_monitor_demonitor_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_link_monitor_demonitor(fns.head.body) of {
+            true -> true;
+            false -> link_monitor_demonitor_in_functions(fns.tail)
+        }
+    }
+}
+
+// True when the module uses link, monitor, or demonitor (supervisors plan Phase G matrix / silica-spec §15.4.8.4–8.7).
+fn module_uses_link_monitor_prims(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
+    link_monitor_demonitor_in_functions(sir_module.functions)
+}
+
+fn is_actor_prim(name: string) -> bool {
+    name == "spawn" or name == "spawn_dangerous" or name == "spawn_registered" or name == "spawn_dangerous_registered" or name == "spawn_registered_supervisor" or name == "add_child" or name == "send" or name == "actor_call" or name == "actor_call_registered" or name == "actor_cast" or name == "actor_cast_registered" or name == "actor_cast_dangerous_registered" or name == "self"
+        or name == "recv"
+        or name == "link" or name == "monitor" or name == "demonitor" or name == "supervision_ingress_enqueue"
+        or name == "supervision_wait_and_drain_one" or name == "child_table_first_ref"
+        or name == "child_table_row_ref"
+        or name == "kill_abnormal"
+        or name == "failure_reason_tag" or name == "failure_reason_atom"
+        or name == "failure_agent_type" or name == "failure_release" or name == "start_child" or name == "supervisor_add_child"
+        or name == "supervisor_remove_child" or name == "supervisor_restart_child" or name == "supervisor_terminate_child"
+        or name == "supervisor_which_children" or name == "supervisor_count_children" or name == "supervisor_get_child"
+        or name == "supervisor_get_child_info"
+        or name == "supervisor_get_child_id" or name == "supervisor_get_child_agent_type" or name == "supervisor_get_child_restart"
+        or name == "pin_actor_to_core" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
+        or name == "pin_actor_realtime" or name == "remove_actor" or name == "register_actor" or name == "get_registry_actor" or name == "get_pid_registry" or name == "pin_actor_to_numa_node"
+        or name == "unpin_actor" or name == "set_actor_priority"
+        or name == "get_cpu_topology" or name == "get_efficiency_cores" or name == "get_performance_cores"
+        or name == "get_core_capabilities"
+        or name == "get_actor_memory_usage"
+        or name == "migrate_actor" or name == "move"
+        or name == "register_failure_reporter"
+        or name == "wait_for_exit"
+}
+
+fn actor_prim_is_nullary(name: string) -> bool {
+    name == "self" or name == "recv" or name == "get_cpu_topology" or name == "get_efficiency_cores" or name == "get_performance_cores"
+        or name == "supervision_wait_and_drain_one" or name == "wait_for_exit" or name == "child_table_first_ref"
+        or name == "get_registry_actor" or name == "get_pid_registry"
+}
+
+fn actor_prim_is_unary(name: string) -> bool {
+    name == "link" or name == "monitor" or name == "demonitor"
+        or name == "get_core_capabilities" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
+        or name == "unpin_actor" or name == "remove_actor" or name == "register_actor" or name == "get_actor_memory_usage"
+        or name == "failure_reason_tag" or name == "failure_reason_atom" or name == "failure_agent_type" or name == "failure_release"
+        or name == "start_child" or name == "kill_abnormal" or name == "child_table_row_ref"
+        or name == "supervisor_which_children" or name == "supervisor_count_children"
+        or name == "register_failure_reporter"
+}
+
+fn actor_prim_is_ternary(name: string) -> bool {
+    name == "move"
+}
+
+fn asm_bl(label: string) -> string {
+    concat(concat("    BL ", label), "\n")
+}
+
+fn spawn_init_stack_round16(nbytes: int64) -> int64 {
+    (nbytes + 15) / 16 * 16
+}
+
+fn spawn_init_stack_bytes(inner: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
+    case sir_term_root_node(inner).kind == 6 and sir_term_root_node(inner).name == "record_make" of {
+        true -> {
+            Rm: string <- sir_term_root_node(inner).type_name;
+            case prims_record@record_type_has_only_scalar_fields(Rm) of {
+                true -> spawn_init_stack_round16(prims_record@record_type_value_flat_byte_size(Rm));
+                false -> {
+                    cr: int64 <- prims_record@count_record_fields(Rm);
+                    prims_tuple@flat_alloc_size(cr)
+                }
+            }
+        };
+        false -> case sir_term_root_node(inner).kind == 6 and sir_term_root_node(inner).name == "tuple_make" of {
+            true -> {
+                cf: int64 <- prims_tuple@count_flat_elements(inner);
+                prims_tuple@flat_alloc_size(cf)
+            };
+            false -> 0
+        }
+    }
+}
+
+fn spawn_init_needs_heap_copy(inner: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    sir_term_root_node(inner).kind == 6 and (sir_term_root_node(inner).name == "record_make" or sir_term_root_node(inner).name == "tuple_make")
+        and reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(inner).type_name)
+}
+
+fn heap_promote_copy_words(idx: int64, words: int64) -> string {
+    case idx >= words of {
+        true -> "";
+        false -> {
+            off: int64 <- idx * 8;
+            pair: string <- concat(concat(concat(concat("    LDR X3, [X1, #", atom_table@int64_to_decimal_string(off)), "]\n    STR X3, [X4, #"), atom_table@int64_to_decimal_string(off)), "]\n");
+            concat(pair, heap_promote_copy_words(idx + 1, words))
+        }
+    }
+}
+
+// Copy stack-built initial state to the heap so actor threads do not retain pointers into the caller stack.
+fn heap_promote_stack_aggregate_x0(nbytes: int64) -> string {
+    case nbytes <= 0 of {
+        true -> "";
+        false -> {
+            words: int64 <- nbytes / 8;
+            case words <= 0 of {
+                true -> "";
+                false -> {
+                    copy_asm: string <- heap_promote_copy_words(0, words);
+                    concat(concat(concat(concat("    SUB SP, SP, #16\n    STR X0, [SP, #8]\n    MOV X0, #", atom_table@int64_to_decimal_string(nbytes)), "\n    BL _silica_rt_region_alloc\n    MOV X4, X0\n    LDR X1, [SP, #8]\n"), copy_asm), "    MOV X0, X4\n    ADD SP, SP, #16\n")
+                }
+            }
+        }
+    }
+}
+
+// Runtime returns in X0 (or W0 for some narrow/bool paths). LLVM rejects `MOV Wn, X0`; use `MOV Wn, W0` then.
+// For actor_ref / int64 / pointers / lists, use full `MOV Xn, X0` (Wn and Xn are the same AArch64 GPR).
+// `substring(s, start, end)` uses end exclusive (same as var.silica emit_var_reg).
+// Used by term_emitter spill path (spawn/call may assign W* dest for GPR values).
+fn gpr_x_view(dest: string) -> string {
+    case len(dest) > 1 and substring(dest, 0, 1) == "W" of {
+        true -> concat("X", substring(dest, 1, len(dest)));
+        false -> dest
+    }
+}
+
+fn prim_return_uses_w32_from_x0(result_type: string) -> bool {
+    result_type == "int32" or result_type == "int16" or result_type == "int8"
+        or result_type == "uint32" or result_type == "uint16" or result_type == "uint8"
+        or result_type == "bool"
+}
+
+// Phase E e3b: extract \"<TypeName>\" from SIR value \"[concurrency]|e3b:<TypeName>\".
+// \"[concurrency]\" is 13 chars, so \"|e3b:\" starts at index 13 and the type name at 18.
+fn e3b_extract_type_name(value: string) -> string {
+    case len(value) > 18 and substring(value, 13, 18) == "|e3b:" of {
+        true -> substring(value, 18, len(value));
+        false -> ""
+    }
+}
+
+// Phase E e3b: load supervisor trampoline address into X3 before spawn call.
+// For non-supervisor spawns emits MOV X3, XZR so ACB#280 stays 0.
+fn e3b_trampoline_x3_prefix(value: string) -> string {
+    tn: string <- e3b_extract_type_name(value);
+    case len(tn) == 0 of {
+        true -> "    MOV X3, XZR\n";
+        false -> {
+            sym: string <- concat("_silica_supervisor_start_", tn);
+            concat(concat(concat(concat("    ADRP X3, ", sym), "@PAGE\n    ADD X3, X3, "), sym), "@PAGEOFF\n")
+        }
+    }
+}
+
+fn e3b_trampoline_x4_prefix(value: string) -> string {
+    tn: string <- e3b_extract_type_name(value);
+    case len(tn) == 0 of {
+        true -> "    MOV X4, XZR\n";
+        false -> {
+            sym: string <- concat("_silica_supervisor_start_", tn);
+            concat(concat(concat(concat("    ADRP X4, ", sym), "@PAGE\n    ADD X4, X4, "), sym), "@PAGEOFF\n")
+        }
+    }
+}
+
+fn mov_dest_from_x0_for_type(dest: string, result_type: string) -> string {
+    case dest == "X0" of {
+        true -> "";
+        false -> case prim_return_uses_w32_from_x0(result_type) of {
+            true -> case len(dest) > 0 and substring(dest, 0, 1) == "W" of {
+                true -> case dest == "W0" of {
+                    true -> "    MOV W0, W0\n";
+                    false -> concat(concat(concat("    MOV ", dest), ", W0"), "\n")
+                };
+                false -> concat(concat(concat("    MOV ", dest), ", X0"), "\n")
+            };
+            false -> concat(concat(concat("    MOV ", gpr_x_view(dest)), ", X0"), "\n")
+        }
+    }
+}
+
+// 3-arg: term_emitter saves initial state to X11 before building the behavior/placement tuple (which reuses X9).
+// spawn_linked: §15.4.8.3 / supervisors_implementation_development_plan Phase A.
+// ABI _silica_rt_actor_spawn_linked(X0 init, X1 beh, X2 agent_atom, X3 core_id): core_id 0 = default placement.
+// 3-arg SIR: right = tuple_make(beh, agent); 4-arg: flat [beh, agent, core] at X10 (nested tuple_make layout).
+fn emit_spawn_linked(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    e3b_pfx: string <- e3b_trampoline_x4_prefix(sir_term_root_node(term).value);
+    four_args: bool <- sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).kind == 6 and sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).name == "tuple_make"
+        and sir_term_root_node(sir_term_at(sir_term_at(term, sir_term_root_node(term).right_expr), sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).inner)).kind == 6 and sir_term_root_node(sir_term_at(sir_term_at(term, sir_term_root_node(term).right_expr), sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).inner)).name == "tuple_make";
+    case four_args of {
+        true -> concat(concat(concat(e3b_pfx, "    MOV X0, X11\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n    LDR X3, [X10, #16]\n"), asm_bl("_silica_rt_actor_spawn_linked")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name));
+        false -> case sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).kind == 6 and sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).name == "tuple_make" of {
+            true -> concat(concat(concat(e3b_pfx, "    MOV X0, X11\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n    MOV X3, XZR\n"), asm_bl("_silica_rt_actor_spawn_linked")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name));
+            false -> {
+                nb_sl: int64 <- spawn_init_stack_bytes(sir_term_at(term, sir_term_root_node(term).inner));
+                copy_init_sl: bool <- spawn_init_needs_heap_copy(sir_term_at(term, sir_term_root_node(term).inner)) and nb_sl > 0;
+                case copy_init_sl of {
+                    true -> {
+                        promote_sl: string <- heap_promote_stack_aggregate_x0(nb_sl);
+                        pop_stack_sl: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nb_sl), "\n"));
+                        pre_sl: string <- concat("    MOV X12, X10\n    MOV X0, X9\n", promote_sl);
+                        mid_sl: string <- concat(pre_sl, concat("    MOV X9, X0\n    MOV X10, X12\n", concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV X2, XZR\n    MOV X3, XZR\n")));
+                        after_sl: string <- concat(mid_sl, asm_bl("_silica_rt_actor_spawn_linked"));
+                        with_dest_sl: string <- concat(after_sl, mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name));
+                        concat(with_dest_sl, pop_stack_sl)
+                    };
+                    false -> concat(concat(concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV X2, XZR\n    MOV X3, XZR\n"), asm_bl("_silica_rt_actor_spawn_linked")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+                }
+            }
+        }
+    }
+}
+
+fn emit_spawn(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    e3b_pfx: string <- e3b_trampoline_x3_prefix(sir_term_root_node(term).value);
+    three: bool <- sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).kind == 6 and sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).name == "tuple_make";
+    case three of {
+        true -> concat(concat(concat(concat(e3b_pfx, "    MOV X0, X11\n    LDR X1, [X10]\n    LDR X12, [X10, #8]\n    MOV W2, W12\n"), asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name)), "");
+        false -> {
+            nb: int64 <- spawn_init_stack_bytes(sir_term_at(term, sir_term_root_node(term).inner));
+            copy_init: bool <- spawn_init_needs_heap_copy(sir_term_at(term, sir_term_root_node(term).inner)) and nb > 0;
+            case copy_init of {
+                true -> {
+                    promote: string <- heap_promote_stack_aggregate_x0(nb);
+                    pop_stack: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nb), "\n"));
+                    pre: string <- concat("    MOV X12, X10\n    MOV X0, X9\n", promote);
+                    mid: string <- concat(pre, concat("    MOV X9, X0\n    MOV X10, X12\n", concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n")));
+                    after_spawn: string <- concat(mid, asm_bl("_silica_rt_actor_spawn"));
+                    with_dest: string <- concat(after_spawn, mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name));
+                    concat(with_dest, pop_stack)
+                };
+                false -> concat(concat(concat(concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n"), asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name)), "")
+            }
+        }
+    }
+}
+
+fn emit_spawn_registered(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, register_label: string) -> string {
+    e3b_pfx: string <- e3b_trampoline_x3_prefix(sir_term_root_node(term).value);
+    save_name: string <- "    SUB SP, SP, #16\n    LDR X12, [X10, #8]\n    STR X12, [SP, #8]\n";
+    spawn_asm: string <- concat(concat(e3b_pfx, "    MOV X0, X11\n    LDR X1, [X10]\n    MOV W2, WZR\n"), asm_bl("_silica_rt_actor_spawn"));
+    save_actor: string <- "    STR X0, [SP, #0]\n";
+    reg_tail: string <- concat(register_label, "\n    LDR X0, [SP, #0]\n    ADD SP, SP, #16\n");
+    reg: string <- concat("    LDR X1, [SP, #8]\n    BL ", reg_tail);
+    concat(concat(concat(concat(save_name, spawn_asm), save_actor), reg), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+// Phase C runtime supervisor startup. The actor is created with a compiler-owned first-schedule
+// trampoline in X3 and no user behavior function. The trampoline calls init/1 exactly once and
+// materializes the returned child specs before _silica_rt_actor_spawn returns to user code.
+fn emit_spawn_registered_supervisor(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    e3b_pfx: string <- e3b_trampoline_x3_prefix(sir_term_root_node(term).value);
+    save_name: string <- "    SUB SP, SP, #16\n    STR X10, [SP, #8]\n";
+    spawn_asm: string <- concat(e3b_pfx, concat("    MOV X0, X9\n    MOV X1, XZR\n    MOV W2, WZR\n", asm_bl("_silica_rt_actor_spawn")));
+    save_actor: string <- "    STR X0, [SP, #0]\n";
+    reg: string <- "    LDR X1, [SP, #8]\n    BL _silica_rt_register_actor_named\n    LDR X0, [SP, #0]\n    ADD SP, SP, #16\n";
+    concat(concat(concat(concat(save_name, spawn_asm), save_actor), reg), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn emit_send(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    concat(concat("    MOV X0, X11\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_send")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn emit_actor_call(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    concat(concat("    MOV X0, X11\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_call")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn emit_actor_call_registered(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    concat(concat("    MOV X0, X11\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_call_registered")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn emit_actor_cast(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    // bool in W0 per AAPCS; widen to X for dest
+    concat(concat("    MOV X0, X11\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_cast")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn emit_actor_cast_registered(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    concat(concat("    MOV X0, X11\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_cast_registered")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn emit_actor_cast_dangerous_registered(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    concat(concat("    MOV X0, X11\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_cast_dangerous_registered")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn emit_supervisor_add_child(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    concat(concat("    MOV X0, X11\n    MOV X1, X10\n", asm_bl("_silica_rt_supervisor_add_child")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn emit_self(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    concat(asm_bl("_silica_rt_actor_self"), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn emit_recv(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    concat(asm_bl("_silica_rt_actor_recv"), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn runtime_label(name: string) -> string {
+    case name of {
+        "recv" -> "_silica_rt_actor_recv";
+        "add_child" -> "_silica_rt_actor_add_child";
+        "supervision_ingress_enqueue" -> "_silica_rt_actor_supervision_ingress_enqueue";
+        "supervision_wait_and_drain_one" -> "_silica_rt_actor_supervision_wait_and_drain_one";
+        "child_table_first_ref" -> "_silica_rt_child_table_first_ref";
+        "child_table_row_ref" -> "_silica_rt_child_table_row_ref";
+        "failure_reason_tag" -> "_silica_rt_actor_failure_reason_tag";
+        "failure_reason_atom" -> "_silica_rt_actor_failure_reason_atom";
+        "failure_agent_type" -> "_silica_rt_actor_failure_agent_type";
+        "failure_release" -> "_silica_rt_actor_failure_release";
+        "link" -> "_silica_rt_actor_link";
+        "monitor" -> "_silica_rt_actor_monitor";
+        "demonitor" -> "_silica_rt_actor_demonitor";
+        "get_cpu_topology" -> "_silica_rt_get_cpu_topology";
+        "get_efficiency_cores" -> "_silica_rt_get_efficiency_cores";
+        "get_performance_cores" -> "_silica_rt_get_performance_cores";
+        "get_core_capabilities" -> "_silica_rt_get_core_capabilities";
+        "pin_actor_to_core" -> "_silica_rt_pin_actor_to_core";
+        "pin_actor_to_efficiency_core" -> "_silica_rt_pin_actor_to_efficiency_core";
+        "pin_actor_to_performance_core" -> "_silica_rt_pin_actor_to_performance_core";
+        "pin_actor_realtime" -> "_silica_rt_pin_actor_realtime";
+        "remove_actor" -> "_silica_rt_remove_actor";
+        "register_actor" -> "_silica_rt_register_actor";
+        "get_registry_actor" -> "_silica_rt_get_registry_actor";
+        "get_pid_registry" -> "_silica_rt_get_registry_actor";
+        "pin_actor_to_numa_node" -> "_silica_rt_pin_actor_to_numa_node";
+        "unpin_actor" -> "_silica_rt_unpin_actor";
+        "set_actor_priority" -> "_silica_rt_set_actor_priority";
+        "get_actor_memory_usage" -> "_silica_rt_get_actor_memory_usage";
+        "migrate_actor" -> "_silica_rt_migrate_actor";
+        "move" -> "_silica_rt_move_actor";
+        "start_child" -> "_silica_rt_supervisor_start_child";
+        "supervisor_add_child" -> "_silica_rt_supervisor_add_child";
+        "supervisor_remove_child" -> "_silica_rt_supervisor_remove_child";
+        "supervisor_restart_child" -> "_silica_rt_supervisor_restart_child";
+        "supervisor_terminate_child" -> "_silica_rt_supervisor_terminate_child";
+        "supervisor_which_children" -> "_silica_rt_supervisor_which_children";
+        "supervisor_count_children" -> "_silica_rt_supervisor_count_children";
+        "supervisor_get_child" -> "_silica_rt_supervisor_get_child";
+        "supervisor_get_child_info" -> "_silica_rt_supervisor_get_child_info";
+        "supervisor_get_child_id" -> "_silica_rt_supervisor_get_child_id";
+        "supervisor_get_child_agent_type" -> "_silica_rt_supervisor_get_child_agent_type";
+        "supervisor_get_child_restart" -> "_silica_rt_supervisor_get_child_restart";
+        "kill_abnormal" -> "_silica_rt_actor_kill_abnormal";
+        "register_failure_reporter" -> "_silica_rt_failure_reporter_register";
+        "wait_for_exit" -> "_silica_rt_wait_for_exit";
+        _: string -> "_silica_rt_actor_unknown"
+    }
+}
+
+fn emit_runtime_nullary(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    concat(asm_bl(runtime_label(sir_term_root_node(term).name)), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+// Emit register_failure_reporter(fr): before calling _silica_rt_failure_reporter_register, call
+// region_dump_limit() (the required FailureReporter trait method, always in-unit for current trials)
+// and pass the result to _silica_rt_failure_reporter_set_dump_limit so the runtime caches the limit.
+// X9 holds the fr actor_ref; save it across the region_dump_limit/set_dump_limit calls since X9 is caller-saved.
+fn emit_register_failure_reporter(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    save: string <- "    SUB SP, SP, #16\n    STR X9, [SP, #0]\n";
+    call_rdl: string <- "    BL region_dump_limit\n    BL _silica_rt_failure_reporter_set_dump_limit\n";
+    restore: string <- "    LDR X9, [SP, #0]\n    ADD SP, SP, #16\n";
+    reg: string <- "    MOV X0, X9\n    BL _silica_rt_failure_reporter_register\n";
+    concat(concat(concat(concat(save, call_rdl), restore), reg), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn emit_runtime_unary(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    concat(concat("    MOV X0, X9\n", asm_bl(runtime_label(sir_term_root_node(term).name))), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn emit_runtime_binary(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl(runtime_label(sir_term_root_node(term).name))), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+// First operand (actor_ref) is in X11: term_emitter saves X9→X11 before tuple_make into X10 (tuple emission clobbers X9).
+fn emit_runtime_ternary(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    concat(concat("    MOV X0, X11\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n", asm_bl(runtime_label(sir_term_root_node(term).name))), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
+    case sir_term_root_node(term).name of {
+        "spawn" -> emit_spawn(dest, term);
+        "spawn_dangerous" -> emit_spawn(dest, term);
+        "spawn_registered" -> emit_spawn_registered(dest, term, "_silica_rt_register_actor_named");
+        "spawn_dangerous_registered" -> emit_spawn_registered(dest, term, "_silica_rt_register_dangerous_actor_named");
+        "spawn_registered_supervisor" -> emit_spawn_registered_supervisor(dest, term);
+        "spawn_linked" -> emit_spawn_linked(dest, term);
+        "send" -> emit_send(dest, term);
+        "actor_call" -> emit_actor_call(dest, term);
+        "actor_call_registered" -> emit_actor_call_registered(dest, term);
+        "actor_cast" -> emit_actor_cast(dest, term);
+        "actor_cast_registered" -> emit_actor_cast_registered(dest, term);
+        "actor_cast_dangerous_registered" -> emit_actor_cast_dangerous_registered(dest, term);
+        "self" -> emit_self(dest, term);
+        "recv" -> emit_recv(dest, term);
+        "link" -> emit_runtime_unary(dest, term);
+        "add_child" -> emit_runtime_binary(dest, term);
+        "monitor" -> emit_runtime_unary(dest, term);
+        "demonitor" -> emit_runtime_unary(dest, term);
+        "supervision_ingress_enqueue" -> emit_runtime_binary(dest, term);
+        "supervision_wait_and_drain_one" -> emit_runtime_nullary(dest, term);
+        "child_table_first_ref" -> emit_runtime_nullary(dest, term);
+        "child_table_row_ref" -> emit_runtime_unary(dest, term);
+        "failure_reason_tag" -> emit_runtime_unary(dest, term);
+        "failure_reason_atom" -> emit_runtime_unary(dest, term);
+        "failure_agent_type" -> emit_runtime_unary(dest, term);
+        "failure_release" -> emit_runtime_unary(dest, term);
+        "get_cpu_topology" -> emit_runtime_nullary(dest, term);
+        "get_efficiency_cores" -> emit_runtime_nullary(dest, term);
+        "get_performance_cores" -> emit_runtime_nullary(dest, term);
+        "get_core_capabilities" -> emit_runtime_unary(dest, term);
+        "pin_actor_to_core" -> emit_runtime_binary(dest, term);
+        "pin_actor_to_efficiency_core" -> emit_runtime_unary(dest, term);
+        "pin_actor_to_performance_core" -> emit_runtime_unary(dest, term);
+        "pin_actor_realtime" -> emit_runtime_binary(dest, term);
+        "remove_actor" -> emit_runtime_unary(dest, term);
+        "register_actor" -> emit_runtime_unary(dest, term);
+        "get_registry_actor" -> emit_runtime_nullary(dest, term);
+        "get_pid_registry" -> emit_runtime_nullary(dest, term);
+        "pin_actor_to_numa_node" -> emit_runtime_binary(dest, term);
+        "unpin_actor" -> emit_runtime_unary(dest, term);
+        "set_actor_priority" -> emit_runtime_binary(dest, term);
+        "get_actor_memory_usage" -> emit_runtime_unary(dest, term);
+        "migrate_actor" -> emit_runtime_binary(dest, term);
+        "move" -> emit_runtime_ternary(dest, term);
+        "start_child" -> emit_runtime_unary(dest, term);
+        "supervisor_add_child" -> emit_supervisor_add_child(dest, term);
+        "supervisor_remove_child" -> emit_runtime_binary(dest, term);
+        "supervisor_restart_child" -> emit_runtime_binary(dest, term);
+        "supervisor_terminate_child" -> emit_runtime_binary(dest, term);
+        "supervisor_which_children" -> emit_runtime_unary(dest, term);
+        "supervisor_count_children" -> emit_runtime_unary(dest, term);
+        "supervisor_get_child" -> emit_runtime_binary(dest, term);
+        "supervisor_get_child_info" -> emit_runtime_binary(dest, term);
+        "supervisor_get_child_id" -> emit_runtime_binary(dest, term);
+        "supervisor_get_child_agent_type" -> emit_runtime_binary(dest, term);
+        "supervisor_get_child_restart" -> emit_runtime_binary(dest, term);
+        "kill_abnormal" -> emit_runtime_unary(dest, term);
+        "register_failure_reporter" -> emit_register_failure_reporter(dest, term);
+        "wait_for_exit" -> emit_runtime_nullary(dest, term);
+        _: string -> concat(concat("    ; unsupported actor prim: ", sir_term_root_node(term).name), "\n")
+    }
+}

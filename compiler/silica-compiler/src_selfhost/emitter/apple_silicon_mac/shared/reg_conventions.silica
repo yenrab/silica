@@ -1,0 +1,180 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Register conventions: type_name -> reg prefix, dest mapping
+// Shared by const, let, prims, call - centralizes AArch64 register allocation by type
+
+export reg_prefix_for_type/1;
+export is_narrow_type/1;
+export is_unsigned_type/1;
+export is_float64_type/1;
+export is_float32_type/1;
+export is_float16_type/1;
+export is_tuple_type/1;
+export is_atom_option_type/1;
+export is_inline_struct_type/1;
+export is_aggregate_struct_or_tuple_return_type/1;
+export float_scalar_literal_pool_ptr_reg/1;
+
+fn is_narrow_type(type_name: string) -> bool {
+    type_name == "int32" or type_name == "int16" or type_name == "int8" or type_name == "uint32" or type_name == "uint16" or type_name == "uint8"
+}
+
+fn is_unsigned_type(type_name: string) -> bool {
+    type_name == "uint64" or type_name == "uint32" or type_name == "uint16" or type_name == "uint8"
+}
+
+fn is_float64_type(type_name: string) -> bool {
+    type_name == "float64"
+}
+
+fn is_float32_type(type_name: string) -> bool {
+    type_name == "float32"
+}
+
+fn is_float16_type(type_name: string) -> bool {
+    type_name == "float16"
+}
+
+fn strip_spaces_regcv(s: string) -> string {
+    strip_spaces_regcv_from(s, 0, "")
+}
+
+fn strip_spaces_regcv_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> strip_spaces_regcv_from(s, i + 1, acc);
+            false -> strip_spaces_regcv_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn unwrap_atom_option_parens_regcv(type_name: string) -> string {
+    t: string <- strip_spaces_regcv(type_name);
+    case len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
+        false -> t;
+        true -> {
+            inner: string <- substring(t, 1, len(t) - 1);
+            case len(inner) > 0 and substring(inner, 0, 1) == ":" of {
+                true -> inner;
+                false -> t
+            }
+        }
+    }
+}
+
+fn is_atom_option_type_regcv(type_name: string) -> bool {
+    t: string <- unwrap_atom_option_parens_regcv(type_name);
+    len(t) > 0 and substring(t, 0, 1) == ":"
+}
+
+fn is_atom_option_type(type_name: string) -> bool {
+    is_atom_option_type_regcv(type_name)
+}
+
+// Top-level `->` in parenthesized types: distinguishes `(T1,...,Tn) -> R` (function) from `(T1, T2)` (tuple).
+// Mirrors sir_generator / var emitter arrow scanning so tuple vs function classification stays aligned.
+fn find_top_arrow_from_regcv(s: string, i: int64, depth: int64) -> int64 {
+    case i + 1 >= len(s) of {
+        true -> -1;
+        false -> case depth == 0 and substring(s, i, i + 2) == "->" of {
+            true -> i;
+            false -> {
+                c: string <- substring(s, i, i + 1);
+                d2: int64 <- case c == "(" or c == "[" or c == "{" of {
+                    true -> depth + 1;
+                    false -> case c == ")" or c == "]" or c == "}" of {
+                        true -> depth - 1;
+                        false -> depth
+                    }
+                };
+                find_top_arrow_from_regcv(s, i + 1, d2)
+            }
+        }
+    }
+}
+
+// Tuple type: (T1, T2, ...). Parenthesized function types `(params) -> R` also start with "(" — exclude them.
+fn is_tuple_type(type_name: string) -> bool {
+    case is_atom_option_type_regcv(type_name) of {
+        true -> false;
+        false -> case len(type_name) < 2 of {
+            true -> false;
+            false -> case substring(type_name, 0, 1) == "(" of {
+                false -> false;
+                true -> find_top_arrow_from_regcv(type_name, 1, 1) < 0
+            }
+        }
+    }
+}
+
+// Inline struct: { f1: T1, f2: T2, ... } — same pointer/flat return path as tuples in the emitter.
+fn is_inline_struct_type(type_name: string) -> bool {
+    case len(type_name) >= 1 of {
+        true -> substring(type_name, 0, 1) == "{";
+        false -> false
+    }
+}
+
+fn is_aggregate_struct_or_tuple_return_type(type_name: string) -> bool {
+    case is_tuple_type(type_name) of {
+        true -> true;
+        false -> is_inline_struct_type(type_name)
+    }
+}
+
+// Reg prefix: "X" (int64/uint64/pointer/tuple), "W" (narrow), "D" (float64), "S" (float32), "H" (float16)
+// Tuple types are pointers; must use X (64-bit), not W
+// ADRP base for float literal loads: X0 for low-index scalar temps (functions goldens); X10 for reg 9+ and multi-digit (tuple temps like D9).
+fn float_scalar_literal_pool_ptr_reg(dest: string) -> string {
+    case len(dest) < 2 of {
+        true -> "X10";
+        false -> {
+            p: string <- substring(dest, 0, 1);
+            case p == "S" or p == "D" or p == "H" of {
+                false -> "X10";
+                true -> case len(dest) > 2 of {
+                    true -> "X10";
+                    false -> case substring(dest, 1, 2) == "9" of {
+                        true -> "X10";
+                        false -> "X0"
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn reg_prefix_for_type(type_name: string) -> string {
+    case type_name == "float64" of {
+        true -> "D";
+        false -> case type_name == "float32" of {
+            true -> "S";
+            false -> case type_name == "float16" of {
+                true -> "H";
+                false -> case is_tuple_type(type_name) of {
+                true -> "X";
+                false -> case is_narrow_type(type_name) of {
+                    true -> "W";
+                    false -> "X"
+                }
+            }
+            }
+        }
+    }
+}

@@ -1,0 +1,73 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Kind-1 (var) term emission — narrow literal pools only.
+
+use atom_table;
+use const_dispatcher;
+use string_parse;
+use var;
+use reg_conventions;
+use term_sir_helpers;
+use term_user_call_abi;
+
+export emit_var_term/4;
+
+fn emit_var_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string {
+    case term_user_call_abi@is_inline_float_var(term_sir_helpers@sir_term_root_node(term).name, dest) of {
+                    true -> {
+                        float_val: string <- substring(term_sir_helpers@sir_term_root_node(term).name, 1, len(term_sir_helpers@sir_term_root_node(term).name));
+                        float_type: string <- case substring(dest, 0, 1) == "S" of { true -> "float32"; false -> "float64" };
+                        synthetic_const: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@make_leaf_sir_const(float_type, float_val);
+                        const_dispatcher@emit_const(synthetic_const, dest, pools.table, pools.literal_table, pools.float64_literal_table, pools.float32_literal_table, bound.outer_reg)
+                    };
+                    false -> {
+                        bound_norm: string <- case substring(bound.bound_name, 0, 1) == "%" of {
+                            true -> bound.bound_name;
+                            false -> concat("%", bound.bound_name)
+                        };
+                        case term_sir_helpers@sir_term_root_node(term).name == bound_norm of {
+                            true -> case len(bound.bound_reg) > 0 and substring(bound.bound_reg, 0, 1) == "[" of {
+                                true -> var@emit_var_sp_load(dest, bound.bound_reg);
+                                false -> case reg_conventions@is_inline_struct_type(term_sir_helpers@sir_term_root_node(term).type_name) and bound.bound_reg == "X0" and dest != "X0" of {
+                                    // When a record_make is bound to X0 (MOV X0, SP) but is passed as a non-first
+                                    // arg (dest != X0), the first-arg computation may have clobbered X0 before this
+                                    // arg is computed. Use the _va.name SP offset instead to get the struct pointer.
+                                    true -> {
+                                        va_fix: string <- var@find_sp_binding(bound.outer_reg, concat("_va.", bound.bound_name));
+                                        adj_fix: string <- var@find_sp_binding(bound.outer_reg, "_adj");
+                                        va_int_fix: int64 <- case len(va_fix) > 0 of { true -> string_parse@string_to_int64(va_fix); false -> -1 };
+                                        adj_int_fix: int64 <- case len(adj_fix) > 0 of { true -> string_parse@string_to_int64(adj_fix); false -> 0 };
+                                        case va_int_fix >= 0 of {
+                                            true -> {
+                                                off_fix: int64 <- va_int_fix + adj_int_fix;
+                                                case off_fix == 0 of {
+                                                    true -> concat(concat("    MOV ", dest), ", SP\n");
+                                                    false -> concat("    ADD ", concat(dest, concat(", SP, #", concat(atom_table@int64_to_decimal_string(off_fix), "\n"))))
+                                                }
+                                            };
+                                            false -> var@emit_var_reg_outer(term, dest, bound.bound_reg, bound.outer_reg)
+                                        }
+                                    };
+                                    false -> var@emit_var_reg_outer(term, dest, bound.bound_reg, bound.outer_reg)
+                                }
+                            };
+                            false -> var@emit_var_with_sp_check(term, dest, bound.outer_reg)
+                        }
+                    }
+                }
+}

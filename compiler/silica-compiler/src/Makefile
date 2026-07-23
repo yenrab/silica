@@ -5,11 +5,11 @@
 #   make                        # compile silica-compiler (default; no trial integration)
 #   make all                    # clean, then compile
 #   make TARGET=esp32-s3        # builds emitter for ESP32-S3
-#   make TARGET=apple_silicon   # builds emitter for Apple Silicon
+#   make TARGET=apple_silicon_mac   # builds emitter for Apple Silicon
 #   make integrate              # build compiler, then `make integrate` in each trials/*/ Makefile
 
 # Target chip directory under emitter/ (override from command line)
-TARGET ?= apple_silicon
+TARGET ?= apple_silicon_mac
 
 SILICA_COMPILER := ../../silica-bootstrap-compiler/target/release/silica-boot
 RUNTIME_LIB := ../../silica-bootstrap-compiler/target/release/libsilica_compiler.a

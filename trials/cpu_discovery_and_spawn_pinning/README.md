@@ -33,7 +33,7 @@ After intentional source or environment changes, regenerate from this directory,
 make -C trials/cpu_discovery_and_spawn_pinning phase-h
 ```
 
-This runs `phase_h_static.sh`, which asserts that `src/emitter/apple_silicon/terms/prims/prims_actors_runtime_asm.silica` still defines the sysctl-backed topology/capability symbols and the **`get_core_capabilities`** failure sentinel.
+This runs `phase_h_static.sh`, which asserts that `src/emitter/apple_silicon_mac/terms/prims/prims_actors_runtime_asm.silica` still defines the sysctl-backed topology/capability symbols and the **`get_core_capabilities`** failure sentinel.
 
 ## Build
 
