@@ -17,10 +17,12 @@
 
 // Type checker core - TypeContext, TypeCheckResult, symbol table
 // Shared by type checker capabilities and runner
+// Phase 2: symbol rows carry interned type_id (int64); type_name kept for diagnostics.
 
 use parser_ast;
 use instantiated_fn_name;
 use lexer_core;
+use type_interner;
 
 export TypeContext/0;
 export ParamConcreteEnv/0;
@@ -44,14 +46,43 @@ export type_check_ok/0;
 export type_check_err/5;
 export empty_symbol_table/0;
 export type_context_with_env/2;
+export type_context_with_interner/2;
 export type_context_with_supervisor_types/2;
 export lookup_supervisor_csv/1;
 export type_name_in_supervisor_csv/2;
+export lookup_symbol_type_id/2;
+export lookup_symbol_type_id_found/2;
+export invalid_type_id/0;
+export types_equal_type_ids/2;
+export TypeIdCache/0;
+export TypeContextParseOutcome/0;
+export context_tid_int64/1;
+export context_tid_boolean/1;
+export context_tid_string/1;
+export context_tid_discard/1;
+export context_tid_atom/1;
+export context_tid_uint64/1;
+export context_tid_float32/1;
+export context_tid_float16/1;
+export context_tid_char/1;
+export context_tid_actor_ref/1;
+export context_tid_supervisor_ref/1;
+export context_tid_monitor_ref/1;
+export context_tid_list_int64_normal/1;
+export type_id_is_discard/2;
+export type_id_eq_or_discard/3;
+export context_parse_type/2;
+export context_require_type/2;
+export type_id_to_surface/2;
+export type_id_is_integer_kind/2;
+export type_id_is_float_kind/2;
+export type_id_accepts_numeric_literal/2;
 
-// Symbol table: name -> type_name, declared_effects
+// Symbol table: name -> type_id + surface type_name, declared_effects
 struct SymbolEntry {
     name: string,
     type_name: string,
+    type_id: int64,
     declared_effects: ListEffectName,
     is_effect_alias: bool,
     source_module: string
@@ -63,8 +94,33 @@ struct ListSymbolEntry {
     tail: ListSymbolEntry
 }
 
+// Cached interned ids for primitive / common expected types (hot path).
+struct TypeIdCache {
+    tid_int64: int64,
+    tid_boolean: int64,
+    tid_string: int64,
+    tid_discard: int64,
+    tid_atom: int64,
+    tid_uint64: int64,
+    tid_float32: int64,
+    tid_float16: int64,
+    tid_char: int64,
+    tid_actor_ref: int64,
+    tid_supervisor_ref: int64,
+    tid_monitor_ref: int64,
+    tid_list_int64_normal: int64
+}
+
 struct TypeContext {
-    env: ListSymbolEntry
+    env: ListSymbolEntry,
+    interner: TypeInterner,
+    tids: TypeIdCache
+}
+
+struct TypeContextParseOutcome {
+    context: TypeContext,
+    type_id: int64,
+    ok: bool
 }
 
 struct ParamConcreteEnv {
@@ -73,17 +129,198 @@ struct ParamConcreteEnv {
     base: TypeContext
 }
 
+fn invalid_type_id() -> int64 {
+    type_interner@invalid_type_id()
+}
+
+fn type_context_env(ctx: TypeContext) -> ListSymbolEntry {
+    ctx.env
+}
+
+fn type_context_interner(ctx: TypeContext) -> TypeInterner {
+    ctx.interner
+}
+
+fn type_context_make(env: ListSymbolEntry, interner: TypeInterner, tids: TypeIdCache) -> TypeContext {
+    TypeContext { env: env, interner: interner, tids: tids }
+}
+
+fn type_context_rebuild(ctx: TypeContext, env: ListSymbolEntry, interner: TypeInterner) -> TypeContext {
+    type_context_make(env, interner, ctx.tids)
+}
+
+fn prepend_symbol_entry(env: ListSymbolEntry, entry: SymbolEntry) -> ListSymbolEntry {
+    ListSymbolEntry { is_nil: false, head: entry, tail: env }
+}
+
+fn symbol_entry_make(name: string, type_name: string, type_id: int64, declared_effects: ListEffectName, is_effect_alias: bool, source_module: string) -> SymbolEntry {
+    SymbolEntry { name: name, type_name: type_name, type_id: type_id, declared_effects: declared_effects, is_effect_alias: is_effect_alias, source_module: source_module }
+}
+
+fn types_equal_type_ids(a: int64, b: int64) -> bool {
+    a == b
+}
+
+fn context_tid_int64(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_int64
+}
+
+fn context_tid_boolean(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_boolean
+}
+
+fn context_tid_string(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_string
+}
+
+fn context_tid_discard(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_discard
+}
+
+fn context_tid_atom(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_atom
+}
+
+fn context_tid_uint64(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_uint64
+}
+
+fn context_tid_float32(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_float32
+}
+
+fn context_tid_float16(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_float16
+}
+
+fn context_tid_char(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_char
+}
+
+fn context_tid_actor_ref(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_actor_ref
+}
+
+fn context_tid_supervisor_ref(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_supervisor_ref
+}
+
+fn context_tid_monitor_ref(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_monitor_ref
+}
+
+fn context_tid_list_int64_normal(ctx: TypeContext) -> int64 {
+    ctx.tids.tid_list_int64_normal
+}
+
+fn type_id_is_discard(ctx: TypeContext, type_id: int64) -> bool {
+    types_equal_type_ids(type_id, context_tid_discard(ctx))
+}
+
+fn type_id_eq_or_discard(ctx: TypeContext, type_id: int64, target_id: int64) -> bool {
+    case types_equal_type_ids(type_id, target_id) of {
+        true -> true;
+        false -> type_id_is_discard(ctx, type_id)
+    }
+}
+
+fn type_id_is_integer_kind(ctx: TypeContext, type_id: int64) -> bool {
+    k: int64 <- type_interner@node_kind(type_context_interner(ctx), type_id);
+    k == type_interner@kind_int8() or k == type_interner@kind_int16() or k == type_interner@kind_int32() or k == type_interner@kind_int64() or k == type_interner@kind_uint8() or k == type_interner@kind_uint16() or k == type_interner@kind_uint32() or k == type_interner@kind_uint64()
+}
+
+fn type_id_is_float_kind(ctx: TypeContext, type_id: int64) -> bool {
+    k: int64 <- type_interner@node_kind(type_context_interner(ctx), type_id);
+    k == type_interner@kind_float16() or k == type_interner@kind_float32() or k == type_interner@kind_float64()
+}
+
+fn type_id_accepts_numeric_literal(ctx: TypeContext, type_id: int64) -> bool {
+    case type_id_is_discard(ctx, type_id) of {
+        true -> true;
+        false -> case type_id_is_integer_kind(ctx, type_id) of {
+            true -> true;
+            false -> case type_id_is_float_kind(ctx, type_id) of {
+                true -> true;
+                false -> type_id_eq_or_discard(ctx, type_id, context_tid_atom(ctx)) or type_id_eq_or_discard(ctx, type_id, context_tid_char(ctx)) or type_id_eq_or_discard(ctx, type_id, context_tid_string(ctx))
+            }
+        }
+    }
+}
+
+fn type_id_to_surface(ctx: TypeContext, type_id: int64) -> string {
+    type_interner@print_type(type_context_interner(ctx), type_id)
+}
+
+fn mk_prim_cache_step(interner: TypeInterner, kind: int64) -> (TypeInterner, int64) {
+    r: InternResult <- type_interner@mk_prim(interner, kind);
+    (type_interner@intern_result_interner(r), type_interner@intern_result_id(r))
+}
+
+fn parse_surface_cache_step(interner: TypeInterner, surface: string) -> (TypeInterner, int64) {
+    pr: TypeInternParseResult <- type_interner@parse_type(interner, surface);
+    tid: int64 <- case type_interner@parse_result_ok(pr) of {
+        true -> type_interner@parse_result_id(pr);
+        false -> invalid_type_id()
+    };
+    (type_interner@parse_result_interner(pr), tid)
+}
+
+fn init_type_id_cache(interner: TypeInterner) -> (TypeInterner, TypeIdCache) {
+    (i1: TypeInterner, t_int64: int64) <- mk_prim_cache_step(interner, type_interner@kind_int64());
+    (i2: TypeInterner, t_boolean: int64) <- mk_prim_cache_step(i1, type_interner@kind_boolean());
+    (i3: TypeInterner, t_string: int64) <- mk_prim_cache_step(i2, type_interner@kind_string());
+    (i4: TypeInterner, t_discard: int64) <- mk_prim_cache_step(i3, type_interner@kind_discard());
+    (i5: TypeInterner, t_atom: int64) <- mk_prim_cache_step(i4, type_interner@kind_atom());
+    (i6: TypeInterner, t_uint64: int64) <- mk_prim_cache_step(i5, type_interner@kind_uint64());
+    (i7: TypeInterner, t_float32: int64) <- mk_prim_cache_step(i6, type_interner@kind_float32());
+    (i8: TypeInterner, t_float16: int64) <- mk_prim_cache_step(i7, type_interner@kind_float16());
+    (i9: TypeInterner, t_char: int64) <- mk_prim_cache_step(i8, type_interner@kind_char());
+    (i10: TypeInterner, t_actor_ref: int64) <- mk_prim_cache_step(i9, type_interner@kind_actor_ref());
+    (i11: TypeInterner, t_supervisor_ref: int64) <- mk_prim_cache_step(i10, type_interner@kind_supervisor_ref());
+    (i12: TypeInterner, t_monitor_ref: int64) <- mk_prim_cache_step(i11, type_interner@kind_monitor_ref());
+    (i13: TypeInterner, t_list: int64) <- parse_surface_cache_step(i12, "List[int64,normal]");
+    cache: TypeIdCache <- TypeIdCache {
+        tid_int64: t_int64,
+        tid_boolean: t_boolean,
+        tid_string: t_string,
+        tid_discard: t_discard,
+        tid_atom: t_atom,
+        tid_uint64: t_uint64,
+        tid_float32: t_float32,
+        tid_float16: t_float16,
+        tid_char: t_char,
+        tid_actor_ref: t_actor_ref,
+        tid_supervisor_ref: t_supervisor_ref,
+        tid_monitor_ref: t_monitor_ref,
+        tid_list_int64_normal: t_list
+    };
+    (i13, cache)
+}
+
+fn context_parse_type(ctx: TypeContext, surface: string) -> TypeContextParseOutcome {
+    pr: TypeInternParseResult <- type_interner@parse_type(type_context_interner(ctx), surface);
+    ctx2: TypeContext <- type_context_rebuild(ctx, type_context_env(ctx), type_interner@parse_result_interner(pr));
+    case type_interner@parse_result_ok(pr) of {
+        true -> TypeContextParseOutcome { context: ctx2, type_id: type_interner@parse_result_id(pr), ok: true };
+        false -> TypeContextParseOutcome { context: ctx2, type_id: invalid_type_id(), ok: false }
+    }
+}
+
+fn context_require_type(ctx: TypeContext, surface: string) -> TypeContextParseOutcome {
+    context_parse_type(ctx, surface)
+}
+
 fn add_params_concrete_loop1(st: ParamConcreteEnv) -> TypeContext {
     case st.decl_params.is_nil of {
         true -> st.base;
         false -> case st.concrete_types.is_nil of {
             true -> st.base;
             false -> do
-                new_env: ListSymbolEntry <- add_symbol(st.base.env, st.decl_params.head.name, st.concrete_types.head.type_name, parser_ast@empty_effect_name_list(), "");
+                ctx2: TypeContext <- add_symbol(st.base, st.decl_params.head.name, st.concrete_types.head.type_name, parser_ast@empty_effect_name_list(), "");
                 add_params_concrete_loop1(ParamConcreteEnv {
                     decl_params: st.decl_params.tail,
                     concrete_types: st.concrete_types.tail,
-                    base: type_context_with_env(st.base, new_env)
+                    base: ctx2
                 })
             end
         }
@@ -130,7 +367,7 @@ fn module_typecheck_outcome_from_pair(r: TypeCheckResult, c: TypeContext) -> Mod
 }
 
 fn dummy_symbol_entry() -> SymbolEntry {
-    SymbolEntry { name: "", type_name: "", declared_effects: parser_ast@empty_effect_name_list(), is_effect_alias: false, source_module: "" }
+    SymbolEntry { name: "", type_name: "", type_id: invalid_type_id(), declared_effects: parser_ast@empty_effect_name_list(), is_effect_alias: false, source_module: "" }
 }
 
 fn empty_symbol_table() -> ListSymbolEntry {
@@ -139,21 +376,27 @@ fn empty_symbol_table() -> ListSymbolEntry {
 }
 
 fn create_type_context() -> TypeContext {
-    env: ListSymbolEntry <- empty_symbol_table();
-    env_with_false: ListSymbolEntry <- add_symbol(env, "false", "boolean", parser_ast@empty_effect_name_list(), "");
-    env_with_both: ListSymbolEntry <- add_symbol(env_with_false, "true", "boolean", parser_ast@empty_effect_name_list(), "");
-    TypeContext { env: env_with_both }
+    interner0: TypeInterner <- type_interner@create_type_interner();
+    (interner: TypeInterner, tids: TypeIdCache) <- init_type_id_cache(interner0);
+    ctx: TypeContext <- type_context_make(empty_symbol_table(), interner, tids);
+    ctx_false: TypeContext <- add_symbol(ctx, "false", "boolean", parser_ast@empty_effect_name_list(), "");
+    ctx_both: TypeContext <- add_symbol(ctx_false, "true", "boolean", parser_ast@empty_effect_name_list(), "");
+    ctx_both
 }
 
-// Replace env (let bindings, params, pattern bindings).
+// Replace env (let bindings, params, pattern bindings); preserve interner + cached type ids.
 fn type_context_with_env(ctx: TypeContext, new_env: ListSymbolEntry) -> TypeContext {
-    TypeContext { env: new_env }
+    type_context_rebuild(ctx, new_env, type_context_interner(ctx))
+}
+
+// Thread an updated interner without changing env or cached type ids.
+fn type_context_with_interner(ctx: TypeContext, interner: TypeInterner) -> TypeContext {
+    type_context_rebuild(ctx, type_context_env(ctx), interner)
 }
 
 // Phase E e3b: store supervisor CSV as a magic symbol in the env so struct shape stays unchanged.
 fn type_context_with_supervisor_types(ctx: TypeContext, csv: string) -> TypeContext {
-    new_env: ListSymbolEntry <- add_symbol(ctx.env, "__silica_e3b_sup_csv", csv, parser_ast@empty_effect_name_list(), "");
-    TypeContext { env: new_env }
+    add_symbol(ctx, "__silica_e3b_sup_csv", csv, parser_ast@empty_effect_name_list(), "")
 }
 
 fn lookup_supervisor_csv(ctx: TypeContext) -> string {
@@ -180,14 +423,21 @@ fn type_name_in_supervisor_csv(t: string, csv: string) -> bool {
     }
 }
 
-fn add_symbol(env: ListSymbolEntry, name: string, type_name: string, declared_effects: ListEffectName, source_module: string) -> ListSymbolEntry {
-    entry: SymbolEntry <- SymbolEntry { name: name, type_name: type_name, declared_effects: declared_effects, is_effect_alias: false, source_module: source_module };
-    ListSymbolEntry { is_nil: false, head: entry, tail: env }
+fn add_symbol(ctx: TypeContext, name: string, type_name: string, declared_effects: ListEffectName, source_module: string) -> TypeContext {
+    pr: TypeInternParseResult <- type_interner@parse_type(type_context_interner(ctx), type_name);
+    tid: int64 <- case type_interner@parse_result_ok(pr) of {
+        true -> type_interner@parse_result_id(pr);
+        false -> invalid_type_id()
+    };
+    entry: SymbolEntry <- symbol_entry_make(name, type_name, tid, declared_effects, false, source_module);
+    new_env: ListSymbolEntry <- prepend_symbol_entry(type_context_env(ctx), entry);
+    type_context_rebuild(ctx, new_env, type_interner@parse_result_interner(pr))
 }
 
-fn add_effect_alias_symbol(env: ListSymbolEntry, name: string, effects: ListEffectName) -> ListSymbolEntry {
-    entry: SymbolEntry <- SymbolEntry { name: name, type_name: "", declared_effects: effects, is_effect_alias: true, source_module: "" };
-    ListSymbolEntry { is_nil: false, head: entry, tail: env }
+fn add_effect_alias_symbol(ctx: TypeContext, name: string, effects: ListEffectName) -> TypeContext {
+    entry: SymbolEntry <- symbol_entry_make(name, "", invalid_type_id(), effects, true, "");
+    new_env: ListSymbolEntry <- prepend_symbol_entry(type_context_env(ctx), entry);
+    type_context_rebuild(ctx, new_env, type_context_interner(ctx))
 }
 
 fn lookup_symbol(env: ListSymbolEntry, name: string) -> string {
@@ -200,6 +450,16 @@ fn lookup_symbol(env: ListSymbolEntry, name: string) -> string {
     }
 }
 
+fn lookup_symbol_type_id(env: ListSymbolEntry, name: string) -> int64 {
+    case env.is_nil of {
+        true -> invalid_type_id();
+        false -> case env.head.name == name of {
+            true -> env.head.type_id;
+            false -> lookup_symbol_type_id(env.tail, name)
+        }
+    }
+}
+
 // Returns (found, type_name). Use when string comparison for "" is unreliable.
 fn lookup_symbol_found(env: ListSymbolEntry, name: string) -> (bool, string) {
     case env.is_nil of {
@@ -207,6 +467,16 @@ fn lookup_symbol_found(env: ListSymbolEntry, name: string) -> (bool, string) {
         false -> case env.head.name == name of {
             true -> (true, env.head.type_name);
             false -> lookup_symbol_found(env.tail, name)
+        }
+    }
+}
+
+fn lookup_symbol_type_id_found(env: ListSymbolEntry, name: string) -> (bool, int64) {
+    case env.is_nil of {
+        true -> (false, invalid_type_id());
+        false -> case env.head.name == name of {
+            true -> (true, env.head.type_id);
+            false -> lookup_symbol_type_id_found(env.tail, name)
         }
     }
 }

@@ -74,13 +74,16 @@ define RUN_SILICA_COMPILER_WITH
 	done
 endef
 
+# Quiet reclaim loop for golden capture. Do not `exit` on hard failure: recipe lines that
+# redirect into `.cur_fail` often run in the make shell (not a subshell), and `exit`
+# would abort the recipe before the diff step. Callers use `|| true` around the loop.
 define RUN_SILICA_COMPILER_QUIET_WITH
 	while true; do \
 		$(1); \
 		ec=$$?; \
 		if [ $$ec -eq 0 ]; then break; fi; \
 		if [ $$ec -eq 75 ]; then continue; fi; \
-		exit $$ec; \
+		break; \
 	done
 endef
 

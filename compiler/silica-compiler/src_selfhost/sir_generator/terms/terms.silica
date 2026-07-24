@@ -2309,19 +2309,54 @@ fn lower_struct_literal_expr(context: TypeContext, expr: Expr, expected_type: st
     }
 }
 
-// Kind 22: field access `base.field` -> prim record_proj.
+// Kind 22: field access `base.field` -> list surface fields or record_proj.
+fn lower_list_field_access(
+    base_s: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 },
+    list_t: string,
+    elem: string,
+    field: string
+) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    case field == "is_nil" of {
+        true -> {
+            len_t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- list_terms@build_list_length_prim(base_s);
+            zero: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_ast@make_sir_term(0, "int64", "0", "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
+            sir_ast@make_sir_term(6, "bool", "", "eq", len_t, zero)
+        };
+        false -> case field == "head" of {
+            true -> list_terms@build_list_head_prim(base_s, elem);
+            false -> case field == "tail" of {
+                true -> list_terms@build_list_remove_head_prim(base_s, list_t);
+                false -> sir_ast@dummy_sir_term()
+            }
+        }
+    }
+}
+
 fn lower_field_access_expr(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     base_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
-    ft: string <- type_checker_record_types@find_field_type_in_record(base_t, expr.name);
-    case len(ft) == 0 of {
-        true -> sir_ast@dummy_sir_term();
-        false -> {
+    (ok_list: bool, elem: string, space: string) <- type_checker_lists@parse_list_type_params(base_t);
+    case ok_list of {
+        true -> {
             base_s: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case in_body of {
                 true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, base_t);
                 false -> expr_to_sir_with_expected(context, expr.inner, base_t)
             };
-            ft_sir: string <- types@type_name_to_sir(ft);
-            struct_terms@build_record_proj_prim(ft_sir, expr.name, base_s)
+            list_t: string <- type_checker_lists@format_list_type_from_parts(elem, space);
+            lower_list_field_access(base_s, list_t, elem, expr.name)
+        };
+        false -> {
+            ft: string <- type_checker_record_types@find_field_type_in_record(base_t, expr.name);
+            case len(ft) == 0 of {
+                true -> sir_ast@dummy_sir_term();
+                false -> {
+                    base_s: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case in_body of {
+                        true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, base_t);
+                        false -> expr_to_sir_with_expected(context, expr.inner, base_t)
+                    };
+                    ft_sir: string <- types@type_name_to_sir(ft);
+                    struct_terms@build_record_proj_prim(ft_sir, expr.name, base_s)
+                }
+            }
         }
     }
 }

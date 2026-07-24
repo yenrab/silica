@@ -29,7 +29,7 @@ export infer_expr_type/2;
 export infer_binop_left_preferred_operand_type/2;
 export infer_binop_operand_type_for_sir/3;
 export infer_struct_literal_type/2;
-export types_equal/2;
+export types_equal_surface/2;
 export add_bindings_to_context/2;
 export pattern_bindings_valid/2;
 export fill_empty_binding_types_from_rhs/2;
@@ -504,7 +504,7 @@ fn infer_if_expr_kind19(expr: Expr, context: TypeContext) -> string {
         true -> then_t;
         false -> case len(then_t) > 0 of {
             true -> case len(else_t) > 0 of {
-                true -> case types_equal(then_t, else_t) of { true -> then_t; false -> "" };
+                true -> case types_equal_surface(then_t, else_t) of { true -> then_t; false -> "" };
                 false -> ""
             };
             false -> ""
@@ -746,9 +746,8 @@ fn add_bindings_to_context(context: TypeContext, bindings: ListTupleDecomposeBin
         true -> context;
         false -> do
             b: TupleDecomposeBinding <- bindings.head;
-            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, b.name, b.type_str, parser_ast@empty_effect_name_list(), "");
-            new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
-            add_bindings_to_context(new_context, bindings.tail)
+            ctx2: TypeContext <- type_checker_core@add_symbol(context, b.name, b.type_str, parser_ast@empty_effect_name_list(), "");
+            add_bindings_to_context(ctx2, bindings.tail)
         end
     }
 }
@@ -785,7 +784,7 @@ fn pattern_types_match_rhs(bindings: ListTupleDecomposeBinding, rhs_type: string
     pattern_type: string <- build_pattern_type_from_bindings(bindings);
     rhs_trimmed: string <- tuple_trim(rhs_type);
     pattern_trimmed: string <- tuple_trim(pattern_type);
-    case types_equal(rhs_trimmed, pattern_trimmed) of {
+    case types_equal_surface(rhs_trimmed, pattern_trimmed) of {
         true -> type_checker_core@type_check_ok();
         false -> type_checker_core@type_check_err("E2005", location, concat(concat("tuple decomposition pattern type ", concat(pattern_trimmed, " does not match RHS type ")), rhs_trimmed), "sect4")
     }
@@ -889,7 +888,7 @@ fn normalize_type_equal_text(s: string) -> string {
     normalize_mem_normal_alias(case_unwrap_atom_union_parens(s))
 }
 
-fn types_equal(a: string, b: string) -> bool {
+fn types_equal_surface(a: string, b: string) -> bool {
     na: string <- normalize_type_equal_text(a);
     nb: string <- normalize_type_equal_text(b);
     case na == nb of {
@@ -1401,7 +1400,7 @@ fn case_list_cons_matches(pi: CasePatternInfo, scrutinee_type: string) -> bool {
     (ok_s: bool, se: string, _: string) <- type_checker_lists@parse_list_type_params(scrutinee_type);
     case ok_s of {
         false -> false;
-        true -> case types_equal(se, pi.bind_type) of {
+        true -> case types_equal_surface(se, pi.bind_type) of {
             false -> false;
             true -> type_checker_lists@list_types_compatible(scrutinee_type, pi.list_tail_type)
         }
@@ -1412,16 +1411,16 @@ fn case_pattern_matches_scrutinee(pi: CasePatternInfo, scrutinee_type: string) -
     case pi.is_valid of {
         false -> false;
         true -> case pi.pattern_kind of {
-            0 -> types_equal(scrutinee_type, "boolean");
-            1 -> types_equal(scrutinee_type, "string");
-            2 -> types_equal(scrutinee_type, pi.bind_type) or (types_equal(scrutinee_type, "failure_reason") and types_equal(pi.bind_type, "atom")) or type_checker_recursive_tuples@case_pattern_matches_ref_optional(scrutinee_type, pi.bind_type);
+            0 -> types_equal_surface(scrutinee_type, "boolean");
+            1 -> types_equal_surface(scrutinee_type, "string");
+            2 -> types_equal_surface(scrutinee_type, pi.bind_type) or (types_equal_surface(scrutinee_type, "failure_reason") and types_equal_surface(pi.bind_type, "atom")) or type_checker_recursive_tuples@case_pattern_matches_ref_optional(scrutinee_type, pi.bind_type);
             3 -> case len(pi.bind_type) == 0 of {
                 true -> pi.bind_name == "_";
-                false -> case types_equal(scrutinee_type, pi.bind_type) of {
+                false -> case types_equal_surface(scrutinee_type, pi.bind_type) of {
                     true -> true;
                     false -> case type_checker_recursive_tuples@case_pattern_matches_ref_optional(scrutinee_type, pi.bind_type) of {
                         true -> true;
-                        false -> case types_equal(pi.bind_type, "atom") and case_type_is_atom_union(scrutinee_type) of {
+                        false -> case types_equal_surface(pi.bind_type, "atom") and case_type_is_atom_union(scrutinee_type) of {
                             true -> true;
                             false -> case len(pi.bind_type) >= 5 of {
                                 true -> case substring(pi.bind_type, 0, 5) == "List[" of {
@@ -1437,10 +1436,10 @@ fn case_pattern_matches_scrutinee(pi: CasePatternInfo, scrutinee_type: string) -
             4 -> is_primitive_numeric_type_name(scrutinee_type);
             5 -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
             6 -> case_list_cons_matches(pi, scrutinee_type);
-            7 -> types_equal(scrutinee_type, "atom") or types_equal(scrutinee_type, "failure_reason") or case_atom_union_contains(scrutinee_type, pi.str_lit) or (type_checker_recursive_tuples@is_ref_optional_type(scrutinee_type) and pi.str_lit == "none");
+            7 -> types_equal_surface(scrutinee_type, "atom") or types_equal_surface(scrutinee_type, "failure_reason") or case_atom_union_contains(scrutinee_type, pi.str_lit) or (type_checker_recursive_tuples@is_ref_optional_type(scrutinee_type) and pi.str_lit == "none");
             8 -> case_record_pat_matches_full(pi.bind_type, scrutinee_type);
             9 -> case_tuple_pat_matches_full(pi.bind_type, scrutinee_type);
-            10 -> types_equal(scrutinee_type, "char");
+            10 -> types_equal_surface(scrutinee_type, "char");
             _: int64 -> false
         }
     }
@@ -1540,7 +1539,7 @@ fn case_extend_record_fields_rem(context: TypeContext, rem: string, scrutinee_ty
                                 false -> case_extend_record_fields_rem(context, rest, scrutinee_type);
                                 true -> do
                                     ctx2: TypeContext <- case spi.pattern_kind of {
-                                        2 -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, spi.bind_name, spi.bind_type, parser_ast@empty_effect_name_list(), ""));
+                                        2 -> type_checker_core@add_symbol(context, spi.bind_name, spi.bind_type, parser_ast@empty_effect_name_list(), "");
                                         8 -> case_extend_record_fields_rem(context, type_checker_record_types@record_case_inner_body(spi.bind_type), fty);
                                         _: int64 -> context
                                     };
@@ -1579,12 +1578,12 @@ fn case_extend_context_for_pattern(context: TypeContext, scrutinee_type: string,
     case pi.is_valid of {
         false -> context;
         true -> case pi.pattern_kind of {
-            2 -> case types_equal(scrutinee_type, pi.bind_type) of {
-                true -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), ""));
-                false -> case types_equal(scrutinee_type, "failure_reason") and types_equal(pi.bind_type, "atom") of {
-                    true -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, pi.bind_name, "atom", parser_ast@empty_effect_name_list(), ""));
+            2 -> case types_equal_surface(scrutinee_type, pi.bind_type) of {
+                true -> type_checker_core@add_symbol(context, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), "");
+                false -> case types_equal_surface(scrutinee_type, "failure_reason") and types_equal_surface(pi.bind_type, "atom") of {
+                    true -> type_checker_core@add_symbol(context, pi.bind_name, "atom", parser_ast@empty_effect_name_list(), "");
                     false -> case type_checker_recursive_tuples@case_pattern_matches_ref_optional(scrutinee_type, pi.bind_type) of {
-                        true -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), ""));
+                        true -> type_checker_core@add_symbol(context, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), "");
                         false -> context
                     }
                 }
@@ -1593,11 +1592,11 @@ fn case_extend_context_for_pattern(context: TypeContext, scrutinee_type: string,
                 false -> context;
                 true -> do
                     ctx_after_head: TypeContext <- case len(pi.bind_name) > 0 and pi.bind_name != "_" of {
-                        true -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), ""));
+                        true -> type_checker_core@add_symbol(context, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), "");
                         false -> context
                     };
                     case len(pi.list_tail_name) > 0 and pi.list_tail_name != "_" of {
-                        true -> type_checker_core@type_context_with_env(ctx_after_head, type_checker_core@add_symbol(ctx_after_head.env, pi.list_tail_name, pi.list_tail_type, parser_ast@empty_effect_name_list(), ""));
+                        true -> type_checker_core@add_symbol(ctx_after_head, pi.list_tail_name, pi.list_tail_type, parser_ast@empty_effect_name_list(), "");
                         false -> ctx_after_head
                     }
                 end
@@ -1624,7 +1623,7 @@ fn case_merge_bool_coverage(a: CaseBoolCoverage, b: CaseBoolCoverage) -> CaseBoo
 
 fn case_bool_coverage_from_pattern_str(pat_str: string, scrutinee_type: string) -> CaseBoolCoverage {
     pi: CasePatternInfo <- case_parse_pattern(pat_str);
-    case types_equal(scrutinee_type, "boolean") of {
+    case types_equal_surface(scrutinee_type, "boolean") of {
         false -> CaseBoolCoverage { has_true: 0, has_false: 0, has_wild: 0 };
         true -> case pi.is_valid of {
             false -> CaseBoolCoverage { has_true: 0, has_false: 0, has_wild: 0 };
@@ -1633,7 +1632,7 @@ fn case_bool_coverage_from_pattern_str(pat_str: string, scrutinee_type: string) 
                     true -> CaseBoolCoverage { has_true: 1, has_false: 0, has_wild: 0 };
                     false -> CaseBoolCoverage { has_true: 0, has_false: 1, has_wild: 0 }
                 };
-                3 -> case types_equal(pi.bind_type, "boolean") of {
+                3 -> case types_equal_surface(pi.bind_type, "boolean") of {
                     true -> CaseBoolCoverage { has_true: 0, has_false: 0, has_wild: 1 };
                     false -> CaseBoolCoverage { has_true: 0, has_false: 0, has_wild: 0 }
                 };

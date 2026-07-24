@@ -264,7 +264,13 @@ fn specialized_program_for_module(mod_name: string, program: Program, specialize
 
 fn maybe_write_runtime_assembly(any_needs_runtime: bool) -> int64 proc[DeviceIO] {
     case any_needs_runtime of {
-        true -> build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module_with_atom_table(atom_table@empty_atom_table()));
+        // Incremental / process-per-unit reclaim path: still must seed the fixed
+        // actor-runtime atom prefix (:insert/:lookup/:delete/…). An empty table
+        // embeds cmp #-1 in __silica_runtime.sams and deadlocks pid-registry init.
+        true -> do
+            (seeded: AtomTable, _: int64) <- atom_table@seed_actor_runtime_atoms();
+            build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module_with_atom_table(seeded))
+        end;
         false -> 0
     }
 }
@@ -302,6 +308,36 @@ fn finish_batch_artifacts() -> int64 proc[DeviceIO] {
     delete_file(needs_runtime_marker_path());
     println("Compilation complete.");
     0
+}
+
+// In-process multi-unit path (matches error-enforcement goldens): parse once, compile all units,
+// then write/validate the link manifest so E4034 lands after Finished compiling.
+fn compile_all_parsed(sorted_files: ListString, parsed_all: ListParsedFile, all_config_files: ListString) -> int64 proc[DeviceIO] {
+    case sorted_files.is_nil of {
+        true -> do
+            println("Compilation complete.");
+            0
+        end;
+        false -> do
+            compile_code: int64 <- compile_parsed_list(sorted_files, parsed_all, all_config_files);
+            case compile_code != 0 of {
+                true -> compile_code;
+                false -> do
+                    // Archive/manifest diagnostics (e.g. E4034) print here; goldens still expect
+                    // the trailing "Compilation complete." line after those errors.
+                    link_st: int64 <- ffi_link_manifest@write_link_manifest_for_parsed(parsed_all);
+                    println("Compilation complete.");
+                    link_st
+                end
+            }
+        end
+    }
+}
+
+// Large batches (e.g. src_selfhost) still use process-per-unit reclaim; small batches stay in-process
+// so compiler stdout matches historical .golden_fail captures.
+fn use_process_per_unit(sorted_files: ListString) -> bool {
+    list_string_length(sorted_files) > 32
 }
 
 fn parsed_contains_path(parsed: ListParsedFile, path: string) -> bool {
@@ -1201,28 +1237,34 @@ fn after_unit_compiled(rest: ListString, unit_rt: bool) -> int64 proc[DeviceIO] 
     }
 }
 
-// First process: full parse + topo + link manifest. Single-unit batches compile here; multi-unit
-// exits 75 so each unit compiles in a fresh process (OS reclaim).
+// First process: full parse + topo. Small batches compile in-process; large multi-unit batches
+// exit 75 so each unit compiles in a fresh process (OS reclaim).
 fn prepare_compile_order(sorted_files: ListString, parsed_all: ListParsedFile, all_config_files: ListString) -> int64 proc[DeviceIO] {
     case sorted_files.is_nil of {
         true -> finish_batch_artifacts();
-        false -> do
-            _: int64 <- ffi_link_manifest@write_link_manifest_for_parsed(parsed_all);
-            case sorted_files.tail.is_nil of {
-                true -> do
-                    (code: int64, unit_rt: bool) <- compile_one_sorted_unit(sorted_files.head, parsed_all, all_config_files);
-                    case code != 0 of {
-                        true -> code;
-                        false -> after_unit_compiled(module_checker_core@empty_list_string(), unit_rt)
+        false -> case use_process_per_unit(sorted_files) of {
+            false -> compile_all_parsed(sorted_files, parsed_all, all_config_files);
+            true -> do
+                link_st: int64 <- ffi_link_manifest@write_link_manifest_for_parsed(parsed_all);
+                case link_st != 0 of {
+                    true -> link_st;
+                    false -> case sorted_files.tail.is_nil of {
+                        true -> do
+                            (code: int64, unit_rt: bool) <- compile_one_sorted_unit(sorted_files.head, parsed_all, all_config_files);
+                            case code != 0 of {
+                                true -> code;
+                                false -> after_unit_compiled(module_checker_core@empty_list_string(), unit_rt)
+                            }
+                        end;
+                        false -> do
+                            _: int64 <- write_paths_file(compile_order_path(), sorted_files);
+                            println("Compile order ready; exiting to reclaim memory before unit compiles...");
+                            continue_exit_code()
+                        end
                     }
-                end;
-                false -> do
-                    _: int64 <- write_paths_file(compile_order_path(), sorted_files);
-                    println("Compile order ready; exiting to reclaim memory before unit compiles...");
-                    continue_exit_code()
-                end
-            }
-        end
+                }
+            end
+        }
     }
 }
 
@@ -1273,6 +1315,16 @@ fn main() -> int64 proc[DeviceIO] {
             case validation != 0 of {
                 true -> 1;
                 false -> do
+                    // Small configs always compile in-process; drop any leftover reclaim-order
+                    // file so a prior process-per-unit run cannot force "Resuming…" output.
+                    _: bool <- case use_process_per_unit(files) of {
+                        true -> false;
+                        false -> do
+                            delete_file(compile_order_path());
+                            delete_file(needs_runtime_marker_path());
+                            false
+                        end
+                    };
                     order_exists: bool <- file_exists(compile_order_path());
                     case order_exists of {
                         true -> do

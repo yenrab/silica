@@ -20,14 +20,18 @@
 
 use parser_ast;
 use type_checker_core;
+use type_interner;
 
 export check_expr/4;
 
-// Check Expr kind 7 (boolean literal). Expected type is function return type (e.g. "boolean").
-fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
-    case expected_type of {
-        "boolean" -> type_checker_core@type_check_ok();
-        "discard" -> type_checker_core@type_check_ok();
-        _: string -> type_checker_core@type_check_err("E2001", expr.location, concat("boolean literal requires boolean return type, got ", case expected_type of { "" -> "[EMPTY]"; _: string -> expected_type }), "sect6")
+// Check Expr kind 7 (boolean literal). expected_type is interned type id.
+fn check_expr(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> (TypeCheckResult, TypeContext) {
+    k: int64 <- type_interner@node_kind(context.interner, expected_type);
+    case k == type_interner@kind_boolean() or k == type_interner@kind_discard() of {
+        true -> (type_checker_core@type_check_ok(), context);
+        false -> {
+            expect_surf: string <- type_checker_core@surface_for_type_id(context, expected_type);
+            (type_checker_core@type_check_err("E2001", expr.location, concat("boolean literal requires boolean return type, got ", case len(expect_surf) == 0 of { true -> "[EMPTY]"; false -> expect_surf }), "sect6"), context)
+        }
     }
 }

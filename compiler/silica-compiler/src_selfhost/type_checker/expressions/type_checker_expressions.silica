@@ -76,7 +76,7 @@ fn is_shift_op_lexeme(op: string) -> bool {
     op == "shl" or op == "shr"
 }
 
-fn check_uint64_result(expected_type: string, location: { file: string, line: int64, column: int64, offset: int64 }, op_label: string) -> TypeCheckResult {
+fn check_uint64_result(expected_type: int64, location: { file: string, line: int64, column: int64, offset: int64 }, op_label: string) -> TypeCheckResult {
     case expected_type of {
         "uint64" -> type_checker_core@type_check_ok();
         "discard" -> type_checker_core@type_check_ok();
@@ -94,7 +94,7 @@ fn shift_amount_literal_out_of_range(expr: Expr) -> bool {
     }
 }
 
-fn check_bnot_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_bnot_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     arg_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_expr(expr.inner, "uint64", context, world);
     case arg_result.is_ok of {
         false -> arg_result;
@@ -102,7 +102,7 @@ fn check_bnot_call(expr: Expr, expected_type: string, context: TypeContext, worl
     }
 }
 
-fn check_bitwise_binary_op(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_bitwise_binary_op(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     op: string <- expr.value;
     left_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_expr(expr.inner, "uint64", context, world);
     case left_result.is_ok of {
@@ -167,7 +167,7 @@ fn inferred_comparison_operand_type(expr: Expr, context: TypeContext) -> string 
 
 // Try each supported comparison operand type; first match wins.
 // Signed: int64, int32, int16, int8. Unsigned: uint64, uint32, uint16, uint8. Also float32, float16, string, atom (ordering by atom table index), boolean.
-fn bool_result(expected_type: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult {
+fn bool_result(expected_type: int64, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult {
     case expected_type of {
         "boolean" -> type_checker_core@type_check_ok();
         "discard" -> type_checker_core@type_check_ok();
@@ -175,7 +175,7 @@ fn bool_result(expected_type: string, location: { file: string, line: int64, col
     }
 }
 
-fn check_comparison_result(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_comparison_result(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     inferred_operand: string <- inferred_comparison_operand_type(expr, context);
     case len(inferred_operand) > 0 of {
         true -> {
@@ -195,7 +195,7 @@ fn check_comparison_result(expr: Expr, expected_type: string, context: TypeConte
     }
 }
 
-fn check_comparison_result_rest(expr: Expr, expected_type: string, context: TypeContext, first_err: TypeCheckResult, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_comparison_result_rest(expr: Expr, expected_type: int64, context: TypeContext, first_err: TypeCheckResult, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     r64: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_comparison_operands(expr, "int64", context, world);
     case r64.is_ok of {
         true -> bool_result(expected_type, expr.location);
@@ -274,7 +274,7 @@ fn is_logical_op_lexeme(op: string) -> bool {
     op == "and" or op == "or"
 }
 
-fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_binary_op(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     op: string <- expr.value;
     case is_arithmetic_op_lexeme(op) of {
         true -> {
@@ -382,7 +382,7 @@ fn call_fourth_arg_expr(expr: Expr) -> Expr {
 }
 
 // Memory region built-ins per spec §4.4, §9.2.2, §12, §22
-fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_region_builtin_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.name == "alloc_region" of {
         true -> {
             mem_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_memory_regions@validate_memory_region_type(expected_type, expr.location);
@@ -441,7 +441,7 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                     case len(elem_type) == 0 of {
                         true -> type_checker_core@type_check_err("E2010", expr.location, "read_ref: argument must have ref(R, Space, T) type", "sect4.4.2");
                         false -> case elem_type == expected_type of {
-                            false -> case type_checker_tuple_decompose_helpers@types_equal(elem_type, expected_type) of {
+                            false -> case type_checker_tuple_decompose_helpers@types_equal_surface(elem_type, expected_type) of {
                                 false -> type_checker_core@type_check_err("E2010", expr.location, concat(concat("read_ref: element type ", elem_type), concat(" does not match expected ", expected_type)), "sect4.4.2");
                                 true -> check_expr(expr.inner, ref_type, context, world)
                             };
@@ -629,7 +629,7 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
 
 // Built-in: print_int64/32/16/8, print_uint64/32/16/8 - arg matches type, returns atom
 // Built-in: print_atom(atom:x) - arg atom, returns atom (:ok on success, :fail on failure)
-fn check_print_call(expr: Expr, arg_type: string, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_print_call(expr: Expr, arg_type: string, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     arg_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_expr(expr.inner, arg_type, context, world);
     case arg_result.is_ok of {
         false -> arg_result;
@@ -655,7 +655,7 @@ fn negate_builtin_arg_type(name: string) -> string {
     }
 }
 
-fn check_negate_call(expr: Expr, num_type: string, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_negate_call(expr: Expr, num_type: string, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     arg_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_expr(expr.inner, num_type, context, world);
     case arg_result.is_ok of {
         false -> arg_result;
@@ -706,7 +706,7 @@ fn is_actor_concurrency_builtin(name: string) -> bool {
     name == "spawn" or name == "spawn_dangerous" or name == "spawn_registered" or name == "spawn_dangerous_registered" or name == "spawn_registered_supervisor" or name == "spawn_linked" or name == "call_supervisor" or name == "add_child" or name == "link" or name == "monitor" or name == "demonitor" or name == "send" or name == "cast" or name == "cast_registered" or name == "cast_dangerous_registered" or name == "call" or name == "call_registered" or name == "self" or name == "recv" or name == "supervision_ingress_enqueue" or name == "supervision_wait_and_drain_one" or name == "failure_reason_tag" or name == "failure_reason_atom" or name == "failure_agent_type" or name == "failure_release" or name == "start_child" or name == "child_table_first_ref" or name == "child_table_row_ref" or name == "kill_abnormal" or name == "wait_for_exit" or is_actor_runtime_helper_name(name)
 }
 
-fn check_runtime_builtin_return(expr: Expr, inferred: string, expected_type: string) -> TypeCheckResult {
+fn check_runtime_builtin_return(expr: Expr, inferred: string, expected_type: int64) -> TypeCheckResult {
     disp: string <- type_checker_core@user_call_base_function_name(expr.name);
     case expected_type == "discard" of {
         true -> type_checker_core@type_check_ok();
@@ -717,7 +717,7 @@ fn check_runtime_builtin_return(expr: Expr, inferred: string, expected_type: str
     }
 }
 
-fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_runtime_helper_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     eff: string <- type_checker_core@user_call_base_function_name(expr.name);
     inferred: string <- actor_runtime_builtin_return_type(eff);
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
@@ -964,7 +964,7 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
     }
 }
 
-fn check_actor_self_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_self_call(expr: Expr, expected_type: int64, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 0 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "self expects 0 arguments (§15.1.3)", "sect15");
@@ -994,7 +994,7 @@ fn check_spawn_core_id_placement(place_e: Expr, context: TypeContext, world: Lis
     }
 }
 
-fn check_actor_spawn_result_type(expr: Expr, expected_type: string, builtin_label: string, spawn_result_type: string) -> TypeCheckResult {
+fn check_actor_spawn_result_type(expr: Expr, expected_type: int64, builtin_label: string, spawn_result_type: string) -> TypeCheckResult {
     case expected_type == spawn_result_type of {
         true -> type_checker_core@type_check_ok();
         false -> case expected_type == "discard" of {
@@ -1004,7 +1004,7 @@ fn check_actor_spawn_result_type(expr: Expr, expected_type: string, builtin_labe
     }
 }
 
-fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram, builtin_label: string, spawn_result_type: string) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_spawn_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram, builtin_label: string, spawn_result_type: string) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 or ac == 3 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, concat(concat(builtin_label, " expects 2 or 3 arguments: (initial_state, behavior_fn [, core_id]) §15.1.1"), ""), "sect15");
@@ -1070,7 +1070,7 @@ fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContex
 
 // Spawn: optional `core_id(x)` wrapper — x must be uint64; result is uint64 (same as spawn's third argument).
 // `core_set` and list / performance_cores / efficiency_cores placement forms are not supported for spawn.
-fn check_spawn_affinity_constructor_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_spawn_affinity_constructor_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case expr.name == "core_id" of {
         true -> case ac == 1 of {
@@ -1289,7 +1289,7 @@ fn check_spawn_registered_registry_rules(expr: Expr, name_e: Expr, beh_e: Expr, 
     }
 }
 
-fn check_actor_spawn_registered_family_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram, builtin_label: string, spawn_result_type: string) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_spawn_registered_family_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram, builtin_label: string, spawn_result_type: string) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 3 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, concat(concat(builtin_label, " expects 3 arguments: (initial_state, behavior_fn, name: atom)"), ""), "sect15");
@@ -1344,15 +1344,15 @@ fn check_actor_spawn_registered_family_call(expr: Expr, expected_type: string, c
     }
 }
 
-fn check_actor_spawn_registered_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_spawn_registered_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     check_actor_spawn_registered_family_call(expr, expected_type, context, world, "spawn_registered", "actor_ref")
 }
 
-fn check_actor_spawn_dangerous_registered_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_spawn_dangerous_registered_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     check_actor_spawn_registered_family_call(expr, expected_type, context, world, "spawn_dangerous_registered", "dangerous_actor_ref")
 }
 
-fn check_supervisor_spawn_result_type(expr: Expr, expected_type: string, builtin_label: string) -> TypeCheckResult {
+fn check_supervisor_spawn_result_type(expr: Expr, expected_type: int64, builtin_label: string) -> TypeCheckResult {
     case expected_type == "supervisor_ref" of {
         true -> type_checker_core@type_check_ok();
         false -> case expected_type == "discard" of {
@@ -1362,7 +1362,7 @@ fn check_supervisor_spawn_result_type(expr: Expr, expected_type: string, builtin
     }
 }
 
-fn check_spawn_registered_supervisor_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_spawn_registered_supervisor_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 3 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "spawn_registered_supervisor expects 3 arguments: (SupervisorImplType, initial_state, name: atom)", "sect15.4.13");
@@ -1390,18 +1390,18 @@ fn check_spawn_registered_supervisor_call(expr: Expr, expected_type: string, con
     }
 }
 
-fn check_call_supervisor_result_type(expr: Expr, expected_type: string) -> TypeCheckResult {
+fn check_call_supervisor_result_type(expr: Expr, expected_type: int64) -> TypeCheckResult {
     inferred: string <- type_checker_expressions_actors@supervisor_reply_record_type();
     case expected_type == "discard" of {
         true -> type_checker_core@type_check_ok();
-        false -> case type_checker_tuple_decompose_helpers@types_equal(inferred, expected_type) of {
+        false -> case type_checker_tuple_decompose_helpers@types_equal_surface(inferred, expected_type) of {
             true -> type_checker_core@type_check_ok();
             false -> type_checker_core@type_check_err("E2003", expr.location, concat("call_supervisor returns ", concat(inferred, concat(", expected ", expected_type))), "sect15.4.13")
         }
     }
 }
 
-fn check_call_supervisor_builtin(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_call_supervisor_builtin(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "call_supervisor expects 2 arguments: (supervisor_ref, SupervisorMessage)", "sect15.4.13");
@@ -1434,11 +1434,11 @@ fn check_call_supervisor_builtin(expr: Expr, expected_type: string, context: Typ
 
 // §15.4.8.3: spawn_linked(initial_state, behavior_fn, agent_type: atom [, core_id]) -> actor_ref.
 // Supervisors plan Phase D: behavior-only call site (§15.4.8.3).
-fn check_actor_spawn_linked_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_spawn_linked_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     type_checker_core@type_check_err("E2091", expr.location, "spawn_linked is no longer part of the public supervisor surface; use spawn_registered for actors or spawn_registered_supervisor for supervisors", "sect15.4.13")
 }
 
-fn check_actor_spawn_linked_call_removed_old(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_spawn_linked_call_removed_old(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "spawn_linked may only be called from within an actor behavior function (§15.4.8.3; supervisors plan Phase D)", "sect15.4.8.3");
         true -> {
@@ -1503,7 +1503,7 @@ fn check_actor_spawn_linked_call_removed_old(expr: Expr, expected_type: string, 
 }
 
 // §15.4.8.5: link(target: actor_ref) -> :ok proc[concurrency]. Supervisors plan Phase D: behavior-only.
-fn check_actor_link_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_link_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "link may only be called from within an actor behavior function (§15.4.8.5; supervisors plan Phase D)", "sect15.4.8.5");
         true -> {
@@ -1544,7 +1544,7 @@ fn check_add_child_parent_supervisor(parent_e: Expr, context: TypeContext, locat
 
 // Explicit supervisor parent/child registration: add_child(parent: actor_ref, child: actor_ref) -> :ok.
 // The parent ref is accepted only when this type-checking pass can prove it came from a Supervisor impl spawn.
-fn check_add_child_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_add_child_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "add_child expects 2 arguments: (parent: actor_ref implementing Supervisor, child: actor_ref)", "sect15.4.13");
@@ -1578,7 +1578,7 @@ fn check_add_child_call(expr: Expr, expected_type: string, context: TypeContext,
 // §15.4.8.6: monitor(target: actor_ref) -> monitor_ref proc[concurrency].
 // Supervisors plan Phase G: `DOWN` to standard mailbox only — call site must be the monitoring actor
 // (same static rule as `link` §15.4.8.5: behavior function where `self()` is defined).
-fn check_actor_monitor_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_monitor_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "monitor may only be called from within an actor behavior function (§15.4.8.6; DOWN to standard mailbox; supervisors plan Phase G)", "sect15.4.8.6");
         true -> {
@@ -1601,7 +1601,7 @@ fn check_actor_monitor_call(expr: Expr, expected_type: string, context: TypeCont
 }
 
 // §15.4.8.6: demonitor(ref: monitor_ref) -> :ok proc[concurrency]. Phase G: same behavior-only surface as `monitor`.
-fn check_actor_demonitor_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_demonitor_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "demonitor may only be called from within an actor behavior function (§15.4.8.6; supervisors plan Phase G)", "sect15.4.8.6");
         true -> {
@@ -1624,7 +1624,7 @@ fn check_actor_demonitor_call(expr: Expr, expected_type: string, context: TypeCo
 }
 
 // supervisors_implementation_development_plan Phase B: enqueue synthetic int64 on target's supervision ingress (trial / Phase C precursor).
-fn check_supervision_ingress_enqueue_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_supervision_ingress_enqueue_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "supervision_ingress_enqueue may only be called from within an actor behavior function (supervisors plan Phase B)", "sect15.4.9");
         true -> {
@@ -1655,7 +1655,7 @@ fn check_supervision_ingress_enqueue_call(expr: Expr, expected_type: string, con
 
 // supervisors_implementation_development_plan Phase C: behavior-only accessors over the structured exit
 // notification delivered by `_silica_rt_actor_deliver_exit` (§15.4.10–§15.4.11).
-fn check_supervision_wait_and_drain_one_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_supervision_wait_and_drain_one_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "supervision_wait_and_drain_one may only be called from within an actor behavior function (supervisors plan Phase C)", "sect15.4.10");
         true -> {
@@ -1671,7 +1671,7 @@ fn check_supervision_wait_and_drain_one_call(expr: Expr, expected_type: string, 
     }
 }
 
-fn check_child_table_first_ref_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_child_table_first_ref_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "child_table_first_ref may only be called from within an actor behavior function (supervisors plan Phase E e4a)", "sect15.4.13");
         true -> {
@@ -1687,7 +1687,7 @@ fn check_child_table_first_ref_call(expr: Expr, expected_type: string, context: 
     }
 }
 
-fn check_child_table_row_ref_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_child_table_row_ref_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "child_table_row_ref may only be called from within an actor behavior function (supervisors plan Phase E e4f)", "sect15.4.13");
         true -> {
@@ -1714,7 +1714,7 @@ fn check_child_table_row_ref_call(expr: Expr, expected_type: string, context: Ty
 // :transient restart policy without depending on a divide-by-zero / segfault path that does not yet exist on
 // the user surface (supervisors_implementation_development_plan Phase E e4b).
 // Phase I — wait_for_exit/0 — main/0 only (supervisors_implementation_development_plan.md §4).
-fn check_wait_for_exit_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_wait_for_exit_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_main_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "wait_for_exit may only be called from within main/0 (Phase I)", "sect15.4");
         true -> {
@@ -1730,7 +1730,7 @@ fn check_wait_for_exit_call(expr: Expr, expected_type: string, context: TypeCont
     }
 }
 
-fn check_kill_abnormal_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_kill_abnormal_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "kill_abnormal may only be called from within an actor behavior function (supervisors plan Phase E e4b)", "sect15.4.13");
         true -> {
@@ -1756,7 +1756,7 @@ fn check_kill_abnormal_call(expr: Expr, expected_type: string, context: TypeCont
     }
 }
 
-fn check_failure_reason_tag_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_failure_reason_tag_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "failure_reason_tag may only be called from within an actor behavior function (supervisors plan Phase C)", "sect15.4.11");
         true -> {
@@ -1778,7 +1778,7 @@ fn check_failure_reason_tag_call(expr: Expr, expected_type: string, context: Typ
     }
 }
 
-fn check_failure_reason_atom_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_failure_reason_atom_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "failure_reason_atom may only be called from within an actor behavior function (supervisors plan Phase C)", "sect15.4.11");
         true -> {
@@ -1800,7 +1800,7 @@ fn check_failure_reason_atom_call(expr: Expr, expected_type: string, context: Ty
     }
 }
 
-fn check_failure_agent_type_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_failure_agent_type_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "failure_agent_type may only be called from within an actor behavior function (supervisors plan Phase C)", "sect15.4.11");
         true -> {
@@ -1822,7 +1822,7 @@ fn check_failure_agent_type_call(expr: Expr, expected_type: string, context: Typ
     }
 }
 
-fn check_failure_release_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_failure_release_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "failure_release may only be called from within an actor behavior function (supervisors plan Phase C)", "sect15.4.11");
         true -> {
@@ -1845,7 +1845,7 @@ fn check_failure_release_call(expr: Expr, expected_type: string, context: TypeCo
 }
 
 // Phase E e3b2: start_child(child_spec) -> actor_ref — supervisor-only dynamic child spawn (§15.4.13.3).
-fn check_start_child_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_start_child_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "start_child may only be called from within an actor behavior function (supervisors plan Phase E e3b2, spec sect15.4.13.3)", "sect15.4.13.3");
         true -> {
@@ -1890,7 +1890,7 @@ fn check_actor_message_target(ref_e: Expr, context: TypeContext, world: ListName
     }
 }
 
-fn check_actor_call_builtin(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_call_builtin(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "call expects 2 arguments: (actor_ref, message) §16.1.1", "sect16");
@@ -1934,7 +1934,7 @@ fn check_actor_call_builtin(expr: Expr, expected_type: string, context: TypeCont
     }
 }
 
-fn check_actor_call_registered_builtin(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_call_registered_builtin(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "call_registered expects 2 arguments: (registered_name: atom, message) §16.1.1", "sect16");
@@ -1955,7 +1955,7 @@ fn check_actor_call_registered_builtin(expr: Expr, expected_type: string, contex
     }
 }
 
-fn check_actor_cast_builtin(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_cast_builtin(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "cast expects 2 arguments: (actor_ref, message) §16.1.2", "sect16");
@@ -1990,7 +1990,7 @@ fn check_actor_cast_builtin(expr: Expr, expected_type: string, context: TypeCont
     }
 }
 
-fn check_actor_cast_registered_builtin(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_cast_registered_builtin(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "cast_registered expects 2 arguments: (registered_name: atom, message) §16.1.2", "sect16");
@@ -2027,7 +2027,7 @@ fn check_actor_cast_registered_builtin(expr: Expr, expected_type: string, contex
     }
 }
 
-fn check_actor_cast_dangerous_registered_builtin(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_cast_dangerous_registered_builtin(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "cast_dangerous_registered expects 2 arguments: (registered_name: atom, message) §16.1.2", "sect16");
@@ -2064,7 +2064,7 @@ fn check_actor_cast_dangerous_registered_builtin(expr: Expr, expected_type: stri
     }
 }
 
-fn check_actor_send_builtin(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_send_builtin(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "send expects 2 arguments: (actor_ref, message) §16.1", "sect16");
@@ -2099,7 +2099,7 @@ fn check_actor_send_builtin(expr: Expr, expected_type: string, context: TypeCont
     }
 }
 
-fn check_actor_concurrency_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_concurrency_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     eff: string <- type_checker_core@user_call_base_function_name(expr.name);
     case is_actor_runtime_helper_name(eff) of {
         true -> check_actor_runtime_helper_call(expr, expected_type, context, world);
@@ -2220,7 +2220,7 @@ fn float_predicate_arg_type(name: string) -> string {
     }
 }
 
-fn check_float_special_const_call(expr: Expr, expected_type: string) -> TypeCheckResult {
+fn check_float_special_const_call(expr: Expr, expected_type: int64) -> TypeCheckResult {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     ret: string <- float_special_const_type(expr.name);
     case ac == 0 of {
@@ -2232,7 +2232,7 @@ fn check_float_special_const_call(expr: Expr, expected_type: string) -> TypeChec
     }
 }
 
-fn check_float_predicate_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_float_predicate_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 1 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " expects 1 argument"), "sect6");
@@ -2263,11 +2263,11 @@ fn is_checked_int64_builtin_call(call_name: string) -> bool {
     call_name == "checked_int64_add" or call_name == "checked_int64_mul" or call_name == "checked_int64_add1" or call_name == "checked_int64_byte_size"
 }
 
-fn checked_int64_result_type_ok(expected_type: string) -> bool {
+fn checked_int64_result_type_ok(expected_type: int64) -> bool {
     expected_type == "(boolean, int64)"
 }
 
-fn check_checked_int64_builtin_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_checked_int64_builtin_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case checked_int64_result_type_ok(expected_type) of {
         false -> type_checker_core@type_check_err("E2003", expr.location, concat("checked int64 built-in returns (boolean, int64), got ", expected_type), "common_contract§9");
         true -> case expr.name of {
@@ -2290,7 +2290,7 @@ fn check_checked_int64_builtin_call(expr: Expr, expected_type: string, context: 
     }
 }
 
-fn check_collection_result_builtin_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_collection_result_builtin_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     arg_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_expr(expr.inner, "atom", context, world);
     case arg_result.is_ok of {
         false -> arg_result;
@@ -2328,7 +2328,7 @@ fn is_fn_type_string(type_str: string) -> bool {
     }
 }
 
-fn check_ordering_identity_builtin_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_ordering_identity_builtin_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.name of {
         "ordering_identity_fresh_env" -> case expected_type == "int64" of {
             true -> type_checker_core@type_check_ok();
@@ -2380,7 +2380,7 @@ fn check_ordering_identity_builtin_call(expr: Expr, expected_type: string, conte
     }
 }
 
-fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_call_builtins_dispatch(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case is_float_special_const_name(expr.name) of {
         true -> check_float_special_const_call(expr, expected_type);
         false -> case is_float_predicate_name(expr.name) of {
@@ -2638,11 +2638,11 @@ fn lookup_fn_type_by_name_and_module_local(env: ListSymbolEntry, fn_name: string
         false -> case instantiated_fn_name@decl_name_matches(env.head.name, fn_name) and env.head.is_effect_alias == false of {
             true -> case len(required_module) == 0 of {
                 true -> case env.head.source_module == "" of {
-                    true -> env.head.type_name;
+                    true -> env.head.type_id;
                     false -> lookup_fn_type_by_name_and_module_local(env.tail, fn_name, required_module)
                 };
                 false -> case env.head.source_module == required_module of {
-                    true -> env.head.type_name;
+                    true -> env.head.type_id;
                     false -> lookup_fn_type_by_name_and_module_local(env.tail, fn_name, required_module)
                 }
             };
@@ -2659,7 +2659,7 @@ fn lookup_function_type_for_call_local(env: ListSymbolEntry, composite_name: str
     }
 }
 
-fn check_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     // Module-qualified calls (spec §19.3.2): use first_at in this TU. Routing via
     // type_checker_core@call_name_is_module_qualified misclassified on bootstrap (deep builtin chain / stack).
     // Supervisors Phase A: `spawn` / `spawn_linked` are intrinsics (§15.4.8.3); module@spawn_linked must type-check like the unqualified form.
@@ -2897,7 +2897,7 @@ fn qualified_call_first_arg_exact_matches_decl(inferred: string, decl: Declarati
             act: string <- type_checker_traits@trim_type_text(inferred);
             case type_checker_lists@types_equal_strip(act, expect) of {
                 true -> true;
-                false -> type_checker_tuple_decompose_helpers@types_equal(act, expect)
+                false -> type_checker_tuple_decompose_helpers@types_equal_surface(act, expect)
             }
         }
     }
@@ -3093,7 +3093,7 @@ fn call_site_actual_matches_formal(inferred: string, formal: string, world: List
                 true -> type_checker_collections@collection_type_fits_concrete_record(fin, fdecl, world);
                 false -> case type_checker_collections@is_collection_trait_type(fdecl) of {
                     true -> type_checker_collections@collection_type_fits_concrete_record(fdecl, fin, world);
-                    false -> case type_checker_tuple_decompose_helpers@types_equal(fin, fdecl) of {
+                    false -> case type_checker_tuple_decompose_helpers@types_equal_surface(fin, fdecl) of {
                         true -> true;
                         false -> case type_checker_expressions_identifiers@function_types_compatible(fin, fdecl) of {
                             true -> true;
@@ -3172,7 +3172,7 @@ fn struct_literal_inferred_matches_impl_record(actual: string, impl_param: strin
             false -> false;
             true -> {
                 relaxed: string <- replace_int64_with_int32_in_type_text_loop(a, 0, "");
-                type_checker_tuple_decompose_helpers@types_equal(relaxed, p)
+                type_checker_tuple_decompose_helpers@types_equal_surface(relaxed, p)
             }
         }
     }
@@ -3444,7 +3444,7 @@ fn check_callsite_body_with_concrete_params(decl: Declaration, world: ListNamedP
                 true -> {
                     dp: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- parser_ast@param_list_normalize(decl.parameters);
                     cp: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- parser_ast@param_list_normalize(conc_decl_order);
-                    ctx_params: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_core@add_params_concrete_loop1({ decl_params: dp, concrete_types: cp, base: ctx_callee });
+                    ctx_params: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, a: int64, b: int64, c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- type_checker_core@add_params_concrete_loop1({ decl_params: dp, concrete_types: cp, base: ctx_callee });
                     ret_rec: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- validate_callsite_return_record_type(decl.return_type_name, decl.return_type_location);
                     case ret_rec.is_ok of {
                         false -> ret_rec;
@@ -3469,7 +3469,7 @@ fn check_callsite_body_with_concrete_params(decl: Declaration, world: ListNamedP
 }
 
 // §19.3.2: for `module@fn(args)`, resolve callee in `world` (includes the current module). Overloads share name/arity; pick by inferred first-argument type, then required trait signature (tag 7), then first tag-0 match.
-fn try_resolve_qualified_call_func_type(expr: Expr, expected_type: string, world: ListNamedProgram, context: TypeContext) -> (bool, string) {
+fn try_resolve_qualified_call_func_type(expr: Expr, expected_type: int64, world: ListNamedProgram, context: TypeContext) -> (bool, string) {
     at: int64 <- first_at_in_expr_call_name(expr.name, 0);
     case at < 0 of {
         true -> (false, "");
@@ -3518,7 +3518,7 @@ fn try_resolve_qualified_call_func_type(expr: Expr, expected_type: string, world
     }
 }
 
-fn check_user_call_result_user_call(expr: Expr, expected_type: string, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
+fn check_user_call_result_user_call(expr: Expr, expected_type: int64, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
     receiver_resolved_return: string <- type_checker_collections@resolve_constructor_call_formal(expected_type, return_type);
     resolved_return: string <- type_checker_collections@resolve_accumulator_call_formal(expected_type, receiver_resolved_return);
     constructor_module: string <- type_checker_collections@module_name_from_qualified_call(expr.name);
@@ -3586,7 +3586,7 @@ fn params_inner_is_ptr_len_pair(params_inner: string) -> bool {
     }
 }
 
-fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_type: string, return_type: string, context: TypeContext, call_expr: Expr, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_type: int64, return_type: string, context: TypeContext, call_expr: Expr, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.inner.kind == -1 of {
         true -> case len(params_inner) == 0 of {
             true -> check_user_call_result_user_call(call_expr, expected_type, return_type, context, world);
@@ -3644,7 +3644,7 @@ fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_typ
     }
 }
 
-fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: string, context: TypeContext, params_inner: string, return_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: int64, context: TypeContext, params_inner: string, return_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     arg_inferred: string <- case count_call_args_user_call(expr) > 0 of {
         true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
         false -> ""
@@ -3749,7 +3749,7 @@ fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: strin
     }
 }
 
-fn check_user_defined_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_user_defined_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     (rw: bool, ft_world: string) <- try_resolve_qualified_call_func_type(expr, expected_type, world, context);
     local_name: string <- instantiated_fn_name@resolve_call_fn_name(expr.name, expr.value);
     resolved_type: string <- case rw of {
@@ -3765,7 +3765,7 @@ fn check_user_defined_call(expr: Expr, expected_type: string, context: TypeConte
     }
 }
 
-fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: TypeContext, func_type: string, world: ListNamedProgram, callee_type_from_world: bool) -> TypeCheckResult proc[DeviceIO] {
+fn check_user_defined_call_parsed(expr: Expr, expected_type: int64, context: TypeContext, func_type: string, world: ListNamedProgram, callee_type_from_world: bool) -> TypeCheckResult proc[DeviceIO] {
     func_type_canon: string <- type_checker_expressions_identifiers@normalize_fn_type_idf(func_type);
     expected_arg_count: int64 <- parse_function_param_count(func_type_canon);
     params_inner: string <- get_params_inner_from_func_type(func_type_canon);
@@ -3813,7 +3813,7 @@ fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: Ty
     }
 }
 
-fn check_user_call_one_tuple_as_two_args(expr: Expr, params_inner: string, expected_type: string, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_user_call_one_tuple_as_two_args(expr: Expr, params_inner: string, expected_type: int64, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     (first_param: string, rest_params: string) <- get_first_param_type(params_inner);
     (second_param: string, _: string) <- get_first_param_type(rest_params);
     case len(first_param) == 0 or len(second_param) == 0 of {
@@ -3829,7 +3829,7 @@ fn check_user_call_one_tuple_as_two_args(expr: Expr, params_inner: string, expec
     }
 }
 
-fn check_user_call_two_args_as_tuple(expr: Expr, tuple_param: string, expected_type: string, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_user_call_two_args_as_tuple(expr: Expr, tuple_param: string, expected_type: int64, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     inner: string <- trim_leading_user_call(substring(tuple_param, 1, len(tuple_param) - 1));
     comma_pos: int64 <- find_top_level_comma_user_call(inner, 0, 0);
     case comma_pos >= len(inner) of {
@@ -4047,7 +4047,7 @@ fn empty_call_constructor_witness_fn_type(rhs: Expr, field: string, context: Typ
     }
 }
 
-fn check_collection_trait_let(expr: Expr, expected_type: string, context: TypeContext, bind_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_collection_trait_let(expr: Expr, expected_type: int64, context: TypeContext, bind_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     // Pass the declared collection type (OrderedMap[...], OrderedSet[...], ...) so
     // KeyType/ValueType/ItemType inside constructor formals are witnessed. Checking
     // with "discard" leaves those placeholders unresolved for generic empty/1.
@@ -4059,9 +4059,9 @@ fn check_collection_trait_let(expr: Expr, expected_type: string, context: TypeCo
             case witness_result.is_ok of {
                 false -> witness_result;
                 true -> {
-                    base_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(context.env, expr.name, bind_type, parser_ast@empty_effect_name_list(), "");
-                    new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- enrich_env_for_actor_spawn(base_env, expr.name, bind_type, expr.inner, context);
-                    new_context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_core@type_context_with_env(context, new_env);
+                    bound_ctx: TypeContext <- type_checker_core@context_add_symbol_surface(context, expr.name, bind_type, parser_ast@empty_effect_name_list(), "");
+                    new_env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- enrich_env_for_actor_spawn(bound_ctx.env, expr.name, bind_type, expr.inner, context);
+                    new_context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, a: int64, b: int64, c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- type_checker_core@type_context_with_env(bound_ctx, new_env);
                     body_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_expr(expr.right_expr, expected_type, new_context, world);
                     body_result
                 }
@@ -4074,7 +4074,7 @@ fn check_collection_trait_let(expr: Expr, expected_type: string, context: TypeCo
 // Reject unit for named variables; allow _ : unit <- expr (discard pattern for expression statements).
 // Memory region types (ref, region, buf) are validated before type checking.
 // Untyped `name <- rhs` (empty annotation) is a type error (E2018), not a parse defect.
-fn check_let(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_let(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     bind_type: string <- expr.value;
     case len(bind_type) == 0 of {
         true -> type_checker_core@type_check_err("E2018", expr.location, concat(concat("variable binding '", expr.name), "' must have an explicit type annotation; write 'name: <type> <- ...'"), "sect8.3.1");
@@ -4112,7 +4112,7 @@ fn check_let(expr: Expr, expected_type: string, context: TypeContext, world: Lis
     }
 }
 
-fn check_let_memory_region(expr: Expr, expected_type: string, context: TypeContext, bind_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_let_memory_region(expr: Expr, expected_type: int64, context: TypeContext, bind_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     mem_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_memory_regions@validate_memory_region_type_in_context(bind_type, expr.location, context);
     case mem_result.is_ok of {
         false -> mem_result;
@@ -4134,12 +4134,12 @@ fn enrich_env_for_actor_spawn(env: ListSymbolEntry, var_name: string, bind_type:
     case rhs.kind == 4 and spawn_pair_ok of {
         true -> {
             beh_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- type_checker_expressions_actors@spawn_behavior_expr(rhs);
-            env1: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- case beh_e.kind == 1 of {
+            env1: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- case beh_e.kind == 1 of {
                 true -> {
                     (beh_found: bool, beh_type: string) <- type_checker_core@lookup_symbol_found(context.env, beh_e.name);
                     case beh_found of {
                         true -> {
-                            env_beh: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(env, concat("__actor_beh__", var_name), beh_type, parser_ast@empty_effect_name_list(), "");
+                            env_beh: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(env, concat("__actor_beh__", var_name), beh_type, parser_ast@empty_effect_name_list(), "");
                             state_t: string <- type_checker_expressions_actors@parse_behavior_state_param_type(beh_type);
                             sup_csv: string <- type_checker_core@lookup_supervisor_csv(context);
                             case type_checker_core@type_name_in_supervisor_csv(state_t, sup_csv) or len(sup_csv) > 0 of {
@@ -4180,13 +4180,13 @@ fn lambda_formal_bindings_valid(bindings: ListTupleDecomposeBinding, location: {
     }
 }
 
-fn check_lambda_expression(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_lambda_expression(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     formal_ok: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- lambda_formal_bindings_valid(expr.pattern_bindings, expr.location);
     case formal_ok.is_ok of {
         false -> formal_ok;
         true -> {
             ret_ty: string <- expr.right_expr.value;
-            inner_ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_tuple_decompose_helpers@add_bindings_to_context(context, expr.pattern_bindings);
+            inner_ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, a: int64, b: int64, c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- type_checker_tuple_decompose_helpers@add_bindings_to_context(context, expr.pattern_bindings);
             case expected_type == "discard" of {
                 true -> check_expr(expr.inner, ret_ty, inner_ctx, world);
                 false -> {
@@ -4202,7 +4202,7 @@ fn check_lambda_expression(expr: Expr, expected_type: string, context: TypeConte
     }
 }
 
-fn check_let_after_validation(expr: Expr, expected_type: string, context: TypeContext, bind_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_let_after_validation(expr: Expr, expected_type: int64, context: TypeContext, bind_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case bind_type == "unit" of {
         true -> case expr.name == "_" of {
             true -> {
@@ -4224,9 +4224,9 @@ fn check_let_after_validation(expr: Expr, expected_type: string, context: TypeCo
             case rhs_result.is_ok of {
                 false -> rhs_result;
                 true -> {
-                    base_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(context.env, expr.name, bind_type, parser_ast@empty_effect_name_list(), "");
-                    new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- enrich_env_for_actor_spawn(base_env, expr.name, bind_type, expr.inner, context);
-                    new_context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_core@type_context_with_env(context, new_env);
+                    bound_ctx: TypeContext <- type_checker_core@context_add_symbol_surface(context, expr.name, bind_type, parser_ast@empty_effect_name_list(), "");
+                    new_env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- enrich_env_for_actor_spawn(bound_ctx.env, expr.name, bind_type, expr.inner, context);
+                    new_context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, a: int64, b: int64, c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- type_checker_core@type_context_with_env(bound_ctx, new_env);
                     body_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_expr(expr.right_expr, expected_type, new_context, world);
                     body_result
                 }
@@ -4241,12 +4241,12 @@ fn context_after_sequence_body(body: Expr, context: TypeContext) -> TypeContext 
     case body.kind == 6 of {
         true -> {
             is_discard: bool <- body.value == "unit" and body.name == "_";
-            new_context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- case is_discard of {
+            new_context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, a: int64, b: int64, c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- case is_discard of {
                 true -> context;
                 false -> {
-                    base_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(context.env, body.name, body.value, parser_ast@empty_effect_name_list(), "");
-                    enriched_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- enrich_env_for_actor_spawn(base_env, body.name, body.value, body.inner, context);
-                    type_checker_core@type_context_with_env(context, enriched_env)
+                    bound_ctx: TypeContext <- type_checker_core@context_add_symbol_surface(context, body.name, body.value, parser_ast@empty_effect_name_list(), "");
+                    enriched_env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- enrich_env_for_actor_spawn(bound_ctx.env, body.name, body.value, body.inner, context);
+                    type_checker_core@type_context_with_env(bound_ctx, enriched_env)
                 }
             };
             context_after_sequence_body(body.right_expr, new_context)
@@ -4263,7 +4263,7 @@ fn context_after_sequence_body(body: Expr, context: TypeContext) -> TypeContext 
                     false -> rhs_trimmed
                 };
                 filled: List[{ name: string, path: string, type_str: string }, mem(normal)] <- type_checker_tuple_decompose_helpers@fill_empty_binding_types_from_rhs(body.pattern_bindings, tuple_for_fill);
-                extended: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_tuple_decompose_helpers@add_bindings_to_context(context, filled);
+                extended: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, a: int64, b: int64, c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- type_checker_tuple_decompose_helpers@add_bindings_to_context(context, filled);
                 context_after_sequence_body(body.right_expr, extended)
             };
             false -> context
@@ -4275,12 +4275,12 @@ fn context_after_sequence_body(body: Expr, context: TypeContext) -> TypeContext 
 // inner = body (statements before produces), right_expr = result (pure expr); sequence_effects validated by effect checker
 // The produces expr is in scope of all bindings from the body.
 // Phase A lifetime analysis: when return type contains ref/buf, region must be returned (spec §12.1.4).
-fn check_sequence_block(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_sequence_block(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     body_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_expr(expr.inner, "discard", context, world);
     case body_result.is_ok of {
         false -> body_result;
         true -> {
-            result_context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- context_after_sequence_body(expr.inner, context);
+            result_context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, a: int64, b: int64, c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- context_after_sequence_body(expr.inner, context);
             expr_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_expr(expr.right_expr, expected_type, result_context, world);
             case expr_result.is_ok of {
                 false -> expr_result;
@@ -4299,7 +4299,7 @@ fn tuple_elem_type_for_check(field_type: string) -> string {
 }
 
 // Tuple literal (kind 9): check against expected tuple type "(T1, T2)"
-fn check_tuple_literal_inline(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_tuple_literal_inline(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case len(expected_type) == 7 and substring(expected_type, 0, 1) == "d" and substring(expected_type, 1, 2) == "i" and substring(expected_type, 2, 3) == "s" and substring(expected_type, 3, 4) == "c" and substring(expected_type, 4, 5) == "a" and substring(expected_type, 5, 6) == "r" and substring(expected_type, 6, 7) == "d" of {
         true -> type_checker_core@type_check_ok();
         false -> case len(expected_type) < 2 of {
@@ -4566,7 +4566,7 @@ fn check_case_branch_guard(branch: Expr, pi: { is_valid: bool, pattern_kind: int
     }
 }
 
-fn check_one_case_branch(branch: Expr, scrutinee_type: string, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_one_case_branch(branch: Expr, scrutinee_type: string, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case branch.kind == 18 of {
         false -> type_checker_core@type_check_err("E2005", branch.location, "malformed case branch", "sect3");
         true -> {
@@ -4584,7 +4584,7 @@ fn check_one_case_branch(branch: Expr, scrutinee_type: string, expected_type: st
                                 true -> case type_checker_tuple_decompose_helpers@case_pattern_matches_scrutinee(pi, scrutinee_type) of {
                                     false -> type_checker_core@type_check_err("E2005", branch.location, "case pattern does not match scrutinee type", "sect3");
                                     true -> {
-                                        ext_ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_tuple_decompose_helpers@case_extend_context_for_pattern(context, scrutinee_type, branch.value);
+                                        ext_ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, a: int64, b: int64, c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- type_checker_tuple_decompose_helpers@case_extend_context_for_pattern(context, scrutinee_type, branch.value);
                                         guard_r: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_case_branch_guard(branch, pi, ext_ctx, scrutinee_type, world);
                                         case guard_r.is_ok of {
                                             false -> guard_r;
@@ -4601,7 +4601,7 @@ fn check_one_case_branch(branch: Expr, scrutinee_type: string, expected_type: st
     }
 }
 
-fn check_case_branch_list(branches: Expr, scrutinee_type: string, expected_type: string, context: TypeContext, case_loc: { file: string, line: int64, column: int64, offset: int64 }, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_case_branch_list(branches: Expr, scrutinee_type: string, expected_type: int64, context: TypeContext, case_loc: { file: string, line: int64, column: int64, offset: int64 }, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case branches.kind == -1 of {
         true -> type_checker_core@type_check_ok();
         false -> case branches.kind == 17 of {
@@ -4632,7 +4632,7 @@ fn check_case_boolean_exhaustive(branches: Expr, scrutinee_type: string, case_lo
     }
 }
 
-fn check_case_expression(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_case_expression(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.right_expr.kind == -1 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, "case expression must have at least one branch", "sect3");
         false -> {
@@ -4688,7 +4688,7 @@ fn is_true_or_false_identifier(expr: Expr) -> bool {
 }
 
 // List literal (kind 20): value = full List[T, S] on root; inner/right_expr chain like tuple kind 9.
-fn check_list_literal(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_list_literal(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     lit_t: string <- case len(expr.value) > 0 of {
         true -> expr.value;
         false -> expected_type
@@ -4728,7 +4728,7 @@ fn check_list_elem_tree(expr: Expr, elem_type: string, context: TypeContext, wor
 
 // Compiler-known list primitives (list_implementation_design.md §7): empty, length, prepend, remove_head, head.
 // Phase 0.4: resolve List[Collectable, S] from expected_type once, then check like concrete generics.
-fn check_list_primitive_resolved(expr: Expr, expected_type: string, elem_res: string, list_t: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_list_primitive_resolved(expr: Expr, expected_type: int64, elem_res: string, list_t: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.name == "empty" of {
         true -> {
             ac: int64 <- type_checker_lists@list_empty_effective_arg_count(expr);
@@ -4837,7 +4837,7 @@ fn check_list_primitive_resolved(expr: Expr, expected_type: string, elem_res: st
     }
 }
 
-fn list_primitive_collectable_context_type(expr: Expr, expected_type: string, context: TypeContext) -> string {
+fn list_primitive_collectable_context_type(expr: Expr, expected_type: int64, context: TypeContext) -> string {
     case expr.name == "empty" of {
         true -> expected_type;
         false -> case expr.name == "prepend" of {
@@ -4847,7 +4847,7 @@ fn list_primitive_collectable_context_type(expr: Expr, expected_type: string, co
     }
 }
 
-fn check_list_primitive_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_list_primitive_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     (elem: string, space: string) <- type_checker_lists@parse_generic_ts(expr.value);
     case len(elem) == 0 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("list primitive ", expr.name), " requires [T, S], [T], or [Collectable, S] with a typed binding"), "list");
@@ -4894,7 +4894,7 @@ fn check_struct_literal_discard_chain(expr: Expr, context: TypeContext, world: L
     }
 }
 
-fn check_struct_literal_chain(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_struct_literal_chain(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.kind == -1 or expr.kind == 999 of {
         true -> type_checker_core@type_check_ok();
         false -> case expr.kind == 21 of {
@@ -4916,7 +4916,7 @@ fn check_struct_literal_chain(expr: Expr, expected_type: string, context: TypeCo
     }
 }
 
-fn check_struct_literal_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_struct_literal_expr(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expected_type == "discard" of {
         true -> check_struct_literal_discard_chain(expr, context, world);
         false -> {
@@ -4937,7 +4937,7 @@ fn check_struct_literal_expr(expr: Expr, expected_type: string, context: TypeCon
     }
 }
 
-fn check_field_access_field_type(expr: Expr, base_t: string, ft: string, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
+fn check_field_access_field_type(expr: Expr, base_t: string, ft: string, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
     sequence proc[DeviceIO]
         result: TypeCheckResult <- case len(ft) == 0 of {
             true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("no field ", expr.name), " on this type"), "sect3");
@@ -4947,7 +4947,7 @@ fn check_field_access_field_type(expr: Expr, base_t: string, ft: string, expecte
                     false -> rbase;
                     true -> case expected_type == "discard" of {
                         true -> type_checker_core@type_check_ok();
-                        false -> case type_checker_tuple_decompose_helpers@types_equal(ft, expected_type) of {
+                        false -> case type_checker_tuple_decompose_helpers@types_equal_surface(ft, expected_type) of {
                             true -> type_checker_core@type_check_ok();
                             false -> case type_checker_expressions_identifiers@function_types_compatible(ft, expected_type) of {
                                 true -> type_checker_core@type_check_ok();
@@ -4966,7 +4966,7 @@ fn check_field_access_field_type(expr: Expr, base_t: string, ft: string, expecte
     end
 }
 
-fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
+fn check_field_access_expr(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
     sequence proc[DeviceIO]
         base_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
         result: TypeCheckResult <- case len(base_t) == 0 of {
@@ -4992,7 +4992,7 @@ fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeConte
 }
 
 // Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal, 12=unary minus (forbidden); 20=list literal; 21=struct literal; 22=field access; 991=lambda
-fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_expr(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> (TypeCheckResult, TypeContext) proc[DeviceIO] {
     case expr.kind of {
         0 -> type_checker_expressions_literals@check_expr(expr, expected_type, context, world);
         1 -> case is_true_or_false_identifier(expr) of {
@@ -5029,7 +5029,7 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: Li
     }
 }
 
-fn check_if_expression(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_if_expression(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     rc: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_expr(expr.inner, "boolean", context, world);
     case rc.is_ok of {
         false -> rc;
@@ -5048,7 +5048,7 @@ fn check_if_expression(expr: Expr, expected_type: string, context: TypeContext, 
 
 // Tuple decomposition (kind 10): (pattern) <- rhs; body
 // Structured pattern_bindings from AST. Bare identifiers get types from the RHS tuple; explicit `ident : type` must agree with RHS.
-fn check_tuple_decompose(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_tuple_decompose(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     rhs_type: string <- case expr.inner.kind == 11 of {
         true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner.right_expr, context_after_sequence_body(expr.inner.inner, context));
         false -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context)
@@ -5072,7 +5072,7 @@ fn check_tuple_decompose(expr: Expr, expected_type: string, context: TypeContext
     }
 }
 
-fn check_tuple_decompose_after_valid(expr: Expr, expected_type: string, context: TypeContext, rhs_type: string, bindings: ListTupleDecomposeBinding, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_tuple_decompose_after_valid(expr: Expr, expected_type: int64, context: TypeContext, rhs_type: string, bindings: ListTupleDecomposeBinding, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     match_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_tuple_decompose_helpers@pattern_types_match_rhs(bindings, rhs_type, expr.location);
     case match_result.is_ok of {
         false -> match_result;
@@ -5081,7 +5081,7 @@ fn check_tuple_decompose_after_valid(expr: Expr, expected_type: string, context:
             case rhs_result.is_ok of {
                 false -> rhs_result;
                 true -> {
-                    extended_context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_tuple_decompose_helpers@add_bindings_to_context(context, bindings);
+                    extended_context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, a: int64, b: int64, c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- type_checker_tuple_decompose_helpers@add_bindings_to_context(context, bindings);
                     check_expr(expr.right_expr, expected_type, extended_context, world)
                 }
             }

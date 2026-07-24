@@ -270,7 +270,13 @@ fn maybe_write_runtime_assembly(any_needs_runtime: bool) -> int64 {
     sequence proc[DeviceIO]
         result: int64 <- {
         case any_needs_runtime of {
-            true -> build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module_with_atom_table(atom_table@empty_atom_table()));
+            // Incremental / process-per-unit reclaim path: seed the fixed actor-runtime
+            // atom prefix. An empty table embeds cmp #-1 and deadlocks pid-registry init.
+            true -> {
+                seeded_work: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 } <- atom_table@seed_actor_runtime_atoms();
+                seeded: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] } <- atom_table@to_export_table(seeded_work);
+                build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module_with_atom_table(seeded))
+            };
             false -> 0
         }
         }

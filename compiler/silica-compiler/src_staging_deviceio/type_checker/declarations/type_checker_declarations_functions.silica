@@ -56,8 +56,7 @@ fn build_function_type(decl: Declaration) -> string {
 // Add function name with full function type (params -> return) for call resolution. Used for first pass (all decls).
 fn add_function(decl: Declaration, context: TypeContext) -> TypeContext {
     func_type: string <- build_function_type(decl);
-    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decl.name, func_type, decl.declared_effects, "");
-    type_checker_core@type_context_with_env(context, new_env)
+    type_checker_core@add_symbol(context, decl.name, func_type, decl.declared_effects, "")
 }
 
 fn add_params_to_context_loop(params: ListParam, context: TypeContext) -> TypeContext {
@@ -65,8 +64,8 @@ fn add_params_to_context_loop(params: ListParam, context: TypeContext) -> TypeCo
         true -> context;
         false -> do
             p: Param <- params.head;
-            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, p.name, p.type_name, parser_ast@empty_effect_name_list(), "");
-            add_params_to_context_loop(params.tail, type_checker_core@type_context_with_env(context, new_env))
+            ctx2: TypeContext <- type_checker_core@add_symbol(context, p.name, p.type_name, parser_ast@empty_effect_name_list(), "");
+            add_params_to_context_loop(params.tail, ctx2)
         end
     }
 }
@@ -240,14 +239,13 @@ fn check_body(decl: Declaration, context: TypeContext, world: ListNamedProgram) 
 
 fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     context_with_params: TypeContext <- add_params_to_context(decl, context);
-    extended_env: ListSymbolEntry <- case type_checker_expressions_actors@is_actor_behavior_declaration(decl) of {
-        true -> type_checker_core@add_symbol(context_with_params.env, type_checker_expressions_actors@tc_in_behavior_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
+    body_ctx: TypeContext <- case type_checker_expressions_actors@is_actor_behavior_declaration(decl) of {
+        true -> type_checker_core@add_symbol(context_with_params, type_checker_expressions_actors@tc_in_behavior_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
         false -> case decl.name == "main" of {
-            true -> type_checker_core@add_symbol(context_with_params.env, type_checker_expressions_actors@tc_in_main_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
-            false -> context_with_params.env
+            true -> type_checker_core@add_symbol(context_with_params, type_checker_expressions_actors@tc_in_main_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
+            false -> context_with_params
         }
     };
-    body_ctx: TypeContext <- type_checker_core@type_context_with_env(context_with_params, extended_env);
     ret_rec: TypeCheckResult <- validate_record_type_string(decl.return_type_name, decl.return_type_location);
     case ret_rec.is_ok of {
         false -> ret_rec;
@@ -272,7 +270,8 @@ fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListN
                                             false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
                                                 true -> check_body_memory_region_return(decl, body_ctx, world);
                                                 false -> do
-                                                    body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, body_ctx, world);
+                                                    ret_out: TypeContextParseOutcome <- type_checker_core@context_parse_type(body_ctx, decl.return_type_name);
+                                                    body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, ret_out.type_id, ret_out.context, world);
                                                     case body_result.is_ok of {
                                                         false -> body_result;
                                                         true -> do
@@ -302,7 +301,8 @@ fn check_body_memory_region_return(decl: Declaration, context: TypeContext, worl
     case mem_result.is_ok of {
         false -> mem_result;
         true -> do
-            body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context, world);
+            ret_out: TypeContextParseOutcome <- type_checker_core@context_parse_type(context, decl.return_type_name);
+            body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, ret_out.type_id, ret_out.context, world);
             case body_result.is_ok of {
                 false -> body_result;
                 true -> do

@@ -1011,9 +1011,8 @@ fn add_bindings_to_context(context: TypeContext, bindings: ListTupleDecomposeBin
         true -> context;
         false -> do
             b: TupleDecomposeBinding <- bindings.head;
-            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, b.name, b.type_str, parser_ast@empty_effect_name_list(), "");
-            new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
-            add_bindings_to_context(new_context, bindings.tail)
+            ctx2: TypeContext <- type_checker_core@add_symbol(context, b.name, b.type_str, parser_ast@empty_effect_name_list(), "");
+            add_bindings_to_context(ctx2, bindings.tail)
         end
     }
 }
@@ -1450,7 +1449,7 @@ fn lower_sequence_body_to_lets(context: TypeContext, body_expr: Expr, result_exp
                 };
                 case collection_constructor_calls@is_collection_constructor_let(body_expr.value, body_expr.inner) of {
                     true -> do
-                        bind_context: TypeContext <- type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, body_expr.name, body_expr.value, parser_ast@empty_effect_name_list(), ""));
+                        bind_context: TypeContext <- type_checker_core@add_symbol(context, body_expr.name, body_expr.value, parser_ast@empty_effect_name_list(), "");
                         inner_body: SIRTerm <- lower_sequence_body_to_lets(bind_context, body_expr.right_expr, result_expr, expected_type, true, body_expr.name, body_expr.value);
                         collection_constructor_calls@build_collection_constructor_lets(bind_context, body_expr.name, body_expr.value, body_expr.inner, rhs, inner_body)
                     end;
@@ -1548,18 +1547,16 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                 true -> do
                     rhs: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expr.value);
                     bind_type: string <- types@type_name_to_sir(expr.value);
-                    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, expr.value, parser_ast@empty_effect_name_list(), "");
-                    new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
-                    body: SIRTerm <- expr_to_sir_in_let_body(new_context, expr.right_expr, expr.name, expr.value, expected_type);
-                    collection_constructor_calls@build_collection_constructor_lets(new_context, expr.name, expr.value, expr.inner, rhs, body)
+                    ctx2: TypeContext <- type_checker_core@add_symbol(context, expr.name, expr.value, parser_ast@empty_effect_name_list(), "");
+                    body: SIRTerm <- expr_to_sir_in_let_body(ctx2, expr.right_expr, expr.name, expr.value, expected_type);
+                    collection_constructor_calls@build_collection_constructor_lets(ctx2, expr.name, expr.value, expr.inner, rhs, body)
                 end;
                 false -> do
                     rhs: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expr.value);
                     bind_type: string <- types@type_name_to_sir(expr.value);
                     prefixed: string <- concat("%", expr.name);
-                    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, expr.value, parser_ast@empty_effect_name_list(), "");
-                    new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
-                    body: SIRTerm <- expr_to_sir_in_let_body(new_context, expr.right_expr, expr.name, expr.value, expected_type);
+                    ctx2: TypeContext <- type_checker_core@add_symbol(context, expr.name, expr.value, parser_ast@empty_effect_name_list(), "");
+                    body: SIRTerm <- expr_to_sir_in_let_body(ctx2, expr.right_expr, expr.name, expr.value, expected_type);
                     SIRTerm { kind: 2, type_name: bind_type, value: "", name: prefixed, inner: rhs, right_expr: body }
                 end
             }
@@ -2306,19 +2303,63 @@ fn lower_struct_literal_expr(context: TypeContext, expr: Expr, expected_type: st
     }
 }
 
-// Kind 22: field access `base.field` -> prim record_proj.
+// Kind 22: field access `base.field` -> list surface fields or record_proj.
+fn lower_list_field_access(base_s: SIRTerm, list_t: string, elem: string, field: string) -> SIRTerm {
+    case field == "is_nil" of {
+        true -> do
+            len_t: SIRTerm <- list_terms@build_list_length_prim(base_s);
+            zero: SIRTerm <- SIRTerm {
+                kind: 0,
+                type_name: "int64",
+                value: "0",
+                name: "",
+                inner: sir_ast@dummy_sir_term(),
+                right_expr: sir_ast@dummy_sir_term()
+            };
+            SIRTerm {
+                kind: 6,
+                type_name: "bool",
+                value: "",
+                name: "eq",
+                inner: len_t,
+                right_expr: zero
+            }
+        end;
+        false -> case field == "head" of {
+            true -> list_terms@build_list_head_prim(base_s, elem);
+            false -> case field == "tail" of {
+                true -> list_terms@build_list_remove_head_prim(base_s, list_t);
+                false -> sir_ast@dummy_sir_term()
+            }
+        }
+    }
+}
+
 fn lower_field_access_expr(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
     base_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
-    ft: string <- type_checker_record_types@find_field_type_in_record(base_t, expr.name);
-    case len(ft) == 0 of {
-        true -> sir_ast@dummy_sir_term();
-        false -> do
+    (ok_list: bool, elem: string, space: string) <- type_checker_lists@parse_list_type_params(base_t);
+    case ok_list of {
+        true -> do
             base_s: SIRTerm <- case in_body of {
                 true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, base_t);
                 false -> expr_to_sir_with_expected(context, expr.inner, base_t)
             };
-            ft_sir: string <- types@type_name_to_sir(ft);
-            struct_terms@build_record_proj_prim(ft_sir, expr.name, base_s)
+            list_t: string <- type_checker_lists@format_list_type_from_parts(elem, space);
+            lower_list_field_access(base_s, list_t, elem, expr.name)
+        end;
+        false -> do
+            ft: string <- type_checker_record_types@find_field_type_in_record(base_t, expr.name);
+            case len(ft) == 0 of {
+                true -> sir_ast@dummy_sir_term();
+                false -> do
+                    base_s: SIRTerm <- case in_body of {
+                        true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, base_t);
+                        false -> expr_to_sir_with_expected(context, expr.inner, base_t)
+                    };
+                    ft_sir: string <- types@type_name_to_sir(ft);
+                    struct_terms@build_record_proj_prim(ft_sir, expr.name, base_s)
+                end
+            }
         end
     }
 }
@@ -2412,7 +2453,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
             case collection_constructor_calls@is_collection_constructor_let(expr.value, expr.inner) of {
                 true -> do
                     rhs: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, expr.value);
-                    bind_context: TypeContext <- type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, expr.name, expr.value, parser_ast@empty_effect_name_list(), ""));
+                    bind_context: TypeContext <- type_checker_core@add_symbol(context, expr.name, expr.value, parser_ast@empty_effect_name_list(), "");
                     body: SIRTerm <- expr_to_sir_in_let_body(bind_context, expr.right_expr, expr.name, expr.value, expected_type);
                     collection_constructor_calls@build_collection_constructor_lets(bind_context, expr.name, expr.value, expr.inner, rhs, body)
                 end;
@@ -2546,8 +2587,7 @@ fn expr_to_sir(context: TypeContext, expr: Expr) -> SIRTerm {
 // --- case expression (Expr kind 13) -> SIR kind 3; branch list kind 7; branch kind 8 ---
 
 fn extend_context_for_bind(ctx: TypeContext, name: string, ast_type: string) -> TypeContext {
-    new_env: ListSymbolEntry <- type_checker_core@add_symbol(ctx.env, name, ast_type, parser_ast@empty_effect_name_list(), "");
-    type_checker_core@type_context_with_env(ctx, new_env)
+    type_checker_core@add_symbol(ctx, name, ast_type, parser_ast@empty_effect_name_list(), "")
 }
 
 fn trim_leading_ws(s: string) -> string {

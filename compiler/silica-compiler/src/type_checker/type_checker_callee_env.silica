@@ -308,23 +308,23 @@ fn local_function_shadow_scan(env: ListSymbolEntry, fn_name: string, new_fn_ty: 
     }
 }
 
-fn add_exported_symbols_from_items(items: ListParam, whole: ListDeclaration, env: ListSymbolEntry, source_mod: string) -> (TypeCheckResult, ListSymbolEntry) proc[DeviceIO] {
+fn add_exported_symbols_from_items(items: ListParam, whole: ListDeclaration, ctx: TypeContext, source_mod: string) -> (TypeCheckResult, TypeContext) proc[DeviceIO] {
     case items.is_nil of {
-        true -> (type_checker_core@type_check_ok(), env);
+        true -> (type_checker_core@type_check_ok(), ctx);
         false -> do
             (ok_ar: bool, ar: int64) <- parse_unsigned_decimal(items.head.type_name);
             case ok_ar of {
-                false -> (type_checker_core@type_check_err("E4014", items.head.location, "invalid export arity", "sect19.2"), env);
+                false -> (type_checker_core@type_check_err("E4014", items.head.location, "invalid export arity", "sect19.2"), ctx);
                 true -> do
                     (fd: bool, decl: Declaration) <- find_function_decl_by_name_arity(whole, items.head.name, ar);
                     case fd of {
-                        false -> (type_checker_core@type_check_err("E4010", items.head.location, "internal: missing export target", "sect19.2"), env);
+                        false -> (type_checker_core@type_check_err("E4010", items.head.location, "internal: missing export target", "sect19.2"), ctx);
                         true -> do
                             ft: string <- build_function_type_for_module_export(decl);
-                            (found: bool, _: string) <- lookup_symbol_found_here(env, decl.name);
+                            (found: bool, _: string) <- lookup_symbol_found_here(ctx.env, decl.name);
                             case found of {
-                                true -> add_exported_symbols_from_items(items.tail, whole, env, source_mod);
-                                false -> add_exported_symbols_from_items(items.tail, whole, type_checker_core@add_symbol(env, decl.name, ft, decl.declared_effects, source_mod), source_mod)
+                                true -> add_exported_symbols_from_items(items.tail, whole, ctx, source_mod);
+                                false -> add_exported_symbols_from_items(items.tail, whole, type_checker_core@add_symbol(ctx, decl.name, ft, decl.declared_effects, source_mod), source_mod)
                             }
                         end
                     }
@@ -334,18 +334,18 @@ fn add_exported_symbols_from_items(items: ListParam, whole: ListDeclaration, env
     }
 }
 
-fn add_all_export_symbols_from_program(decls: ListDeclaration, unit_decls: ListDeclaration, env: ListSymbolEntry, source_mod: string) -> (TypeCheckResult, ListSymbolEntry) {
+fn add_all_export_symbols_from_program(decls: ListDeclaration, unit_decls: ListDeclaration, ctx: TypeContext, source_mod: string) -> (TypeCheckResult, TypeContext) {
     case decls.is_nil of {
-        true -> (type_checker_core@type_check_ok(), env);
+        true -> (type_checker_core@type_check_ok(), ctx);
         false -> case decls.head.tag == 3 of {
             true -> do
-                (r1: TypeCheckResult, e1: ListSymbolEntry) <- add_exported_symbols_from_items(decls.head.parameters, unit_decls, env, source_mod);
+                (r1: TypeCheckResult, c1: TypeContext) <- add_exported_symbols_from_items(decls.head.parameters, unit_decls, ctx, source_mod);
                 case r1.is_ok of {
-                    true -> add_all_export_symbols_from_program(decls.tail, unit_decls, e1, source_mod);
-                    false -> (r1, e1)
+                    true -> add_all_export_symbols_from_program(decls.tail, unit_decls, c1, source_mod);
+                    false -> (r1, c1)
                 }
             end;
-            false -> add_all_export_symbols_from_program(decls.tail, unit_decls, env, source_mod)
+            false -> add_all_export_symbols_from_program(decls.tail, unit_decls, ctx, source_mod)
         }
     }
 }
@@ -373,10 +373,10 @@ fn apply_use_add_symbols_loop(mod_names: ListParam, ctx: TypeContext, world: Lis
             case found of {
                 false -> (type_checker_core@type_check_err("E4002", err_loc, concat("unknown module ", m), "sect19.3"), ctx);
                 true -> do
-                    (r1: TypeCheckResult, e1: ListSymbolEntry) <- add_all_export_symbols_from_program(prog.declarations, prog.declarations, ctx.env, m);
+                    (r1: TypeCheckResult, c1: TypeContext) <- add_all_export_symbols_from_program(prog.declarations, prog.declarations, ctx, m);
                     case r1.is_ok of {
                         false -> (r1, ctx);
-                        true -> apply_use_add_symbols_loop(mod_names.tail, type_checker_core@type_context_with_env(ctx, e1), world, err_loc)
+                        true -> apply_use_add_symbols_loop(mod_names.tail, c1, world, err_loc)
                     }
                 end
             }
@@ -408,15 +408,14 @@ fn add_all_declarations_with_world(decls: ListDeclaration, context: TypeContext,
                     false -> (sh, context);
                     true -> do
                         func_ty: string <- build_function_type_for_module_export(decls.head);
-                        new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decls.head.name, func_ty, decls.head.declared_effects, "");
-                        ctx2: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
+                        ctx2: TypeContext <- type_checker_core@add_symbol(context, decls.head.name, func_ty, decls.head.declared_effects, "");
                         add_all_declarations_with_world(decls.tail, ctx2, world, current_module)
                     end
                 }
             end;
             1 -> do
-                new_env: ListSymbolEntry <- type_checker_core@add_effect_alias_symbol(context.env, decls.head.name, decls.head.declared_effects);
-                add_all_declarations_with_world(decls.tail, type_checker_core@type_context_with_env(context, new_env), world, current_module)
+                ctx2: TypeContext <- type_checker_core@add_effect_alias_symbol(context, decls.head.name, decls.head.declared_effects);
+                add_all_declarations_with_world(decls.tail, ctx2, world, current_module)
             end;
             9 -> do
                 sh: TypeCheckResult <- local_function_shadows_existing(context.env, decls.head);
@@ -424,8 +423,7 @@ fn add_all_declarations_with_world(decls: ListDeclaration, context: TypeContext,
                     false -> (sh, context);
                     true -> do
                         func_ty: string <- build_function_type_for_module_export(decls.head);
-                        new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decls.head.name, func_ty, decls.head.declared_effects, "");
-                        ctx2: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
+                        ctx2: TypeContext <- type_checker_core@add_symbol(context, decls.head.name, func_ty, decls.head.declared_effects, "");
                         add_all_declarations_with_world(decls.tail, ctx2, world, current_module)
                     end
                 }

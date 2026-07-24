@@ -56,8 +56,7 @@ fn build_function_type(decl: Declaration) -> string {
 // Add function name with full function type (params -> return) for call resolution. Used for first pass (all decls).
 fn add_function(decl: Declaration, context: TypeContext) -> TypeContext {
     func_type: string <- build_function_type(decl);
-    new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(context.env, decl.name, func_type, decl.declared_effects, "");
-    type_checker_core@type_context_with_env(context, new_env)
+    type_checker_core@context_add_symbol_surface(context, decl.name, func_type, decl.declared_effects, "")
 }
 
 fn add_params_to_context_loop(params: ListParam, context: TypeContext) -> TypeContext {
@@ -65,8 +64,8 @@ fn add_params_to_context_loop(params: ListParam, context: TypeContext) -> TypeCo
         true -> context;
         false -> {
             p: { name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- params.head;
-            new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(context.env, p.name, p.type_name, parser_ast@empty_effect_name_list(), "");
-            add_params_to_context_loop(params.tail, type_checker_core@type_context_with_env(context, new_env))
+            next_ctx: TypeContext <- type_checker_core@context_add_symbol_surface(context, p.name, p.type_name, parser_ast@empty_effect_name_list(), "");
+            add_params_to_context_loop(params.tail, next_ctx)
         }
     }
 }
@@ -239,15 +238,15 @@ fn check_body(decl: Declaration, context: TypeContext, world: ListNamedProgram) 
 }
 
 fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    context_with_params: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- add_params_to_context(decl, context);
-    extended_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- case type_checker_expressions_actors@is_actor_behavior_declaration(decl) of {
+    context_with_params: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, a: int64, b: int64, c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- add_params_to_context(decl, context);
+    extended_env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- case type_checker_expressions_actors@is_actor_behavior_declaration(decl) of {
         true -> type_checker_core@add_symbol(context_with_params.env, type_checker_expressions_actors@tc_in_behavior_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
         false -> case decl.name == "main" of {
             true -> type_checker_core@add_symbol(context_with_params.env, type_checker_expressions_actors@tc_in_main_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
             false -> context_with_params.env
         }
     };
-    body_ctx: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_core@type_context_with_env(context_with_params, extended_env);
+    body_ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, a: int64, b: int64, c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- type_checker_core@type_context_with_env(context_with_params, extended_env);
     ret_rec: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- validate_record_type_string(decl.return_type_name, decl.return_type_location);
     case ret_rec.is_ok of {
         false -> ret_rec;

@@ -39,6 +39,16 @@ LIB_STDLIB_MODULES := wbt_map OrderedMap
 	silica.config silica.config.compiler assembly-selfhost build-selfhost \
 	help --help all-targets check-seed
 
+# Completion chime for this root Makefile only (not the compiler, not subdir Makefiles).
+# Tone: Ping — distinct from src (Glass).
+define SELFHOST_COMPLETION_BING
+	if command -v afplay >/dev/null 2>&1 && [ -f /System/Library/Sounds/Ping.aiff ]; then \
+		afplay /System/Library/Sounds/Ping.aiff >/dev/null 2>&1 || true; \
+	else \
+		printf '\a'; \
+	fi
+endef
+
 all: clean build
 
 check-seed:
@@ -153,6 +163,7 @@ executables: objects
 	echo "✅ Built $(EXECUTABLE)"
 
 build: executables
+	@$(SELFHOST_COMPLETION_BING)
 
 assembly-selfhost: assembly
 build-selfhost: build

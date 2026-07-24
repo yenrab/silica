@@ -64,12 +64,12 @@ fn mk_expr(kind_v: int64, value_v: string, name_v: string, loc: SourceLocation,
     }
 }
 
-fn add_params_to_env(ps: ListParam, env: ListSymbolEntry) -> ListSymbolEntry {
+fn add_params_to_env(ps: ListParam, ctx: TypeContext) -> TypeContext {
     case ps.is_nil of {
-        true -> env;
+        true -> ctx;
         false -> do
-            new_env: ListSymbolEntry <- type_checker_core@add_symbol(env, ps.head.name, ps.head.type_name, parser_ast@empty_effect_name_list(), "");
-            add_params_to_env(ps.tail, new_env)
+            ctx2: TypeContext <- type_checker_core@add_symbol(ctx, ps.head.name, ps.head.type_name, parser_ast@empty_effect_name_list(), "");
+            add_params_to_env(ps.tail, ctx2)
         end
     }
 }
@@ -78,10 +78,7 @@ fn extend_ctx_for_binding(ctx: TypeContext, bind_name: string, bind_type: string
     is_discard: bool <- bind_type == "unit" and bind_name == "_";
     case is_discard of {
         true -> ctx;
-        false -> do
-            extended_env: ListSymbolEntry <- type_checker_core@add_symbol(ctx.env, bind_name, bind_type, parser_ast@empty_effect_name_list(), "");
-            type_checker_core@type_context_with_env(ctx, extended_env)
-        end
+        false -> type_checker_core@add_symbol(ctx, bind_name, bind_type, parser_ast@empty_effect_name_list(), "")
     }
 }
 
@@ -191,8 +188,7 @@ fn mangle_decl_body(d: Declaration, world: ListNamedProgram, base_ctx: TypeConte
     case d.tag == 0 of {
         false -> d;
         true -> do
-            env_with_params: ListSymbolEntry <- add_params_to_env(d.parameters, base_ctx.env);
-            decl_ctx: TypeContext <- type_checker_core@type_context_with_env(base_ctx, env_with_params);
+            decl_ctx: TypeContext <- add_params_to_env(d.parameters, base_ctx);
             new_body: Expr <- walk_expr(d.body, world, decl_ctx, "", local_decls);
             params: ListParam <- d.parameters;
             eff: ListEffectName <- d.declared_effects;

@@ -17,10 +17,12 @@
 
 // Type checker core - TypeContext, TypeCheckResult, symbol table
 // Shared by type checker capabilities and runner
+// Phase 2: symbol rows carry interned type_id (int64); type_name kept for diagnostics.
 
 use parser_ast;
 use instantiated_fn_name;
 use lexer_core;
+use type_interner;
 
 export TypeContext/0;
 export ParamConcreteEnv/0;
@@ -44,14 +46,17 @@ export type_check_ok/0;
 export type_check_err/5;
 export empty_symbol_table/0;
 export type_context_with_env/2;
+export type_context_with_interner/2;
 export type_context_with_supervisor_types/2;
 export lookup_supervisor_csv/1;
 export type_name_in_supervisor_csv/2;
+export types_equal_type_ids/2;
 
-// Symbol table: name -> type_name, declared_effects
+// Symbol table: name -> type_id + surface type_name, declared_effects
 struct SymbolEntry {
     name: string,
     type_name: string,
+    type_id: int64,
     declared_effects: ListEffectName,
     is_effect_alias: bool,
     source_module: string
@@ -64,7 +69,8 @@ struct ListSymbolEntry {
 }
 
 struct TypeContext {
-    env: ListSymbolEntry
+    env: ListSymbolEntry,
+    interner: TypeInterner
 }
 
 struct ParamConcreteEnv {
@@ -73,17 +79,45 @@ struct ParamConcreteEnv {
     base: TypeContext
 }
 
+fn invalid_type_id() -> int64 {
+    type_interner@invalid_type_id()
+}
+
+fn type_context_env(ctx: TypeContext) -> ListSymbolEntry {
+    ctx.env
+}
+
+fn type_context_interner(ctx: TypeContext) -> TypeInterner {
+    ctx.interner
+}
+
+fn type_context_make(env: ListSymbolEntry, interner: TypeInterner) -> TypeContext {
+    TypeContext { env: env, interner: interner }
+}
+
+fn prepend_symbol_entry(env: ListSymbolEntry, entry: SymbolEntry) -> ListSymbolEntry {
+    ListSymbolEntry { is_nil: false, head: entry, tail: env }
+}
+
+fn symbol_entry_make(name: string, type_name: string, type_id: int64, declared_effects: ListEffectName, is_effect_alias: bool, source_module: string) -> SymbolEntry {
+    SymbolEntry { name: name, type_name: type_name, type_id: type_id, declared_effects: declared_effects, is_effect_alias: is_effect_alias, source_module: source_module }
+}
+
+fn types_equal_type_ids(a: int64, b: int64) -> bool {
+    a == b
+}
+
 fn add_params_concrete_loop1(st: ParamConcreteEnv) -> TypeContext {
     case st.decl_params.is_nil of {
         true -> st.base;
         false -> case st.concrete_types.is_nil of {
             true -> st.base;
             false -> do
-                new_env: ListSymbolEntry <- add_symbol(st.base.env, st.decl_params.head.name, st.concrete_types.head.type_name, parser_ast@empty_effect_name_list(), "");
+                ctx2: TypeContext <- add_symbol(st.base, st.decl_params.head.name, st.concrete_types.head.type_name, parser_ast@empty_effect_name_list(), "");
                 add_params_concrete_loop1(ParamConcreteEnv {
                     decl_params: st.decl_params.tail,
                     concrete_types: st.concrete_types.tail,
-                    base: type_context_with_env(st.base, new_env)
+                    base: ctx2
                 })
             end
         }
@@ -130,7 +164,7 @@ fn module_typecheck_outcome_from_pair(r: TypeCheckResult, c: TypeContext) -> Mod
 }
 
 fn dummy_symbol_entry() -> SymbolEntry {
-    SymbolEntry { name: "", type_name: "", declared_effects: parser_ast@empty_effect_name_list(), is_effect_alias: false, source_module: "" }
+    SymbolEntry { name: "", type_name: "", type_id: invalid_type_id(), declared_effects: parser_ast@empty_effect_name_list(), is_effect_alias: false, source_module: "" }
 }
 
 fn empty_symbol_table() -> ListSymbolEntry {
@@ -139,21 +173,26 @@ fn empty_symbol_table() -> ListSymbolEntry {
 }
 
 fn create_type_context() -> TypeContext {
-    env: ListSymbolEntry <- empty_symbol_table();
-    env_with_false: ListSymbolEntry <- add_symbol(env, "false", "boolean", parser_ast@empty_effect_name_list(), "");
-    env_with_both: ListSymbolEntry <- add_symbol(env_with_false, "true", "boolean", parser_ast@empty_effect_name_list(), "");
-    TypeContext { env: env_with_both }
+    interner: TypeInterner <- type_interner@create_type_interner();
+    ctx: TypeContext <- type_context_make(empty_symbol_table(), interner);
+    ctx_false: TypeContext <- add_symbol(ctx, "false", "boolean", parser_ast@empty_effect_name_list(), "");
+    ctx_both: TypeContext <- add_symbol(ctx_false, "true", "boolean", parser_ast@empty_effect_name_list(), "");
+    ctx_both
 }
 
-// Replace env (let bindings, params, pattern bindings).
+// Replace env (let bindings, params, pattern bindings); preserve interner.
 fn type_context_with_env(ctx: TypeContext, new_env: ListSymbolEntry) -> TypeContext {
-    TypeContext { env: new_env }
+    type_context_make(new_env, type_context_interner(ctx))
+}
+
+// Thread an updated interner without changing env (parse at check sites).
+fn type_context_with_interner(ctx: TypeContext, interner: TypeInterner) -> TypeContext {
+    type_context_make(type_context_env(ctx), interner)
 }
 
 // Phase E e3b: store supervisor CSV as a magic symbol in the env so struct shape stays unchanged.
 fn type_context_with_supervisor_types(ctx: TypeContext, csv: string) -> TypeContext {
-    new_env: ListSymbolEntry <- add_symbol(ctx.env, "__silica_e3b_sup_csv", csv, parser_ast@empty_effect_name_list(), "");
-    TypeContext { env: new_env }
+    add_symbol(ctx, "__silica_e3b_sup_csv", csv, parser_ast@empty_effect_name_list(), "")
 }
 
 fn lookup_supervisor_csv(ctx: TypeContext) -> string {
@@ -180,14 +219,21 @@ fn type_name_in_supervisor_csv(t: string, csv: string) -> bool {
     }
 }
 
-fn add_symbol(env: ListSymbolEntry, name: string, type_name: string, declared_effects: ListEffectName, source_module: string) -> ListSymbolEntry {
-    entry: SymbolEntry <- SymbolEntry { name: name, type_name: type_name, declared_effects: declared_effects, is_effect_alias: false, source_module: source_module };
-    ListSymbolEntry { is_nil: false, head: entry, tail: env }
+fn add_symbol(ctx: TypeContext, name: string, type_name: string, declared_effects: ListEffectName, source_module: string) -> TypeContext {
+    pr: TypeInternParseResult <- type_interner@parse_type(type_context_interner(ctx), type_name);
+    tid: int64 <- case type_interner@parse_result_ok(pr) of {
+        true -> type_interner@parse_result_id(pr);
+        false -> invalid_type_id()
+    };
+    entry: SymbolEntry <- symbol_entry_make(name, type_name, tid, declared_effects, false, source_module);
+    new_env: ListSymbolEntry <- prepend_symbol_entry(type_context_env(ctx), entry);
+    type_context_make(new_env, type_interner@parse_result_interner(pr))
 }
 
-fn add_effect_alias_symbol(env: ListSymbolEntry, name: string, effects: ListEffectName) -> ListSymbolEntry {
-    entry: SymbolEntry <- SymbolEntry { name: name, type_name: "", declared_effects: effects, is_effect_alias: true, source_module: "" };
-    ListSymbolEntry { is_nil: false, head: entry, tail: env }
+fn add_effect_alias_symbol(ctx: TypeContext, name: string, effects: ListEffectName) -> TypeContext {
+    entry: SymbolEntry <- symbol_entry_make(name, "", invalid_type_id(), effects, true, "");
+    new_env: ListSymbolEntry <- prepend_symbol_entry(type_context_env(ctx), entry);
+    type_context_make(new_env, type_context_interner(ctx))
 }
 
 fn lookup_symbol(env: ListSymbolEntry, name: string) -> string {
@@ -200,6 +246,16 @@ fn lookup_symbol(env: ListSymbolEntry, name: string) -> string {
     }
 }
 
+fn lookup_symbol_type_id(env: ListSymbolEntry, name: string) -> int64 {
+    case env.is_nil of {
+        true -> invalid_type_id();
+        false -> case env.head.name == name of {
+            true -> env.head.type_id;
+            false -> lookup_symbol_type_id(env.tail, name)
+        }
+    }
+}
+
 // Returns (found, type_name). Use when string comparison for "" is unreliable.
 fn lookup_symbol_found(env: ListSymbolEntry, name: string) -> (bool, string) {
     case env.is_nil of {
@@ -207,6 +263,16 @@ fn lookup_symbol_found(env: ListSymbolEntry, name: string) -> (bool, string) {
         false -> case env.head.name == name of {
             true -> (true, env.head.type_name);
             false -> lookup_symbol_found(env.tail, name)
+        }
+    }
+}
+
+fn lookup_symbol_type_id_found(env: ListSymbolEntry, name: string) -> (bool, int64) {
+    case env.is_nil of {
+        true -> (false, invalid_type_id());
+        false -> case env.head.name == name of {
+            true -> (true, env.head.type_id);
+            false -> lookup_symbol_type_id_found(env.tail, name)
         }
     }
 }

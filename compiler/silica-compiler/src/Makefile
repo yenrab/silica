@@ -73,6 +73,16 @@ TRIAL_SUBDIRS := $(sort $(foreach mf,$(TRIAL_MAKEFILES),$(notdir $(patsubst %/,%
 
 .DEFAULT_GOAL := build
 
+# Completion chime for this root Makefile only (not the compiler, not subdir Makefiles).
+# Tone: Glass — distinct from src_selfhost (Ping).
+define SRC_COMPLETION_BING
+	if command -v afplay >/dev/null 2>&1 && [ -f /System/Library/Sounds/Glass.aiff ]; then \
+		afplay /System/Library/Sounds/Glass.aiff >/dev/null 2>&1 || true; \
+	else \
+		printf '\a'; \
+	fi
+endef
+
 # Default `make` compiles only (bootstrap → this frozen tree). Use `make all` for clean + build;
 # `make integrate` for trials. Parallel self-host path: `make build-selfhost` (§12) → ../src_selfhost.
 
@@ -81,6 +91,7 @@ all: clean build
 # Real build target - ensure bootstrap compiler exists, then compile subdirs, modules, and main
 
 build: $(SILICA_COMPILER) subdirs modules executables
+	@$(SRC_COMPLETION_BING)
 
 # Explicit alias for the frozen bootstrap path (default `build`).
 build-bootstrap: build
@@ -165,6 +176,7 @@ integrate: $(EXECUTABLE)
 		echo "=== $(TRIALS_ROOT)/$$dir (make integrate) ==="; \
 		$(MAKE) -C "$(TRIALS_ROOT)/$$dir" integrate TARGET=$(TARGET) || failed=1; \
 	done; \
+	if [ $$failed -eq 0 ]; then $(SRC_COMPLETION_BING); fi; \
 	exit $$failed
 
 # Clean generated files (including subdirectories)
