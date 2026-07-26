@@ -21,13 +21,14 @@
 
 use parser_ast;
 use type_checker_core;
+use type_checker_expressions_identifiers;
 use instantiated_fn_name;
 
 export list_param_length/1;
 export empty_export_marks/0;
 export cons_export_mark/3;
 export accum_exports_local_duplicates/3;
-export add_all_declarations_with_world/4;
+export add_all_declarations_with_world/5;
 
 // Seed dialect: named structs (silica-boot cannot parse List[{...}, mem(normal)] type syntax).
 struct ModuleExportMark {
@@ -252,6 +253,9 @@ fn param_types_str_for_module_export(params: ListParam) -> string {
 }
 
 fn build_function_type_for_module_export(decl: Declaration) -> string {
+    // Always rebuild from parameters + return_type_name. Do not scan return_type_name
+    // for " -> ": nested fn(...) -> R inside return types (e.g. Supervisor.init) must
+    // not be mistaken for a full function surface (that broke iface publish / imports).
     params_str: string <- param_types_str_for_module_export(decl.parameters);
     case decl.parameters.is_nil of {
         true -> concat("() -> ", decl.return_type_name);
@@ -283,23 +287,24 @@ fn is_function_type_symbol(type_name: string) -> bool {
     find_arrow_in_symbol_type_str(type_name, 0) >= 0
 }
 
-fn local_function_shadow_scan(env: ListSymbolEntry, fn_name: string, new_fn_ty: string, loc: SourceLocation) -> TypeCheckResult {
+fn local_function_shadow_scan(env: ListSymbolEntry, fn_name: string, new_fn_ty: string, new_fn_tid: int64, loc: SourceLocation) -> TypeCheckResult {
     case env.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> case env.head.name == fn_name of {
-            false -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, loc);
+            false -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, new_fn_tid, loc);
             // Imported symbols (source_module set) may be shadowed by local fn / impl fn.
             // Qualified calls (module@name) still resolve to the import; this enables
             // trait impl fn get(...) { wbt_map@get(...) } after `use wbt_map`.
             true -> case len(env.head.source_module) > 0 of {
-                true -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, loc);
+                true -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, new_fn_tid, loc);
                 false -> case env.head.is_effect_alias of {
                     true -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
                     false -> case is_function_type_symbol(env.head.type_name) of {
                         false -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
-                        true -> case env.head.type_name == new_fn_ty of {
+                        // Same interned function type => duplicate/shadow; id compare avoids giant string ==.
+                        true -> case type_checker_core@types_equal_type_ids(env.head.type_id, new_fn_tid) or env.head.type_name == new_fn_ty of {
                             true -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
-                            false -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, loc)
+                            false -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, new_fn_tid, loc)
                         }
                     }
                 }
@@ -384,12 +389,18 @@ fn apply_use_add_symbols_loop(mod_names: ListParam, ctx: TypeContext, world: Lis
     }
 }
 
-fn local_function_shadows_existing(env: ListSymbolEntry, decl: Declaration) -> TypeCheckResult {
+fn local_function_shadows_existing(ctx: TypeContext, decl: Declaration) -> TypeCheckResult {
     new_ty: string <- build_function_type_for_module_export(decl);
-    local_function_shadow_scan(env, decl.name, new_ty, decl.location)
+    // Intern once here so add_symbol's later parse hits the surface->id cache.
+    parsed: TypeContextParseOutcome <- type_checker_core@context_parse_type(ctx, new_ty);
+    tid: int64 <- case parsed.ok of {
+        true -> parsed.type_id;
+        false -> type_checker_core@invalid_type_id()
+    };
+    local_function_shadow_scan(ctx.env, decl.name, new_ty, tid, decl.location)
 }
 
-fn add_all_declarations_with_world(decls: ListDeclaration, context: TypeContext, world: ListNamedProgram, current_module: string) -> (TypeCheckResult, TypeContext) {
+fn add_all_declarations_with_world(decls: ListDeclaration, all_decls: ListDeclaration, context: TypeContext, world: ListNamedProgram, current_module: string) -> (TypeCheckResult, TypeContext) {
     case decls.is_nil of {
         true -> (type_checker_core@type_check_ok(), context);
         false -> case decls.head.tag of {
@@ -397,38 +408,49 @@ fn add_all_declarations_with_world(decls: ListDeclaration, context: TypeContext,
                 (u1: TypeCheckResult, c1: TypeContext) <- apply_use_declaration_for_module(decls.head, context, world, current_module);
                 case u1.is_ok of {
                     false -> (u1, c1);
-                    true -> add_all_declarations_with_world(decls.tail, c1, world, current_module)
+                    true -> add_all_declarations_with_world(decls.tail, all_decls, c1, world, current_module)
                 }
             end;
-            3 -> add_all_declarations_with_world(decls.tail, context, world, current_module);
-            4 -> add_all_declarations_with_world(decls.tail, context, world, current_module);
+            3 -> add_all_declarations_with_world(decls.tail, all_decls, context, world, current_module);
+            4 -> add_all_declarations_with_world(decls.tail, all_decls, context, world, current_module);
             0 -> do
-                sh: TypeCheckResult <- local_function_shadows_existing(context.env, decls.head);
+                func_ty: string <- type_checker_expressions_identifiers@build_function_type_for_symbol_table(decls.head, all_decls);
+                // Parse/intern before shadow check so both shadow id-compare and add_symbol reuse cache.
+                parsed: TypeContextParseOutcome <- type_checker_core@context_parse_type(context, func_ty);
+                tid: int64 <- case parsed.ok of {
+                    true -> parsed.type_id;
+                    false -> type_checker_core@invalid_type_id()
+                };
+                sh: TypeCheckResult <- local_function_shadow_scan(parsed.context.env, decls.head.name, func_ty, tid, decls.head.location);
                 case sh.is_ok of {
-                    false -> (sh, context);
+                    false -> (sh, parsed.context);
                     true -> do
-                        func_ty: string <- build_function_type_for_module_export(decls.head);
-                        ctx2: TypeContext <- type_checker_core@add_symbol(context, decls.head.name, func_ty, decls.head.declared_effects, "");
-                        add_all_declarations_with_world(decls.tail, ctx2, world, current_module)
+                        ctx2: TypeContext <- type_checker_core@add_symbol(parsed.context, decls.head.name, func_ty, decls.head.declared_effects, "");
+                        add_all_declarations_with_world(decls.tail, all_decls, ctx2, world, current_module)
                     end
                 }
             end;
             1 -> do
                 ctx2: TypeContext <- type_checker_core@add_effect_alias_symbol(context, decls.head.name, decls.head.declared_effects);
-                add_all_declarations_with_world(decls.tail, ctx2, world, current_module)
+                add_all_declarations_with_world(decls.tail, all_decls, ctx2, world, current_module)
             end;
             9 -> do
-                sh: TypeCheckResult <- local_function_shadows_existing(context.env, decls.head);
-                case sh.is_ok of {
-                    false -> (sh, context);
+                func_ty9: string <- build_function_type_for_module_export(decls.head);
+                parsed9: TypeContextParseOutcome <- type_checker_core@context_parse_type(context, func_ty9);
+                tid9: int64 <- case parsed9.ok of {
+                    true -> parsed9.type_id;
+                    false -> type_checker_core@invalid_type_id()
+                };
+                sh9: TypeCheckResult <- local_function_shadow_scan(parsed9.context.env, decls.head.name, func_ty9, tid9, decls.head.location);
+                case sh9.is_ok of {
+                    false -> (sh9, parsed9.context);
                     true -> do
-                        func_ty: string <- build_function_type_for_module_export(decls.head);
-                        ctx2: TypeContext <- type_checker_core@add_symbol(context, decls.head.name, func_ty, decls.head.declared_effects, "");
-                        add_all_declarations_with_world(decls.tail, ctx2, world, current_module)
+                        ctx2: TypeContext <- type_checker_core@add_symbol(parsed9.context, decls.head.name, func_ty9, decls.head.declared_effects, "");
+                        add_all_declarations_with_world(decls.tail, all_decls, ctx2, world, current_module)
                     end
                 }
             end;
-            _: int64 -> add_all_declarations_with_world(decls.tail, context, world, current_module)
+            _: int64 -> add_all_declarations_with_world(decls.tail, all_decls, context, world, current_module)
         }
     }
 }

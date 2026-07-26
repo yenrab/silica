@@ -74,6 +74,7 @@ lib-sources:
 # Canonical batch list (§12). Seed reads the basename `silica.config`.
 # Append constraint_extract_* impl units in dependency order so plain sort does
 # not place them before parser_tuples / other parser deps.
+# Reorder emitter prims with cross-module `use` deps (record → tuple → memory/list/actors).
 silica.config.compiler: check-target silica.target lib-sources
 	@echo "Regenerating silica.config.compiler (TARGET=$(TARGET))..."
 	@cd "$(THIS_DIR)" && { \
@@ -86,7 +87,28 @@ silica.config.compiler: check-target silica.target lib-sources
 	  | grep -v 'btree_set_nodeid\.silica' \
 	  | sort -u > silica.config.compiler.raw
 	@cd "$(THIS_DIR)" && \
-	  grep -v '^parser/constraint_extract_' silica.config.compiler.raw > silica.config.compiler && \
+	  grep -v '^parser/constraint_extract_' silica.config.compiler.raw \
+	    | grep -Ev '^emitter/[^/]+/terms/prims/prims(_actors_child_table_asm|_actors_runtime_asm|_record|_tuple|_memory|_list|_actors)?\.silica$$' \
+	    > silica.config.compiler && \
+	  awk -v target="$(TARGET)" ' \
+	    $$0 == "emitter/" target "/terms/prims/prims_atom.silica" && !inserted { \
+	      print "emitter/" target "/terms/prims/prims_record.silica"; \
+	      print "emitter/" target "/terms/prims/prims_tuple.silica"; \
+	      print "emitter/" target "/terms/prims/prims_memory.silica"; \
+	      print "emitter/" target "/terms/prims/prims_list.silica"; \
+	      print "emitter/" target "/terms/prims/prims_actors.silica"; \
+	      print "emitter/" target "/terms/prims/prims_actors_child_table_asm.silica"; \
+	      print "emitter/" target "/terms/prims/prims_actors_runtime_asm.silica"; \
+	      inserted = 1; \
+	    } \
+	    $$0 ~ ("^emitter/" target "/terms/prims/prims_uint64\\.silica$$") { \
+	      print; \
+	      print "emitter/" target "/terms/prims/prims.silica"; \
+	      next; \
+	    } \
+	    { print } \
+	  ' silica.config.compiler > silica.config.compiler.prims && \
+	  mv silica.config.compiler.prims silica.config.compiler && \
 	  for u in \
 	    parser/constraint_extract_slots.silica \
 	    parser/constraint_extract_params.silica \
@@ -190,7 +212,9 @@ clean:
 	  rm -f $(EXECUTABLE) silica.config silica.config.compiler silica.target silica.link \
 	    __silica_runtime.sams __silica_runtime.o; \
 	  rm -f silica-compiler-* 2>/dev/null || true; \
-	  rm -f lib/wbt_map.silica lib/OrderedMap.silica lib/wbt_map.sams lib/OrderedMap.sams lib/*.o 2>/dev/null || true
+	  rm -f lib/wbt_map.silica lib/OrderedMap.silica lib/wbt_map.sams lib/OrderedMap.sams lib/*.o 2>/dev/null || true; \
+	  rm -rf .cache/ifaces; \
+	  find . -name '*.iface' -type f ! -path './_wd_probe/*' -delete 2>/dev/null || true
 	@echo "✅ Clean complete"
 
 # Project help. Prefer: make help

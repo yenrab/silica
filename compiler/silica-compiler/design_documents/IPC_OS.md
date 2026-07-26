@@ -156,20 +156,25 @@ Messages consist of a fixed-size header followed by an opaque payload.
 +---------+---------+----------+----------------+
 ```
 
-Suggested header
+Suggested header record (selfhost dialect: inline record type, bound to a variable)
 
-```c
-struct Header
-{
-    uint8_t  version;
-    uint8_t  flags;
-    uint16_t type;
-    uint32_t sender;
-    uint64_t correlation;
-};
+```silica
+header: {
+    version: uint8,
+    flags: uint8,
+    type: uint16,
+    sender: uint32,
+    correlation: uint64
+} <- {
+    version: 1,
+    flags: 0,
+    type: msg_type,
+    sender: sender_id,
+    correlation: corr_id
+}
 ```
 
-The payload is application defined.
+The payload is application defined. Application messages use Silica sum types or inline records; opaque bytes on the wire use `buf(L_ipc, normal, uint8, N)` with UTF-8 for `string` fields (see `IPC_Bare.md` § Text and Unicode).
 
 ---
 

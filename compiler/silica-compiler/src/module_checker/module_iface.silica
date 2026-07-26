@@ -1,0 +1,1350 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Module interface (iface) draft extract + write-only publish (Phase 1).
+// Design: design_documents/module_interface_cache_and_bottom_up_typecheck_plan.md
+// Read path for type-check arrives in Phase 2; this module only writes/deletes.
+
+use parser_ast;
+use type_checker_callee_env;
+use effect_checker_core;
+use atom_table;
+
+export iface_format_version/0;
+export iface_compiler_stamp/0;
+export iface_path_for_module/1;
+export iface_path_from_source/1;
+export publish_module_iface/4;
+export unpublish_module_iface/1;
+export unpublish_module_iface_at_path/1;
+export iface_exists_for_source/1;
+export iface_usable_for_source/2;
+export ModuleIface/0;
+export ListModuleIface/0;
+export ListIfaceExport/0;
+export IfaceExport/0;
+export empty_module_iface_list/0;
+export find_module_iface/2;
+export load_iface_file/1;
+export load_ifaces_for_module_names/2;
+export iface_config_path_for_module/2;
+export empty_iface_string_list/0;
+export cons_iface_string_public/2;
+export reverse_iface_string_list/1;
+export iface_exports_fn_arity/3;
+export lookup_iface_fn_effects/3;
+export append_iface_stub_programs/2;
+export export_key_iface/2;
+export parse_effects_iface_string/1;
+
+
+fn iface_format_version() -> string { "1" }
+fn iface_compiler_stamp() -> string { "seed-iface-5" }
+
+fn iface_cache_dir() -> string { ".cache/ifaces" }
+
+fn iface_path_for_module(module_name: string) -> string {
+    // Legacy cache location (still checked on load for older artifacts).
+    concat(concat(iface_cache_dir(), "/"), concat(module_name, ".iface"))
+}
+
+fn find_last_slash_iface(path: string, i: int64, last: int64) -> int64 {
+    case i >= len(path) of {
+        true -> last;
+        false -> case substring(path, i, i + 1) == "/" of {
+            true -> find_last_slash_iface(path, i + 1, i);
+            false -> find_last_slash_iface(path, i + 1, last)
+        }
+    }
+}
+
+fn module_stem_from_path(path: string) -> string {
+    slash: int64 <- find_last_slash_iface(path, 0, 0 - 1);
+    base: string <- case slash < 0 of {
+        true -> path;
+        false -> substring(path, slash + 1, len(path))
+    };
+    case len(base) > 7 of {
+        true -> case substring(base, len(base) - 7, len(base)) == ".silica" of {
+            true -> substring(base, 0, len(base) - 7);
+            false -> base
+        };
+        false -> base
+    }
+}
+
+fn iface_adjacent_path_from_source(source_path: string) -> string {
+    case len(source_path) > 7 of {
+        true -> case substring(source_path, len(source_path) - 7, len(source_path)) == ".silica" of {
+            true -> concat(substring(source_path, 0, len(source_path) - 7), ".iface");
+            false -> concat(source_path, ".iface")
+        };
+        false -> concat(source_path, ".iface")
+    }
+}
+
+// Phase 3 primary location: source-adjacent `.iface` (no mkdir required for process-per-unit).
+fn iface_path_from_source(source_path: string) -> string {
+    iface_adjacent_path_from_source(source_path)
+}
+
+struct IfaceExport {
+    name: string,
+    arity: int64,
+    effects: string,
+    type_surface: string
+}
+
+struct ListIfaceExport {
+    is_nil: bool,
+    head: IfaceExport,
+    tail: ListIfaceExport
+}
+
+
+struct ModuleIface {
+    module_name: string,
+    source_path: string,
+    export_trait: string,
+    exports: ListIfaceExport,
+    impls: ListIfaceExport
+}
+
+struct ListModuleIface {
+    is_nil: bool,
+    head: ModuleIface,
+    tail: ListModuleIface
+}
+
+struct ListIfaceString {
+    is_nil: bool,
+    head: string,
+    tail: ListIfaceString
+}
+
+fn empty_iface_exports() -> ListIfaceExport {
+    dummy: IfaceExport <- IfaceExport { name: "", arity: 0, effects: "", type_surface: "" };
+    nil_e: ListIfaceExport <- ListIfaceExport { is_nil: true, head: dummy, tail: nil_e };
+    nil_e
+}
+
+fn cons_iface_export(e: IfaceExport, rest: ListIfaceExport) -> ListIfaceExport {
+    ListIfaceExport { is_nil: false, head: e, tail: rest }
+}
+
+fn empty_iface_strings() -> ListIfaceString {
+    nil_s: ListIfaceString <- ListIfaceString { is_nil: true, head: "", tail: nil_s };
+    nil_s
+}
+
+fn cons_iface_string(s: string, rest: ListIfaceString) -> ListIfaceString {
+    ListIfaceString { is_nil: false, head: s, tail: rest }
+}
+
+fn reverse_iface_exports(lst: ListIfaceExport, acc: ListIfaceExport) -> ListIfaceExport {
+    case lst.is_nil of {
+        true -> acc;
+        false -> reverse_iface_exports(lst.tail, cons_iface_export(lst.head, acc))
+    }
+}
+
+fn reverse_iface_strings(lst: ListIfaceString, acc: ListIfaceString) -> ListIfaceString {
+    case lst.is_nil of {
+        true -> acc;
+        false -> reverse_iface_strings(lst.tail, cons_iface_string(lst.head, acc))
+    }
+}
+
+
+fn hash_string_iface_acc(s: string, i: int64, acc: int64) -> int64 {
+    case i >= len(s) of {
+        true -> acc;
+        false -> do
+            piece: string <- substring(s, i, case i + 3 <= len(s) of { true -> i + 3; false -> len(s) });
+            mixed: int64 <- acc * 131 + len(piece) * (i + 1) + len(s);
+            next: int64 <- case mixed < 0 of { true -> 0 - mixed; false -> mixed };
+            hash_string_iface_acc(s, i + 1, next)
+        end
+    }
+}
+
+fn hash_string_iface(s: string) -> string {
+    atom_table@int64_to_decimal_string(hash_string_iface_acc(s, 0, 17))
+}
+
+fn source_content_hash_iface(source_path: string) -> string proc[DeviceIO] {
+    do
+        exists: bool <- file_exists(source_path);
+        case exists of {
+            false -> "";
+            true -> do
+                content: string <- read_lines(source_path);
+                hash_string_iface(content)
+            end
+        }
+    end
+}
+
+fn split_comma_iface(s: string, i: int64, start: int64, acc: ListIfaceString) -> ListIfaceString {
+    case i >= len(s) of {
+        true -> case len(s) == 0 of {
+            true -> empty_iface_strings();
+            false -> reverse_iface_strings(cons_iface_string(substring(s, start, len(s)), acc), empty_iface_strings())
+        };
+        false -> case substring(s, i, i + 1) == "," of {
+            true -> split_comma_iface(s, i + 1, i + 1, cons_iface_string(substring(s, start, i), acc));
+            false -> split_comma_iface(s, i + 1, start, acc)
+        }
+    }
+}
+
+fn count_iface_exports(lst: ListIfaceExport) -> int64 {
+    case lst.is_nil of {
+        true -> 0;
+        false -> 1 + count_iface_exports(lst.tail)
+    }
+}
+
+fn effects_to_iface_string(effects: ListEffectName) -> string {
+    case effects.is_nil of {
+        true -> "";
+        false -> case effects.tail.is_nil of {
+            true -> effect_checker_core@effect_name_to_string(effects.head);
+            false -> concat(
+                concat(effect_checker_core@effect_name_to_string(effects.head), ";"),
+                effects_to_iface_string(effects.tail)
+            )
+        }
+    }
+}
+
+fn collect_dep_names_from_params(params: ListParam, acc: ListIfaceString) -> ListIfaceString {
+    case params.is_nil of {
+        true -> acc;
+        false -> collect_dep_names_from_params(params.tail, cons_iface_string(params.head.name, acc))
+    }
+}
+
+fn collect_dep_names_from_decls(decls: ListDeclaration, acc: ListIfaceString) -> ListIfaceString {
+    case decls.is_nil of {
+        true -> acc;
+        false -> case decls.head.tag == 2 of {
+            true -> collect_dep_names_from_decls(decls.tail, collect_dep_names_from_params(decls.head.parameters, acc));
+            false -> collect_dep_names_from_decls(decls.tail, acc)
+        }
+    }
+}
+
+fn join_dep_names(deps: ListIfaceString) -> string {
+    case deps.is_nil of {
+        true -> "";
+        false -> case deps.tail.is_nil of {
+            true -> deps.head;
+            false -> concat(concat(deps.head, ","), join_dep_names(deps.tail))
+        }
+    }
+}
+
+// Export trait id (tag 5), or "" when the module is not a trait module.
+fn find_export_trait_name(decls: ListDeclaration) -> string {
+    case decls.is_nil of {
+        true -> "";
+        false -> case decls.head.tag == 5 of {
+            true -> decls.head.name;
+            false -> find_export_trait_name(decls.tail)
+        }
+    }
+}
+
+fn first_param_type_name_iface(params: ListParam) -> string {
+    case params.is_nil of {
+        true -> "";
+        false -> do
+            src: ListParam <- parser_ast@list_param_reverse_with_acc(params, parser_ast@nil_list_param());
+            src.head.type_name
+        end
+    }
+}
+
+// Prefer required method signatures (tag 7) so export surfaces keep the trait Self name.
+// Fall back to tag 0 / existing finder for ordinary modules and provided-only methods.
+fn find_decl_for_iface_export(decls: ListDeclaration, fn_name: string, arity: int64) -> (bool, Declaration) {
+    (z7: bool, d7: Declaration) <- find_decl_by_name_arity_tag(decls, fn_name, arity, 7);
+    case z7 of {
+        true -> (true, d7);
+        false -> type_checker_callee_env@find_function_decl_by_name_arity(decls, fn_name, arity)
+    }
+}
+
+fn find_decl_by_name_arity_tag(decls: ListDeclaration, fn_name: string, arity: int64, want_tag: int64) -> (bool, Declaration) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case decls.head.tag == want_tag of {
+            true -> case decls.head.name == fn_name and type_checker_callee_env@list_param_length(decls.head.parameters) == arity of {
+                true -> (true, decls.head);
+                false -> find_decl_by_name_arity_tag(decls.tail, fn_name, arity, want_tag)
+            };
+            false -> find_decl_by_name_arity_tag(decls.tail, fn_name, arity, want_tag)
+        }
+    }
+}
+
+// All concrete `impl fn` specializations for an exported name/arity (first param ≠ trait Self).
+fn collect_impls_for_export(decls: ListDeclaration, fn_name: string, arity: int64, trait_name: string, acc: ListIfaceExport) -> ListIfaceExport {
+    case decls.is_nil of {
+        true -> acc;
+        false -> case decls.head.tag == 0 of {
+            true -> case decls.head.name == fn_name and type_checker_callee_env@list_param_length(decls.head.parameters) == arity of {
+                true -> do
+                    p0: string <- first_param_type_name_iface(decls.head.parameters);
+                    next: ListIfaceExport <- case len(trait_name) > 0 and len(p0) > 0 and p0 != trait_name of {
+                        true -> do
+                            ft: string <- type_checker_callee_env@build_function_type_for_module_export(decls.head);
+                            cons_iface_export(
+                                IfaceExport {
+                                    name: fn_name,
+                                    arity: arity,
+                                    effects: effects_to_iface_string(decls.head.declared_effects),
+                                    type_surface: ft
+                                },
+                                acc
+                            )
+                        end;
+                        false -> acc
+                    };
+                    collect_impls_for_export(decls.tail, fn_name, arity, trait_name, next)
+                end;
+                false -> collect_impls_for_export(decls.tail, fn_name, arity, trait_name, acc)
+            };
+            false -> collect_impls_for_export(decls.tail, fn_name, arity, trait_name, acc)
+        }
+    }
+}
+
+fn collect_impls_from_export_items(items: ListParam, whole: ListDeclaration, trait_name: string, acc: ListIfaceExport) -> ListIfaceExport {
+    case items.is_nil of {
+        true -> acc;
+        false -> do
+            (ok_ar: bool, ar: int64) <- type_checker_callee_env@parse_unsigned_decimal(items.head.type_name);
+            next: ListIfaceExport <- case ok_ar of {
+                false -> acc;
+                true -> collect_impls_for_export(whole, items.head.name, ar, trait_name, acc)
+            };
+            collect_impls_from_export_items(items.tail, whole, trait_name, next)
+        end
+    }
+}
+
+fn collect_impls_from_program(decls: ListDeclaration, whole: ListDeclaration, trait_name: string, acc: ListIfaceExport) -> ListIfaceExport {
+    case decls.is_nil of {
+        true -> acc;
+        false -> case decls.head.tag == 3 of {
+            true -> collect_impls_from_program(
+                decls.tail,
+                whole,
+                trait_name,
+                collect_impls_from_export_items(decls.head.parameters, whole, trait_name, acc)
+            );
+            false -> collect_impls_from_program(decls.tail, whole, trait_name, acc)
+        }
+    }
+}
+
+fn extract_exports_from_items(items: ListParam, whole: ListDeclaration, acc: ListIfaceExport) -> (bool, ListIfaceExport) {
+    case items.is_nil of {
+        true -> (true, acc);
+        false -> do
+            (ok_ar: bool, ar: int64) <- type_checker_callee_env@parse_unsigned_decimal(items.head.type_name);
+            case ok_ar of {
+                false -> (false, acc);
+                true -> do
+                    (fd: bool, decl: Declaration) <- find_decl_for_iface_export(whole, items.head.name, ar);
+                    case fd of {
+                        false -> (false, acc);
+                        true -> do
+                            ft: string <- type_checker_callee_env@build_function_type_for_module_export(decl);
+                            e: IfaceExport <- IfaceExport {
+                                name: decl.name,
+                                arity: ar,
+                                effects: effects_to_iface_string(decl.declared_effects),
+                                type_surface: ft
+                            };
+                            extract_exports_from_items(items.tail, whole, cons_iface_export(e, acc))
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn extract_exports_from_decls(decls: ListDeclaration, whole: ListDeclaration, acc: ListIfaceExport) -> (bool, ListIfaceExport) {
+    case decls.is_nil of {
+        true -> (true, acc);
+        false -> case decls.head.tag == 3 of {
+            true -> do
+                (ok: bool, acc2: ListIfaceExport) <- extract_exports_from_items(decls.head.parameters, whole, acc);
+                case ok of {
+                    true -> extract_exports_from_decls(decls.tail, whole, acc2);
+                    false -> (false, acc2)
+                }
+            end;
+            false -> extract_exports_from_decls(decls.tail, whole, acc)
+        }
+    }
+}
+
+// (ok, exports, impls, export_trait)
+fn extract_iface_tables(program: Program) -> (bool, ListIfaceExport, ListIfaceExport, string) {
+    trait_name: string <- find_export_trait_name(program.declarations);
+    (ok: bool, exports_rev: ListIfaceExport) <- extract_exports_from_decls(
+        program.declarations,
+        program.declarations,
+        empty_iface_exports()
+    );
+    case ok of {
+        false -> (false, empty_iface_exports(), empty_iface_exports(), "");
+        true -> do
+            exports: ListIfaceExport <- reverse_iface_exports(exports_rev, empty_iface_exports());
+            impls_rev: ListIfaceExport <- case len(trait_name) == 0 of {
+                true -> empty_iface_exports();
+                false -> collect_impls_from_program(program.declarations, program.declarations, trait_name, empty_iface_exports())
+            };
+            impls: ListIfaceExport <- reverse_iface_exports(impls_rev, empty_iface_exports());
+            (true, exports, impls, trait_name)
+        end
+    }
+}
+
+fn ends_with_newline(s: string) -> bool {
+    case len(s) == 0 of {
+        true -> false;
+        false -> substring(s, len(s) - 1, len(s)) == "\n"
+    }
+}
+
+fn append_line(path: string, line: string) -> int64 proc[DeviceIO] {
+    do
+        body: string <- case ends_with_newline(line) of {
+            true -> line;
+            false -> concat(line, "\n")
+        };
+        _: bool <- append_file(path, body);
+        0
+    end
+}
+
+fn write_export_blocks(path: string, exports: ListIfaceExport) -> int64 proc[DeviceIO] {
+    case exports.is_nil of {
+        true -> 0;
+        false -> do
+            _: int64 <- append_line(path, "---");
+            _: int64 <- append_line(path, exports.head.name);
+            _: int64 <- append_line(path, atom_table@int64_to_decimal_string(exports.head.arity));
+            _: int64 <- append_line(path, exports.head.effects);
+            _: int64 <- append_line(path, exports.head.type_surface);
+            write_export_blocks(path, exports.tail)
+        end
+    }
+}
+
+fn write_iface_header_and_exports(
+    path: string,
+    module_name: string,
+    source_path: string,
+    src_hash: string,
+    deps: ListIfaceString,
+    d_hash: string,
+    export_trait: string,
+    exports: ListIfaceExport,
+    impls: ListIfaceExport
+) -> int64 proc[DeviceIO] {
+    do
+        _: int64 <- append_line(path, "SILICA_IFACE_V1");
+        _: int64 <- append_line(path, concat("module=", module_name));
+        _: int64 <- append_line(path, concat("stamp=", iface_compiler_stamp()));
+        _: int64 <- append_line(path, concat("format=", iface_format_version()));
+        _: int64 <- append_line(path, concat("source=", source_path));
+        _: int64 <- append_line(path, concat("source_hash=", src_hash));
+        _: int64 <- append_line(path, concat("deps=", join_dep_names(deps)));
+        _: int64 <- append_line(path, concat("deps_hash=", d_hash));
+        _: int64 <- append_line(path, concat("export_trait=", export_trait));
+        _: int64 <- append_line(path, concat("export_count=", atom_table@int64_to_decimal_string(count_iface_exports(exports))));
+        _: int64 <- append_line(path, concat("impl_count=", atom_table@int64_to_decimal_string(count_iface_exports(impls))));
+        _: int64 <- write_export_blocks(path, exports);
+        _: int64 <- write_export_blocks(path, impls);
+        0
+    end
+}
+
+// Publish draft export table after successful type check. Returns 0 always (I/O best-effort;
+// extraction failure leaves no iface / deletes stale).
+fn publish_module_iface(module_name: string, source_path: string, program: Program, config: ListIfaceString) -> int64 proc[DeviceIO] {
+    do
+        (ok: bool, exports: ListIfaceExport, impls: ListIfaceExport, export_trait: string) <- extract_iface_tables(program);
+        path: string <- iface_path_from_source(source_path);
+        legacy_path: string <- iface_path_for_module(module_name);
+        case ok of {
+            false -> do
+                delete_file(path);
+                delete_file(legacy_path);
+                println(concat("Warning: iface extract failed for ", module_name));
+                1
+            end;
+            true -> do
+                deps_rev: ListIfaceString <- collect_dep_names_from_decls(program.declarations, empty_iface_strings());
+                deps: ListIfaceString <- reverse_iface_strings(deps_rev, empty_iface_strings());
+                src_hash: string <- source_content_hash_iface(source_path);
+                d_hash: string <- deps_hash_for_names(deps, config);
+                delete_file(path);
+                delete_file(legacy_path);
+                _: int64 <- write_iface_header_and_exports(path, module_name, source_path, src_hash, deps, d_hash, export_trait, exports, impls);
+                0
+            end
+        }
+    end
+}
+
+fn unpublish_module_iface(module_name: string) -> int64 proc[DeviceIO] {
+    do
+        delete_file(iface_path_for_module(module_name));
+        0
+    end
+}
+
+fn unpublish_module_iface_at_path(source_path: string) -> int64 proc[DeviceIO] {
+    do
+        delete_file(iface_path_from_source(source_path));
+        delete_file(iface_path_for_module(module_stem_from_path(source_path)));
+        0
+    end
+}
+
+fn iface_exists_for_source(source_path: string) -> bool proc[DeviceIO] {
+    case file_exists(iface_path_from_source(source_path)) of {
+        true -> true;
+        false -> file_exists(iface_path_for_module(module_stem_from_path(source_path)))
+    }
+}
+
+// Phase 3: usable only when stamp/format/source_hash/deps_hash still match disk sources.
+fn iface_usable_for_source(source_path: string, config: ListIfaceString) -> bool proc[DeviceIO] {
+    do
+        primary: string <- iface_path_from_source(source_path);
+        legacy: string <- iface_path_for_module(module_stem_from_path(source_path));
+        primary_exists: bool <- file_exists(primary);
+        path: string <- case primary_exists of {
+            true -> primary;
+            false -> legacy
+        };
+        (ok: bool, _: ModuleIface) <- load_iface_file_validated(path, source_path, config);
+        ok
+    end
+}
+
+fn empty_module_iface() -> ModuleIface {
+    ModuleIface {
+        module_name: "",
+        source_path: "",
+        export_trait: "",
+        exports: empty_iface_exports(),
+        impls: empty_iface_exports()
+    }
+}
+
+fn empty_module_iface_list() -> ListModuleIface {
+    dummy: ModuleIface <- empty_module_iface();
+    nil_m: ListModuleIface <- ListModuleIface { is_nil: true, head: dummy, tail: nil_m };
+    nil_m
+}
+
+
+fn cons_module_iface(m: ModuleIface, rest: ListModuleIface) -> ListModuleIface {
+    ListModuleIface { is_nil: false, head: m, tail: rest }
+}
+
+
+fn find_module_iface(module_name: string, ifaces: ListModuleIface) -> (bool, ModuleIface) {
+    case ifaces.is_nil of {
+        true -> (false, empty_module_iface());
+        false -> case ifaces.head.module_name == module_name of {
+            true -> (true, ifaces.head);
+            false -> find_module_iface(module_name, ifaces.tail)
+        }
+    }
+}
+
+
+fn reverse_module_ifaces(lst: ListModuleIface, acc: ListModuleIface) -> ListModuleIface {
+    case lst.is_nil of {
+        true -> acc;
+        false -> reverse_module_ifaces(lst.tail, cons_module_iface(lst.head, acc))
+    }
+}
+
+
+fn is_decimal_digit_char_iface(c: string) -> bool {
+    c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9"
+}
+
+
+fn parse_unsigned_decimal_iface(s: string) -> (bool, int64) {
+    case len(s) == 0 of {
+        true -> (false, 0);
+        false -> parse_unsigned_decimal_iface_loop(s, 0, 0)
+    }
+}
+
+
+fn parse_unsigned_decimal_iface_loop(s: string, i: int64, acc: int64) -> (bool, int64) {
+    case i >= len(s) of {
+        true -> (true, acc);
+        false -> do
+            ch: string <- substring(s, i, i + 1);
+            case is_decimal_digit_char_iface(ch) of {
+                false -> (false, 0);
+                true -> do
+                    digit: int64 <- case ch of {
+                        "0" -> 0; "1" -> 1; "2" -> 2; "3" -> 3; "4" -> 4;
+                        "5" -> 5; "6" -> 6; "7" -> 7; "8" -> 8; _: string -> 9
+                    };
+                    parse_unsigned_decimal_iface_loop(s, i + 1, acc * 10 + digit)
+                end
+            }
+        end
+    }
+}
+
+
+fn find_newline_iface(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "\n" of {
+            true -> i;
+            false -> find_newline_iface(s, i + 1)
+        }
+    }
+}
+
+
+fn split_lines_iface(s: string, i: int64, acc: ListIfaceString) -> ListIfaceString {
+    case i >= len(s) of {
+        true -> reverse_iface_strings(acc, empty_iface_strings());
+        false -> do
+            nl: int64 <- find_newline_iface(s, i);
+            case nl < 0 of {
+                true -> do
+                    line: string <- substring(s, i, len(s));
+                    case len(line) == 0 of {
+                        true -> reverse_iface_strings(acc, empty_iface_strings());
+                        false -> reverse_iface_strings(cons_iface_string(line, acc), empty_iface_strings())
+                    }
+                end;
+                false -> do
+                    line: string <- substring(s, i, nl);
+                    split_lines_iface(s, nl + 1, cons_iface_string(line, acc))
+                end
+            }
+        end
+    }
+}
+
+
+fn starts_with_iface(s: string, prefix: string) -> bool {
+    case len(s) < len(prefix) of {
+        true -> false;
+        false -> substring(s, 0, len(prefix)) == prefix
+    }
+}
+
+
+fn header_value_after(line: string, key: string) -> string {
+    case starts_with_iface(line, key) of {
+        true -> substring(line, len(key), len(line));
+        false -> ""
+    }
+}
+
+
+fn parse_export_blocks_iface(lines: ListIfaceString, acc: ListIfaceExport) -> (bool, ListIfaceExport) {
+    case lines.is_nil of {
+        true -> (true, reverse_iface_exports(acc, empty_iface_exports()));
+        false -> case lines.head == "---" of {
+            false -> (false, acc);
+            true -> case lines.tail.is_nil of {
+                true -> (false, acc);
+                false -> case lines.tail.tail.is_nil of {
+                    true -> (false, acc);
+                    false -> case lines.tail.tail.tail.is_nil of {
+                        true -> (false, acc);
+                        false -> case lines.tail.tail.tail.tail.is_nil of {
+                            true -> (false, acc);
+                            false -> do
+                                name_l: string <- lines.tail.head;
+                                arity_l: string <- lines.tail.tail.head;
+                                eff_l: string <- lines.tail.tail.tail.head;
+                                ty_l: string <- lines.tail.tail.tail.tail.head;
+                                rest: ListIfaceString <- lines.tail.tail.tail.tail.tail;
+                                (ok_ar: bool, ar: int64) <- parse_unsigned_decimal_iface(arity_l);
+                                case ok_ar of {
+                                    false -> (false, acc);
+                                    true -> do
+                                        e: IfaceExport <- IfaceExport {
+                                            name: name_l,
+                                            arity: ar,
+                                            effects: eff_l,
+                                            type_surface: ty_l
+                                        };
+                                        parse_export_blocks_iface(rest, cons_iface_export(e, acc))
+                                    end
+                                }
+                            end
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// flags bit0=format_ok, bit1=magic_ok, bit2=stamp_ok (E3010: ≤8 params).
+fn iface_hdr_format_ok(flags: int64) -> bool {
+    case flags % 2 == 0 of { true -> false; false -> true }
+}
+fn iface_hdr_magic_ok(flags: int64) -> bool {
+    case (flags / 2) % 2 == 0 of { true -> false; false -> true }
+}
+fn iface_hdr_stamp_ok(flags: int64) -> bool {
+    case (flags / 4) % 2 == 0 of { true -> false; false -> true }
+}
+fn iface_hdr_flags(format_ok: bool, magic_ok: bool, stamp_ok: bool) -> int64 {
+    do
+        b0: int64 <- case format_ok of { true -> 1; false -> 0 };
+        b1: int64 <- case magic_ok of { true -> 2; false -> 0 };
+        b2: int64 <- case stamp_ok of { true -> 4; false -> 0 };
+        b0 + b1 + b2
+    end
+}
+fn iface_hdr_with_format(flags: int64, format_ok: bool) -> int64 {
+    do
+        magic_b: bool <- iface_hdr_magic_ok(flags);
+        stamp_b: bool <- iface_hdr_stamp_ok(flags);
+        iface_hdr_flags(format_ok, magic_b, stamp_b)
+    end
+}
+fn iface_hdr_with_magic(flags: int64, magic_ok: bool) -> int64 {
+    do
+        format_b: bool <- iface_hdr_format_ok(flags);
+        stamp_b: bool <- iface_hdr_stamp_ok(flags);
+        iface_hdr_flags(format_b, magic_ok, stamp_b)
+    end
+}
+fn iface_hdr_with_stamp(flags: int64, stamp_ok: bool) -> int64 {
+    do
+        format_b: bool <- iface_hdr_format_ok(flags);
+        magic_b: bool <- iface_hdr_magic_ok(flags);
+        iface_hdr_flags(format_b, magic_b, stamp_ok)
+    end
+}
+
+// Returns (ok, mod, source, source_hash, deps, deps_hash, rest_lines)
+fn parse_iface_header_loop(
+    lines: ListIfaceString,
+    mod_name: string,
+    source_path: string,
+    flags: int64,
+    source_hash: string,
+    deps: string,
+    deps_hash: string
+) -> (bool, string, string, string, string, string, ListIfaceString) {
+    case lines.is_nil of {
+        true -> (iface_hdr_magic_ok(flags) and iface_hdr_format_ok(flags) and iface_hdr_stamp_ok(flags) and len(mod_name) > 0 and len(source_hash) > 0, mod_name, source_path, source_hash, deps, deps_hash, lines);
+        false -> case lines.head == "---" of {
+            true -> (iface_hdr_magic_ok(flags) and iface_hdr_format_ok(flags) and iface_hdr_stamp_ok(flags) and len(mod_name) > 0 and len(source_hash) > 0, mod_name, source_path, source_hash, deps, deps_hash, lines);
+            false -> case lines.head == "SILICA_IFACE_V1" of {
+                true -> parse_iface_header_loop(lines.tail, mod_name, source_path, iface_hdr_with_magic(flags, true), source_hash, deps, deps_hash);
+                false -> case starts_with_iface(lines.head, "module=") of {
+                    true -> parse_iface_header_loop(lines.tail, header_value_after(lines.head, "module="), source_path, flags, source_hash, deps, deps_hash);
+                    false -> case starts_with_iface(lines.head, "format=") of {
+                        true -> parse_iface_header_loop(lines.tail, mod_name, source_path, iface_hdr_with_format(flags, header_value_after(lines.head, "format=") == iface_format_version()), source_hash, deps, deps_hash);
+                        false -> case starts_with_iface(lines.head, "stamp=") of {
+                            true -> parse_iface_header_loop(lines.tail, mod_name, source_path, iface_hdr_with_stamp(flags, header_value_after(lines.head, "stamp=") == iface_compiler_stamp()), source_hash, deps, deps_hash);
+                            false -> case starts_with_iface(lines.head, "source=") of {
+                                true -> parse_iface_header_loop(lines.tail, mod_name, header_value_after(lines.head, "source="), flags, source_hash, deps, deps_hash);
+                                false -> case starts_with_iface(lines.head, "source_hash=") of {
+                                    true -> parse_iface_header_loop(lines.tail, mod_name, source_path, flags, header_value_after(lines.head, "source_hash="), deps, deps_hash);
+                                    false -> case starts_with_iface(lines.head, "deps_hash=") of {
+                                        true -> parse_iface_header_loop(lines.tail, mod_name, source_path, flags, source_hash, deps, header_value_after(lines.head, "deps_hash="));
+                                        false -> case starts_with_iface(lines.head, "deps=") of {
+                                            true -> parse_iface_header_loop(lines.tail, mod_name, source_path, flags, source_hash, header_value_after(lines.head, "deps="), deps_hash);
+                                            false -> parse_iface_header_loop(lines.tail, mod_name, source_path, flags, source_hash, deps, deps_hash)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+fn iface_header_field_scan(lines: ListIfaceString, key: string) -> string {
+    case lines.is_nil of {
+        true -> "";
+        false -> case lines.head == "---" of {
+            true -> "";
+            false -> case starts_with_iface(lines.head, key) of {
+                true -> header_value_after(lines.head, key);
+                false -> iface_header_field_scan(lines.tail, key)
+            }
+        }
+    }
+}
+
+fn take_n_iface_exports(lst: ListIfaceExport, n: int64, acc: ListIfaceExport) -> (ListIfaceExport, ListIfaceExport) {
+    case n <= 0 of {
+        true -> (reverse_iface_exports(acc, empty_iface_exports()), lst);
+        false -> case lst.is_nil of {
+            true -> (reverse_iface_exports(acc, empty_iface_exports()), lst);
+            false -> take_n_iface_exports(lst.tail, n - 1, cons_iface_export(lst.head, acc))
+        }
+    }
+}
+
+fn load_iface_file_validated(iface_path: string, expected_source: string, config: ListIfaceString) -> (bool, ModuleIface) proc[DeviceIO] {
+    do
+        exists: bool <- file_exists(iface_path);
+        case exists of {
+            false -> (false, empty_module_iface());
+            true -> do
+                content: string <- read_lines(iface_path);
+                lines: ListIfaceString <- split_lines_iface(content, 0, empty_iface_strings());
+                (hdr_ok: bool, mod_name: string, source_path: string, source_hash: string, deps: string, deps_hash: string, rest: ListIfaceString) <- parse_iface_header_loop(lines, "", "", iface_hdr_flags(false, false, false), "", "", "");
+                case hdr_ok of {
+                    false -> (false, empty_module_iface());
+                    true -> do
+                        // Prefer the caller source path when provided (config path).
+                        src_for_hash: string <- case len(expected_source) == 0 of {
+                            true -> source_path;
+                            false -> expected_source
+                        };
+                        cur_hash: string <- source_content_hash_iface(src_for_hash);
+                        cur_deps_hash: string <- deps_hash_from_deps_line(deps, config);
+                        case cur_hash == source_hash and len(deps_hash) > 0 and cur_deps_hash == deps_hash of {
+                            false -> (false, empty_module_iface());
+                            true -> do
+                                export_trait: string <- iface_header_field_scan(lines, "export_trait=");
+                                export_count_s: string <- iface_header_field_scan(lines, "export_count=");
+                                (ok_ec: bool, export_count: int64) <- parse_unsigned_decimal_iface(export_count_s);
+                                (ex_ok: bool, all_blocks: ListIfaceExport) <- parse_export_blocks_iface(rest, empty_iface_exports());
+                                case ex_ok and ok_ec of {
+                                    false -> (false, empty_module_iface());
+                                    true -> do
+                                        (exports: ListIfaceExport, impls: ListIfaceExport) <- take_n_iface_exports(all_blocks, export_count, empty_iface_exports());
+                                        (true, ModuleIface {
+                                            module_name: mod_name,
+                                            source_path: source_path,
+                                            export_trait: export_trait,
+                                            exports: exports,
+                                            impls: impls
+                                        })
+                                    end
+                                }
+                            end
+                        }
+                    end
+                }
+            end
+        }
+    end
+}
+
+
+// Backward-compatible load without dep-hash check (stamp/format/source_hash still enforced when config empty deps_hash match allows empty).
+fn load_iface_file(iface_path: string) -> (bool, ModuleIface) proc[DeviceIO] {
+    load_iface_file_validated(iface_path, "", empty_iface_strings())
+}
+
+
+fn iface_config_path_for_module(mod_name: string, config: ListIfaceString) -> string {
+    case config.is_nil of {
+        true -> "";
+        false -> do
+            stem: string <- module_stem_from_path(config.head);
+            case stem == mod_name of {
+                true -> config.head;
+                false -> iface_config_path_for_module(mod_name, config.tail)
+            }
+        end
+    }
+}
+
+
+fn deps_hash_for_names_loop(names: ListIfaceString, config: ListIfaceString, acc: string) -> string proc[DeviceIO] {
+    case names.is_nil of {
+        true -> hash_string_iface(acc);
+        false -> do
+            src: string <- iface_config_path_for_module(names.head, config);
+            h: string <- case len(src) == 0 of {
+                true -> "";
+                false -> source_content_hash_iface(src)
+            };
+            deps_hash_for_names_loop(names.tail, config, concat(concat(acc, names.head), concat(":", concat(h, ";"))))
+        end
+    }
+}
+
+fn deps_hash_for_names(names: ListIfaceString, config: ListIfaceString) -> string proc[DeviceIO] {
+    case names.is_nil of {
+        true -> hash_string_iface("");
+        false -> deps_hash_for_names_loop(names, config, "")
+    }
+}
+
+fn deps_hash_from_deps_line(deps_line: string, config: ListIfaceString) -> string proc[DeviceIO] {
+    case len(deps_line) == 0 of {
+        true -> hash_string_iface("");
+        false -> do
+            names: ListIfaceString <- split_comma_iface(deps_line, 0, 0, empty_iface_strings());
+            deps_hash_for_names(names, config)
+        end
+    }
+}
+
+
+
+fn load_ifaces_for_module_names_loop(names: ListIfaceString, config: ListIfaceString, acc: ListModuleIface) -> ListModuleIface proc[DeviceIO] {
+    case names.is_nil of {
+        true -> reverse_module_ifaces(acc, empty_module_iface_list());
+        false -> do
+            src: string <- iface_config_path_for_module(names.head, config);
+            case len(src) == 0 of {
+                true -> load_ifaces_for_module_names_loop(names.tail, config, acc);
+                false -> do
+                    primary: string <- iface_path_from_source(src);
+                    legacy: string <- iface_path_for_module(module_stem_from_path(src));
+                    primary_exists: bool <- file_exists(primary);
+                    load_path: string <- case primary_exists of {
+                        true -> primary;
+                        false -> legacy
+                    };
+                    (ok: bool, iface: ModuleIface) <- load_iface_file_validated(load_path, src, config);
+                    case ok of {
+                        true -> load_ifaces_for_module_names_loop(names.tail, config, cons_module_iface(iface, acc));
+                        false -> load_ifaces_for_module_names_loop(names.tail, config, acc)
+                    }
+                end
+            }
+        end
+    }
+}
+
+
+fn load_ifaces_for_module_names(names: ListIfaceString, config: ListIfaceString) -> ListModuleIface proc[DeviceIO] {
+    load_ifaces_for_module_names_loop(names, config, empty_module_iface_list())
+}
+
+
+fn cons_iface_string_public(s: string, rest: ListIfaceString) -> ListIfaceString {
+    cons_iface_string(s, rest)
+}
+
+
+fn empty_iface_string_list() -> ListIfaceString {
+    empty_iface_strings()
+}
+
+
+fn reverse_iface_string_list(lst: ListIfaceString) -> ListIfaceString {
+    reverse_iface_strings(lst, empty_iface_strings())
+}
+
+
+fn parse_one_effect_token(tok: string) -> EffectName {
+    // name or name(param)
+    open: int64 <- find_char_iface(tok, "(", 0);
+    case open < 0 of {
+        true -> parser_ast@rebuild_effect_name(tok, "", parser_ast@zero_location());
+        false -> do
+            close: int64 <- find_char_iface(tok, ")", open + 1);
+            case close < 0 of {
+                true -> parser_ast@rebuild_effect_name(tok, "", parser_ast@zero_location());
+                false -> parser_ast@rebuild_effect_name(
+                    substring(tok, 0, open),
+                    substring(tok, open + 1, close),
+                    parser_ast@zero_location()
+                )
+            }
+        end
+    }
+}
+
+
+fn find_char_iface(s: string, ch: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == ch of {
+            true -> i;
+            false -> find_char_iface(s, ch, i + 1)
+        }
+    }
+}
+
+
+fn parse_effects_iface_string(s: string) -> ListEffectName {
+    case len(s) == 0 of {
+        true -> parser_ast@empty_effect_name_list();
+        false -> parse_effects_iface_split(s, 0, parser_ast@empty_effect_name_list())
+    }
+}
+
+
+fn parse_effects_iface_split(s: string, i: int64, acc: ListEffectName) -> ListEffectName {
+    case i >= len(s) of {
+        true -> reverse_effect_list_iface(acc, parser_ast@empty_effect_name_list());
+        false -> do
+            semi: int64 <- find_char_iface(s, ";", i);
+            case semi < 0 of {
+                true -> do
+                    tok: string <- substring(s, i, len(s));
+                    reverse_effect_list_iface(
+                        parser_ast@cons_effect_name(parse_one_effect_token(tok), acc),
+                        parser_ast@empty_effect_name_list()
+                    )
+                end;
+                false -> do
+                    tok: string <- substring(s, i, semi);
+                    parse_effects_iface_split(s, semi + 1, parser_ast@cons_effect_name(parse_one_effect_token(tok), acc))
+                end
+            }
+        end
+    }
+}
+
+
+fn reverse_effect_list_iface(lst: ListEffectName, acc: ListEffectName) -> ListEffectName {
+    case lst.is_nil of {
+        true -> acc;
+        false -> reverse_effect_list_iface(lst.tail, parser_ast@cons_effect_name(lst.head, acc))
+    }
+}
+
+
+fn iface_exports_fn_arity_loop(exports: ListIfaceExport, fn_name: string, arity: int64) -> bool {
+    case exports.is_nil of {
+        true -> false;
+        false -> case exports.head.name == fn_name and exports.head.arity == arity of {
+            true -> true;
+            false -> iface_exports_fn_arity_loop(exports.tail, fn_name, arity)
+        }
+    }
+}
+
+
+fn iface_exports_fn_arity(iface: ModuleIface, fn_name: string, arity: int64) -> bool {
+    iface_exports_fn_arity_loop(iface.exports, fn_name, arity)
+}
+
+
+fn lookup_iface_fn_effects_loop(exports: ListIfaceExport, fn_name: string) -> (bool, ListEffectName) {
+    case exports.is_nil of {
+        true -> (false, parser_ast@empty_effect_name_list());
+        false -> case exports.head.name == fn_name of {
+            true -> (true, parse_effects_iface_string(exports.head.effects));
+            false -> lookup_iface_fn_effects_loop(exports.tail, fn_name)
+        }
+    }
+}
+
+
+fn lookup_iface_fn_effects(iface: ModuleIface, fn_name: string) -> (bool, ListEffectName) {
+    lookup_iface_fn_effects_loop(iface.exports, fn_name)
+}
+
+
+fn export_key_iface(fn_name: string, arity: int64) -> string {
+    concat(concat(fn_name, "/"), atom_table@int64_to_decimal_string(arity))
+}
+
+
+// Top-level arrow only (paren/brace/bracket aware) so nested fn(...) -> R in returns
+// does not split the surface early.
+fn find_arrow_iface(s: string, i: int64, paren: int64, brace: int64, bracket: int64) -> int64 {
+    case i + 1 >= len(s) of {
+        true -> -1;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" of {
+                true -> find_arrow_iface(s, i + 1, paren + 1, brace, bracket);
+                false -> case c == ")" of {
+                    true -> find_arrow_iface(s, i + 1, paren - 1, brace, bracket);
+                    false -> case c == "{" of {
+                        true -> find_arrow_iface(s, i + 1, paren, brace + 1, bracket);
+                        false -> case c == "}" of {
+                            true -> find_arrow_iface(s, i + 1, paren, brace - 1, bracket);
+                            false -> case c == "[" of {
+                                true -> find_arrow_iface(s, i + 1, paren, brace, bracket + 1);
+                                false -> case c == "]" of {
+                                    true -> find_arrow_iface(s, i + 1, paren, brace, bracket - 1);
+                                    false -> case paren == 0 and brace == 0 and bracket == 0 and substring(s, i, i + 4) == " -> " of {
+                                        true -> i;
+                                        false -> find_arrow_iface(s, i + 1, paren, brace, bracket)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+
+fn return_type_from_surface(surface: string) -> string {
+    a: int64 <- find_arrow_iface(surface, 0, 0, 0, 0);
+    case a < 0 of {
+        true -> "int64";
+        false -> substring(surface, a + 4, len(surface))
+    }
+}
+
+
+// Split top-level commas in "T1,T2,T3" (paren/brace/bracket aware).
+fn split_param_types_iface(s: string, i: int64, start: int64, paren: int64, brace: int64, bracket: int64, acc: ListIfaceString) -> ListIfaceString {
+    case i >= len(s) of {
+        true -> case start >= len(s) of {
+            true -> reverse_iface_strings(acc, empty_iface_strings());
+            false -> reverse_iface_strings(cons_iface_string(substring(s, start, len(s)), acc), empty_iface_strings())
+        };
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" of {
+                true -> split_param_types_iface(s, i + 1, start, paren + 1, brace, bracket, acc);
+                false -> case c == ")" of {
+                    true -> split_param_types_iface(s, i + 1, start, paren - 1, brace, bracket, acc);
+                    false -> case c == "{" of {
+                        true -> split_param_types_iface(s, i + 1, start, paren, brace + 1, bracket, acc);
+                        false -> case c == "}" of {
+                            true -> split_param_types_iface(s, i + 1, start, paren, brace - 1, bracket, acc);
+                            false -> case c == "[" of {
+                                true -> split_param_types_iface(s, i + 1, start, paren, brace, bracket + 1, acc);
+                                false -> case c == "]" of {
+                                    true -> split_param_types_iface(s, i + 1, start, paren, brace, bracket - 1, acc);
+                                    false -> case c == "," and paren == 0 and brace == 0 and bracket == 0 of {
+                                        true -> split_param_types_iface(s, i + 1, i + 1, 0, 0, 0, cons_iface_string(substring(s, start, i), acc));
+                                        false -> split_param_types_iface(s, i + 1, start, paren, brace, bracket, acc)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+
+fn params_from_type_list(types: ListIfaceString, i: int64, acc: ListParam) -> ListParam {
+    case types.is_nil of {
+        true -> acc;
+        false -> params_from_type_list(
+            types.tail,
+            i + 1,
+            parser_ast@cons_param(
+                parser_ast@rebuild_param(concat("p", atom_table@int64_to_decimal_string(i)), types.head, parser_ast@zero_location()),
+                acc
+            )
+        )
+    }
+}
+
+
+fn params_from_surface(surface: string, arity: int64) -> ListParam {
+    a: int64 <- find_arrow_iface(surface, 0, 0, 0, 0);
+    case a < 0 of {
+        true -> parser_ast@nil_list_param();
+        false -> do
+            // Expect "(...)" before arrow.
+            case a >= 2 of {
+                false -> parser_ast@nil_list_param();
+                true -> case substring(surface, 0, 1) == "(" and substring(surface, a - 1, a) == ")" of {
+                    false -> parser_ast@nil_list_param();
+                    true -> do
+                        inner: string <- substring(surface, 1, a - 1);
+                        case len(inner) == 0 of {
+                            true -> parser_ast@nil_list_param();
+                            false -> do
+                                types: ListIfaceString <- split_param_types_iface(inner, 0, 0, 0, 0, 0, empty_iface_strings());
+                                params_from_type_list(types, 0, parser_ast@nil_list_param())
+                            end
+                        }
+                    end
+                }
+            }
+        end
+    }
+}
+
+
+fn stub_fn_decl_from_export_tagged(e: IfaceExport, tag: int64) -> Declaration {
+    // Reconstruct a fn/required decl: param type_names + return type only.
+    // Call checking may read return_type_name directly; do not store the full surface there.
+    params: ListParam <- params_from_surface(e.type_surface, e.arity);
+    ret: string <- return_type_from_surface(e.type_surface);
+    effs: ListEffectName <- parse_effects_iface_string(e.effects);
+    Declaration {
+        tag: tag,
+        name: e.name,
+        parameters: params,
+        return_type_name: ret,
+        return_type_location: parser_ast@zero_location(),
+        location: parser_ast@zero_location(),
+        body: parser_ast@dummy_expr(),
+        declared_effects: effs
+    }
+}
+
+
+fn stub_fn_decl_from_export(e: IfaceExport) -> Declaration {
+    // Concrete impl stubs and ordinary modules always use tag 0.
+    stub_fn_decl_from_export_tagged(e, 0)
+}
+
+
+// Trait Self export surfaces must be tag 7 (required), matching a full parse.
+// Emitting them as tag 0 doubles the overload set with concrete impl stubs and
+// triggers SIR mangling that the real module (one tag-0 impl) does not emit.
+fn stub_export_tag_for_surface(export_trait: string, type_surface: string, arity: int64) -> int64 {
+    case len(export_trait) == 0 of {
+        true -> 0;
+        false -> do
+            params: ListParam <- params_from_surface(type_surface, arity);
+            p0: string <- first_param_type_name_iface(params);
+            case p0 == export_trait of {
+                true -> 7;
+                false -> 0
+            }
+        end
+    }
+}
+
+
+fn stub_decls_from_exports(exports: ListIfaceExport, acc: ListDeclaration) -> ListDeclaration {
+    case exports.is_nil of {
+        true -> acc;
+        false -> stub_decls_from_exports(exports.tail, parser_ast@cons_declaration(stub_fn_decl_from_export(exports.head), acc))
+    }
+}
+
+
+fn stub_decls_from_exports_with_trait(exports: ListIfaceExport, export_trait: string, acc: ListDeclaration) -> ListDeclaration {
+    case exports.is_nil of {
+        true -> acc;
+        false -> do
+            tag: int64 <- stub_export_tag_for_surface(export_trait, exports.head.type_surface, exports.head.arity);
+            stub_decls_from_exports_with_trait(
+                exports.tail,
+                export_trait,
+                parser_ast@cons_declaration(stub_fn_decl_from_export_tagged(exports.head, tag), acc)
+            )
+        end
+    }
+}
+
+
+fn export_items_from_exports(exports: ListIfaceExport, acc: ListParam) -> ListParam {
+    case exports.is_nil of {
+        true -> acc;
+        false -> export_items_from_exports(
+            exports.tail,
+            parser_ast@cons_param(
+                parser_ast@rebuild_param(exports.head.name, atom_table@int64_to_decimal_string(exports.head.arity), parser_ast@zero_location()),
+                acc
+            )
+        )
+    }
+}
+
+
+fn program_stub_from_iface(iface: ModuleIface) -> Program {
+    // Export line + export fn stubs (trait Self surfaces as tag 7) + concrete impl stubs (tag 0),
+    // plus export trait (tag 5) when this module declares one.
+    export_fns: ListDeclaration <- stub_decls_from_exports_with_trait(iface.exports, iface.export_trait, parser_ast@empty_list_decl());
+    impl_fns: ListDeclaration <- stub_decls_from_exports(iface.impls, export_fns);
+    items: ListParam <- export_items_from_exports(iface.exports, parser_ast@nil_list_param());
+    exp: Declaration <- Declaration {
+        tag: 3,
+        name: "",
+        parameters: items,
+        return_type_name: "",
+        return_type_location: parser_ast@zero_location(),
+        location: parser_ast@zero_location(),
+        body: parser_ast@dummy_expr(),
+        declared_effects: parser_ast@empty_effect_name_list()
+    };
+    with_export: ListDeclaration <- parser_ast@cons_declaration(exp, impl_fns);
+    decls: ListDeclaration <- case len(iface.export_trait) == 0 of {
+        true -> with_export;
+        false -> parser_ast@cons_declaration(
+            Declaration {
+                tag: 5,
+                name: iface.export_trait,
+                parameters: parser_ast@nil_list_param(),
+                return_type_name: "",
+                return_type_location: parser_ast@zero_location(),
+                location: parser_ast@zero_location(),
+                body: parser_ast@dummy_expr(),
+                declared_effects: parser_ast@empty_effect_name_list()
+            },
+            with_export
+        )
+    };
+    Program { declarations: decls, location: parser_ast@zero_location() }
+}
+
+
+fn world_has_module(world: ListNamedProgram, name: string) -> bool {
+    case world.is_nil of {
+        true -> false;
+        false -> case world.head.module_name == name of {
+            true -> true;
+            false -> world_has_module(world.tail, name)
+        }
+    }
+}
+
+
+fn append_iface_stub_programs(world: ListNamedProgram, ifaces: ListModuleIface) -> ListNamedProgram {
+    case ifaces.is_nil of {
+        true -> world;
+        false -> case world_has_module(world, ifaces.head.module_name) of {
+            true -> append_iface_stub_programs(world, ifaces.tail);
+            false -> parser_ast@cons_named_program(
+                ifaces.head.module_name,
+                program_stub_from_iface(ifaces.head),
+                append_iface_stub_programs(world, ifaces.tail)
+            )
+        }
+    }
+}
+

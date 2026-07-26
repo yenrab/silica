@@ -15,7 +15,7 @@
    limitations under the License.
 -}
 
-// Capability: check identifier expression (Expr kind 1)
+// Capability: check identifier expression ({ nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } kind 1)
 // Resolves name in symbol table, verifies type matches expected
 
 use parser_ast;
@@ -31,6 +31,9 @@ export check_expr/4;
 export normalize_fn_type_idf/1;
 export find_arrow_idf/5;
 export function_types_compatible/2;
+export function_types_compatible_first_class_closure/2;
+export is_lifted_lambda_symbol_name/1;
+export build_function_type_for_symbol_table/2;
 
 // §3.4 / §15.4.13.2: function-value types. The compiler builds call-site fn types as `(T1,T2) -> R`
 // (see `build_function_type_for_decl_call`), while declared `fn(msg: T1, state: T2) -> R` annotations
@@ -197,7 +200,7 @@ fn strip_param_name_idf(seg: string) -> string {
     }
 }
 
-// Normalize `fn(a: T1, b: T2) -> R` / `fn (…) -> R` or `(T1,T2) -> R` → `(T1,T2) -> R` (names stripped). Outer declarations still count one formal per `Param`; inner arity is only for calls on function values.
+// Normalize `fn(a: T1, b: T2) -> R` / `fn (…) -> R` or `(T1,T2) -> R` → `(T1,T2) -> R` (names stripped). Outer declarations still count one formal per `{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }`; inner arity is only for calls on function values.
 fn normalize_fn_type_idf(s: string) -> string {
     stripped: string <- strip_fn_keyword_prefix_idf(s);
     t: string <- trim_spaces_idf(stripped);
@@ -256,6 +259,8 @@ fn function_types_compatible(resolved: string, expected: string) -> bool {
 }
 
 // Synthetic lifted lambda symbols (parser): "main.__lam0", etc.
+export is_lifted_lambda_symbol_name/1;
+
 fn is_lifted_lambda_symbol_name(m: string) -> bool {
     lifted_lam_sub_at(m, 0)
 }
@@ -330,8 +335,77 @@ fn param_types_prefix_match(li_res: string, li_exp: string, remaining: int64) ->
     }
 }
 
-// Lifted lambdas appear as symbols with arity formals+captures; source annotations use callee arity only.
-// Compare return types and require the resolved (implementation) param list to start with the expected param types.
+fn take_first_n_param_types(inner: string, remaining: int64) -> string {
+    case remaining == 0 of {
+        true -> "";
+        false -> case len(inner) == 0 of {
+            true -> "";
+            false -> {
+                comma: int64 <- find_comma_idf(inner, 0, 0, 0, 0);
+                case comma < 0 of {
+                    true -> trim_spaces_idf(inner);
+                    false -> {
+                        head: string <- trim_spaces_idf(substring(inner, 0, comma));
+                        rest: string <- take_first_n_param_types(trim_spaces_idf(substring(inner, comma + 1, len(inner))), remaining - 1);
+                        case len(rest) == 0 of {
+                            true -> head;
+                            false -> concat(concat(head, ","), rest)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn function_type_with_prefix_params(resolved: string, n: int64) -> string {
+    a: string <- normalize_fn_type_idf(resolved);
+    case find_arrow_idf(a, 0, 0, 0, 0) < 0 of {
+        true -> "";
+        false -> {
+            (li_a, ret_a) <- normalized_fn_params_ret(a);
+            prefix_li: string <- take_first_n_param_types(li_a, n);
+            concat(concat(concat("(", prefix_li), ") -> "), ret_a)
+        }
+    }
+}
+
+fn drop_first_n_param_types(inner: string, remaining: int64) -> string {
+    case remaining <= 0 of {
+        true -> trim_spaces_idf(inner);
+        false -> case len(inner) == 0 of {
+            true -> "";
+            false -> {
+                comma: int64 <- find_comma_idf(inner, 0, 0, 0, 0);
+                case comma < 0 of {
+                    true -> "";
+                    false -> drop_first_n_param_types(trim_spaces_idf(substring(inner, comma + 1, len(inner))), remaining - 1)
+                }
+            }
+        }
+    }
+}
+
+fn function_type_with_suffix_params(resolved: string, n: int64) -> string {
+    a: string <- normalize_fn_type_idf(resolved);
+    case find_arrow_idf(a, 0, 0, 0, 0) < 0 of {
+        true -> "";
+        false -> {
+            (li_a, ret_a) <- normalized_fn_params_ret(a);
+            na: int64 <- count_top_level_param_types(li_a);
+            case na < n of {
+                true -> "";
+                false -> {
+                    suffix_li: string <- drop_first_n_param_types(li_a, na - n);
+                    concat(concat(concat("(", suffix_li), ") -> "), ret_a)
+                }
+            }
+        }
+    }
+}
+
+// Lifted lambdas append captures at the List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] deep end; param_types_str therefore emits captures
+// before formals. Accept either formals-as-prefix or formals-as-suffix of the implementation arity.
 fn function_types_compatible_lifted_implementation(resolved: string, expected: string) -> bool {
     a: string <- normalize_fn_type_idf(resolved);
     b: string <- normalize_fn_type_idf(expected);
@@ -349,7 +423,145 @@ fn function_types_compatible_lifted_implementation(resolved: string, expected: s
                         na: int64 <- count_top_level_param_types(li_a);
                         case na >= nb of {
                             false -> false;
-                            true -> param_types_prefix_match(li_a, li_b, nb)
+                            true -> case param_types_prefix_match(li_a, li_b, nb) of {
+                                true -> true;
+                                false -> case function_types_compatible(function_type_with_prefix_params(resolved, nb), expected) of {
+                                    true -> true;
+                                    false -> function_types_compatible(function_type_with_suffix_params(resolved, nb), expected)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// First-class closures: a capturing implementation may have extra trailing capture parameters.
+fn function_types_compatible_first_class_closure(resolved: string, expected: string) -> bool {
+    case function_types_compatible(resolved, expected) of {
+        true -> true;
+        false -> function_types_compatible_lifted_implementation(resolved, expected)
+    }
+}
+
+fn param_types_str_for_decl(params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> string {
+    case params.is_nil of {
+        true -> "";
+        false -> case params.tail.is_nil of {
+            true -> params.head.type_name;
+            false -> concat(concat(param_types_str_for_decl(params.tail), ","), params.head.type_name)
+        }
+    }
+}
+
+fn build_function_type_from_params(params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], ret: string) -> string {
+    params_str: string <- param_types_str_for_decl(params);
+    case params.is_nil of {
+        true -> concat("() -> ", ret);
+        false -> concat(concat(concat("(", params_str), ") -> "), ret)
+    }
+}
+
+fn build_function_type_surface(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) -> string {
+    build_function_type_from_params(decl.parameters, decl.return_type_name)
+}
+
+fn list_param_len(ps: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> int64 {
+    case ps.is_nil of {
+        true -> 0;
+        false -> 1 + list_param_len(ps.tail)
+    }
+}
+
+// List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] head = last source param; captures are appended at the linked-list end (deepest tails).
+fn list_param_take_n(ps: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], n: int64) -> List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
+    case n <= 0 of {
+        true -> parser_ast@nil_list_param();
+        false -> case ps.is_nil of {
+            true -> parser_ast@nil_list_param();
+            false -> parser_ast@cons_param(ps.head, list_param_take_n(ps.tail, n - 1))
+        }
+    }
+}
+
+fn list_param_reverse(ps: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], acc: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
+    case ps.is_nil of {
+        true -> acc;
+        false -> list_param_reverse(ps.tail, parser_ast@cons_param(ps.head, acc))
+    }
+}
+
+fn param_name_in_list(ps: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], nm: string) -> bool {
+    case ps.is_nil of {
+        true -> false;
+        false -> case ps.head.name == nm of {
+            true -> true;
+            false -> param_name_in_list(ps.tail, nm)
+        }
+    }
+}
+
+fn count_parent_capture_prefix(rev_ps: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], parent_ps: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> int64 {
+    case rev_ps.is_nil of {
+        true -> 0;
+        false -> case param_name_in_list(parent_ps, rev_ps.head.name) of {
+            true -> 1 + count_parent_capture_prefix(rev_ps.tail, parent_ps);
+            false -> 0
+        }
+    }
+}
+
+fn count_trailing_parent_capture_params(lam_ps: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], parent_ps: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> int64 {
+    rev: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- list_param_reverse(lam_ps, parser_ast@nil_list_param());
+    count_parent_capture_prefix(rev, parent_ps)
+}
+
+fn lifted_lambda_parent_name(lam_name: string) -> string {
+    case is_lifted_lambda_symbol_name(lam_name) of {
+        true -> parent_prefix_before_lam_marker(lam_name, 0);
+        false -> lam_name
+    }
+}
+
+fn parent_prefix_before_lam_marker(m: string, i: int64) -> string {
+    case i + 6 > len(m) of {
+        true -> m;
+        false -> case substring(m, i, i + 6) == ".__lam" of {
+            true -> substring(m, 0, i);
+            false -> parent_prefix_before_lam_marker(m, i + 1)
+        }
+    }
+}
+
+fn find_program_tag0_decl(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], nm: string) -> (bool, { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case decls.head.tag == 0 and decls.head.name == nm of {
+            true -> (true, decls.head);
+            false -> find_program_tag0_decl(decls.tail, nm)
+        }
+    }
+}
+
+fn build_function_type_for_symbol_table(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, all_decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> string {
+    case is_lifted_lambda_symbol_name(decl.name) of {
+        false -> build_function_type_surface(decl);
+        true -> {
+            parent_name: string <- lifted_lambda_parent_name(decl.name);
+            (found: bool, parent_decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) <- find_program_tag0_decl(all_decls, parent_name);
+            case found of {
+                false -> build_function_type_surface(decl);
+                true -> {
+                    trailing: int64 <- count_trailing_parent_capture_params(decl.parameters, parent_decl.parameters);
+                    total: int64 <- list_param_len(decl.parameters);
+                    formal_n: int64 <- total - trailing;
+                    case trailing <= 0 of {
+                        true -> build_function_type_surface(decl);
+                        false -> case formal_n <= 0 of {
+                            true -> build_function_type_surface(decl);
+                            false -> build_function_type_from_params(list_param_take_n(decl.parameters, formal_n), decl.return_type_name)
                         }
                     }
                 }
@@ -404,8 +616,8 @@ fn lookup_symbol_surface_identifier_module(env: ListSymbolEntry, fn_name: string
     }
 }
 
-// Check Expr kind 1 (identifier). Lookup in context.env, verify matches expected_type id.
-fn check_expr(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> (TypeCheckResult, TypeContext) {
+// Check { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } kind 1 (identifier). Lookup in context.env, verify matches expected_type id.
+fn check_expr(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, expected_type: int64, context: TypeContext, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> (TypeCheckResult, TypeContext) {
     ek: int64 <- type_interner@node_kind(context.interner, expected_type);
     case ek == type_interner@kind_discard() of {
         true -> case expr.name == "performance_cores" or expr.name == "efficiency_cores" of {
@@ -429,9 +641,9 @@ fn check_expr(expr: Expr, expected_type: int64, context: TypeContext, world: Lis
                         false -> {
                             resolved_surf: string <- lookup_symbol_surface_identifier(context.env, expr.name);
                             expect_surf: string <- type_checker_core@surface_for_type_id(context, expected_type);
-                            case function_types_compatible(resolved_surf, expect_surf) of {
+                            case function_types_compatible_first_class_closure(resolved_surf, expect_surf) of {
                                 true -> (type_checker_core@type_check_ok(), context);
-                                false -> case is_lifted_lambda_symbol_name(expr.name) and function_types_compatible_lifted_implementation(resolved_surf, expect_surf) of {
+                                false -> case type_checker_tuple_decompose_helpers@types_equal_surface(resolved_surf, expect_surf) of {
                                     true -> (type_checker_core@type_check_ok(), context);
                                     false -> case type_checker_record_types@record_type_starts(resolved_surf) and type_checker_record_types@record_type_starts(expect_surf) of {
                                         true -> case type_checker_tuple_decompose_helpers@types_equal_surface(resolved_surf, expect_surf) of {

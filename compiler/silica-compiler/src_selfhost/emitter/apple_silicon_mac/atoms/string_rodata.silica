@@ -457,13 +457,32 @@ fn module_uses_println(sir_module: { module_name: string, used_modules: List[str
 
 // Case branch with string literal pattern (pk == "string") needs L_string_eq_helper: pointer
 // compare is wrong when scrutinee is heap/mmap (e.g. substring) vs rodata literal.
+fn pat_text_has_quoted_string(s: string) -> bool {
+    case len(s) == 0 of {
+        true -> false;
+        false -> case substring(s, 0, 1) == "\"" of {
+            true -> true;
+            false -> pat_text_has_quoted_string(substring(s, 1, len(s)))
+        }
+    }
+}
+
 fn term_has_string_case_pattern(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case term.root < 0 of {
         true -> false;
         false -> {
             node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
             case node.kind of {
-            8 -> node.value == "string";
+            8 -> case node.value == "string" of {
+                true -> true;
+                false -> case node.value == "record" or node.value == "tuple" of {
+                    true -> pat_text_has_quoted_string(node.name);
+                    false -> case term_has_string_case_pattern(sir_term_at(term, node.inner)) of {
+                        true -> true;
+                        false -> term_has_string_case_pattern(sir_term_at(term, node.right_expr))
+                    }
+                }
+            };
             3 -> case term_has_string_case_pattern(sir_term_at(term, node.inner)) of {
                 true -> true;
                 false -> term_has_string_case_pattern(sir_term_at(term, node.right_expr))

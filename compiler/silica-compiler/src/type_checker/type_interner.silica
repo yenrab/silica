@@ -159,13 +159,27 @@ struct ListFieldEntry {
     tail: ListFieldEntry
 }
 
+// Exact surface string -> interned type id. Avoids re-parsing repeated inline
+// structural annotations (dominant RAM cost when checking selfhost emitters).
+struct SurfaceTypeCacheEntry {
+    surface: string,
+    type_id: int64
+}
+
+struct ListSurfaceTypeCacheEntry {
+    is_nil: boolean,
+    head: SurfaceTypeCacheEntry,
+    tail: ListSurfaceTypeCacheEntry
+}
+
 struct TypeInterner {
     nodes: ListTypeNode,
     by_key: ListKeyEntry,
     names: ListNameEntry,
     name_lexemes: ListStringEntry,
     next_id: int64,
-    seq_nil_id: int64
+    seq_nil_id: int64,
+    surface_cache: ListSurfaceTypeCacheEntry
 }
 
 struct InternResult {
@@ -450,6 +464,45 @@ fn prepend_name(names: ListNameEntry, entry: NameEntry) -> ListNameEntry {
     ListNameEntry { is_nil: false, head: entry, tail: names }
 }
 
+fn dummy_surface_type_cache_entry() -> SurfaceTypeCacheEntry {
+    SurfaceTypeCacheEntry { surface: "", type_id: 0 - 1 }
+}
+
+fn empty_surface_type_cache() -> ListSurfaceTypeCacheEntry {
+    nil_placeholder: ListSurfaceTypeCacheEntry <- ListSurfaceTypeCacheEntry { is_nil: true, head: dummy_surface_type_cache_entry(), tail: nil_placeholder };
+    nil_placeholder
+}
+
+fn lookup_surface_type_cache(cache: ListSurfaceTypeCacheEntry, surface: string) -> (boolean, int64) {
+    case cache.is_nil of {
+        true -> (false, 0 - 1);
+        false -> case cache.head.surface == surface of {
+            true -> (true, cache.head.type_id);
+            false -> lookup_surface_type_cache(cache.tail, surface)
+        }
+    }
+}
+
+fn prepend_surface_type_cache(cache: ListSurfaceTypeCacheEntry, surface: string, type_id: int64) -> ListSurfaceTypeCacheEntry {
+    ListSurfaceTypeCacheEntry {
+        is_nil: false,
+        head: SurfaceTypeCacheEntry { surface: surface, type_id: type_id },
+        tail: cache
+    }
+}
+
+fn interner_with_surface_cache(interner: TypeInterner, surface_cache: ListSurfaceTypeCacheEntry) -> TypeInterner {
+    TypeInterner {
+        nodes: interner.nodes,
+        by_key: interner.by_key,
+        names: interner.names,
+        name_lexemes: interner.name_lexemes,
+        next_id: interner.next_id,
+        seq_nil_id: interner.seq_nil_id,
+        surface_cache: surface_cache
+    }
+}
+
 fn intern_name(interner: TypeInterner, lexeme: string) -> InternResult {
     nl: NameLookupResult <- lookup_name(interner.names, lexeme);
     case nl.found of {
@@ -465,7 +518,8 @@ fn intern_name(interner: TypeInterner, lexeme: string) -> InternResult {
                 names: new_names,
                 name_lexemes: new_lexemes,
                 next_id: interner.next_id,
-                seq_nil_id: interner.seq_nil_id
+                seq_nil_id: interner.seq_nil_id,
+                surface_cache: interner.surface_cache
             };
             InternResult { interner: next_i, id: new_id }
         end
@@ -494,7 +548,8 @@ fn intern_key(
                 names: interner.names,
                 name_lexemes: interner.name_lexemes,
                 next_id: interner.next_id + 1,
-                seq_nil_id: interner.seq_nil_id
+                seq_nil_id: interner.seq_nil_id,
+                surface_cache: interner.surface_cache
             };
             InternResult { interner: next_i, id: interner.next_id }
         end
@@ -508,7 +563,8 @@ fn create_type_interner() -> TypeInterner {
         names: empty_name_list(),
         name_lexemes: empty_lexeme_list(),
         next_id: 0,
-        seq_nil_id: 0 - 1
+        seq_nil_id: 0 - 1,
+        surface_cache: empty_surface_type_cache()
     };
     nil_r: InternResult <- intern_key(base, 1, 0, 0, 0, false);
     TypeInterner {
@@ -517,7 +573,8 @@ fn create_type_interner() -> TypeInterner {
         names: nil_r.interner.names,
         name_lexemes: nil_r.interner.name_lexemes,
         next_id: nil_r.interner.next_id,
-        seq_nil_id: nil_r.id
+        seq_nil_id: nil_r.id,
+        surface_cache: nil_r.interner.surface_cache
     }
 }
 
@@ -883,6 +940,16 @@ fn trim_type(s: string) -> string {
 
 // Parser type surfaces insert spaces between tokens (`region ( L , normal )`).
 // Interning prefixes require compact forms (`region(L,normal)`); strip spaces once up front.
+fn type_surface_has_space(s: string, i: int64) -> boolean {
+    case i >= len(s) of {
+        true -> false;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> true;
+            false -> type_surface_has_space(s, i + 1)
+        }
+    }
+}
+
 fn strip_type_spaces_from(s: string, i: int64, acc: string) -> string {
     case i >= len(s) of {
         true -> acc;
@@ -902,7 +969,11 @@ fn strip_type_spaces_from(s: string, i: int64, acc: string) -> string {
 }
 
 fn strip_type_spaces(s: string) -> string {
-    strip_type_spaces_from(s, 0, "")
+    // Hot path: selfhost annotations are usually already compact — avoid O(n) rebuild.
+    case type_surface_has_space(s, 0) of {
+        false -> s;
+        true -> strip_type_spaces_from(s, 0, "")
+    }
 }
 
 fn find_matching(s: string, i: int64, open_ch: string, close_ch: string, depth: int64) -> int64 {
@@ -1075,8 +1146,37 @@ fn find_top_type_sum_bar(s: string, i: int64, depth_paren: int64, depth_brack: i
     }
 }
 
+fn parse_type_remember(interner: TypeInterner, surface: string, stripped: string, type_id: int64) -> TypeInterner {
+    c0: ListSurfaceTypeCacheEntry <- prepend_surface_type_cache(interner.surface_cache, surface, type_id);
+    c1: ListSurfaceTypeCacheEntry <- case surface == stripped of {
+        true -> c0;
+        false -> prepend_surface_type_cache(c0, stripped, type_id)
+    };
+    interner_with_surface_cache(interner, c1)
+}
+
 fn parse_type(interner: TypeInterner, surface: string) -> TypeInternParseResult {
-    parse_type_inner(interner, surface)
+    (hit: boolean, cached_id: int64) <- lookup_surface_type_cache(interner.surface_cache, surface);
+    case hit of {
+        true -> parse_type_ok(interner, cached_id);
+        false -> do
+            stripped: string <- strip_type_spaces(trim_type(surface));
+            (hit_stripped: boolean, cached_stripped: int64) <- case surface == stripped of {
+                true -> (false, 0 - 1);
+                false -> lookup_surface_type_cache(interner.surface_cache, stripped)
+            };
+            case hit_stripped of {
+                true -> parse_type_ok(parse_type_remember(interner, surface, stripped, cached_stripped), cached_stripped);
+                false -> do
+                    pr: TypeInternParseResult <- parse_type_inner(interner, surface);
+                    case pr.ok of {
+                        true -> parse_type_ok(parse_type_remember(pr.interner, surface, stripped, pr.id), pr.id);
+                        false -> pr
+                    }
+                end
+            }
+        end
+    }
 }
 
 fn parse_type_inner(interner: TypeInterner, s: string) -> TypeInternParseResult {

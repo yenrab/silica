@@ -434,11 +434,30 @@ fn module_uses_println(sir_module: SIRModule) -> bool {
 
 // Case branch with string literal pattern (pk == "string") needs L_string_eq_helper: pointer
 // compare is wrong when scrutinee is heap/mmap (e.g. substring) vs rodata literal.
+fn pat_text_has_quoted_string(s: string) -> bool {
+    case len(s) == 0 of {
+        true -> false;
+        false -> case substring(s, 0, 1) == "\"" of {
+            true -> true;
+            false -> pat_text_has_quoted_string(substring(s, 1, len(s)))
+        }
+    }
+}
+
 fn term_has_string_case_pattern(term: SIRTerm) -> bool {
     case term.kind < 0 of {
         true -> false;
         false -> case term.kind of {
-            8 -> term.value == "string" or term.value == "tuple";
+            8 -> case term.value == "string" of {
+                true -> true;
+                false -> case term.value == "record" or term.value == "tuple" of {
+                    true -> pat_text_has_quoted_string(term.name);
+                    false -> case term_has_string_case_pattern(term.inner) of {
+                        true -> true;
+                        false -> term_has_string_case_pattern(term.right_expr)
+                    }
+                }
+            };
             3 -> case term_has_string_case_pattern(term.inner) of {
                 true -> true;
                 false -> term_has_string_case_pattern(term.right_expr)

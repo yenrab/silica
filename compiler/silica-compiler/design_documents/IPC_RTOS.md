@@ -82,16 +82,23 @@ Many actors may send messages.
 +---------+---------+----------+----------+
 ```
 
-Suggested structure
+Suggested wire record (selfhost dialect: inline record type, bound to a variable)
 
-```c
-typedef struct
-{
-    uint16_t type;
-    uint16_t sender;
-    uint16_t length;
-    uint8_t payload[MAX_PAYLOAD];
-} Message;
+```silica
+// L_ipc: static lifetime for mailbox storage (RTOS actor region)
+// MAX_PAYLOAD: compile-time byte capacity (e.g. 256)
+
+msg: {
+    type: uint16,
+    sender: uint16,
+    length: uint16,
+    payload: buf(L_ipc, normal, uint8, MAX_PAYLOAD)
+} <- {
+    type: msg_type,
+    sender: sender_id,
+    length: byte_len,
+    payload: payload_buf
+}
 ```
 
 ---

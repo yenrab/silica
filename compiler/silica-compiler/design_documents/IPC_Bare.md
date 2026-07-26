@@ -4,6 +4,8 @@
 
 This document describes an Erlang-inspired actor runtime for embedded systems running without an operating system.
 
+It also defines how **independent applications on the same piece of hardware** exchange messages—including **non-ASCII text**—without an operating system or network stack. Communication stays on-device; payloads are opaque bytes with **UTF-8** as the standard encoding whenever applications send Silica `string` values or other human-readable text.
+
 Examples include
 
 - STM32
@@ -13,7 +15,7 @@ Examples include
 - MSP430
 - Bare-metal ESP32
 
-The runtime provides asynchronous message passing between actors while performing all scheduling internally.
+The runtime provides asynchronous message passing between actors while performing all scheduling internally. Applications on the same device never share mutable memory; they communicate only through bounded datagram-style messages.
 
 ---
 
@@ -22,6 +24,8 @@ The runtime provides asynchronous message passing between actors while performin
 - No operating system
 - No shared mutable state
 - Message-oriented communication
+- Same-device application isolation with local-only delivery
+- UTF-8 text interchange (full Unicode scalar values, including non-ASCII)
 - Deterministic execution
 - Automatic supervision
 - Automatic restart
@@ -59,6 +63,29 @@ Actors never directly invoke one another.
 
 ---
 
+# Same-Device Applications
+
+Multiple applications may run on one piece of hardware without a general-purpose operating system—for example separate firmware images, core-local runtimes, or MPU-isolated regions on a multi-core MCU.
+
+```
+Device
+│
+├── Application: UI
+│   └── actors …
+│
+├── Application: Control
+│   └── actors …
+│
+└── Application: Logger
+    └── actors …
+```
+
+Each application owns private memory. The runtime (or a thin shared transport layer) delivers **datagram messages** between application mailboxes. Messages never leave the device and never traverse TCP/IP or other off-board links as part of this design.
+
+Applications agree on logical names and message types at compile time or through a shared registry; they do not pass raw pointers across the boundary.
+
+---
+
 # Mailboxes
 
 Each actor owns one circular mailbox.
@@ -89,17 +116,48 @@ Many actors may enqueue messages.
 +---------+---------+----------+----------+
 ```
 
-Suggested structure
+Suggested wire record (selfhost dialect: inline record type, bound to a variable)
 
-```c
-typedef struct
-{
-    uint16_t type;
-    uint16_t sender;
-    uint16_t length;
-    uint8_t payload[MAX_PAYLOAD];
-} Message;
+```silica
+// L_ipc: static lifetime for mailbox storage (bare-metal runtime region)
+// MAX_PAYLOAD: compile-time byte capacity (e.g. 256)
+
+msg: {
+    type: uint16,
+    sender: uint16,
+    length: uint16,
+    payload: buf(L_ipc, normal, uint8, MAX_PAYLOAD)
+} <- {
+    type: msg_type,
+    sender: sender_id,
+    length: byte_len,
+    payload: payload_buf
+}
 ```
+
+Application-level text uses Silica `string` at the API boundary; the runtime encodes it into `payload` as UTF-8 bytes before send and decodes after receive:
+
+```silica
+log_line: Line { text: string } <- Line { text: greeting }
+```
+
+The `length` field is the **byte length** of the UTF-8 (or other opaque) bytes copied into `payload`, not a Unicode character count.
+
+---
+
+# Text and Unicode
+
+Silica `string` values are UTF-8 encoded (see `silica-specification.md` §4). When applications exchange human-readable text—including accented letters, CJK, emoji, and other non-ASCII characters—the **payload bytes MUST be valid UTF-8**.
+
+Rules:
+
+- The transport is **encoding-neutral**: it copies and delivers opaque byte sequences and preserves message boundaries. It does not inspect or normalize text.
+- Each complete UTF-8 string intended for the receiver MUST fit in a single message payload, unless the applications define an explicit multi-part reassembly protocol.
+- Do not rely on NUL (`0x00`) termination; use `length` (and application message types) instead.
+- If a receiver decodes a text payload and finds invalid UTF-8, that is an **application-level error**; the transport has already delivered the datagram successfully.
+- Binary and text payloads may coexist: distinguish them with the `type` field or application-defined message variants.
+
+Example: sending the greeting `"café 🔥"` from one application to another copies eleven UTF-8 bytes (including multi-byte `é` and four-byte emoji) as one bounded payload; the receiver reconstructs a Silica `string` from those bytes.
 
 ---
 
@@ -272,6 +330,8 @@ No heap allocation is required.
 - Deterministic execution
 - Very small footprint
 - No shared mutable state
+- Local-only messaging on one device
+- Full Unicode text without an OS locale or socket stack
 - Automatic supervision
 - Automatic restart
 - Excellent modularity
@@ -293,6 +353,10 @@ No heap allocation is required.
 # Summary
 
 Each actor owns private state and one mailbox.
+
+Independent applications on the same hardware communicate through bounded local datagrams—never through shared mutable memory or off-device networking.
+
+Text payloads use UTF-8 so applications can exchange non-ASCII and full Unicode strings consistently with Silica `string`.
 
 The runtime scheduler dispatches one message at a time to ready actors.
 

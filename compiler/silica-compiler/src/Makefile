@@ -190,6 +190,9 @@ clean:
 	rm -f module_checker/*.ll
 	rm -f trait_checker/*.ll
 	rm -f effect_checker/*.ll
+	# Phase 3: drop published module ifaces so the next build cannot reuse stale caches.
+	rm -rf .cache/ifaces
+	find . -name '*.iface' -type f -delete 2>/dev/null || true
 	@echo "✅ Clean complete"
 
 # Help target

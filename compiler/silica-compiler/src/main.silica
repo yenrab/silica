@@ -35,6 +35,7 @@ use atom_table;
 use build_output;
 use diagnostics_core;
 use module_checker_core;
+use module_iface;
 use trait_checker_core;
 use trait_specialization;
 use qualified_call_mangler;
@@ -57,6 +58,163 @@ use ffi_link_manifest;
 fn compile_order_path() -> string { "silica.compile.order" }
 fn needs_runtime_marker_path() -> string { "silica.needs_runtime" }
 fn continue_exit_code() -> int64 { 75 }
+
+// Phase 0 iface plan: TC world-size instrumentation (design_documents/module_interface_cache_and_bottom_up_typecheck_plan.md).
+fn tc_world_p0_log_path() -> string { "silica.tc_world.p0.log" }
+
+fn count_named_programs(world: ListNamedProgram) -> int64 {
+    case world.is_nil of {
+        true -> 0;
+        false -> 1 + count_named_programs(world.tail)
+    }
+}
+
+fn count_declarations(decls: ListDeclaration) -> int64 {
+    case decls.is_nil of {
+        true -> 0;
+        false -> 1 + count_declarations(decls.tail)
+    }
+}
+
+fn param_type_chars(params: ListParam) -> int64 {
+    case params.is_nil of {
+        true -> 0;
+        false -> len(params.head.type_name) + param_type_chars(params.tail)
+    }
+}
+
+fn find_fn_decl_for_export_p0(decls: ListDeclaration, fn_name: string, arity: int64) -> (bool, Declaration) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case (decls.head.tag == 0 or decls.head.tag == 7 or decls.head.tag == 9) and decls.head.name == fn_name of {
+            true -> case list_param_length_p0(decls.head.parameters) == arity of {
+                true -> (true, decls.head);
+                false -> find_fn_decl_for_export_p0(decls.tail, fn_name, arity)
+            };
+            false -> find_fn_decl_for_export_p0(decls.tail, fn_name, arity)
+        }
+    }
+}
+
+fn list_param_length_p0(params: ListParam) -> int64 {
+    case params.is_nil of {
+        true -> 0;
+        false -> 1 + list_param_length_p0(params.tail)
+    }
+}
+
+fn decimal_digit_p0(ch: string) -> (bool, int64) {
+    case ch of {
+        "0" -> (true, 0);
+        "1" -> (true, 1);
+        "2" -> (true, 2);
+        "3" -> (true, 3);
+        "4" -> (true, 4);
+        "5" -> (true, 5);
+        "6" -> (true, 6);
+        "7" -> (true, 7);
+        "8" -> (true, 8);
+        "9" -> (true, 9);
+        _: string -> (false, 0)
+    }
+}
+
+fn parse_export_arity_p0(s: string, i: int64, acc: int64) -> (bool, int64) {
+    case i >= len(s) of {
+        true -> case len(s) == 0 of {
+            true -> (false, 0);
+            false -> (true, acc)
+        };
+        false -> do
+            (ok_d: bool, digit: int64) <- decimal_digit_p0(substring(s, i, i + 1));
+            case ok_d of {
+                true -> parse_export_arity_p0(s, i + 1, acc * 10 + digit);
+                false -> (false, 0)
+            }
+        end
+    }
+}
+
+fn export_items_type_chars_p0(items: ListParam, whole: ListDeclaration, sum_chars: int64, max_chars: int64, export_count: int64) -> (int64, int64, int64) {
+    case items.is_nil of {
+        true -> (sum_chars, max_chars, export_count);
+        false -> do
+            (ok_ar: bool, ar: int64) <- parse_export_arity_p0(items.head.type_name, 0, 0);
+            case ok_ar of {
+                false -> export_items_type_chars_p0(items.tail, whole, sum_chars, max_chars, export_count);
+                true -> do
+                    (fd: bool, decl: Declaration) <- find_fn_decl_for_export_p0(whole, items.head.name, ar);
+                    case fd of {
+                        false -> export_items_type_chars_p0(items.tail, whole, sum_chars, max_chars, export_count);
+                        true -> do
+                            // Approximate exported function type surface size (params + return + punctuation budget).
+                            chars: int64 <- param_type_chars(decl.parameters) + len(decl.return_type_name) + 8;
+                            next_max: int64 <- case chars > max_chars of {
+                                true -> chars;
+                                false -> max_chars
+                            };
+                            export_items_type_chars_p0(items.tail, whole, sum_chars + chars, next_max, export_count + 1)
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn program_export_type_chars_p0(decls: ListDeclaration, whole: ListDeclaration, sum_chars: int64, max_chars: int64, export_count: int64) -> (int64, int64, int64) {
+    case decls.is_nil of {
+        true -> (sum_chars, max_chars, export_count);
+        false -> case decls.head.tag == 3 of {
+            true -> do
+                (s2: int64, m2: int64, c2: int64) <- export_items_type_chars_p0(decls.head.parameters, whole, sum_chars, max_chars, export_count);
+                program_export_type_chars_p0(decls.tail, whole, s2, m2, c2)
+            end;
+            false -> program_export_type_chars_p0(decls.tail, whole, sum_chars, max_chars, export_count)
+        }
+    }
+}
+
+fn world_export_type_chars_p0(world: ListNamedProgram, sum_chars: int64, max_chars: int64, export_count: int64) -> (int64, int64, int64) {
+    case world.is_nil of {
+        true -> (sum_chars, max_chars, export_count);
+        false -> do
+            (s2: int64, m2: int64, c2: int64) <- program_export_type_chars_p0(
+                world.head.program.declarations,
+                world.head.program.declarations,
+                sum_chars,
+                max_chars,
+                export_count
+            );
+            world_export_type_chars_p0(world.tail, s2, m2, c2)
+        end
+    }
+}
+
+fn log_tc_world_p0(filename: string, program: Program, module_world: ListNamedProgram, tc_ok: string) -> int64 proc[DeviceIO] {
+    do
+        world_n: int64 <- count_named_programs(module_world);
+        self_decls: int64 <- count_declarations(program.declarations);
+        (export_sum: int64, export_max: int64, export_n: int64) <- world_export_type_chars_p0(module_world, 0, 0, 0);
+        s0: string <- concat("[iface-p0] file=", filename);
+        s1: string <- concat(s0, concat(" world_programs=", atom_table@int64_to_decimal_string(world_n)));
+        s2: string <- concat(s1, concat(" self_decls=", atom_table@int64_to_decimal_string(self_decls)));
+        s3: string <- concat(s2, concat(" dep_exports=", atom_table@int64_to_decimal_string(export_n)));
+        s4: string <- concat(s3, concat(" dep_export_type_chars_sum=", atom_table@int64_to_decimal_string(export_sum)));
+        s5: string <- concat(s4, concat(" dep_export_type_chars_max=", atom_table@int64_to_decimal_string(export_max)));
+        s6: string <- concat(s5, concat(" tc=", tc_ok));
+        line: string <- concat(s6, "\n");
+        _: bool <- append_file(tc_world_p0_log_path(), line);
+        // Also echo for the known OOM shim so operators see it without opening the log.
+        case filename_ends_with(filename, "term_emit_kind_compound.silica") of {
+            true -> do
+                println(line);
+                0
+            end;
+            false -> 0
+        }
+    end
+}
 
 fn list_string_contains_hygiene(lst: ListString, s: string) -> bool {
     case lst.is_nil of {
@@ -374,7 +532,30 @@ fn resolve_use_names_to_config_paths(uses: ListString, config: ListString, acc: 
     }
 }
 
+fn list_string_to_iface_strings(lst: ListString, acc: ListIfaceString) -> ListIfaceString {
+    case lst.is_nil of {
+        true -> module_iface@reverse_iface_string_list(acc);
+        false -> list_string_to_iface_strings(lst.tail, module_iface@cons_iface_string_public(lst.head, acc))
+    }
+}
+
+fn filter_use_paths_missing_iface(paths: ListString, config: ListString, acc: ListString) -> ListString proc[DeviceIO] {
+    case paths.is_nil of {
+        true -> reverse_list_string(acc);
+        false -> do
+            // Phase 3: skip only when a fresh iface exists (stamp/hash/deps valid).
+            cfg: ListIfaceString <- list_string_to_iface_strings(config, module_iface@empty_iface_string_list());
+            has: bool <- module_iface@iface_usable_for_source(paths.head, cfg);
+            case has of {
+                true -> filter_use_paths_missing_iface(paths.tail, config, acc);
+                false -> filter_use_paths_missing_iface(paths.tail, config, module_checker_core@cons_string(paths.head, acc))
+            }
+        end
+    }
+}
+
 // Parse `work` paths and every transitive `use` target found in config (not the whole batch).
+// Deps with a published `.iface` are not parsed (type-check imports them from iface instead).
 fn parse_use_closure_work(work: ListString, config: ListString, acc: ListParsedFile) -> (bool, ListParsedFile) proc[DeviceIO] {
     case work.is_nil of {
         true -> (true, reverse_parsed_files(acc, empty_parsed_files()));
@@ -404,7 +585,8 @@ fn parse_use_closure_work(work: ListString, config: ListString, acc: ListParsedF
                     true -> do
                         uses: ListString <- extract_use_modules_from_program(parse_result.program);
                         use_paths: ListString <- resolve_use_names_to_config_paths(uses, config, module_checker_core@empty_list_string());
-                        next_work: ListString <- append_list_string_hygiene(use_paths, work.tail);
+                        use_paths_need_parse: ListString <- filter_use_paths_missing_iface(use_paths, config, module_checker_core@empty_list_string());
+                        next_work: ListString <- append_list_string_hygiene(use_paths_need_parse, work.tail);
                         parse_use_closure_work(next_work, config, cons_parsed_file(work.head, parse_result.program, acc))
                     end
                 }
@@ -602,7 +784,7 @@ fn dep_paths_for_parsed_file(path: string, parsed: ListParsedFile, config_files:
     do
         (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, path);
         case found of {
-            true -> resolve_deps_to_paths(extract_use_modules_from_program(prog), config_files, module_checker_core@empty_list_string());
+            true -> resolve_deps_to_paths(transitive_use_names_for_program(prog, parsed), config_files, module_checker_core@empty_list_string());
             false -> module_checker_core@empty_list_string()
         }
     end
@@ -920,12 +1102,24 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
                         false -> (1, sir_ast@dummy_sir_module());
                         true -> do
                             println("  Type checking...");
+                            // Phase 0: measure TC world before type-check (survives if TC OOMs afterward).
+                            _: int64 <- log_tc_world_p0(filename, program, module_world, "start");
                             context: TypeContext <- type_checker_core@create_type_context();
                             mod_name: string <- module_checker_core@module_from_path(filename);
                             world_with_self: ListNamedProgram <- parser_ast@cons_named_program(mod_name, program, module_world);
-                            tc_out: ModuleTypecheckOutcome <- type_checker_modules@type_check_program_with_modules_outcome(program, mod_name, world_with_self, context);
+                            // Phase 2: load published ifaces for transitive `use` closure; inject stub
+                            // Programs so TC/effects resolve exports without loading dep full ASTs.
+                            use_names: ListString <- transitive_use_names_for_program(program, all_parsed);
+                            use_names_iface: ListIfaceString <- list_string_to_iface_strings(use_names, module_iface@empty_iface_string_list());
+                            config_iface: ListIfaceString <- list_string_to_iface_strings(config_files, module_iface@empty_iface_string_list());
+                            dep_ifaces: ListModuleIface <- module_iface@load_ifaces_for_module_names(use_names_iface, config_iface);
+                            world_for_tc: ListNamedProgram <- module_iface@append_iface_stub_programs(world_with_self, dep_ifaces);
+                            tc_out: ModuleTypecheckOutcome <- type_checker_modules@type_check_program_with_modules_outcome(program, mod_name, world_for_tc, context);
                             case tc_out.is_ok of {
                                 true -> do
+                                    _: int64 <- log_tc_world_p0(filename, program, module_world, "ok");
+                                    // Phase 1: publish module iface after successful type check (write-only).
+                                    _: int64 <- module_iface@publish_module_iface(mod_name, filename, program, config_iface);
                                     println("  FFI ABI...");
                                     abi_st: int64 <- ffi_abi_checker@validate_program_ffi_abi(program);
                                     case abi_st == 0 of {
@@ -942,7 +1136,7 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
                                                         true -> (1, sir_ast@dummy_sir_module());
                                                         false -> do
                                                             println("  Effect checking...");
-                                                            effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program, world_with_self);
+                                                            effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program, world_for_tc);
                                                             case effect_result.is_ok of {
                                                                 true -> do
                                                                     _: int64 <- case debug_compile(filename) of {
@@ -955,7 +1149,11 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
                                                                     };
                                                                     println("  Generating SIR...");
                                                                     specialized_program: Program <- specialized_program_for_module(mod_name, program, specialized_all);
-                                                                    mangled_program: Program <- qualified_call_mangler@mangle_calls_in_program(specialized_program, specialized_all);
+                                                                    // Same stub inject as TC: when a `use` dep was parse-skipped via iface,
+                                                                    // specialized_all has no Program for it and overload/trait link mangling
+                                                                    // would emit unmangled names (link failure). Stubs carry export trait + impls.
+                                                                    world_for_sir: ListNamedProgram <- module_iface@append_iface_stub_programs(specialized_all, dep_ifaces);
+                                                                    mangled_program: Program <- qualified_call_mangler@mangle_calls_in_program(specialized_program, world_for_sir);
                                                                     link_libs: ListSirString <- ffi_sidecar_loader@collect_program_link_libraries(program);
                                                                     sir_module: SIRModule <- sir_generator_core@emit_program_for_unit_with_link_libraries(mangled_program, tc_out.context, mod_name, link_libs);
                                                                     _: int64 <- case debug_compile(filename) of {
@@ -989,6 +1187,9 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
                                     }
                                 end;
                                 false -> do
+                                    _: int64 <- log_tc_world_p0(filename, program, module_world, "fail");
+                                    // Phase 1: do not leave a stale published iface after TC failure.
+                                    _: int64 <- module_iface@unpublish_module_iface_at_path(filename);
                                     error_code: string <- case tc_out.error_code == "" of {
                                         true -> "E2000";
                                         false -> tc_out.error_code

@@ -889,26 +889,47 @@ fn normalize_type_equal_text(s: string) -> string {
 }
 
 fn types_equal_surface(a: string, b: string) -> bool {
-    na: string <- normalize_type_equal_text(a);
-    nb: string <- normalize_type_equal_text(b);
-    case na == nb of {
+    // Exact match first (no allocation). Huge surfaces skip O(n) mem(normal) rewriting;
+    // callers should prefer type_checker_core@context_surfaces_equal / type ids.
+    case a == b of {
         true -> true;
-        false -> case type_checker_recursive_tuples@ref_fits_ref_optional_slot(na, nb) of {
-            true -> true;
-            false -> case type_checker_recursive_tuples@needs_recursive_compare(na, nb) of {
-                true -> type_checker_recursive_tuples@recursive_types_equal(na, nb);
-                false -> false
-            }
+        false -> case len(a) > 512 or len(b) > 512 of {
+            true -> case type_checker_recursive_tuples@ref_fits_ref_optional_slot(a, b) of {
+                true -> true;
+                false -> case type_checker_recursive_tuples@needs_recursive_compare(a, b) of {
+                    true -> type_checker_recursive_tuples@recursive_types_equal(a, b);
+                    false -> false
+                }
+            };
+            false -> do
+                na: string <- normalize_type_equal_text(a);
+                nb: string <- normalize_type_equal_text(b);
+                case na == nb of {
+                    true -> true;
+                    false -> case type_checker_recursive_tuples@ref_fits_ref_optional_slot(na, nb) of {
+                        true -> true;
+                        false -> case type_checker_recursive_tuples@needs_recursive_compare(na, nb) of {
+                            true -> type_checker_recursive_tuples@recursive_types_equal(na, nb);
+                            false -> false
+                        }
+                    }
+                }
+            end
         }
     }
 }
 
+// Replace each "mem(normal)" with "normal" without per-character concat on the common path.
 fn normalize_mem_normal_alias(s: string) -> string {
-    case len(s) < 11 of {
-        true -> s;
-        false -> case substring(s, 0, 11) == "mem(normal)" of {
-            true -> concat("normal", normalize_mem_normal_alias(substring(s, 11, len(s))));
-            false -> concat(substring(s, 0, 1), normalize_mem_normal_alias(substring(s, 1, len(s))))
+    normalize_mem_normal_alias_from(s, 0, "")
+}
+
+fn normalize_mem_normal_alias_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case i + 11 <= len(s) and substring(s, i, i + 11) == "mem(normal)" of {
+            true -> normalize_mem_normal_alias_from(s, i + 11, concat(acc, "normal"));
+            false -> normalize_mem_normal_alias_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
         }
     }
 }

@@ -73,7 +73,11 @@ export type_id_is_discard/2;
 export type_id_eq_or_discard/3;
 export context_parse_type/2;
 export context_require_type/2;
+export context_surfaces_equal/3;
+export context_surface_matches_type_id/3;
 export type_id_to_surface/2;
+export lookup_function_type_id_for_call/2;
+export lookup_fn_type_id_by_name_and_module/3;
 export type_id_is_integer_kind/2;
 export type_id_is_float_kind/2;
 export type_id_accepts_numeric_literal/2;
@@ -310,6 +314,41 @@ fn context_require_type(ctx: TypeContext, surface: string) -> TypeContextParseOu
     context_parse_type(ctx, surface)
 }
 
+// Id-first surface equality. Threads parse cache via context; falls back to string
+// compare only when interned ids differ (ref?/recursive edge cases).
+fn context_surfaces_equal(ctx: TypeContext, a: string, b: string) -> bool {
+    case a == b of {
+        true -> true;
+        false -> do
+            pa: TypeContextParseOutcome <- context_parse_type(ctx, a);
+            case pa.ok of {
+                false -> false;
+                true -> do
+                    pb: TypeContextParseOutcome <- context_parse_type(pa.context, b);
+                    case pb.ok of {
+                        false -> false;
+                        true -> types_equal_type_ids(pa.type_id, pb.type_id)
+                    }
+                end
+            }
+        end
+    }
+}
+
+// Id-first: does surface intern to expected_type? No print_type on the success path.
+fn context_surface_matches_type_id(ctx: TypeContext, surface: string, expected_type: int64) -> bool {
+    case types_equal_type_ids(expected_type, invalid_type_id()) of {
+        true -> false;
+        false -> do
+            pa: TypeContextParseOutcome <- context_parse_type(ctx, surface);
+            case pa.ok of {
+                false -> false;
+                true -> types_equal_type_ids(expected_type, pa.type_id)
+            }
+        end
+    }
+}
+
 fn add_params_concrete_loop1(st: ParamConcreteEnv) -> TypeContext {
     case st.decl_params.is_nil of {
         true -> st.base;
@@ -424,14 +463,15 @@ fn type_name_in_supervisor_csv(t: string, csv: string) -> bool {
 }
 
 fn add_symbol(ctx: TypeContext, name: string, type_name: string, declared_effects: ListEffectName, source_module: string) -> TypeContext {
-    pr: TypeInternParseResult <- type_interner@parse_type(type_context_interner(ctx), type_name);
-    tid: int64 <- case type_interner@parse_result_ok(pr) of {
-        true -> type_interner@parse_result_id(pr);
+    // Route through context_parse_type so the interner surface->id cache is populated/reused.
+    parsed: TypeContextParseOutcome <- context_parse_type(ctx, type_name);
+    tid: int64 <- case parsed.ok of {
+        true -> parsed.type_id;
         false -> invalid_type_id()
     };
     entry: SymbolEntry <- symbol_entry_make(name, type_name, tid, declared_effects, false, source_module);
-    new_env: ListSymbolEntry <- prepend_symbol_entry(type_context_env(ctx), entry);
-    type_context_rebuild(ctx, new_env, type_interner@parse_result_interner(pr))
+    new_env: ListSymbolEntry <- prepend_symbol_entry(type_context_env(parsed.context), entry);
+    type_context_rebuild(parsed.context, new_env, type_context_interner(parsed.context))
 }
 
 fn add_effect_alias_symbol(ctx: TypeContext, name: string, effects: ListEffectName) -> TypeContext {
@@ -544,6 +584,26 @@ fn lookup_fn_type_by_name_and_module(env: ListSymbolEntry, fn_name: string, requ
     }
 }
 
+// Prefer this over re-parsing lookup_fn_type_by_name_and_module surfaces on hot call paths.
+fn lookup_fn_type_id_by_name_and_module(env: ListSymbolEntry, fn_name: string, required_module: string) -> int64 {
+    case env.is_nil of {
+        true -> invalid_type_id();
+        false -> case instantiated_fn_name@decl_name_matches(env.head.name, fn_name) and env.head.is_effect_alias == false of {
+            true -> case len(required_module) == 0 of {
+                true -> case env.head.source_module == "" of {
+                    true -> env.head.type_id;
+                    false -> lookup_fn_type_id_by_name_and_module(env.tail, fn_name, required_module)
+                };
+                false -> case env.head.source_module == required_module of {
+                    true -> env.head.type_id;
+                    false -> lookup_fn_type_id_by_name_and_module(env.tail, fn_name, required_module)
+                }
+            };
+            false -> lookup_fn_type_id_by_name_and_module(env.tail, fn_name, required_module)
+        }
+    }
+}
+
 // Internal helper for callers that need (bool, string); prefer lookup_fn_type_by_name_and_module from proc callers.
 fn lookup_fn_by_name_and_module(env: ListSymbolEntry, fn_name: string, required_module: string) -> (bool, string) {
     ft: string <- lookup_fn_type_by_name_and_module(env, fn_name, required_module);
@@ -566,6 +626,14 @@ fn lookup_function_type_for_call(env: ListSymbolEntry, composite_name: string) -
     case at < 0 of {
         true -> lookup_fn_type_by_name_and_module(env, composite_name, "");
         false -> lookup_fn_type_by_name_and_module(env, substring(composite_name, at + 1, len(composite_name)), substring(composite_name, 0, at))
+    }
+}
+
+fn lookup_function_type_id_for_call(env: ListSymbolEntry, composite_name: string) -> int64 {
+    at: int64 <- first_at_in_call_name(composite_name, 0);
+    case at < 0 of {
+        true -> lookup_fn_type_id_by_name_and_module(env, composite_name, "");
+        false -> lookup_fn_type_id_by_name_and_module(env, substring(composite_name, at + 1, len(composite_name)), substring(composite_name, 0, at))
     }
 }
 
