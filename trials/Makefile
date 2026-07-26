@@ -67,13 +67,17 @@ integrate-ffi: ensure-silica-compiler
 	echo "fail: ❌❌ $$ko"; \
 	test "$$ko" -eq 0 && test "$${failed:-0}" -eq 0
 
-# clean: delegate so each trial removes what its Makefile defines (same dirs as integrate)
+# clean: delegate so each trial removes what its Makefile defines (same dirs as integrate),
+# then drop any published *.iface caches under the trials tree.
 clean:
 	@failed=0; \
 	for dir in $(TRIAL_SUBDIRS); do \
 		echo "Cleaning $$dir..."; \
 		$(MAKE) -C $$dir clean || failed=1; \
 	done; \
+	echo "Removing *.iface and .cache/ifaces under trials..."; \
+	rm -rf "$(THIS_DIR).cache/ifaces"; \
+	find "$(THIS_DIR)" -name '*.iface' -type f -delete 2>/dev/null || true; \
 	if [ "$${failed:-0}" -eq 0 ]; then echo "Clean complete"; else echo "❌ clean: one or more trial directories failed"; fi; \
 	test "$${failed:-0}" -eq 0
 
@@ -89,7 +93,7 @@ help:
 	@echo "                  (<n>/<m> sum each trial's .integrate_counts: ok fail)"
 	@echo "  integrate-ffi - FFI success-path app trials only: make -C ffi_addition integrate"
 	@echo "                  (failure goldens: error_enforcement_addition/ffi_addition integrate)"
-	@echo "  clean         - For each trial subdir: make -C <dir> clean (rules live in that subdir)"
+	@echo "  clean         - For each trial subdir: make -C <dir> clean, then remove all *.iface / .cache/ifaces"
 	@echo "  help       - Show this help"
 	@echo ""
 	@echo "Per-trial silica.config: run \`make -C <trial_dir> silica.config\` (see that Makefile)."

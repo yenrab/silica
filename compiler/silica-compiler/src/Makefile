@@ -179,9 +179,9 @@ integrate: $(EXECUTABLE)
 	if [ $$failed -eq 0 ]; then $(SRC_COMPLETION_BING); fi; \
 	exit $$failed
 
-# Clean generated files (including subdirectories)
+# Clean generated files (including subdirectories and published *.iface caches)
 clean:
-	@echo "Cleaning generated files..."
+	@echo "Cleaning generated files (including *.iface and .cache/ifaces)..."
 	@for d in $(SUBDIRS); do $(MAKE) -C $$d clean TARGET=$(TARGET) 2>/dev/null || true; done
 	rm -f *.ll *.bc *.o $(EXECUTABLE)
 	rm -f lexer/*.ll
@@ -190,7 +190,7 @@ clean:
 	rm -f module_checker/*.ll
 	rm -f trait_checker/*.ll
 	rm -f effect_checker/*.ll
-	# Phase 3: drop published module ifaces so the next build cannot reuse stale caches.
+	# Drop published module ifaces so the next build cannot reuse stale caches.
 	rm -rf .cache/ifaces
 	find . -name '*.iface' -type f -delete 2>/dev/null || true
 	@echo "✅ Clean complete"
@@ -218,7 +218,7 @@ help:
 	@echo "  subdirs          - Build lexer, parser, type_checker, sir_generator, emitter"
 	@echo "  executables      - Compile main.silica to LLVM IR"
 	@echo "  modules          - Compile lexer and parser module files to LLVM IR"
-	@echo "  clean            - Remove all generated .ll files"
+	@echo "  clean            - Remove generated artifacts (*.ll/*.o, *.iface, .cache/ifaces)"
 	@echo "  integrate        - Build silica-compiler, then make integrate in each $(TRIALS_ROOT)/*/ Makefile"
 	@echo "  help             - Show this help"
 	@echo ""

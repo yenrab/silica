@@ -206,7 +206,7 @@ all-targets:
 	@echo "✅ all-targets complete: $(ALLOWED_TARGETS)"
 
 clean:
-	@echo "Cleaning generated files..."
+	@echo "Cleaning generated files (including *.iface and .cache/ifaces)..."
 	@cd "$(THIS_DIR)" && \
 	  find . \( -name '*.sams' -o -name '*.o' -o -name '*.ll' -o -name '*.bc' \) ! -path './_wd_probe/*' -delete; \
 	  rm -f $(EXECUTABLE) silica.config silica.config.compiler silica.target silica.link \
@@ -262,7 +262,7 @@ help:
 	@echo "  silica.config.compiler    regenerate unit list for TARGET"
 	@echo "  silica.target             rewrite emit_target declaration"
 	@echo "  all-targets               build silica-compiler-<TARGET> for each allowable TARGET"
-	@echo "  clean                     remove generated artifacts (including silica.target)"
+	@echo "  clean                     remove generated artifacts (*.sams/*.o, silica.target, *.iface, .cache/ifaces)"
 	@echo "  check-target              validate TARGET against emitter/*/"
 	@echo "  check-seed                ensure binaries/silica-compiler exists"
 	@echo ""
