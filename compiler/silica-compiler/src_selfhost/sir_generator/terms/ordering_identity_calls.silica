@@ -19,7 +19,6 @@
 
 use sir_ast;
 use types;
-use type_checker_core;
 use parser_ast;
 
 export is_ordering_identity_builtin/1;
@@ -30,7 +29,6 @@ export ordering_env_binding_name/1;
 export context_has_ordering_env_binding/2;
 export build_ordering_env_zero/0;
 export build_ordering_env_init/1;
-export build_ordering_env_zero/0;
 export wrap_fn_let_with_ordering_env/6;
 export prepare_fn_binding_context/4;
 export build_fn_binding_lets/5;
@@ -69,10 +67,29 @@ fn ordering_env_binding_name(bind_name: string) -> string {
     concat(bind_name, ".__oid_env")
 }
 
-fn context_has_ordering_env_binding(context: TypeContext, bind_name: string) -> bool {
+// SIR generator keeps a type_name string env (not type_checker_core's type_id env).
+fn sir_env_has_name(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], name: string) -> bool {
+    case env.is_nil of {
+        true -> false;
+        false -> case env.head.name == name of {
+            true -> true;
+            false -> sir_env_has_name(env.tail, name)
+        }
+    }
+}
+
+fn sir_env_add_symbol(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], source_module: string) -> List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        entry: { name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string } <- { name: name, type_name: type_name, declared_effects: declared_effects, is_effect_alias: false, source_module: source_module };
+        result: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- prepend[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)](entry, env)
+    produces
+        pure result
+    end
+}
+
+fn context_has_ordering_env_binding(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, bind_name: string) -> bool {
     env_name: string <- ordering_env_binding_name(bind_name);
-    (found: bool, _: string) <- type_checker_core@lookup_symbol_found(context.env, env_name);
-    found
+    sir_env_has_name(context.env, env_name)
 }
 
 fn build_ordering_env_zero() -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
@@ -87,8 +104,9 @@ fn build_ordering_env_init(use_fresh: bool) -> { nodes: List[{ kind: int64, type
 }
 
 fn rhs_is_lambda_identifier(rhs_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> bool {
-    case rhs_expr.kind == 1 of {
-        true -> is_lifted_lambda_identifier(rhs_expr.name);
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(rhs_expr);
+    case node.kind == 1 of {
+        true -> is_lifted_lambda_identifier(node.name);
         false -> false
     }
 }
@@ -107,11 +125,12 @@ fn use_fresh_ordering_env_for_rhs(rhs_expr: { nodes: List[{ kind: int64, value: 
     rhs_is_lambda_identifier(rhs_expr)
 }
 
-fn build_ordering_env_for_fn_operand(context: TypeContext, fn_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    case fn_expr.kind == 1 of {
-        true -> case context_has_ordering_env_binding(context, fn_expr.name) of {
+fn build_ordering_env_for_fn_operand(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, fn_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(fn_expr);
+    case node.kind == 1 of {
+        true -> case context_has_ordering_env_binding(context, node.name) of {
             true -> {
-                env_name: string <- ordering_env_binding_name(fn_expr.name);
+                env_name: string <- ordering_env_binding_name(node.name);
                 prefixed: string <- concat("%", env_name);
                 sir_ast@make_sir_term(1, "int64", "", prefixed, sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term())
             };
@@ -121,17 +140,17 @@ fn build_ordering_env_for_fn_operand(context: TypeContext, fn_expr: { nodes: Lis
     }
 }
 
-fn prepare_fn_binding_context(context: TypeContext, bind_name: string, bind_type: string, rhs_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> TypeContext {
+fn prepare_fn_binding_context(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, bind_name: string, bind_type: string, rhs_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } {
     case needs_ordering_env_binding(bind_type, bind_name, rhs_expr) of {
         false -> {
-            new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(context.env, bind_name, bind_type, parser_ast@empty_effect_name_list(), "");
-            type_checker_core@type_context_with_env(context, new_env)
+            new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- sir_env_add_symbol(context.env, bind_name, bind_type, parser_ast@empty_effect_name_list(), "");
+            { env: new_env }
         };
         true -> {
             env_name: string <- ordering_env_binding_name(bind_name);
-            env_symbols: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(context.env, env_name, "int64", parser_ast@empty_effect_name_list(), "");
-            fn_symbols: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(env_symbols, bind_name, bind_type, parser_ast@empty_effect_name_list(), "");
-            type_checker_core@type_context_with_env(context, fn_symbols)
+            env_symbols: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- sir_env_add_symbol(context.env, env_name, "int64", parser_ast@empty_effect_name_list(), "");
+            fn_symbols: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- sir_env_add_symbol(env_symbols, bind_name, bind_type, parser_ast@empty_effect_name_list(), "");
+            { env: fn_symbols }
         }
     }
 }
@@ -151,7 +170,7 @@ fn build_fn_binding_lets(bind_name: string, bind_type: string, rhs_expr: { nodes
     }
 }
 
-fn wrap_fn_let_with_ordering_env(context: TypeContext, bind_name: string, bind_type: string, rhs_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, rhs_sir: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, inner_sir: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> ({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, TypeContext) {
+fn wrap_fn_let_with_ordering_env(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, bind_name: string, bind_type: string, rhs_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, rhs_sir: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, inner_sir: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> ({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }) {
     new_context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- prepare_fn_binding_context(context, bind_name, bind_type, rhs_expr);
     let_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- build_fn_binding_lets(bind_name, bind_type, rhs_expr, rhs_sir, inner_sir);
     (let_term, new_context)

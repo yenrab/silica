@@ -76,93 +76,88 @@ fn cons_token(head: { kind: int64, lexeme: string, location: { file: string, lin
 - Last-modified-by: Lee S. Barney
 -}
 fn tokenize(lexer: { source: string, position: int64, line: int64, column: int64, file: string }, tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
-    sequence proc[mem(normal)]
-        // Skip whitespace and comments
-        after_comments: { source: string, position: int64, line: int64, column: int64, file: string } <- skip_whitespace_and_line_comments(lexer);
+    after_comments: { source: string, position: int64, line: int64, column: int64, file: string } <- skip_whitespace_and_line_comments(lexer);
 
-        current: string <- lexer_core@peek_char(after_comments);
+    current: string <- lexer_core@peek_char(after_comments);
 
-        // DEBUG: Print peek_char result before pattern matching
-        //         println("DEBUG peek_char pos=");
-        //         print_int64(after_comments.position);
-        //         println(" current=[");
-        //         println(current);
-        //         println("]");
-        //
+    // DEBUG: Print peek_char result before pattern matching
+    //         println("DEBUG peek_char pos=");
+    //         print_int64(after_comments.position);
+    //         println(" current=[");
+    //         println(current);
+    //         println("]");
+    //
 
-        // Check for EOF: use len() to avoid reliance on string equality for "" (robust against
-        // empty-string representation differences between substring result and literal "")
-        is_empty: bool <- len(current) == 0;
-        result: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- case is_empty of {
-            true -> {
-                                eof_location: { file: string, line: int64, column: int64, offset: int64 } <- lexer_core@current_location(after_comments);
-                eof_token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- lexer_core@make_token(lexer_token_kind@token_kind_eof(), "", eof_location);
-                cons_token(eof_token, tokens )
+    // Check for EOF: use len() to avoid reliance on string equality for "" (robust against
+    // empty-string representation differences between substring result and literal "")
+    is_empty: bool <- len(current) == 0;
+    case is_empty of {
+        true -> {
+                            eof_location: { file: string, line: int64, column: int64, offset: int64 } <- lexer_core@current_location(after_comments);
+            eof_token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- lexer_core@make_token(lexer_token_kind@token_kind_eof(), "", eof_location);
+            cons_token(eof_token, tokens )
+        };
+        false -> case current of {
+            " " -> {
+                // Workaround: skip_whitespace sometimes doesn't skip space (bootstrap bug?)
+                advanced: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(after_comments);
+                tokenize(advanced, tokens)
             };
-            false -> case current of {
-                " " -> {
-                    // Workaround: skip_whitespace sometimes doesn't skip space (bootstrap bug?)
-                    advanced: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(after_comments);
-                    tokenize(advanced, tokens)
-                };
-                "\t" -> {
-                    advanced: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(after_comments);
-                    tokenize(advanced, tokens)
-                };
-                "\n" -> {
-                    advanced: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(after_comments);
-                    tokenize(advanced, tokens)
-                };
-                "\r" -> {
-                    advanced: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(after_comments);
-                    tokenize(advanced, tokens)
-                };
-                _: string -> {
-                    // Determine token type and read it
-                    token_and_lexer: ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, { source: string, position: int64, line: int64, column: int64, file: string }) <- case lexer_keywords@is_identifier_start(current) of {
-                        true -> lexer_keywords@read_identifier(after_comments);
-                        false -> case lexer_integer_literals@is_decimal_digit_char(current) of {
-                            true -> lexer_float_literals@read_numeric_literal(after_comments);
-                            false -> case current of {
-                                ":" -> lexer_atom_literals@read_colon_or_atom_literal(after_comments);
-                                "\"" -> lexer_string_literals@read_string_literal(after_comments);
-                                "'" -> lexer_string_literals@read_char_literal(after_comments);
-                                "-" -> lexer_operators@read_arrow(after_comments);
-                                "(" -> lexer_operators@read_grouping_operator(after_comments, "(");
-                                ")" -> lexer_operators@read_grouping_operator(after_comments, ")");
-                                "{" -> lexer_operators@read_grouping_operator(after_comments, "{");
-                                "}" -> lexer_operators@read_grouping_operator(after_comments, "}");
-                                "[" -> lexer_operators@read_grouping_operator(after_comments, "[");
-                                "]" -> lexer_operators@read_grouping_operator(after_comments, "]");
-                                "," -> lexer_operators@read_grouping_operator(after_comments, ",");
-                                ";" -> lexer_operators@read_grouping_operator(after_comments, ";");
-                                "." -> lexer_operators@read_grouping_operator(after_comments, ".");
-                                "@" -> lexer_operators@read_grouping_operator(after_comments, "@");
-                                "+" -> lexer_operators@read_single_char_arithmetic(after_comments, "+");
-                                "*" -> lexer_operators@read_single_char_arithmetic(after_comments, "*");
-                                "/" -> lexer_operators@read_single_char_arithmetic(after_comments, "/");
-                                "%" -> lexer_operators@read_single_char_arithmetic(after_comments, "%");
-                                "<" -> lexer_operators@read_less_than(after_comments);
-                                ">" -> lexer_operators@read_greater_than(after_comments);
-                                "=" -> lexer_operators@read_equal(after_comments);
-                                "!" -> lexer_operators@read_bang_equal(after_comments);
-                                _: string -> {
-                                                                        error_location: { file: string, line: int64, column: int64, offset: int64 } <- lexer_core@current_location(after_comments);
-                                    error_token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- lexer_core@make_token(lexer_token_kind@token_kind_unknown_char(), current, error_location);
-                                    (error_token, lexer_core@advance(after_comments))
-                                }
+            "\t" -> {
+                advanced: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(after_comments);
+                tokenize(advanced, tokens)
+            };
+            "\n" -> {
+                advanced: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(after_comments);
+                tokenize(advanced, tokens)
+            };
+            "\r" -> {
+                advanced: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(after_comments);
+                tokenize(advanced, tokens)
+            };
+            _: string -> {
+                // Determine token type and read it
+                token_and_lexer: ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, { source: string, position: int64, line: int64, column: int64, file: string }) <- case lexer_keywords@is_identifier_start(current) of {
+                    true -> lexer_keywords@read_identifier(after_comments);
+                    false -> case lexer_integer_literals@is_decimal_digit_char(current) of {
+                        true -> lexer_float_literals@read_numeric_literal(after_comments);
+                        false -> case current of {
+                            ":" -> lexer_atom_literals@read_colon_or_atom_literal(after_comments);
+                            "\"" -> lexer_string_literals@read_string_literal(after_comments);
+                            "'" -> lexer_string_literals@read_char_literal(after_comments);
+                            "-" -> lexer_operators@read_arrow(after_comments);
+                            "(" -> lexer_operators@read_grouping_operator(after_comments, "(");
+                            ")" -> lexer_operators@read_grouping_operator(after_comments, ")");
+                            "{" -> lexer_operators@read_grouping_operator(after_comments, "{");
+                            "}" -> lexer_operators@read_grouping_operator(after_comments, "}");
+                            "[" -> lexer_operators@read_grouping_operator(after_comments, "[");
+                            "]" -> lexer_operators@read_grouping_operator(after_comments, "]");
+                            "," -> lexer_operators@read_grouping_operator(after_comments, ",");
+                            ";" -> lexer_operators@read_grouping_operator(after_comments, ";");
+                            "." -> lexer_operators@read_grouping_operator(after_comments, ".");
+                            "@" -> lexer_operators@read_grouping_operator(after_comments, "@");
+                            "+" -> lexer_operators@read_single_char_arithmetic(after_comments, "+");
+                            "*" -> lexer_operators@read_single_char_arithmetic(after_comments, "*");
+                            "/" -> lexer_operators@read_single_char_arithmetic(after_comments, "/");
+                            "%" -> lexer_operators@read_single_char_arithmetic(after_comments, "%");
+                            "<" -> lexer_operators@read_less_than(after_comments);
+                            ">" -> lexer_operators@read_greater_than(after_comments);
+                            "=" -> lexer_operators@read_equal(after_comments);
+                            "!" -> lexer_operators@read_bang_equal(after_comments);
+                            _: string -> {
+                                                                    error_location: { file: string, line: int64, column: int64, offset: int64 } <- lexer_core@current_location(after_comments);
+                                error_token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- lexer_core@make_token(lexer_token_kind@token_kind_unknown_char(), current, error_location);
+                                (error_token, lexer_core@advance(after_comments))
                             }
                         }
-                    };
-                    (token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, next_lexer: { source: string, position: int64, line: int64, column: int64, file: string }) <- token_and_lexer;
-                    new_tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- cons_token(token, tokens );
-                    tokenize(next_lexer, new_tokens)
-                }
+                    }
+                };
+                (token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, next_lexer: { source: string, position: int64, line: int64, column: int64, file: string }) <- token_and_lexer;
+                new_tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- cons_token(token, tokens );
+                tokenize(next_lexer, new_tokens)
             }
         }
-    produces
-        pure result
-    end
+    }
 }
 
 
@@ -196,7 +191,8 @@ fn empty_token_list() -> List[{ kind: int64, lexeme: string, location: { file: s
 - Last-modified-by: Lee S. Barney
 -}
 fn lexer_runner(filename: string) -> List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
-    sequence proc[mem(normal), DeviceIO]
+    // DeviceIO for read_lines; mem is encapsulated in empty_token_list / cons_token.
+    sequence proc[DeviceIO]
         source: string <- read_lines(filename);
         lexer: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@new_lexer(source, filename);
         initial_tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- empty_token_list();

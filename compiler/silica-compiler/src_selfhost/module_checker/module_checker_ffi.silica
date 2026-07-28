@@ -92,7 +92,10 @@ fn program_has_wrapper_meta_loop(decls: List[{ tag: int64, name: string, paramet
 fn foreign_binding_has_meta(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) -> bool {
     case decl.tag == 9 of {
         false -> false;
-        true -> len(decl.body.name) > 0
+        true -> {
+            body_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(decl.body);
+            len(body_node.name) > 0
+        }
     }
 }
 
@@ -120,7 +123,8 @@ fn first_foreign_binding_location_loop(decls: List[{ tag: int64, name: string, p
 }
 
 fn ffi_wrapper_warning_message(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) -> string {
-    c_symbol: string <- strip_string_literal_quotes(decl.body.value);
+    body_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(decl.body);
+    c_symbol: string <- strip_string_literal_quotes(body_node.value);
     concat(
         "DANGER DANGER DANGER: this module uses FFI wrapper '",
         concat(
@@ -137,29 +141,21 @@ fn ffi_wrapper_warning_message(decl: { tag: int64, name: string, parameters: Lis
 }
 
 fn emit_ffi_wrapper_warnings_loop(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> int64 {
-    sequence proc[DeviceIO]
-        result: int64 <- case decls.is_nil of {
-            true -> 0;
-            false -> case decls.head.tag == 9 of {
-                true -> {
-                    msg: string <- ffi_wrapper_warning_message(decls.head);
-                    _: int8 <- diagnostics_core@print_compiler_warning("FFI_Warning", "W4001", decls.head.location, msg, "sect3");
-                    emit_ffi_wrapper_warnings_loop(decls.tail)
-                };
-                false -> emit_ffi_wrapper_warnings_loop(decls.tail)
-            }
+    case decls.is_nil of {
+        true -> 0;
+        false -> case decls.head.tag == 9 of {
+            true -> {
+                msg: string <- ffi_wrapper_warning_message(decls.head);
+                _: int8 <- diagnostics_core@print_compiler_warning("FFI_Warning", "W4001", decls.head.location, msg, "sect3");
+                emit_ffi_wrapper_warnings_loop(decls.tail)
+            };
+            false -> emit_ffi_wrapper_warnings_loop(decls.tail)
         }
-    produces
-        pure result
-    end
+    }
 }
 
 fn emit_ffi_wrapper_warnings(program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) -> int64 {
-    sequence proc[DeviceIO]
-        result: int64 <- emit_ffi_wrapper_warnings_loop(program.declarations)
-    produces
-        pure result
-    end
+    emit_ffi_wrapper_warnings_loop(program.declarations)
 }
 
 fn validate_sidecar_path_lexeme(lexeme: string, loc: { file: string, line: int64, column: int64, offset: int64 }) -> (int64, string, { file: string, line: int64, column: int64, offset: int64 }, string, string) {
@@ -190,13 +186,16 @@ fn validate_foreign_meta_paths_loop(decls: List[{ tag: int64, name: string, para
     case decls.is_nil of {
         true -> (0, "", parser_ast@zero_location(), "", "");
         false -> case decls.head.tag == 9 of {
-            true -> case len(decls.head.body.name) > 0 of {
-                false -> validate_foreign_meta_paths_loop(decls.tail);
-                true -> {
-                    (st: int64, ec: string, eloc: { file: string, line: int64, column: int64, offset: int64 }, emsg: string, espec: string) <- validate_sidecar_path_lexeme(decls.head.body.name, decls.head.location);
-                    case st == 0 of {
-                        false -> (st, ec, eloc, emsg, espec);
-                        true -> validate_foreign_meta_paths_loop(decls.tail)
+            true -> {
+                body_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(decls.head.body);
+                case len(body_node.name) > 0 of {
+                    false -> validate_foreign_meta_paths_loop(decls.tail);
+                    true -> {
+                        (st: int64, ec: string, eloc: { file: string, line: int64, column: int64, offset: int64 }, emsg: string, espec: string) <- validate_sidecar_path_lexeme(body_node.name, decls.head.location);
+                        case st == 0 of {
+                            false -> (st, ec, eloc, emsg, espec);
+                            true -> validate_foreign_meta_paths_loop(decls.tail)
+                        }
                     }
                 }
             };
@@ -252,19 +251,25 @@ fn is_spawn_dangerous_call(name: string) -> bool {
 }
 
 fn validate_expr_dangerous_spawn_surface(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> (int64, string, { file: string, line: int64, column: int64, offset: int64 }, string, string) {
-    case expr.kind == -1 of {
+    case expr.root < 0 of {
         true -> (0, "", parser_ast@zero_location(), "", "");
-        false -> case expr.kind == 4 of {
-            true -> case is_dangerous_spawn_surface_call(expr.name) of {
-                true -> (1, "E4026", expr.location, dangerous_spawn_surface_error(), "sect3.1");
-                false -> validate_expr_pair_dangerous_spawn_surface(expr.inner, expr.right_expr)
-            };
-            false -> case expr.kind == 6 of {
-                true -> case is_dangerous_actor_ref_type(expr.value) of {
-                    true -> (1, "E4026", expr.location, dangerous_spawn_surface_error(), "sect3.1");
-                    false -> validate_expr_pair_dangerous_spawn_surface(expr.inner, expr.right_expr)
-                };
-                false -> validate_expr_pair_dangerous_spawn_surface(expr.inner, expr.right_expr)
+        false -> {
+            node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+            case node.kind < 0 of {
+                true -> (0, "", parser_ast@zero_location(), "", "");
+                false -> case node.kind == 4 of {
+                    true -> case is_dangerous_spawn_surface_call(node.name) of {
+                        true -> (1, "E4026", node.location, dangerous_spawn_surface_error(), "sect3.1");
+                        false -> validate_expr_pair_dangerous_spawn_surface(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr))
+                    };
+                    false -> case node.kind == 6 of {
+                        true -> case is_dangerous_actor_ref_type(node.value) of {
+                            true -> (1, "E4026", node.location, dangerous_spawn_surface_error(), "sect3.1");
+                            false -> validate_expr_pair_dangerous_spawn_surface(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr))
+                        };
+                        false -> validate_expr_pair_dangerous_spawn_surface(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr))
+                    }
+                }
             }
         }
     }
@@ -414,7 +419,13 @@ fn tag0_decl_matches_export_loop(decls: List[{ tag: int64, name: string, paramet
 fn decl_has_silica_body(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) -> bool {
     case decl.tag == 0 of {
         false -> false;
-        true -> decl.body.kind >= 0
+        true -> case decl.body.root < 0 of {
+            true -> false;
+            false -> {
+                body_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(decl.body);
+                body_node.kind >= 0
+            }
+        }
     }
 }
 

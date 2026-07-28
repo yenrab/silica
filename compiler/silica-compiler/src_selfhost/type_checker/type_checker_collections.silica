@@ -68,6 +68,8 @@ export public_trait_family_tag/1;
 export representation_id_from_module/1;
 export required_constructor_fields/1;
 export constructor_orientation_atom_lexeme/1;
+export constructor_ordering_field_count/1;
+export constructor_ordering_field_at/2;
 export constructor_ordering_field_count_for_module/1;
 export constructor_ordering_field_at_for_module/2;
 
@@ -1231,7 +1233,7 @@ fn resolve_constructor_call_formal(bind_type: string, formal: string) -> string 
 // expected result of fold-like calls, so keep this substitution separate from
 // constructor witness resolution (which may receive a function or record type
 // as its bind_type for unrelated reasons).
-fn resolve_accumulator_call_formal(expected_type: int64, formal: string) -> string {
+fn resolve_accumulator_call_formal(expected_type: string, formal: string) -> string {
     e: string <- strip_spaces_col(expected_type);
     case len(e) == 0 or e == "discard" or e == "AccType" of {
         true -> formal;
@@ -1239,22 +1241,29 @@ fn resolve_accumulator_call_formal(expected_type: int64, formal: string) -> stri
     }
 }
 
-fn infer_collection_decl_from_receiver(inferred: string, arg_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context_env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)]) -> string {
+fn infer_collection_decl_from_receiver(inferred: string, arg_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context_env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)]) -> string {
     inf: string <- strip_all_spaces_col(inferred);
     case is_collection_trait_type(inf) of {
         true -> inferred;
-        false -> case arg_expr.kind == 4 of {
-            true -> case arg_expr.inner.kind == 1 of {
+        false -> {
+            arg_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(arg_expr);
+            case arg_node.kind == 4 of {
                 true -> {
-                    (found: bool, bound: string) <- type_checker_core@lookup_symbol_found(context_env, arg_expr.inner.name);
-                    case found of {
-                        false -> "";
-                        true -> case is_collection_trait_type(bound) of { true -> bound; false -> "" }
+                    inner_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(arg_expr, arg_node.inner);
+                    inner_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(inner_e);
+                    case inner_node.kind == 1 of {
+                        true -> {
+                            bound: string <- type_checker_core@lookup_symbol_surface(context_env, inner_node.name);
+                            case len(bound) == 0 of {
+                                true -> "";
+                                false -> case is_collection_trait_type(bound) of { true -> bound; false -> "" }
+                            }
+                        };
+                        false -> ""
                     }
                 };
                 false -> ""
-            };
-            false -> ""
+            }
         }
     }
 }
@@ -1660,8 +1669,12 @@ fn required_constructor_fields(bind_type: string) -> List[string, mem(normal)] {
 }
 
 fn record_literal_field_names(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, acc: List[string, mem(normal)]) -> List[string, mem(normal)] {
-    case expr.kind == 21 of {
-        true -> record_literal_field_names(expr.right_expr, cons_constructor_field(expr.name, acc));
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    case node.kind == 21 of {
+        true -> {
+            right: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.right_expr);
+            record_literal_field_names(right, cons_constructor_field(node.name, acc))
+        };
         false -> acc
     }
 }
@@ -1877,7 +1890,7 @@ fn space_tag_from_mem_space(space: string) -> int64 {
     }
 }
 
-fn record_constructor_field_compatible(expected_type: int64, return_type: string, field_name: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
+fn record_constructor_field_compatible(expected_type: string, return_type: string, field_name: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
     expected_field: string <- type_checker_record_types@find_field_type_in_record(expected_type, field_name);
     actual_field: string <- type_checker_record_types@find_field_type_in_record(return_type, field_name);
     case len(expected_field) == 0 of {
@@ -1891,7 +1904,7 @@ fn record_constructor_field_compatible(expected_type: int64, return_type: string
     }
 }
 
-fn runtime_record_accepts_constructor_return(expected_type: int64, return_type: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
+fn runtime_record_accepts_constructor_return(expected_type: string, return_type: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
     case bind_type_has_collection_runtime_fields(expected_type) and bind_type_has_collection_runtime_fields(return_type) of {
         false -> false;
         true ->

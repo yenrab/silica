@@ -130,47 +130,52 @@ fn is_call_reply(name: string) -> bool {
     }
 }
 
-fn cast_or_call_payload_expr(call_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, right_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } {
-    case call_expr.right_expr.kind == 4 and call_expr.right_expr.name == "" of {
-        true -> call_expr.right_expr.inner;
-        false -> call_expr.right_expr
+fn cast_or_call_payload_expr(call_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(call_expr);
+    right_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(call_expr, node.right_expr);
+    right_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(right_e);
+    case right_node.kind == 4 and right_node.name == "" of {
+        true -> parser_ast@expr_at(right_e, right_node.inner);
+        false -> right_e
     }
 }
 
 fn print_taint_type_error(code: string, loc: { file: string, line: int64, column: int64, offset: int64 }, msg: string) -> int64 {
-    sequence proc[DeviceIO]
-        _: int8 <- diagnostics_core@print_compiler_error("TypeError", code, loc, msg, "sect7");
-        result: int64 <- 1
-    produces
-        pure result
-    end
+    _: int8 <- diagnostics_core@print_compiler_error("TypeError", code, loc, msg, "sect7");
+    1
 }
 
 fn expr_is_scalar_tainted(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, scalar_env: List[string, mem(normal)]) -> int64 {
-    case expr.kind < 0 of {
+    case expr.root < 0 of {
         true -> 0;
-        false -> case expr.kind == 1 of {
-            true -> case env_has_taint(scalar_env, expr.name) of {
-                true -> 1;
-                false -> 0
-            };
-            false -> case expr.kind == 4 of {
-                true -> case is_dangerous_qualified_call(expr.name) of {
-                    true -> 1;
-                    false -> expr_is_scalar_tainted_pair(expr.inner, expr.right_expr, scalar_env)
-                };
-                false -> case expr.kind == 6 of {
-                    true -> expr_is_scalar_tainted(expr.inner, scalar_env);
-                    false -> case expr.kind == 9 of {
-                        true -> case expr_is_scalar_tainted(expr.inner, scalar_env) == 1 of {
+        false -> {
+            node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+            case node.kind < 0 of {
+                true -> 0;
+                false -> case node.kind == 1 of {
+                    true -> case env_has_taint(scalar_env, node.name) of {
+                        true -> 1;
+                        false -> 0
+                    };
+                    false -> case node.kind == 4 of {
+                        true -> case is_dangerous_qualified_call(node.name) of {
                             true -> 1;
-                            false -> expr_is_scalar_tainted(expr.right_expr, scalar_env)
+                            false -> expr_is_scalar_tainted_pair(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), scalar_env)
                         };
-                        false -> case expr.kind == 21 of {
-                            true -> struct_literal_is_scalar_tainted(expr, scalar_env);
-                            false -> case expr.kind == 22 of {
-                                true -> expr_is_scalar_tainted(expr.inner, scalar_env);
-                                false -> expr_is_scalar_tainted_pair(expr.inner, expr.right_expr, scalar_env)
+                        false -> case node.kind == 6 of {
+                            true -> expr_is_scalar_tainted(parser_ast@expr_at(expr, node.inner), scalar_env);
+                            false -> case node.kind == 9 of {
+                                true -> case expr_is_scalar_tainted(parser_ast@expr_at(expr, node.inner), scalar_env) == 1 of {
+                                    true -> 1;
+                                    false -> expr_is_scalar_tainted(parser_ast@expr_at(expr, node.right_expr), scalar_env)
+                                };
+                                false -> case node.kind == 21 of {
+                                    true -> struct_literal_is_scalar_tainted(expr, scalar_env);
+                                    false -> case node.kind == 22 of {
+                                        true -> expr_is_scalar_tainted(parser_ast@expr_at(expr, node.inner), scalar_env);
+                                        false -> expr_is_scalar_tainted_pair(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), scalar_env)
+                                    }
+                                }
                             }
                         }
                     }
@@ -188,39 +193,51 @@ fn expr_is_scalar_tainted_pair(inner: { nodes: List[{ kind: int64, value: string
 }
 
 fn struct_literal_is_scalar_tainted(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, scalar_env: List[string, mem(normal)]) -> int64 {
-    case expr.kind == -1 or expr.kind == 999 of {
+    case expr.root < 0 of {
         true -> 0;
-        false -> case expr.kind == 21 of {
-            true -> case expr_is_scalar_tainted(expr.inner, scalar_env) == 1 of {
-                true -> 1;
-                false -> struct_literal_is_scalar_tainted(expr.right_expr, scalar_env)
-            };
-            false -> 0
+        false -> {
+            node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+            case node.kind == -1 or node.kind == 999 of {
+                true -> 0;
+                false -> case node.kind == 21 of {
+                    true -> case expr_is_scalar_tainted(parser_ast@expr_at(expr, node.inner), scalar_env) == 1 of {
+                        true -> 1;
+                        false -> struct_literal_is_scalar_tainted(parser_ast@expr_at(expr, node.right_expr), scalar_env)
+                    };
+                    false -> 0
+                }
+            }
         }
     }
 }
 
 fn expr_is_region_tainted(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, region_env: List[string, mem(normal)]) -> int64 {
-    case expr.kind == 1 of {
-        true -> case env_has_taint(region_env, expr.name) of {
-            true -> 1;
-            false -> 0
-        };
-        false -> case expr.kind == 6 of {
-            true -> case type_text_is_region_type(expr.value) of {
-                true -> expr_is_region_tainted(expr.inner, region_env);
-                false -> 0
-            };
-            false -> case expr.kind == 22 of {
-                true -> expr_is_region_tainted(expr.inner, region_env);
-                false -> case expr.kind == 9 of {
-                    true -> case expr_is_region_tainted(expr.inner, region_env) == 1 of {
-                        true -> 1;
-                        false -> expr_is_region_tainted(expr.right_expr, region_env)
-                    };
-                    false -> case expr.kind == 21 of {
-                        true -> struct_literal_is_region_tainted(expr, region_env);
+    case expr.root < 0 of {
+        true -> 0;
+        false -> {
+            node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+            case node.kind == 1 of {
+                true -> case env_has_taint(region_env, node.name) of {
+                    true -> 1;
+                    false -> 0
+                };
+                false -> case node.kind == 6 of {
+                    true -> case type_text_is_region_type(node.value) of {
+                        true -> expr_is_region_tainted(parser_ast@expr_at(expr, node.inner), region_env);
                         false -> 0
+                    };
+                    false -> case node.kind == 22 of {
+                        true -> expr_is_region_tainted(parser_ast@expr_at(expr, node.inner), region_env);
+                        false -> case node.kind == 9 of {
+                            true -> case expr_is_region_tainted(parser_ast@expr_at(expr, node.inner), region_env) == 1 of {
+                                true -> 1;
+                                false -> expr_is_region_tainted(parser_ast@expr_at(expr, node.right_expr), region_env)
+                            };
+                            false -> case node.kind == 21 of {
+                                true -> struct_literal_is_region_tainted(expr, region_env);
+                                false -> 0
+                            }
+                        }
                     }
                 }
             }
@@ -229,14 +246,20 @@ fn expr_is_region_tainted(expr: { nodes: List[{ kind: int64, value: string, name
 }
 
 fn struct_literal_is_region_tainted(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, region_env: List[string, mem(normal)]) -> int64 {
-    case expr.kind == -1 or expr.kind == 999 of {
+    case expr.root < 0 of {
         true -> 0;
-        false -> case expr.kind == 21 of {
-            true -> case expr_is_region_tainted(expr.inner, region_env) == 1 of {
-                true -> 1;
-                false -> struct_literal_is_region_tainted(expr.right_expr, region_env)
-            };
-            false -> 0
+        false -> {
+            node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+            case node.kind == -1 or node.kind == 999 of {
+                true -> 0;
+                false -> case node.kind == 21 of {
+                    true -> case expr_is_region_tainted(parser_ast@expr_at(expr, node.inner), region_env) == 1 of {
+                        true -> 1;
+                        false -> struct_literal_is_region_tainted(parser_ast@expr_at(expr, node.right_expr), region_env)
+                    };
+                    false -> 0
+                }
+            }
         }
     }
 }
@@ -265,56 +288,49 @@ fn env_after_binding(name: string, bind_type: string, rhs: { nodes: List[{ kind:
 }
 
 fn check_restricted_use_expr(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], loc: { file: string, line: int64, column: int64, offset: int64 }) -> int64 {
-    sequence proc[DeviceIO]
-        result: int64 <- case expr_is_boundary_tainted(expr, scalar_env, region_env) == 1 of {
-                true -> print_taint_type_error("E2103", loc, "external_danger-touched data cannot be used inside sequence blocks that declare device_io, network_io, hot_swap, or register_rwr (spec 7.3)");
-                false -> 0
-            }
-    produces
-        pure result
-    end
+    case expr_is_boundary_tainted(expr, scalar_env, region_env) == 1 of {
+        true -> print_taint_type_error("E2103", loc, "external_danger-touched data cannot be used inside sequence blocks that declare device_io, network_io, hot_swap, or register_rwr (spec 7.3)");
+        false -> 0
+    }
 }
 
 fn check_restricted_call_args(call_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], loc: { file: string, line: int64, column: int64, offset: int64 }) -> int64 {
-    sequence proc[DeviceIO]
-        result: int64 <- case is_cast_call(call_expr.name) or is_call_reply(call_expr.name) of {
-                true -> {
-                    msg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- cast_or_call_payload_expr(call_expr);
-                    check_restricted_use_expr(msg, scalar_env, region_env, loc)
-                };
-                false -> check_restricted_use_expr(call_expr.inner, scalar_env, region_env, loc)
-            }
-    produces
-        pure result
-    end
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(call_expr);
+    case is_cast_call(node.name) or is_call_reply(node.name) of {
+        true -> {
+            msg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- cast_or_call_payload_expr(call_expr);
+            check_restricted_use_expr(msg, scalar_env, region_env, loc)
+        };
+        false -> check_restricted_use_expr(parser_ast@expr_at(call_expr, node.inner), scalar_env, region_env, loc)
+    }
 }
 
 fn check_cast_or_call_boundary(call_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], allow_ffi_result_cast: int64) -> int64 {
-    sequence proc[DeviceIO]
-        msg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- cast_or_call_payload_expr(call_expr);
-        result: int64 <- case expr_is_boundary_tainted(msg, scalar_env, region_env) == 1 of {
-                false -> 0;
-                true -> case allow_ffi_result_cast == 1 of {
-                    true -> 0;
-                    false -> case is_cast_call(call_expr.name) of {
-                        true -> print_taint_type_error("E2101", call_expr.location, "Memory regions created, modified, or used inside sequence proc[external_danger] cannot appear at any depth in an ordinary call reply or cast payload. Only FFI result casts from an FFI worker actor to the designated receiver are permitted (spec 7.6)");
-                        false -> case is_call_reply(call_expr.name) of {
-                            true -> print_taint_type_error("E2101", call_expr.location, "Memory regions created, modified, or used inside sequence proc[external_danger] cannot appear at any depth in an ordinary call reply or cast payload. Only FFI result casts from an FFI worker actor to the designated receiver are permitted (spec 7.6)");
-                            false -> 0
-                        }
-                    }
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(call_expr);
+    msg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- cast_or_call_payload_expr(call_expr);
+    case expr_is_boundary_tainted(msg, scalar_env, region_env) == 1 of {
+        false -> 0;
+        true -> case allow_ffi_result_cast == 1 of {
+            true -> 0;
+            false -> case is_cast_call(node.name) of {
+                true -> print_taint_type_error("E2101", node.location, "Memory regions created, modified, or used inside sequence proc[external_danger] cannot appear at any depth in an ordinary call reply or cast payload. Only FFI result casts from an FFI worker actor to the designated receiver are permitted (spec 7.6)");
+                false -> case is_call_reply(node.name) of {
+                    true -> print_taint_type_error("E2101", node.location, "Memory regions created, modified, or used inside sequence proc[external_danger] cannot appear at any depth in an ordinary call reply or cast payload. Only FFI result casts from an FFI worker actor to the designated receiver are permitted (spec 7.6)");
+                    false -> 0
                 }
             }
-    produces
-        pure result
-    end
+        }
+    }
 }
 
 fn walk_expr_taint_checks(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], in_external_danger: int64, is_ffi_worker: int64, restricted_seq: int64, ffi_cast_budget: int64) -> (int64, int64) {
-    sequence proc[DeviceIO]
-        result: (int64, int64) <- case expr.kind < 0 of {
+    case expr.root < 0 of {
+        true -> (0, ffi_cast_budget);
+        false -> {
+            node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+            case node.kind < 0 of {
                 true -> (0, ffi_cast_budget);
-                false -> case expr.kind == 4 of {
+                false -> case node.kind == 4 of {
                     true -> {
                         msg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- cast_or_call_payload_expr(expr);
                         payload_tainted: int64 <- expr_is_boundary_tainted(msg, scalar_env, region_env);
@@ -322,7 +338,7 @@ fn walk_expr_taint_checks(expr: { nodes: List[{ kind: int64, value: string, name
                             false -> 0;
                             true -> case is_ffi_worker == 1 of {
                                 false -> 0;
-                                true -> case is_cast_call(expr.name) of {
+                                true -> case is_cast_call(node.name) of {
                                     true -> case ffi_cast_budget > 0 of {
                                         true -> case payload_tainted == 1 of {
                                             true -> 1;
@@ -343,49 +359,49 @@ fn walk_expr_taint_checks(expr: { nodes: List[{ kind: int64, value: string, name
                             false -> (boundary, ffi_cast_budget);
                             true -> case restricted_seq == 1 of {
                                 true -> {
-                                    restricted_args: int64 <- check_restricted_call_args(expr, scalar_env, region_env, expr.location);
+                                    restricted_args: int64 <- check_restricted_call_args(expr, scalar_env, region_env, node.location);
                                     case restricted_args == 0 of {
                                         false -> (restricted_args, ffi_cast_budget);
-                                        true -> case is_cast_call(expr.name) of {
+                                        true -> case is_cast_call(node.name) of {
                                             true -> (0, next_budget);
-                                            false -> walk_expr_taint_checks_pair(expr.inner, expr.right_expr, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, next_budget)
+                                            false -> walk_expr_taint_checks_pair(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, next_budget)
                                         }
                                     }
                                 };
-                                false -> case is_cast_call(expr.name) of {
+                                false -> case is_cast_call(node.name) of {
                                     true -> case allow_ffi == 1 of {
                                         true -> (0, next_budget);
-                                        false -> walk_expr_taint_checks_pair(expr.inner, expr.right_expr, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, next_budget)
+                                        false -> walk_expr_taint_checks_pair(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, next_budget)
                                     };
-                                    false -> walk_expr_taint_checks_pair(expr.inner, expr.right_expr, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, next_budget)
+                                    false -> walk_expr_taint_checks_pair(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, next_budget)
                                 }
                             }
                         }
                     };
-                    false -> case expr.kind == 6 of {
+                    false -> case node.kind == 6 of {
                         true -> {
-                            (inner_st: int64, budget_after_inner: int64) <- walk_expr_taint_checks(expr.inner, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, ffi_cast_budget);
+                            (inner_st: int64, budget_after_inner: int64) <- walk_expr_taint_checks(parser_ast@expr_at(expr, node.inner), scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, ffi_cast_budget);
                             case inner_st == 0 of {
                                 false -> (inner_st, budget_after_inner);
                                 true -> case restricted_seq == 1 of {
                                     true -> {
-                                        use_st: int64 <- check_restricted_use_expr(expr.inner, scalar_env, region_env, expr.location);
+                                        use_st: int64 <- check_restricted_use_expr(parser_ast@expr_at(expr, node.inner), scalar_env, region_env, node.location);
                                         case use_st == 0 of {
                                             false -> (use_st, budget_after_inner);
                                             true -> {
-                                                (next_scalar: List[string, mem(normal)], next_region: List[string, mem(normal)]) <- env_after_binding(expr.name, expr.value, expr.inner, scalar_env, region_env, in_external_danger);
-                                                walk_expr_taint_checks(expr.right_expr, next_scalar, next_region, in_external_danger, is_ffi_worker, restricted_seq, budget_after_inner)
+                                                (next_scalar: List[string, mem(normal)], next_region: List[string, mem(normal)]) <- env_after_binding(node.name, node.value, parser_ast@expr_at(expr, node.inner), scalar_env, region_env, in_external_danger);
+                                                walk_expr_taint_checks(parser_ast@expr_at(expr, node.right_expr), next_scalar, next_region, in_external_danger, is_ffi_worker, restricted_seq, budget_after_inner)
                                             }
                                         }
                                     };
                                     false -> {
-                                        (next_scalar2: List[string, mem(normal)], next_region2: List[string, mem(normal)]) <- env_after_binding(expr.name, expr.value, expr.inner, scalar_env, region_env, in_external_danger);
-                                        walk_expr_taint_checks(expr.right_expr, next_scalar2, next_region2, in_external_danger, is_ffi_worker, restricted_seq, budget_after_inner)
+                                        (next_scalar2: List[string, mem(normal)], next_region2: List[string, mem(normal)]) <- env_after_binding(node.name, node.value, parser_ast@expr_at(expr, node.inner), scalar_env, region_env, in_external_danger);
+                                        walk_expr_taint_checks(parser_ast@expr_at(expr, node.right_expr), next_scalar2, next_region2, in_external_danger, is_ffi_worker, restricted_seq, budget_after_inner)
                                     }
                                 }
                             }
                         };
-                        false -> case expr.kind == 11 of {
+                        false -> case node.kind == 11 of {
                             true -> {
                                 seq_st: int64 <- walk_sequence_taint(expr, scalar_env, region_env, is_ffi_worker);
                                 case seq_st == 0 of {
@@ -393,117 +409,105 @@ fn walk_expr_taint_checks(expr: { nodes: List[{ kind: int64, value: string, name
                                     false -> (seq_st, ffi_cast_budget)
                                 }
                             };
-                            false -> walk_expr_taint_checks_pair(expr.inner, expr.right_expr, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, ffi_cast_budget)
+                            false -> walk_expr_taint_checks_pair(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, ffi_cast_budget)
                         }
                     }
                 }
             }
-    produces
-        pure result
-    end
+        }
+    }
 }
 
 fn walk_expr_taint_checks_pair(inner: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, right: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], in_external_danger: int64, is_ffi_worker: int64, restricted_seq: int64, ffi_cast_budget: int64) -> (int64, int64) {
-    sequence proc[DeviceIO]
-        (first_st: int64, mid_budget: int64) <- walk_expr_taint_checks(inner, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, ffi_cast_budget);
-        result: (int64, int64) <- case first_st == 0 of {
-                false -> (first_st, mid_budget);
-                true -> walk_expr_taint_checks(right, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, mid_budget)
-            }
-    produces
-        pure result
-    end
+    (first_st: int64, mid_budget: int64) <- walk_expr_taint_checks(inner, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, ffi_cast_budget);
+    case first_st == 0 of {
+        false -> (first_st, mid_budget);
+        true -> walk_expr_taint_checks(right, scalar_env, region_env, in_external_danger, is_ffi_worker, restricted_seq, mid_budget)
+    }
 }
 
 fn walk_sequence_taint(seq: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], is_ffi_worker: int64) -> int64 {
-    sequence proc[DeviceIO]
-        has_ed: bool <- effect_list_has_external_danger(seq.sequence_effects);
-            has_restricted: bool <- effect_list_has_restricted_effect(seq.sequence_effects);
-            in_ed: int64 <- case has_ed of { true -> 1; false -> 0 };
-            restricted: int64 <- case has_restricted of { true -> 1; false -> 0 };
-            cast_budget: int64 <- case has_ed of {
-                true -> case is_ffi_worker == 1 of {
-                    true -> 1;
-                    false -> 0
-                };
-                false -> 0
-            };
-            (body_st: int64, _: int64) <- walk_expr_taint_checks(seq.inner, scalar_env, region_env, in_ed, is_ffi_worker, restricted, cast_budget);
-        result: int64 <- case body_st == 0 of {
-                false -> body_st;
-                true -> case has_ed of {
-                    true -> {
-                        (body_scalar: List[string, mem(normal)], body_region: List[string, mem(normal)]) <- env_from_stmt_chain(seq.inner, scalar_env, region_env, 1);
-                        case expr_is_region_tainted(seq.right_expr, body_region) == 1 of {
-                            true -> print_taint_type_error("E2102", seq.right_expr.location, "Memory regions created, modified, or used inside sequence proc[external_danger] cannot move out of the FFI worker behavior function, except when explicitly converted into actor-state-owned region references returned as actor state, or delivered through an FFI result cast under §7.6 (spec 7.5)");
-                            false -> case expr_is_scalar_tainted(seq.right_expr, body_scalar) == 1 of {
-                                true -> print_taint_type_error("E2100", seq.right_expr.location, "sequence proc[external_danger] must produce only pure Silica values; external_danger-touched data cannot appear in the produced value (spec 7.4)");
-                                false -> 0
-                            }
-                        }
-                    };
-                    false -> 0
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(seq);
+    has_ed: bool <- effect_list_has_external_danger(node.sequence_effects);
+    has_restricted: bool <- effect_list_has_restricted_effect(node.sequence_effects);
+    in_ed: int64 <- case has_ed of { true -> 1; false -> 0 };
+    restricted: int64 <- case has_restricted of { true -> 1; false -> 0 };
+    cast_budget: int64 <- case has_ed of {
+        true -> case is_ffi_worker == 1 of {
+            true -> 1;
+            false -> 0
+        };
+        false -> 0
+    };
+    (body_st: int64, _: int64) <- walk_expr_taint_checks(parser_ast@expr_at(seq, node.inner), scalar_env, region_env, in_ed, is_ffi_worker, restricted, cast_budget);
+    case body_st == 0 of {
+        false -> body_st;
+        true -> case has_ed of {
+            true -> {
+                (body_scalar: List[string, mem(normal)], body_region: List[string, mem(normal)]) <- env_from_stmt_chain(parser_ast@expr_at(seq, node.inner), scalar_env, region_env, 1);
+                right_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(seq, node.right_expr);
+                right_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(right_e);
+                case expr_is_region_tainted(right_e, body_region) == 1 of {
+                    true -> print_taint_type_error("E2102", right_node.location, "Memory regions created, modified, or used inside sequence proc[external_danger] cannot move out of the FFI worker behavior function, except when explicitly converted into actor-state-owned region references returned as actor state, or delivered through an FFI result cast under §7.6 (spec 7.5)");
+                    false -> case expr_is_scalar_tainted(right_e, body_scalar) == 1 of {
+                        true -> print_taint_type_error("E2100", right_node.location, "sequence proc[external_danger] must produce only pure Silica values; external_danger-touched data cannot appear in the produced value (spec 7.4)");
+                        false -> 0
+                    }
                 }
-            }
-    produces
-        pure result
-    end
+            };
+            false -> 0
+        }
+    }
 }
 
 fn env_from_stmt_chain(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, scalar_env: List[string, mem(normal)], region_env: List[string, mem(normal)], in_external_danger: int64) -> (List[string, mem(normal)], List[string, mem(normal)]) {
-    case expr.kind < 0 of {
+    case expr.root < 0 of {
         true -> (scalar_env, region_env);
-        false -> case expr.kind == 6 of {
-            true -> {
-                (next_scalar: List[string, mem(normal)], next_region: List[string, mem(normal)]) <- env_after_binding(expr.name, expr.value, expr.inner, scalar_env, region_env, in_external_danger);
-                env_from_stmt_chain(expr.right_expr, next_scalar, next_region, in_external_danger)
-            };
-            false -> case expr.kind == 10 of {
-                true -> env_from_stmt_chain(expr.right_expr, scalar_env, region_env, in_external_danger);
-                false -> (scalar_env, region_env)
+        false -> {
+            node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+            case node.kind < 0 of {
+                true -> (scalar_env, region_env);
+                false -> case node.kind == 6 of {
+                    true -> {
+                        (next_scalar: List[string, mem(normal)], next_region: List[string, mem(normal)]) <- env_after_binding(node.name, node.value, parser_ast@expr_at(expr, node.inner), scalar_env, region_env, in_external_danger);
+                        env_from_stmt_chain(parser_ast@expr_at(expr, node.right_expr), next_scalar, next_region, in_external_danger)
+                    };
+                    false -> case node.kind == 10 of {
+                        true -> env_from_stmt_chain(parser_ast@expr_at(expr, node.right_expr), scalar_env, region_env, in_external_danger);
+                        false -> (scalar_env, region_env)
+                    }
+                }
             }
         }
     }
 }
 
 fn walk_function_body_taint(body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, fn_name: string, ffi_workers: List[string, mem(normal)]) -> int64 {
-    sequence proc[DeviceIO]
-        is_worker: int64 <- case sir_ast@sir_string_list_contains(ffi_workers, fn_name) of {
-                true -> 1;
-                false -> 0
-            };
-            (walk_st: int64, _: int64) <- walk_expr_taint_checks(body, sir_ast@nil_sir_strings(), sir_ast@nil_sir_strings(), 0, is_worker, 0, 0);
-        result: int64 <- walk_st
-    produces
-        pure result
-    end
+    is_worker: int64 <- case sir_ast@sir_string_list_contains(ffi_workers, fn_name) of {
+        true -> 1;
+        false -> 0
+    };
+    (walk_st: int64, _: int64) <- walk_expr_taint_checks(body, sir_ast@nil_sir_strings(), sir_ast@nil_sir_strings(), 0, is_worker, 0, 0);
+    walk_st
 }
 
 fn validate_decls_taint_loop(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], ffi_workers: List[string, mem(normal)]) -> int64 {
-    sequence proc[DeviceIO]
-        result: int64 <- case decls.is_nil of {
-                true -> 0;
-                false -> case decls.head.tag == 0 of {
-                    true -> {
-                        st: int64 <- walk_function_body_taint(decls.head.body, decls.head.name, ffi_workers);
-                        case st == 0 of {
-                            false -> st;
-                            true -> validate_decls_taint_loop(decls.tail, ffi_workers)
-                        }
-                    };
-                    false -> validate_decls_taint_loop(decls.tail, ffi_workers)
+    case decls.is_nil of {
+        true -> 0;
+        false -> case decls.head.tag == 0 of {
+            true -> {
+                st: int64 <- walk_function_body_taint(decls.head.body, decls.head.name, ffi_workers);
+                case st == 0 of {
+                    false -> st;
+                    true -> validate_decls_taint_loop(decls.tail, ffi_workers)
                 }
-            }
-    produces
-        pure result
-    end
+            };
+            false -> validate_decls_taint_loop(decls.tail, ffi_workers)
+        }
+    }
 }
 
 fn validate_program_ffi_taint(program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) -> int64 {
-    sequence proc[DeviceIO]
-        ffi_workers: List[string, mem(normal)] <- ffi_placement_checker@collect_ffi_worker_names(program);
-        result: int64 <- validate_decls_taint_loop(program.declarations, ffi_workers)
-    produces
-        pure result
-    end
+    ffi_workers: List[string, mem(normal)] <- ffi_placement_checker@collect_ffi_worker_names(program);
+    validate_decls_taint_loop(program.declarations, ffi_workers)
 }

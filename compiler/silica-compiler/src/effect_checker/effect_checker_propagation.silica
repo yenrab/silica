@@ -81,6 +81,8 @@ fn stamp_effect_locations(effects: ListEffectName, location: SourceLocation) -> 
    Expr kinds: 0=integer literal, 1=identifier, 2=parenthesized, 3=binary_op, 4=call, 5=atom literal, 6=let binding, 9=tuple literal (right-nested inner/right_expr; also then/else payload under kind 19), 21=struct literal, 22=field access, -1=dummy.
    For calls (kind 4): resolve callee effects (region ops use binding_type for Space), union with arg subtree.
    For let bindings (kind 6): pass expr.value (binding type) when recursing into RHS for region op effect extraction.
+   Kind 11 (sequence): contributes nothing here — nested sequences encapsulate; sequence checking walks
+   body/result with collect_expr_effects_outside_sequence_blocks instead.
    Pure expressions contribute no effects (spec Section 9.3.1). -}
 fn collect_expr_effects(expr: Expr, ctx: EffectContext) -> ListEffectName {
     collect_expr_effects_with_binding(expr, ctx, "")
@@ -99,8 +101,10 @@ fn collect_expr_effects_outside_sequence_blocks_with_binding(expr: Expr, ctx: Ef
         false -> case expr.kind == 4 of {
             true -> do
                 callee_effects: ListEffectName <- resolve_call_effects_with_binding(expr.name, ctx, expr.inner, binding_type, expr.location, expr.value, false);
+                // Walk first arg (inner) and remaining args (right_expr chain: kind-4 name=="" pairs).
                 arg_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "");
-                union_effect_lists(callee_effects, arg_effects)
+                rest_arg_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, ctx, "");
+                union_effect_lists(callee_effects, union_effect_lists(arg_effects, rest_arg_effects))
             end;
             false -> case expr.kind == 3 of {
                 true -> do
@@ -167,8 +171,10 @@ fn collect_expr_effects_with_binding(expr: Expr, ctx: EffectContext, binding_typ
                 true -> parser_ast@empty_effect_name_list();
                 false -> effect_checker_lists@mem_effects_for_list_literal(binding_type, expr.location)
             };
+            // Walk first arg (inner) and remaining args (right_expr chain: kind-4 name=="" pairs).
             arg_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
-            union_effect_lists(union_effect_lists(callee_effects, binding_list_effects), arg_effects)
+            rest_arg_effects: ListEffectName <- collect_expr_effects_with_binding(expr.right_expr, ctx, "");
+            union_effect_lists(union_effect_lists(callee_effects, binding_list_effects), union_effect_lists(arg_effects, rest_arg_effects))
         end;
         false -> case expr.kind == 3 of {
             true -> do
@@ -192,11 +198,10 @@ fn collect_expr_effects_with_binding(expr: Expr, ctx: EffectContext, binding_typ
                             union_effect_lists(rhs_effects, body_effects)
                         end;
                         false -> case expr.kind == 11 of {
-                            true -> do
-                                body_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
-                                result_effects: ListEffectName <- collect_expr_effects_with_binding(expr.right_expr, ctx, "");
-                                union_effect_lists(body_effects, result_effects)
-                            end;
+                            // Nested sequence blocks encapsulate their effects (checked separately).
+                            // Callers that need this sequence's own used-set must walk inner/right_expr
+                            // with collect_expr_effects_outside_sequence_blocks.
+                            true -> parser_ast@empty_effect_name_list();
                             false -> case expr.kind == 20 of {
                                 true -> do
                                     lit_type_src: string <- case len(expr.value) > 0 of {

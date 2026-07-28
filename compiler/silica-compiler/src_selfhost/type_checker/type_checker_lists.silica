@@ -460,16 +460,16 @@ fn struct_type_end(s: string, i: int64, depth: int64) -> (int64, int64) {
 }
 
 // list primitive generic `Collectable` or `Collectable, mem(S)` with expected `List[T,S]` at the call site.
-fn resolve_list_type_from_collectable_generic(elem: string, space: string, expected_type: int64) -> (bool, string, string, string) {
+fn resolve_list_type_from_collectable_generic(elem: string, space: string, list_context_type: string) -> (bool, string, string, string) {
     case is_collectable_element_placeholder(elem) of {
         false -> {
             list_t: string <- format_list_type_from_parts(elem, space);
             (true, elem, space, list_t)
         };
-        true -> case expected_type == "discard" of {
+        true -> case strip_all_spaces_list(list_context_type) == "discard" of {
             true -> (false, "", "", "");
             false -> {
-                (ok_e: bool, ee: string, es: string) <- parse_list_type_params(expected_type);
+                (ok_e: bool, ee: string, es: string) <- parse_list_type_params(list_context_type);
                 case ok_e of {
                     false -> (false, "", "", "");
                     true -> case is_collectable_element_placeholder(ee) of {
@@ -601,20 +601,21 @@ fn list_field_access_type(list_t: string, field: string) -> string {
 }
 
 fn infer_list_primitive_return(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> string {
-    case expr.kind == 4 of {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    case node.kind == 4 of {
         false -> "";
         true -> {
-            (elem: string, space: string) <- parse_generic_ts(expr.value);
+            (elem: string, space: string) <- parse_generic_ts(node.value);
             list_t: string <- format_list_type_from_parts(elem, space);
-            case expr.name == "empty" of {
+            case node.name == "empty" of {
                 true -> list_t;
-                false -> case expr.name == "length" of {
+                false -> case node.name == "length" of {
                     true -> "int64";
-                    false -> case expr.name == "prepend" of {
+                    false -> case node.name == "prepend" of {
                         true -> list_t;
-                        false -> case expr.name == "remove_head" of {
+                        false -> case node.name == "remove_head" of {
                             true -> list_t;
-                            false -> case expr.name == "head" of {
+                            false -> case node.name == "head" of {
                                 true -> elem;
                                 false -> ""
                             }
@@ -627,12 +628,17 @@ fn infer_list_primitive_return(expr: { nodes: List[{ kind: int64, value: string,
 }
 
 fn count_call_args_list(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> int64 {
-    case expr.inner.kind == -1 of {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    inner_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.inner);
+    right_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.right_expr);
+    inner_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(inner_e);
+    right_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(right_e);
+    case inner_node.kind == -1 of {
         true -> 0;
-        false -> case expr.right_expr.kind == -1 of {
+        false -> case right_node.kind == -1 of {
             true -> 1;
-            false -> case expr.right_expr.kind == 4 of {
-                true -> 1 + count_call_args_list(expr.right_expr);
+            false -> case right_node.kind == 4 of {
+                true -> 1 + count_call_args_list(right_e);
                 false -> 2
             }
         }
@@ -642,8 +648,11 @@ fn count_call_args_list(expr: { nodes: List[{ kind: int64, value: string, name: 
 // Case-branch RHS calls parse `(` with extract_case_rhs_with_precedence; empty `()` becomes a stray ")" encoded as kind 0 (see type_checker_expressions_literals). Treat that as zero value arguments so `empty[T, S]()` matches sequence calls (extract_body + extract_call_rest).
 fn list_empty_effective_arg_count(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> int64 {
     ac: int64 <- count_call_args_list(expr);
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    inner_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.inner);
+    inner_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(inner_e);
     case ac == 1 of {
-        true -> case expr.inner.kind == 0 and expr.inner.value == ")" of {
+        true -> case inner_node.kind == 0 and inner_node.value == ")" of {
             true -> 0;
             false -> ac
         };
@@ -795,7 +804,7 @@ fn find_matching_closing_bracket_list(s: string, i: int64, depth: int64) -> int6
     }
 }
 
-fn validate_one_list_type_surface(list_type: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult {
+fn validate_one_list_type_surface(list_type: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     (ok: bool, elem: string, space: string) <- parse_list_type_params(list_type);
     case ok of {
         false -> type_checker_core@type_check_ok();
@@ -806,7 +815,7 @@ fn validate_one_list_type_surface(list_type: string, location: { file: string, l
     }
 }
 
-fn validate_list_type_declaration_from(s: string, location: { file: string, line: int64, column: int64, offset: int64 }, i: int64) -> TypeCheckResult {
+fn validate_list_type_declaration_from(s: string, location: { file: string, line: int64, column: int64, offset: int64 }, i: int64) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     case i >= len(s) of {
         true -> type_checker_core@type_check_ok();
         false -> {
@@ -841,7 +850,7 @@ fn validate_list_type_declaration_from(s: string, location: { file: string, line
     }
 }
 
-fn validate_list_type_declaration(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult {
+fn validate_list_type_declaration(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     validate_list_type_declaration_from(type_str, location, 0)
 }
 

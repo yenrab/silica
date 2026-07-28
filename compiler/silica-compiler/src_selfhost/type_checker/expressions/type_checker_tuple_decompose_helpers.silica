@@ -26,6 +26,7 @@ use type_checker_record_types;
 use type_checker_expressions_actors;
 
 export infer_expr_type/2;
+export infer_literal_type/1;
 export infer_binop_left_preferred_operand_type/2;
 export infer_binop_operand_type_for_sir/3;
 export infer_struct_literal_type/2;
@@ -34,7 +35,7 @@ export add_bindings_to_context/2;
 export pattern_bindings_valid/2;
 export fill_empty_binding_types_from_rhs/2;
 export tuple_trim/1;
-export pattern_types_match_rhs/2;
+export pattern_types_match_rhs/3;
 export build_pattern_type_from_bindings/1;
 export case_parse_pattern/1;
 export case_extend_context_for_pattern/3;
@@ -51,6 +52,18 @@ export case_parse_record_field_subpat/2;
 fn tuple_needs_parens(type_str: string) -> bool {
     len(type_str) >= 2 and substring(type_str, 0, 1) == "("
 }
+
+
+fn env_lookup_surface(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], name: string) -> string {
+    case env.is_nil of {
+        true -> "";
+        false -> case env.head.name == name of {
+            true -> env.head.surface_type;
+            false -> env_lookup_surface(env.tail, name)
+        }
+    }
+}
+
 
 fn numeric_literal_contains_dot_from(value: string, pos: int64, length: int64) -> bool {
     case pos >= length of {
@@ -189,8 +202,9 @@ fn negate_builtin_operand_type(name: string) -> string {
 
 // SIR lowering for kind-3 binary: when enclosing context fixes the numeric type (float* or narrow int),
 // use it so literals don't default to int64 and get int64 prims with a W/S/D/H dest from the caller.
-fn infer_binop_operand_type_for_sir(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext, enclosing_expected: string) -> string {
-    op: string <- expr.value;
+fn infer_binop_operand_type_for_sir(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, enclosing_expected: string) -> string {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    op: string <- node.value;
     case is_bitwise_op_infer(op) of {
         true -> "uint64";
         false -> case is_arithmetic_op_infer(op) of {
@@ -208,28 +222,33 @@ fn infer_binop_operand_type_for_sir(expr: { nodes: List[{ kind: int64, value: st
 
 // SIR lowering: pick a concrete operand type for binary prims. Comparisons/arithmetic may pair a
 // float call with a decimal literal that still infers as int64 (-2.5 has no 'h' suffix); prefer any floatish side.
-fn infer_binop_left_preferred_operand_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext) -> string {
-    case expr.kind == 3 of {
+fn infer_binop_left_preferred_operand_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    case node.kind == 3 of {
         true -> {
-            op: string <- expr.value;
-            raw_lt: string <- infer_expr_type(expr.inner, context);
+            op: string <- node.value;
+            left_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.inner);
+            right_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.right_expr);
+            left_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(left_e);
+            right_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(right_e);
+            raw_lt: string <- infer_expr_type(left_e, context);
             lt: string <- case len(raw_lt) > 0 of {
                 true -> raw_lt;
-                false -> case expr.inner.kind == 1 of {
-                    true -> negate_builtin_operand_type(expr.inner.name);
-                    false -> case expr.inner.kind == 4 of {
-                        true -> negate_builtin_operand_type(expr.inner.name);
+                false -> case left_node.kind == 1 of {
+                    true -> negate_builtin_operand_type(left_node.name);
+                    false -> case left_node.kind == 4 of {
+                        true -> negate_builtin_operand_type(left_node.name);
                         false -> ""
                     }
                 }
             };
-            raw_rt: string <- infer_expr_type(expr.right_expr, context);
+            raw_rt: string <- infer_expr_type(right_e, context);
             rt: string <- case len(raw_rt) > 0 of {
                 true -> raw_rt;
-                false -> case expr.right_expr.kind == 1 of {
-                    true -> negate_builtin_operand_type(expr.right_expr.name);
-                    false -> case expr.right_expr.kind == 4 of {
-                        true -> negate_builtin_operand_type(expr.right_expr.name);
+                false -> case right_node.kind == 1 of {
+                    true -> negate_builtin_operand_type(right_node.name);
+                    false -> case right_node.kind == 4 of {
+                        true -> negate_builtin_operand_type(right_node.name);
                         false -> ""
                     }
                 }
@@ -249,12 +268,13 @@ fn infer_binop_left_preferred_operand_type(expr: { nodes: List[{ kind: int64, va
     }
 }
 
-fn infer_binary_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext) -> string {
-    op: string <- expr.value;
+fn infer_binary_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    op: string <- node.value;
     case is_arithmetic_op_infer(op) of {
         true -> {
-            lt: string <- infer_expr_type(expr.inner, context);
-            rt: string <- infer_expr_type(expr.right_expr, context);
+            lt: string <- infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
+            rt: string <- infer_expr_type(parser_ast@expr_at(expr, node.right_expr), context);
             case len(lt) > 0 of {
                 true -> case len(rt) > 0 of {
                     true -> case lt == rt of { true -> lt; false -> "" };
@@ -298,23 +318,25 @@ fn infer_actor_runtime_return(name: string) -> string {
     }
 }
 
-fn infer_core_id_placement(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext) -> string {
+fn infer_core_id_placement(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 1 of {
         false -> "";
         true -> {
-            it: string <- infer_expr_type(expr.inner, context);
+            node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+            it: string <- infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
             case it == "uint64" of { true -> "uint64"; false -> "" }
         }
     }
 }
 
-fn infer_core_set_placement(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext) -> string {
+fn infer_core_set_placement(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 1 of {
         false -> "";
         true -> {
-            it: string <- infer_expr_type(expr.inner, context);
+            node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+            it: string <- infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
             case it == "List[int64,normal]" of { true -> it; false -> "" }
         }
     }
@@ -332,17 +354,17 @@ fn first_at_infer_call_name(s: string, i: int64) -> int64 {
     }
 }
 
-fn lookup_fn_type_by_name_and_module_infer(env: ListSymbolEntry, fn_name: string, required_module: string) -> string {
+fn lookup_fn_type_by_name_and_module_infer(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], fn_name: string, required_module: string) -> string {
     case env.is_nil of {
         true -> "";
         false -> case env.head.name == fn_name and env.head.is_effect_alias == false of {
             true -> case len(required_module) == 0 of {
                 true -> case env.head.source_module == "" of {
-                    true -> env.head.type_id;
+                    true -> env.head.surface_type;
                     false -> lookup_fn_type_by_name_and_module_infer(env.tail, fn_name, required_module)
                 };
                 false -> case env.head.source_module == required_module of {
-                    true -> env.head.type_id;
+                    true -> env.head.surface_type;
                     false -> lookup_fn_type_by_name_and_module_infer(env.tail, fn_name, required_module)
                 }
             };
@@ -351,7 +373,7 @@ fn lookup_fn_type_by_name_and_module_infer(env: ListSymbolEntry, fn_name: string
     }
 }
 
-fn lookup_function_type_for_call_infer(env: ListSymbolEntry, composite_name: string) -> string {
+fn lookup_function_type_for_call_infer(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], composite_name: string) -> string {
     at: int64 <- first_at_infer_call_name(composite_name, 0);
     case at < 0 of {
         true -> lookup_fn_type_by_name_and_module_infer(env, composite_name, "");
@@ -375,8 +397,9 @@ fn infer_string_builtin_return(name: string) -> string {
     }
 }
 
-fn infer_call_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext) -> string {
-    call_base: string <- type_checker_core@user_call_base_function_name(expr.name);
+fn infer_call_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    call_base: string <- type_checker_core@user_call_base_function_name(node.name);
     neg_ty: string <- negate_builtin_operand_type(call_base);
     case len(neg_ty) > 0 of {
         true -> neg_ty;
@@ -417,10 +440,10 @@ fn infer_call_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: 
                                                                             case len(rt) > 0 of {
                                                                                 true -> rt;
                                                                                 false -> {
-                                                                                    typ: string <- lookup_function_type_for_call_infer(context.env, expr.name);
+                                                                                    typ: string <- lookup_function_type_for_call_infer(context.env, node.name);
                                                                                     case len(typ) > 0 of {
                                                                                         true -> parse_function_return_from_scheme(typ);
-                                                                                        false -> case type_checker_lists@is_list_primitive_name(expr.name) of {
+                                                                                        false -> case type_checker_lists@is_list_primitive_name(node.name) of {
                                                                                             true -> type_checker_lists@infer_list_primitive_return(expr);
                                                                                             false -> ""
                                                                                         }
@@ -447,58 +470,66 @@ fn infer_call_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: 
     }
 }
 
-fn infer_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext) -> string {
-    case expr.kind of {
-        0 -> infer_literal_type(expr.value);
+fn infer_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    case node.kind of {
+        0 -> infer_literal_type(node.value);
         1 -> {
-            case expr.name == "performance_cores" of {
+            case node.name == "performance_cores" of {
                 true -> "spawn_affinity_performance_cores";
-                false -> case expr.name == "efficiency_cores" of {
+                false -> case node.name == "efficiency_cores" of {
                     true -> "spawn_affinity_efficiency_cores";
                     false -> {
-                        (found: bool, resolved: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
-                        case found of { true -> resolved; false -> "" }
+                        resolved: string <- env_lookup_surface(context.env, node.name);
+                        case len(resolved) > 0 of { true -> resolved; false -> "" }
                     }
                 }
             }
         };
-        2 -> infer_expr_type(expr.inner, context);
+        2 -> infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
         3 -> infer_binary_expr_type(expr, context);
         4 -> infer_call_expr_type(expr, context);
         5 -> "atom";
-        6 -> expr.value;
+        6 -> node.value;
         7 -> "boolean";
         8 -> "string";
-        12 -> infer_expr_type(expr.inner, context);
-        20 -> case len(expr.value) > 0 of { true -> expr.value; false -> "" };
+        12 -> infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
+        20 -> case len(node.value) > 0 of { true -> node.value; false -> "" };
         9 -> concat("(", concat(infer_tuple_chain_elems(expr, context), ")"));
         13 -> infer_case_expr_kind13(expr, context);
         19 -> infer_if_expr_kind19(expr, context);
         21 -> infer_struct_literal_type(expr, context);
         22 -> infer_field_access_type(expr, context);
-        991 -> expr.value;
-        992 -> expr.value;
+        991 -> node.value;
+        992 -> node.value;
         _: int64 -> ""
     }
 }
 
 // Walk a right-nested kind-9 tuple chain, flattening it into a comma-separated element list.
 // The parser builds `(a, b, c, d)` as kind 9 { inner: a, right_expr: kind 9 { inner: b, ... } }.
-fn infer_tuple_chain_elems(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext) -> string {
-    case expr.kind == 9 of {
+fn infer_tuple_chain_elems(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    case node.kind == 9 of {
         true -> {
-            first_type: string <- infer_expr_type(expr.inner, context);
-            rest: string <- infer_tuple_chain_elems(expr.right_expr, context);
+            first_type: string <- infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
+            rest: string <- infer_tuple_chain_elems(parser_ast@expr_at(expr, node.right_expr), context);
             concat(first_type, concat(",", rest))
         };
         false -> infer_expr_type(expr, context)
     }
 }
 
-fn infer_if_expr_kind19(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext) -> string {
-    then_t: string <- infer_expr_type(expr.right_expr.inner, context);
-    else_t: string <- infer_expr_type(expr.right_expr.right_expr, context);
-    case expr.right_expr.right_expr.kind < 0 of {
+fn infer_if_expr_kind19(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    then_else: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.right_expr);
+    then_else_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(then_else);
+    then_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, then_else_node.inner);
+    else_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, then_else_node.right_expr);
+    else_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(else_e);
+    then_t: string <- infer_expr_type(then_e, context);
+    else_t: string <- infer_expr_type(else_e, context);
+    case else_node.kind < 0 of {
         true -> then_t;
         false -> case len(then_t) > 0 of {
             true -> case len(else_t) > 0 of {
@@ -511,28 +542,30 @@ fn infer_if_expr_kind19(expr: { nodes: List[{ kind: int64, value: string, name: 
 }
 
 // Kind 21: struct literal — right-nested chain; each node has name = field, inner = expr.
-fn infer_struct_literal_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext) -> string {
-    case expr.kind == -1 of {
+fn infer_struct_literal_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    case node.kind == -1 of {
         true -> "";
         false -> infer_struct_lit_chain(expr, context, "", false)
     }
 }
 
 // Parser may end the kind-21 chain with dummy (-1) or a trailing-comma sentinel (kind 999).
-fn infer_struct_lit_chain(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext, acc: string, need_comma: bool) -> string {
-    case expr.kind == -1 or expr.kind == 999 of {
+fn infer_struct_lit_chain(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, acc: string, need_comma: bool) -> string {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    case node.kind == -1 or node.kind == 999 of {
         true -> case len(acc) > 0 of { true -> concat(acc, "}"); false -> "" };
-        false -> case expr.kind == 21 of {
+        false -> case node.kind == 21 of {
             true -> {
-                it: string <- infer_expr_type(expr.inner, context);
+                it: string <- infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
                 case len(it) == 0 of {
                     true -> "";
                     false -> {
                         chunk: string <- case need_comma of {
-                            true -> concat(concat(concat(",", expr.name), ":"), it);
-                            false -> concat(concat(concat("{", expr.name), ":"), it)
+                            true -> concat(concat(concat(",", node.name), ":"), it);
+                            false -> concat(concat(concat("{", node.name), ":"), it)
                         };
-                        infer_struct_lit_chain(expr.right_expr, context, concat(acc, chunk), true)
+                        infer_struct_lit_chain(parser_ast@expr_at(expr, node.right_expr), context, concat(acc, chunk), true)
                     }
                 }
             };
@@ -542,16 +575,17 @@ fn infer_struct_lit_chain(expr: { nodes: List[{ kind: int64, value: string, name
 }
 
 // Kind 22: field access — inner = base, name = field
-fn infer_field_access_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext) -> string {
-    base_t: string <- infer_expr_type(expr.inner, context);
+fn infer_field_access_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    base_t: string <- infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
     case len(base_t) == 0 of {
         true -> "";
         false -> {
             exp: string <- type_checker_record_types@expand_named_topology_type(base_t);
             effective: string <- case len(exp) > 0 of { true -> exp; false -> base_t };
             case type_checker_record_types@record_type_starts(effective) of {
-                true -> type_checker_record_types@find_field_type_in_record(effective, expr.name);
-                false -> type_checker_lists@list_field_access_type(effective, expr.name)
+                true -> type_checker_record_types@find_field_type_in_record(effective, node.name);
+                false -> type_checker_lists@list_field_access_type(effective, node.name)
             }
         }
     }
@@ -739,19 +773,19 @@ fn fill_empty_binding_types_from_rhs(bindings: List[{ name: string, path: string
     }
 }
 
-fn add_bindings_to_context(context: TypeContext, bindings: List[{ name: string, path: string, type_str: string }, mem(normal)]) -> TypeContext {
+fn add_bindings_to_context(context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, bindings: List[{ name: string, path: string, type_str: string }, mem(normal)]) -> { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } {
     case bindings.is_nil of {
         true -> context;
         false -> {
             b: { name: string, path: string, type_str: string } <- bindings.head;
-            new_context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- type_checker_core@context_add_symbol_surface(context, b.name, b.type_str, parser_ast@empty_effect_name_list(), "");
+            new_context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- type_checker_core@context_add_symbol_surface(context, b.name, b.type_str, parser_ast@empty_effect_name_list(), "");
             add_bindings_to_context(new_context, bindings.tail)
         }
     }
 }
 
 // Check bindings are valid: at least two elements, all typed (no empty type_str).
-fn pattern_bindings_valid(bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn pattern_bindings_valid(bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     case bindings.is_nil of {
         true -> type_checker_core@type_check_err("E2006", location, "tuple decomposition pattern must have at least two elements", "sect4");
         false -> case bindings.tail.is_nil of {
@@ -761,7 +795,7 @@ fn pattern_bindings_valid(bindings: List[{ name: string, path: string, type_str:
     }
 }
 
-fn check_all_typed(bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn check_all_typed(bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     case bindings.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> case len(bindings.head.type_str) == 0 of {
@@ -778,7 +812,7 @@ fn check_all_typed(bindings: List[{ name: string, path: string, type_str: string
 }
 
 // Build pattern type from bindings and check it matches rhs_type. Types are compared after trimming.
-fn pattern_types_match_rhs(bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], rhs_type: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn pattern_types_match_rhs(bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], rhs_type: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     pattern_type: string <- build_pattern_type_from_bindings(bindings);
     rhs_trimmed: string <- tuple_trim(rhs_type);
     pattern_trimmed: string <- tuple_trim(pattern_type);
@@ -1496,7 +1530,7 @@ fn case_record_pattern_has_nonwildcard_bind_loop(rem: string, scrutinee_type: st
     }
 }
 
-fn case_extend_record_fields_rem(context: TypeContext, rem: string, scrutinee_type: string) -> TypeContext {
+fn case_extend_record_fields_rem(context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, rem: string, scrutinee_type: string) -> { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } {
     r: string <- strip_spaces(rem);
     case len(r) == 0 of {
         true -> context;
@@ -1514,8 +1548,8 @@ fn case_extend_record_fields_rem(context: TypeContext, rem: string, scrutinee_ty
                             case spi.is_valid of {
                                 false -> case_extend_record_fields_rem(context, rest, scrutinee_type);
                                 true -> {
-                                    ctx2: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- case spi.pattern_kind of {
-                                        2 -> type_checker_core@context_add_symbol_surface(context, spi.bind_name, spi.bind_type, parser_ast@empty_effect_name_list(), ""));
+                                    ctx2: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- case spi.pattern_kind of {
+                                        2 -> type_checker_core@context_add_symbol_surface(context, spi.bind_name, spi.bind_type, parser_ast@empty_effect_name_list(), "");
                                         8 -> case_extend_record_fields_rem(context, type_checker_record_types@record_case_inner_body(spi.bind_type), fty);
                                         _: int64 -> context
                                     };
@@ -1549,17 +1583,17 @@ fn case_pattern_binding_name(pi: { is_valid: bool, pattern_kind: int64, bool_lit
     }
 }
 
-fn case_extend_context_for_pattern(context: TypeContext, scrutinee_type: string, pat_str: string) -> TypeContext {
+fn case_extend_context_for_pattern(context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, scrutinee_type: string, pat_str: string) -> { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } {
     pi: { is_valid: bool, pattern_kind: int64, bool_lit: bool, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } <- case_parse_pattern(pat_str);
     case pi.is_valid of {
         false -> context;
         true -> case pi.pattern_kind of {
             2 -> case types_equal_surface(scrutinee_type, pi.bind_type) of {
-                true -> type_checker_core@context_add_symbol_surface(context, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), ""));
+                true -> type_checker_core@context_add_symbol_surface(context, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), "");
                 false -> case types_equal_surface(scrutinee_type, "failure_reason") and types_equal_surface(pi.bind_type, "atom") of {
-                    true -> type_checker_core@context_add_symbol_surface(context, pi.bind_name, "atom", parser_ast@empty_effect_name_list(), ""));
+                    true -> type_checker_core@context_add_symbol_surface(context, pi.bind_name, "atom", parser_ast@empty_effect_name_list(), "");
                     false -> case type_checker_recursive_tuples@case_pattern_matches_ref_optional(scrutinee_type, pi.bind_type) of {
-                        true -> type_checker_core@context_add_symbol_surface(context, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), ""));
+                        true -> type_checker_core@context_add_symbol_surface(context, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), "");
                         false -> context
                     }
                 }
@@ -1567,12 +1601,12 @@ fn case_extend_context_for_pattern(context: TypeContext, scrutinee_type: string,
             6 -> case case_list_cons_matches(pi, scrutinee_type) of {
                 false -> context;
                 true -> {
-                    ctx_after_head: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- case len(pi.bind_name) > 0 and pi.bind_name != "_" of {
-                        true -> type_checker_core@context_add_symbol_surface(context, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), ""));
+                    ctx_after_head: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- case len(pi.bind_name) > 0 and pi.bind_name != "_" of {
+                        true -> type_checker_core@context_add_symbol_surface(context, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), "");
                         false -> context
                     };
                     case len(pi.list_tail_name) > 0 and pi.list_tail_name != "_" of {
-                        true -> type_checker_core@type_context_with_env(ctx_after_head, type_checker_core@add_symbol(ctx_after_head.env, pi.list_tail_name, pi.list_tail_type, parser_ast@empty_effect_name_list(), ""));
+                        true -> type_checker_core@context_add_symbol_surface(ctx_after_head, pi.list_tail_name, pi.list_tail_type, parser_ast@empty_effect_name_list(), "");
                         false -> ctx_after_head
                     }
                 }
@@ -1629,13 +1663,15 @@ fn case_bool_coverage_ok(cov: { has_true: int64, has_false: int64, has_wild: int
 }
 
 fn case_scan_bool_coverage(branches: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, scrutinee_type: string) -> { has_true: int64, has_false: int64, has_wild: int64 } {
-    case branches.kind == -1 of {
+    branches_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(branches);
+    case branches_node.kind == -1 of {
         true -> { has_true: 0, has_false: 0, has_wild: 0 };
-        false -> case branches.kind == 17 of {
+        false -> case branches_node.kind == 17 of {
             true -> {
-                b: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- branches.inner;
-                rest: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- branches.right_expr;
-                cov: { has_true: int64, has_false: int64, has_wild: int64 } <- case_bool_coverage_from_pattern_str(b.value, scrutinee_type);
+                b: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(branches, branches_node.inner);
+                rest: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(branches, branches_node.right_expr);
+                b_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(b);
+                cov: { has_true: int64, has_false: int64, has_wild: int64 } <- case_bool_coverage_from_pattern_str(b_node.value, scrutinee_type);
                 rest_cov: { has_true: int64, has_false: int64, has_wild: int64 } <- case_scan_bool_coverage(rest, scrutinee_type);
                 case_merge_bool_coverage(cov, rest_cov)
             };
@@ -1644,25 +1680,28 @@ fn case_scan_bool_coverage(branches: { nodes: List[{ kind: int64, value: string,
     }
 }
 
-fn infer_case_expr_kind13(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext) -> string {
-    scrut_t: string <- infer_expr_type(expr.inner, context);
+fn infer_case_expr_kind13(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    scrut_t: string <- infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
     case len(scrut_t) == 0 of {
         true -> "";
-        false -> infer_case_first_rhs_type(expr.right_expr, scrut_t, context)
+        false -> infer_case_first_rhs_type(parser_ast@expr_at(expr, node.right_expr), scrut_t, context)
     }
 }
 
-fn infer_case_first_rhs_type(branches: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, scrutinee_type: string, context: TypeContext) -> string {
-    case branches.kind == -1 of {
+fn infer_case_first_rhs_type(branches: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, scrutinee_type: string, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
+    branches_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(branches);
+    case branches_node.kind == -1 of {
         true -> "";
-        false -> case branches.kind == 17 of {
+        false -> case branches_node.kind == 17 of {
             true -> {
-                br: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- branches.inner;
-                case br.kind == 18 of {
+                br: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(branches, branches_node.inner);
+                br_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(br);
+                case br_node.kind == 18 of {
                     false -> "";
                     true -> {
-                        ext: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- case_extend_context_for_pattern(context, scrutinee_type, br.value);
-                        infer_expr_type(br.right_expr, ext)
+                        ext: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- case_extend_context_for_pattern(context, scrutinee_type, br_node.value);
+                        infer_expr_type(parser_ast@expr_at(br, br_node.right_expr), ext)
                     }
                 }
             };

@@ -18,7 +18,6 @@
 // Identifier expression to SIR term ({ nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } kind 1, extension)
 
 use parser_ast;
-use type_checker_core;
 use sir_ast;
 use types;
 
@@ -35,7 +34,7 @@ fn first_at_in_identifier_name(s: string, i: int64) -> int64 {
     }
 }
 
-fn lookup_symbol_found_identifier_module(env: ListSymbolEntry, fn_name: string, required_module: string) -> (bool, string) {
+fn lookup_symbol_found_identifier_module(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], fn_name: string, required_module: string) -> (bool, string) {
     case env.is_nil of {
         true -> (false, "");
         false -> case env.head.name == fn_name and env.head.is_effect_alias == false and env.head.source_module == required_module of {
@@ -45,10 +44,20 @@ fn lookup_symbol_found_identifier_module(env: ListSymbolEntry, fn_name: string, 
     }
 }
 
-fn lookup_symbol_found_identifier(env: ListSymbolEntry, name: string) -> (bool, string) {
+fn lookup_symbol_found_identifier_local(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], name: string) -> (bool, string) {
+    case env.is_nil of {
+        true -> (false, "");
+        false -> case env.head.name == name of {
+            true -> (true, env.head.type_name);
+            false -> lookup_symbol_found_identifier_local(env.tail, name)
+        }
+    }
+}
+
+fn lookup_symbol_found_identifier(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], name: string) -> (bool, string) {
     at: int64 <- first_at_in_identifier_name(name, 0);
     case at < 0 of {
-        true -> type_checker_core@lookup_symbol_found(env, name);
+        true -> lookup_symbol_found_identifier_local(env, name);
         false -> lookup_symbol_found_identifier_module(env, substring(name, at + 1, len(name)), substring(name, 0, at))
     }
 }
@@ -57,12 +66,13 @@ fn lookup_symbol_found_identifier(env: ListSymbolEntry, name: string) -> (bool, 
 // name uses % prefix per sir_design_spec §5.2.2
 // Match type checker pattern: lookup_symbol_found at top level, branch on result.
 // Workaround: "true"/"false" as identifiers are treated as boolean literals (parser may produce identifier instead of boolean literal)
-fn expr_to_sir(context: TypeContext, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    case expr.name == "true" or expr.name == "false" of {
-        true -> sir_ast@make_sir_term(0, types@type_name_to_sir("boolean"), expr.name, "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
+fn expr_to_sir(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    case node.name == "true" or node.name == "false" of {
+        true -> sir_ast@make_sir_term(0, types@type_name_to_sir("boolean"), node.name, "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
         false -> {
-            prefixed: string <- concat("%", expr.name);
-            (found: bool, resolved: string) <- lookup_symbol_found_identifier(context.env, expr.name);
+            prefixed: string <- concat("%", node.name);
+            (found: bool, resolved: string) <- lookup_symbol_found_identifier(context.env, node.name);
             type_name: string <- case found of { true -> resolved; false -> "int64" };
             sir_type: string <- types@type_name_to_sir(type_name);
             sir_ast@make_sir_term(1, sir_type, "", prefixed, sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term())
@@ -73,13 +83,14 @@ fn expr_to_sir(context: TypeContext, expr: { nodes: List[{ kind: int64, value: s
 // Same as expr_to_sir but when identifier matches bound_name, use bound_type (avoids lookup for let-bound var).
 // Match type checker pattern: call lookup_symbol_found at top level, then branch on result (avoids bootstrap codegen issues with nested tuple destructuring).
 // Workaround: "true"/"false" as identifiers are treated as boolean literals
-fn expr_to_sir_with_bound(context: TypeContext, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, bound_name: string, bound_type: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    case expr.name == "true" or expr.name == "false" of {
-        true -> sir_ast@make_sir_term(0, types@type_name_to_sir("boolean"), expr.name, "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
+fn expr_to_sir_with_bound(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, bound_name: string, bound_type: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    case node.name == "true" or node.name == "false" of {
+        true -> sir_ast@make_sir_term(0, types@type_name_to_sir("boolean"), node.name, "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
         false -> {
-            prefixed: string <- concat("%", expr.name);
-            (found: bool, resolved: string) <- lookup_symbol_found_identifier(context.env, expr.name);
-            type_name: string <- case expr.name == bound_name of {
+            prefixed: string <- concat("%", node.name);
+            (found: bool, resolved: string) <- lookup_symbol_found_identifier(context.env, node.name);
+            type_name: string <- case node.name == bound_name of {
                 true -> bound_type;
                 false -> case found of { true -> resolved; false -> "int64" }
             };

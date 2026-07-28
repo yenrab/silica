@@ -41,7 +41,7 @@ export empty_iface_string_list/0;
 export cons_iface_string_public/2;
 export reverse_iface_string_list/1;
 export iface_exports_fn_arity/3;
-export lookup_iface_fn_effects/3;
+export lookup_iface_fn_effects/2;
 export append_iface_stub_programs/2;
 export export_key_iface/2;
 export parse_effects_iface_string/1;
@@ -410,7 +410,8 @@ fn write_export_blocks(path: string, exports: List[{ name: string, arity: int64,
 }
 
 fn publish_module_iface(module_name: string, source_path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }, config: List[string, mem(normal)]) -> int64 {
-    sequence proc[DeviceIO]
+    // Nested arms declare their own effects; extract_iface_tables encapsulates mem in helpers.
+    sequence
         (ok: bool, exports: List[{ name: string, arity: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, effects: string, type_surface: string }, mem(normal)], export_trait: string) <- extract_iface_tables(program);
         path: string <- iface_path_from_source(source_path);
         result: int64 <- case ok of {
@@ -482,6 +483,7 @@ fn iface_exists_for_source(source_path: string) -> bool {
 
 // Phase 3: usable only when stamp/format/source_hash/deps_hash still match disk sources.
 fn iface_usable_for_source(source_path: string, config: List[string, mem(normal)]) -> bool {
+    // file_exists needs DeviceIO; load_iface_file_validated allocates lists (mem) and does I/O.
     sequence proc[DeviceIO]
         iface_path: string <- iface_path_from_source(source_path);
         exists: bool <- file_exists(iface_path);
@@ -854,36 +856,29 @@ fn iface_config_path_for_module(mod_name: string, config: List[string, mem(norma
 }
 
 fn deps_hash_for_names_loop(names: List[string, mem(normal)], config: List[string, mem(normal)], acc: string) -> string {
-    sequence proc[DeviceIO]
-        result: string <- case names.is_nil of {
-            true -> hash_string_iface(acc);
-            false -> {
-                src: string <- iface_config_path_for_module(names.head, config);
-                h: string <- case len(src) == 0 of {
-                    true -> "";
-                    false -> source_content_hash_iface(src)
-                };
-                deps_hash_for_names_loop(names.tail, config, concat(concat(acc, names.head), concat(":", concat(h, ";"))))
-            }
+    case names.is_nil of {
+        true -> hash_string_iface(acc);
+        false -> {
+            src: string <- iface_config_path_for_module(names.head, config);
+            h: string <- case len(src) == 0 of {
+                true -> "";
+                false -> source_content_hash_iface(src)
+            };
+            deps_hash_for_names_loop(names.tail, config, concat(concat(acc, names.head), concat(":", concat(h, ";"))))
         }
-    produces
-        pure result
-    end
+    }
 }
 
 fn deps_hash_for_names(names: List[string, mem(normal)], config: List[string, mem(normal)]) -> string {
-    sequence proc[DeviceIO]
-        result: string <- case names.is_nil of {
-            true -> hash_string_iface("");
-            false -> deps_hash_for_names_loop(names, config, "")
-        }
-    produces
-        pure result
-    end
+    case names.is_nil of {
+        true -> hash_string_iface("");
+        false -> deps_hash_for_names_loop(names, config, "")
+    }
 }
 
 fn deps_hash_from_deps_line(deps_line: string, config: List[string, mem(normal)]) -> string {
-    sequence proc[DeviceIO]
+    // split_comma / deps_hash_for_names encapsulate mem and DeviceIO in helpers.
+    sequence
         result: string <- case len(deps_line) == 0 of {
             true -> hash_string_iface("");
             false -> {
@@ -897,7 +892,8 @@ fn deps_hash_from_deps_line(deps_line: string, config: List[string, mem(normal)]
 }
 
 fn load_ifaces_for_module_names_loop(names: List[string, mem(normal)], config: List[string, mem(normal)], acc: List[{ module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, effects: string, type_surface: string }, mem(normal)] }, mem(normal)]) -> List[{ module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, effects: string, type_surface: string }, mem(normal)] }, mem(normal)] {
-    sequence proc[DeviceIO]
+    // List helpers and load_iface_file_validated encapsulate mem / DeviceIO.
+    sequence
         result: List[{ module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, effects: string, type_surface: string }, mem(normal)] }, mem(normal)] <- case names.is_nil of {
             true -> reverse_module_ifaces(acc, empty_module_iface_list());
             false -> {

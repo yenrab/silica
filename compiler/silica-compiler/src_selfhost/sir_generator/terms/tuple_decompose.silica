@@ -19,7 +19,6 @@
 // Uses structured pattern_bindings from AST. Emits nested lets with tuple_proj primitives.
 
 use parser_ast;
-use type_checker_core;
 use type_checker_tuple_decompose_helpers;
 use sir_ast;
 use types;
@@ -28,27 +27,45 @@ export expr_type_of/2;
 export build_decompose_lets/5;
 export tuple_decompose_filled_bindings/2;
 
+fn sir_env_lookup_type_name(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], name: string) -> string {
+    case env.is_nil of {
+        true -> "";
+        false -> case env.head.name == name of {
+            true -> env.head.type_name;
+            false -> sir_env_lookup_type_name(env.tail, name)
+        }
+    }
+}
+
+fn sir_env_add_symbol(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)], name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], source_module: string) -> List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        entry: { name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string } <- { name: name, type_name: type_name, declared_effects: declared_effects, is_effect_alias: false, source_module: source_module };
+        result: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- prepend[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)](entry, env)
+    produces
+        pure result
+    end
+}
+
 // Align with check_tuple_decompose: fill bare tuple-pattern element types from the RHS tuple text.
 fn tuple_decompose_filled_bindings(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, rhs_type: string) -> List[{ name: string, path: string, type_str: string }, mem(normal)] {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
     rhs_trimmed: string <- type_checker_tuple_decompose_helpers@tuple_trim(rhs_type);
-    tuple_for_fill: string <- case len(expr.value) > 0 of {
-        true -> type_checker_tuple_decompose_helpers@tuple_trim(expr.value);
+    tuple_for_fill: string <- case len(node.value) > 0 of {
+        true -> type_checker_tuple_decompose_helpers@tuple_trim(node.value);
         false -> rhs_trimmed
     };
-    type_checker_tuple_decompose_helpers@fill_empty_binding_types_from_rhs(expr.pattern_bindings, tuple_for_fill)
+    type_checker_tuple_decompose_helpers@fill_empty_binding_types_from_rhs(node.pattern_bindings, tuple_for_fill)
 }
 
 // Get type of expression. For identifier: lookup. For paren: recurse. For tuple literal: build from structure.
-fn expr_type_of(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: TypeContext) -> string {
-    case expr.kind of {
-        1 -> {
-            (found: bool, resolved: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
-            case found of { true -> resolved; false -> "" }
-        };
-        2 -> expr_type_of(expr.inner, context);
+fn expr_type_of(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }) -> string {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    case node.kind of {
+        1 -> sir_env_lookup_type_name(context.env, node.name);
+        2 -> expr_type_of(parser_ast@expr_at(expr, node.inner), context);
         9 -> {
-            first_type: string <- expr_type_of(expr.inner, context);
-            rest_type: string <- expr_type_of(expr.right_expr, context);
+            first_type: string <- expr_type_of(parser_ast@expr_at(expr, node.inner), context);
+            rest_type: string <- expr_type_of(parser_ast@expr_at(expr, node.right_expr), context);
             first_wrapped: string <- case tuple_needs_parens(first_type) of {
                 true -> concat("(", concat(first_type, ")"));
                 false -> first_type
@@ -116,7 +133,7 @@ fn digit_char(d: int64) -> string {
 
 // Build nested lets for tuple decomposition. rhs_term is the tuple, bindings from parse, body is continuation.
 // rhs_type_str is the full tuple type (e.g. "(atom,uint64)") for correct SIR types.
-fn build_decompose_lets(rhs_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, context: TypeContext, rhs_type_str: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+fn build_decompose_lets(rhs_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, rhs_type_str: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     case bindings.is_nil of {
         true -> body;
         false -> {
@@ -127,15 +144,15 @@ fn build_decompose_lets(rhs_term: { nodes: List[{ kind: int64, type_name: string
     }
 }
 
-fn build_lets_from_bindings(root_var: string, bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, context: TypeContext, rhs_type_str: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+fn build_lets_from_bindings(root_var: string, bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, rhs_type_str: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     case bindings.is_nil of {
         true -> body;
         false -> {
             b: { name: string, path: string, type_str: string } <- bindings.head;
             proj_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- build_proj_chain(root_var, b.path, b.type_str, rhs_type_str);
             prefixed: string <- concat("%", b.name);
-            new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(context.env, b.name, b.type_str, parser_ast@empty_effect_name_list(), "");
-            new_context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_core@type_context_with_env(context, new_env);
+            new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- sir_env_add_symbol(context.env, b.name, b.type_str, parser_ast@empty_effect_name_list(), "");
+            new_context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- { env: new_env };
             inner_body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- build_lets_from_bindings(root_var, bindings.tail, body, new_context, rhs_type_str);
             bind_type: string <- types@type_name_to_sir(b.type_str);
             sir_ast@make_sir_term(2, bind_type, "", prefixed, proj_term, inner_body)
@@ -152,7 +169,7 @@ fn count_bindings(bindings: List[{ name: string, path: string, type_str: string 
 
 // For 3+ element tuples stored as right-nested binary pairs (e.g. (1,(2,3))),
 // peel the first element and recurse on the rest via an intermediate variable.
-fn build_lets_binary_peel(root_var: string, bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, context: TypeContext, rhs_type_str: string, depth: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+fn build_lets_binary_peel(root_var: string, bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] }, rhs_type_str: string, depth: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     n: int64 <- count_bindings(bindings);
     case n <= 0 of {
         true -> body;
@@ -162,8 +179,8 @@ fn build_lets_binary_peel(root_var: string, bindings: List[{ name: string, path:
                 b0: { name: string, path: string, type_str: string } <- bindings.head;
                 proj0: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- make_simple_tuple_proj(root_var, 0, b0.type_str, rhs_type_str);
                 prefixed0: string <- concat("%", b0.name);
-                new_env0: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(context.env, b0.name, b0.type_str, parser_ast@empty_effect_name_list(), "");
-                new_context0: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_core@type_context_with_env(context, new_env0);
+                new_env0: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- sir_env_add_symbol(context.env, b0.name, b0.type_str, parser_ast@empty_effect_name_list(), "");
+                _new_context0: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- { env: new_env0 };
                 case n == 1 of {
                     true -> sir_ast@make_sir_term(2, types@type_name_to_sir(b0.type_str), "", prefixed0, proj0, body);
                     false -> {
@@ -184,8 +201,8 @@ fn build_lets_binary_peel(root_var: string, bindings: List[{ name: string, path:
                 proj_rest: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- make_simple_tuple_proj(root_var, 1, rest_type, rhs_type_str);
                 inner_var: string <- concat("%_td_", int64_to_str(depth));
                 prefixed0: string <- concat("%", b0.name);
-                new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- type_checker_core@add_symbol(context.env, b0.name, b0.type_str, parser_ast@empty_effect_name_list(), "");
-                new_context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- type_checker_core@type_context_with_env(context, new_env);
+                new_env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] <- sir_env_add_symbol(context.env, b0.name, b0.type_str, parser_ast@empty_effect_name_list(), "");
+                new_context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: bool, source_module: string }, mem(normal)] } <- { env: new_env };
                 inner_body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- build_lets_binary_peel(inner_var, bindings.tail, body, new_context, rest_type, depth + 1);
                 let_rest: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_ast@make_sir_term(2, types@type_name_to_sir(rest_type), "", inner_var, proj_rest, inner_body);
                 sir_ast@make_sir_term(2, types@type_name_to_sir(first_type), "", prefixed0, proj0, let_rest)

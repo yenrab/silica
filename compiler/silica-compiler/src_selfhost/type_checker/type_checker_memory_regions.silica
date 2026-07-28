@@ -36,10 +36,21 @@ export get_space_from_region_type/1;
 export get_space_from_ref_type/1;
 export is_region_builtin_call/1;
 export check_sequence_return_lifetime/2;
+export is_valid_memory_space/1;
 
 // Valid memory space keywords per spec §4.4.1
 fn is_valid_memory_space(space: string) -> bool {
     space == "normal" or space == "normal_writeback" or space == "normal_writethrough" or space == "normal_noncacheable" or space == "atomic" or space == "device"
+}
+
+fn env_lookup_surface(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], name: string) -> string {
+    case env.is_nil of {
+        true -> "";
+        false -> case env.head.name == name of {
+            true -> env.head.surface_type;
+            false -> env_lookup_surface(env.tail, name)
+        }
+    }
 }
 
 // Trim leading/trailing whitespace from string
@@ -188,8 +199,8 @@ fn parse_memory_region_type(type_str: string) -> (string, string) {
     }
 }
 
-// Validate memory region type string. Returns TypeCheckResult.
-fn validate_memory_region_type(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+// Validate memory region type string.
+fn validate_memory_region_type(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     (ctor: string, inner: string) <- parse_memory_region_type(type_str);
     case len(ctor) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, concat("invalid memory region type: ", type_str), "sect4.4");
@@ -223,7 +234,7 @@ fn validate_memory_region_type(type_str: string, location: { file: string, line:
     }
 }
 
-fn validate_ref_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn validate_ref_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
     t: string <- trim_type(list_string_nth(params, 2));
@@ -239,7 +250,7 @@ fn validate_ref_params(params: List[string, mem(normal)], location: { file: stri
     }
 }
 
-fn validate_region_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn validate_region_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
     case len(r) == 0 of {
@@ -251,7 +262,7 @@ fn validate_region_params(params: List[string, mem(normal)], location: { file: s
     }
 }
 
-fn validate_buf_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn validate_buf_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
     t: string <- trim_type(list_string_nth(params, 2));
@@ -310,7 +321,7 @@ fn is_simple_buf_length_identifier(s: string) -> bool {
     }
 }
 
-fn validate_buf_length_param(n_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn validate_buf_length_param(n_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     n: string <- trim_type(n_str);
     case len(n) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, "buf: length N cannot be empty", "sect4.4.3");
@@ -327,7 +338,7 @@ fn validate_buf_length_param(n_str: string, location: { file: string, line: int6
     }
 }
 
-fn validate_buf_length_param_in_context(n_str: string, location: { file: string, line: int64, column: int64, offset: int64 }, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn validate_buf_length_param_in_context(n_str: string, location: { file: string, line: int64, column: int64, offset: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     base: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- validate_buf_length_param(n_str, location);
     case base.is_ok of {
         false -> base;
@@ -335,10 +346,10 @@ fn validate_buf_length_param_in_context(n_str: string, location: { file: string,
             true -> type_checker_core@type_check_ok();
             false -> {
                 name: string <- trim_type(n_str);
-                (found: bool, ty: string) <- type_checker_core@lookup_symbol_found(context.env, name);
-                case found of {
-                    false -> type_checker_core@type_check_err("E2010", location, concat(concat("buf: runtime length identifier '", name), "' is not in scope"), "sect4.4.3");
-                    true -> case ty == "int64" of {
+                ty: string <- env_lookup_surface(context.env, name);
+                case len(ty) == 0 of {
+                    true -> type_checker_core@type_check_err("E2010", location, concat(concat("buf: runtime length identifier '", name), "' is not in scope"), "sect4.4.3");
+                    false -> case ty == "int64" of {
                         true -> type_checker_core@type_check_ok();
                         false -> type_checker_core@type_check_err("E2010", location, concat(concat(concat("buf: runtime length identifier '", name), "' must have type int64, got "), ty), "sect4.4.3")
                     }
@@ -348,7 +359,7 @@ fn validate_buf_length_param_in_context(n_str: string, location: { file: string,
     }
 }
 
-fn validate_buf_params_in_context(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn validate_buf_params_in_context(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
     t: string <- trim_type(list_string_nth(params, 2));
@@ -365,7 +376,7 @@ fn validate_buf_params_in_context(params: List[string, mem(normal)], location: {
     }
 }
 
-fn validate_memory_region_type_in_context(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn validate_memory_region_type_in_context(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     (ctor: string, inner: string) <- parse_memory_region_type(type_str);
     case len(ctor) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, concat("invalid memory region type: ", type_str), "sect4.4");
@@ -383,7 +394,7 @@ fn validate_memory_region_type_in_context(type_str: string, location: { file: st
     }
 }
 
-fn validate_atomic_ref_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn validate_atomic_ref_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
     t: string <- trim_type(list_string_nth(params, 2));
@@ -401,7 +412,7 @@ fn validate_atomic_ref_params(params: List[string, mem(normal)], location: { fil
 
 // Validate type for function parameter. For memory region types, delegates to validate_memory_region_type.
 // For non-memory types, returns ok (other validation handled elsewhere).
-fn validate_type_for_parameter(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn validate_type_for_parameter(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     case is_memory_region_type(type_str) of {
         true -> validate_memory_region_type(type_str, location);
         false -> type_checker_core@type_check_ok()
@@ -536,14 +547,14 @@ fn is_region_builtin_call(call_name: string) -> bool {
 // Spec §12.1.4 Scope Exit Rule: references cannot outlive their containing region.
 // When a sequence returns, any ref(L,...)/buf(L,...)/atomic_ref(L,...) in the return type must have region(L,...) in the return type.
 // Phases B (nested scopes) and C (cross-function) require implementation after functions are fully supported.
-fn check_sequence_return_lifetime(return_type: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn check_sequence_return_lifetime(return_type: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     t: string <- trim_type(return_type);
     ref_ids: List[string, mem(normal)] <- collect_lifetime_ids_from_ref_types(t);
     region_ids: List[string, mem(normal)] <- collect_lifetime_ids_from_region_types(t);
     check_ref_lifetimes_covered(ref_ids, region_ids, location)
 }
 
-fn check_ref_lifetimes_covered(ref_ids: List[string, mem(normal)], region_ids: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> TypeCheckResult proc[DeviceIO] {
+fn check_ref_lifetimes_covered(ref_ids: List[string, mem(normal)], region_ids: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     case ref_ids.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> case list_contains_string(trim_type(ref_ids.head), region_ids) of {
