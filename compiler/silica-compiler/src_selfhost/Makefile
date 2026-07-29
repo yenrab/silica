@@ -37,7 +37,36 @@ LIB_STDLIB_MODULES := wbt_map OrderedMap
 
 .PHONY: all clean build assembly objects executables lib-sources \
 	silica.config silica.config.compiler assembly-selfhost build-selfhost \
-	help --help all-targets check-seed
+	help --help all-targets check-seed record-compile-start
+
+# Wall-clock compile timing: record epoch seconds at compile start; report
+# elapsed time on success or on compilation / emitter / linker failure.
+COMPILE_START_FILE := $(THIS_DIR).compile_start
+
+record-compile-start:
+	@date +%s > "$(COMPILE_START_FILE)"
+
+define REPORT_COMPILE_TIME
+	if [ -f "$(COMPILE_START_FILE)" ]; then \
+		_start=$$(cat "$(COMPILE_START_FILE)"); \
+		_end=$$(date +%s); \
+		_elapsed=$$((_end - _start)); \
+		if [ "$$_elapsed" -ge 60 ]; then \
+			printf 'Compile time: %dm %02ds\n' $$((_elapsed / 60)) $$((_elapsed % 60)); \
+		else \
+			printf 'Compile time: %ds\n' "$$_elapsed"; \
+		fi; \
+		rm -f "$(COMPILE_START_FILE)"; \
+	fi
+endef
+
+# Report elapsed time only when this stage is a top-level goal (not an intermediate).
+# Empty MAKECMDGOALS means the default goal `build`.
+define MAYBE_REPORT_COMPILE_TIME_SUCCESS
+	case " $(if $(MAKECMDGOALS),$(MAKECMDGOALS),build) " in \
+	*" $(1) "*|*" $(1)-selfhost "*) $(REPORT_COMPILE_TIME) ;; \
+	esac
+endef
 
 # Completion chime for this root Makefile only (not the compiler, not subdir Makefiles).
 # Tone: Ping — distinct from src (Glass).
@@ -132,7 +161,8 @@ silica.config: silica.config.compiler
 # Stage 1: seed reads silica.config → .sams (and optional __silica_runtime.sams / silica.link).
 # Multi-unit batches use process-per-unit hygiene: seed exits 75 between units so the OS
 # reclaims host heap (required for large modules such as lib/wbt_map.silica).
-assembly: check-seed silica.config
+# Seed failures cover compilation and emitter errors.
+assembly: check-seed silica.config record-compile-start
 	@cd "$(THIS_DIR)" && \
 	  find . -name '*.sams' -print | while read -r f; do rm -f "$$f"; done; \
 	  rm -f __silica_runtime.sams silica.link silica.compile.order silica.needs_runtime; \
@@ -147,9 +177,11 @@ assembly: check-seed silica.config
 	      continue; \
 	    fi; \
 	    echo "FAIL: seed compilation failed (exit $$ec)"; \
+	    $(REPORT_COMPILE_TIME); \
 	    exit 1; \
 	  done; \
-	  echo "✅ Assembly generated (.sams)"
+	  echo "✅ Assembly generated (.sams)"; \
+	  $(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,assembly)
 
 # Stage 2: .sams → .o (clang assembler), including nested paths and lib/
 objects: assembly
@@ -161,12 +193,16 @@ objects: assembly
 		echo "Assembling: $$sams -> $$base.o"; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || failed=1; \
 	done; \
-	exit $$failed
+	if [ $$failed -ne 0 ]; then \
+		$(REPORT_COMPILE_TIME); \
+		exit 1; \
+	fi; \
+	$(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,objects)
 
 # Stage 3: link entry point `main` with all module objects + runtime
 executables: objects
 	@cd "$(THIS_DIR)" && \
-	if [ ! -f main.o ]; then echo "FAIL: main.o missing"; exit 1; fi; \
+	if [ ! -f main.o ]; then echo "FAIL: main.o missing"; $(REPORT_COMPILE_TIME); exit 1; fi; \
 	objs=$$(find . -type f -name '*.o' ! -path './_wd_probe/*' | sed 's|^\./||' | sort | tr '\n' ' '); \
 	link_archives=""; \
 	if [ -x "$(SILICA_LINK_SH)" ]; then link_archives=$$("$(SILICA_LINK_SH)" .); fi; \
@@ -181,10 +217,16 @@ executables: objects
 		runtime_extra="$(RUNTIME_LIB)"; \
 	fi; \
 	echo "Linking: $(EXECUTABLE)"; \
-	$(LINKER_CLANG) $$objs $$runtime_extra $$link_archives $(LDFLAGS_STACK) -o $(EXECUTABLE); \
-	echo "✅ Built $(EXECUTABLE)"
+	if ! $(LINKER_CLANG) $$objs $$runtime_extra $$link_archives $(LDFLAGS_STACK) -o $(EXECUTABLE); then \
+		echo "FAIL: linker failed"; \
+		$(REPORT_COMPILE_TIME); \
+		exit 1; \
+	fi; \
+	echo "✅ Built $(EXECUTABLE)"; \
+	$(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,executables)
 
 build: executables
+	@$(REPORT_COMPILE_TIME)
 	@$(SELFHOST_COMPLETION_BING)
 
 assembly-selfhost: assembly
@@ -210,7 +252,7 @@ clean:
 	@cd "$(THIS_DIR)" && \
 	  find . \( -name '*.sams' -o -name '*.o' -o -name '*.ll' -o -name '*.bc' \) ! -path './_wd_probe/*' -delete; \
 	  rm -f $(EXECUTABLE) silica.config silica.config.compiler silica.target silica.link \
-	    __silica_runtime.sams __silica_runtime.o; \
+	    __silica_runtime.sams __silica_runtime.o "$(COMPILE_START_FILE)"; \
 	  rm -f silica-compiler-* 2>/dev/null || true; \
 	  rm -f lib/wbt_map.silica lib/OrderedMap.silica lib/wbt_map.sams lib/OrderedMap.sams lib/*.o 2>/dev/null || true; \
 	  rm -rf .cache/ifaces; \

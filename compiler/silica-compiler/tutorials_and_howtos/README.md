@@ -54,3 +54,9 @@ Hands-on guide for **outbound FFI**: C wrapper functions, `dangerous_exposure_so
 ## [designing_apps_with_foreign_functions.md](./designing_apps_with_foreign_functions.md)
 
 App-design tutorial for engineers new to Silica who must use **foreign functions**: keep dangerous code concentrated in a few `dangerous_*` adapter and worker modules, route requests through cast-only FFI worker actors, supervise dangerous workers, and avoid spreading wrapper calls through business logic.
+
+---
+
+## [open_recursion_callbacks.md](./open_recursion_callbacks.md)
+
+How to split a **recursive** algorithm across computation units without circular `use`: the facade passes recursive entry points as **callbacks** (`eval_child` / `check_typed` / `emit_child`). Covers when the pattern is needed, a switchboard analogy, a small standalone example, and a do/don’t checklist.
