@@ -2604,7 +2604,7 @@ Lct_free_loop:
 Lct_free_clear:
 	str	xzr, [x19, #256]
 	str	xzr, [x19, #264]
-	str	xzr, [x19, #272]
+; Do not clear ACB[+272] (sync_failure_reported) — that flag outlives the child-table list.
 	ldr	x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
 	ret
@@ -3215,6 +3215,14 @@ Lmr_freq_reset:
 	b.hi	Lmr_freq_escalate
 	b	Lmr_freq_ok
 Lmr_freq_escalate:
+; Claim sync_failure_reported BEFORE mark-dead+signal. Otherwise actor_thread_main can
+; observe alive==0, take LBB1_exit, and emit a duplicate root failure banner/note.
+	ldr	x8, [x20, #192]
+	cbnz	x8, Lmr_freq_escalate_mark_dead
+	ldr	x8, [x20, #272]
+	cbnz	x8, Lmr_freq_escalate_mark_dead
+	mov	x8, #1
+	str	x8, [x20, #272]
 	add	x0, x20, #16
 	bl	_os_unfair_lock_lock
 	str	wzr, [x20, #152]
@@ -3222,12 +3230,6 @@ Lmr_freq_escalate:
 	bl	_silica_rt_cv_signal
 	add	x0, x20, #16
 	bl	_os_unfair_lock_unlock
-	ldr	x8, [x20, #192]
-	cbnz	x8, Lmr_done
-	ldr	x8, [x20, #272]
-	cbnz	x8, Lmr_done
-	mov	x8, #1
-	str	x8, [x20, #272]
 	mov	x0, x20
 	bl	_silica_rt_actor_deliver_unwind_report
 	mov	w0, #2
@@ -3237,6 +3239,15 @@ Lmr_root_note_b:
 	add	x1, x1, L_silica_root_actor_exit@PAGEOFF
 	mov	w2, #43
 	bl	_write
+	b	Lmr_done
+Lmr_freq_escalate_mark_dead:
+	add	x0, x20, #16
+	bl	_os_unfair_lock_lock
+	str	wzr, [x20, #152]
+	add	x0, x20, #80
+	bl	_silica_rt_cv_signal
+	add	x0, x20, #16
+	bl	_os_unfair_lock_unlock
 	b	Lmr_done
 Lmr_freq_ok:
 	ldr	x0, [x20, #296]

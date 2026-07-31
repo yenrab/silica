@@ -2,7 +2,7 @@
 
 When you split a recursive algorithm across several Silica **computation units** (separate `.silica` files / modules), the natural shape is often a cycle: the dispatcher calls a specialist, and the specialist needs to call back into the dispatcher for nested work. Silica’s `use` graph is **acyclic**, so that shape cannot be expressed with mutual `use`.
 
-**Open recursion** is the pattern that keeps the modules acyclic: the parent passes the recursive entry point in as a **function argument** (a callback). Children call the callback instead of `use`ing the parent.
+**Open recursion** is the pattern that keeps the modules acyclic: the parent passes the recursive entry point in as a **function argument** (a callback). Children call the callback instead of `use`ing the parent. In Silica this means **lambda / function capture**, not OO-style recursion through `self` / `this`—see [compiling_with_less_ram.md](./compiling_with_less_ram.md) for that definition in the context of compile-time memory.
 
 ---
 

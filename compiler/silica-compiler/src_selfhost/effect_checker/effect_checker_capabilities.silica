@@ -247,7 +247,7 @@ fn check_all_fn_decls(decls: List[{ tag: int64, name: string, parameters: List[{
                         body_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(decls.head.body);
                         case body_node.kind == 11 of {
                             true -> {
-                                seq_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr(decls.head.body, decl_ctx);
+                                seq_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr_at(decls.head.body, decl_ctx, true);
                                 case seq_result.is_ok of {
                                     true -> check_all_fn_decls(decls.tail, ctx);
                                     false -> seq_result
@@ -257,7 +257,7 @@ fn check_all_fn_decls(decls: List[{ tag: int64, name: string, parameters: List[{
                                 body_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- effect_checker_propagation@collect_expr_effects_outside_sequence_blocks(decls.head.body, decl_ctx);
                                 case body_effects.is_nil of {
                                     true -> {
-                                        inner_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr(decls.head.body, ctx);
+                                        inner_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr_at(decls.head.body, ctx, false);
                                         case inner_result.is_ok of {
                                             true -> check_all_fn_decls(decls.tail, ctx);
                                             false -> inner_result
@@ -299,9 +299,29 @@ fn check_sequence_unused_effects(declared: List[{ name: string, parameter: strin
     }
 }
 
+{- True when declared effects include external_danger. -}
+fn effect_list_has_external_danger(effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> boolean {
+    case effects.is_nil of {
+        true -> false;
+        false -> case effects.head.name == "external_danger" of {
+            true -> true;
+            false -> effect_list_has_external_danger(effects.tail)
+        }
+    }
+}
+
 {- Recurse through expr and validate each SEQUENCE block (kind 11).
-   For each: (a) used effects subsumed by declared, (b) every declared effect is used. -}
+   allow_external_danger: true only for the function body's root SEQUENCE.
+   Nested SEQUENCE proc[external_danger] is rejected (E3012). -}
 fn check_sequence_blocks_in_expr(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, ctx: { fn_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], alias_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    sequence
+        result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr_at(expr, ctx, false)
+    produces
+        pure result
+    end
+}
+
+fn check_sequence_blocks_in_expr_at(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, ctx: { fn_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], alias_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] }, allow_external_danger: boolean) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     sequence
         node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
         result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <-
@@ -312,98 +332,65 @@ fn check_sequence_blocks_in_expr(expr: { nodes: List[{ kind: int64, value: strin
                         false -> name_validation;
                         true -> {
                             expanded_declared: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- effect_checker_propagation@expand_effect_list(node.sequence_effects, ctx.alias_env);
-                            // Only direct uses in this block — nested sequence proc[...] effects are checked on those blocks.
-                            used: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- effect_checker_propagation@union_effect_lists(
-                                effect_checker_propagation@collect_expr_effects_outside_sequence_blocks(parser_ast@expr_at(expr, node.inner), ctx),
-                                effect_checker_propagation@collect_expr_effects_outside_sequence_blocks(parser_ast@expr_at(expr, node.right_expr), ctx)
-                            );
-                            subsumed_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- all_effects_subsumed(used, expanded_declared);
-                            case subsumed_result.is_ok of {
+                            nest_ok: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- case allow_external_danger of {
+                                true -> effect_checker_core@effect_check_ok();
+                                false -> case effect_list_has_external_danger(expanded_declared) of {
+                                    false -> effect_checker_core@effect_check_ok();
+                                    true -> effect_checker_core@effect_check_err(
+                                        "E3012",
+                                        node.location,
+                                        "Nested external_danger is not allowed; sequence proc[external_danger] is valid only as the root body of a function",
+                                        "sect9.3.1"
+                                    )
+                                }
+                            };
+                            case nest_ok.is_ok of {
+                                false -> nest_ok;
                                 true -> {
-                                    unused_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_unused_effects(expanded_declared, used, node.location);
-                                    case unused_result.is_ok of {
+                                    used: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- effect_checker_propagation@union_effect_lists(
+                                        effect_checker_propagation@collect_sequence_block_direct_effects(parser_ast@expr_at(expr, node.inner), ctx),
+                                        effect_checker_propagation@collect_sequence_block_direct_effects(parser_ast@expr_at(expr, node.right_expr), ctx)
+                                    );
+                                    subsumed_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- all_effects_subsumed(used, expanded_declared);
+                                    case subsumed_result.is_ok of {
                                         true -> {
-                                            list_align: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- effect_checker_lists@check_list_mem_alignment_in_sequence(expr, expanded_declared);
-                                            case list_align.is_ok of {
-                                                false -> list_align;
+                                            unused_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_unused_effects(expanded_declared, used, node.location);
+                                            case unused_result.is_ok of {
                                                 true -> {
-                                                    inner_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr(parser_ast@expr_at(expr, node.inner), ctx);
-                                                    case inner_result.is_ok of {
-                                                        true -> check_sequence_blocks_in_expr(parser_ast@expr_at(expr, node.right_expr), ctx);
-                                                        false -> inner_result;
+                                                    list_align: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- effect_checker_lists@check_list_mem_alignment_in_sequence(expr, expanded_declared);
+                                                    case list_align.is_ok of {
+                                                        false -> list_align;
+                                                        true -> {
+                                                            inner_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr_at(parser_ast@expr_at(expr, node.inner), ctx, false);
+                                                            case inner_result.is_ok of {
+                                                                true -> check_sequence_blocks_in_expr_at(parser_ast@expr_at(expr, node.right_expr), ctx, false);
+                                                                false -> inner_result
+                                                            }
+                                                        }
                                                     }
-                                                }
+                                                };
+                                                false -> unused_result
                                             }
                                         };
-                                        false -> unused_result
+                                        false -> subsumed_result
                                     }
-                                };
-                                false -> subsumed_result
-                            }
-                        };
-                    }
-                };
-                false -> check_sequence_blocks_in_expr_default(expr, ctx)
-            }
-    produces
-        pure result
-    end
-}
-
-fn check_sequence_blocks_in_expr_default(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, ctx: { fn_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], alias_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    sequence
-        node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
-        inner_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.inner);
-        right_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.right_expr);
-        result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <-
-            case node.kind == 4 of {
-                true -> {
-                    arg_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr(inner_e, ctx);
-                    case arg_result.is_ok of {
-                        true -> {
-                            right_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(right_e);
-                            case right_node.kind == 4 and right_node.name == "" of {
-                                true -> {
-                                    r2: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr(parser_ast@expr_at(right_e, right_node.inner), ctx);
-                                    case r2.is_ok of {
-                                        true -> check_sequence_blocks_in_expr(parser_ast@expr_at(right_e, right_node.right_expr), ctx);
-                                        false -> r2;
-                                    }
-                                };
-                                false -> check_sequence_blocks_in_expr(right_e, ctx);
-                            }
-                        };
-                        false -> arg_result;
-                    }
-                };
-                false -> case node.kind == 3 of {
-                    true -> check_sequence_binop_3(expr, ctx);
-                    false -> case node.kind == 6 of {
-                        true -> check_sequence_binop_6(expr, ctx);
-                        false -> case node.kind == 2 of {
-                            true -> check_sequence_blocks_in_expr(inner_e, ctx);
-                            false -> case node.kind == 10 of {
-                                true -> check_sequence_binop_10(expr, ctx);
-                                false -> case node.kind == 11 of {
-                                    true -> check_sequence_blocks_in_expr(expr, ctx);
-                                    false -> effect_checker_core@effect_check_ok();
                                 }
                             }
                         }
                     }
-                }
+                };
+                false -> check_sequence_blocks_in_expr_default(expr, ctx, allow_external_danger)
             }
     produces
         pure result
     end
 }
 
-fn check_sequence_binop_3(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, ctx: { fn_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], alias_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+fn check_sequence_pair(left: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, right: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, ctx: { fn_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], alias_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] }, allow_external_danger: boolean) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     sequence
-        node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
-        left_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr(parser_ast@expr_at(expr, node.inner), ctx);
+        left_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr_at(left, ctx, allow_external_danger);
         result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- case left_result.is_ok of {
-            true -> check_sequence_blocks_in_expr(parser_ast@expr_at(expr, node.right_expr), ctx);
+            true -> check_sequence_blocks_in_expr_at(right, ctx, allow_external_danger);
             false -> left_result
         }
     produces
@@ -411,27 +398,67 @@ fn check_sequence_binop_3(expr: { nodes: List[{ kind: int64, value: string, name
     end
 }
 
-fn check_sequence_binop_6(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, ctx: { fn_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], alias_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+fn check_sequence_blocks_in_expr_default(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, ctx: { fn_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], alias_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] }, allow_external_danger: boolean) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     sequence
         node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
-        rhs_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr(parser_ast@expr_at(expr, node.inner), ctx);
-        result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- case rhs_result.is_ok of {
-            true -> check_sequence_blocks_in_expr(parser_ast@expr_at(expr, node.right_expr), ctx);
-            false -> rhs_result
-        }
-    produces
-        pure result
-    end
-}
-
-fn check_sequence_binop_10(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, ctx: { fn_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], foreign_c_wrapper_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], alias_env: List[{ name: string, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], type_env: List[{ name: string, type_name: string }, mem(normal)], world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    sequence
-        node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
-        rhs_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr(parser_ast@expr_at(expr, node.inner), ctx);
-        result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- case rhs_result.is_ok of {
-            true -> check_sequence_blocks_in_expr(parser_ast@expr_at(expr, node.right_expr), ctx);
-            false -> rhs_result
-        }
+        inner_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.inner);
+        right_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, node.right_expr);
+        result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <-
+            case node.kind == 4 of {
+                true -> {
+                    arg_result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr_at(inner_e, ctx, allow_external_danger);
+                    case arg_result.is_ok of {
+                        true -> {
+                            right_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(right_e);
+                            case right_node.kind == 4 and right_node.name == "" of {
+                                true -> {
+                                    r2: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_sequence_blocks_in_expr_at(parser_ast@expr_at(right_e, right_node.inner), ctx, allow_external_danger);
+                                    case r2.is_ok of {
+                                        true -> check_sequence_blocks_in_expr_at(parser_ast@expr_at(right_e, right_node.right_expr), ctx, allow_external_danger);
+                                        false -> r2
+                                    }
+                                };
+                                false -> check_sequence_blocks_in_expr_at(right_e, ctx, allow_external_danger)
+                            }
+                        };
+                        false -> arg_result
+                    }
+                };
+                false -> case node.kind == 3 of {
+                    true -> check_sequence_pair(inner_e, right_e, ctx, allow_external_danger);
+                    false -> case node.kind == 6 of {
+                        true -> check_sequence_pair(inner_e, right_e, ctx, allow_external_danger);
+                        false -> case node.kind == 2 of {
+                            true -> check_sequence_blocks_in_expr_at(inner_e, ctx, allow_external_danger);
+                            false -> case node.kind == 10 of {
+                                true -> check_sequence_pair(inner_e, right_e, ctx, allow_external_danger);
+                                false -> case node.kind == 13 of {
+                                    true -> check_sequence_pair(inner_e, right_e, ctx, allow_external_danger);
+                                    false -> case node.kind == 17 of {
+                                        true -> check_sequence_pair(inner_e, right_e, ctx, allow_external_danger);
+                                        false -> case node.kind == 18 of {
+                                            true -> check_sequence_blocks_in_expr_at(right_e, ctx, allow_external_danger);
+                                            false -> case node.kind == 9 of {
+                                                true -> check_sequence_pair(inner_e, right_e, ctx, allow_external_danger);
+                                                false -> case node.kind == 20 of {
+                                                    true -> check_sequence_blocks_in_expr_at(inner_e, ctx, allow_external_danger);
+                                                    false -> case node.kind == 21 of {
+                                                        true -> check_sequence_pair(inner_e, right_e, ctx, allow_external_danger);
+                                                        false -> case node.kind == 22 of {
+                                                            true -> check_sequence_blocks_in_expr_at(inner_e, ctx, allow_external_danger);
+                                                            false -> effect_checker_core@effect_check_ok()
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
     produces
         pure result
     end

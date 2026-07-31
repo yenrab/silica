@@ -23,6 +23,7 @@ use constraint_core;
 use parser_ast;
 use parser_tuples;
 use capability_list;
+use capability_case;
 use instantiated_fn_name;
 use constraint_extract_slots;
 
@@ -58,7 +59,7 @@ export extract_body_expr/1;
 
 
 fn extract_effect_declaration(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> ({ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) {
-    sequence proc[DeviceIO]
+    sequence
         result: ({ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- case slots.is_nil of {
             true -> {
                 empty: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_core@empty_list_slot();
@@ -246,33 +247,36 @@ fn collect_optional_proc_effects(slots: List[{ token: { kind: int64, lexeme: str
 
 
 // Collect params from ( param_name : param_type , ... ) and find return type/body. Slots start with left_paren.
-fn collect_params_and_find_type_and_body(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> (List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], string, { file: string, line: int64, column: int64, offset: int64 }, List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) proc[DeviceIO] {
+// Return ret type+loc before params lists so the iface surface has `(string,{file...},...)`
+// rather than a top-level `, string` after a List. Seed surface equality for large tuples
+// is whitespace-sensitive and pattern joins use `,` with no spaces (E2005 otherwise).
+fn collect_params_and_find_type_and_body(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> (string, { file: string, line: int64, column: int64, offset: int64 }, List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) proc[DeviceIO] {
     // Use lexemes for `(`/`)` — kind values can collide in nested List/record param types (same quirk as extract_tuple_type_loop).
     trimmed: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_extract_slots@skip_leading_whitespace_slots(slots);
     case trimmed.is_nil of {
-        true -> (parser_ast@nil_list_param(), "", parser_ast@zero_location(), parser_ast@empty_effect_name_list(), constraint_core@empty_list_slot());
+        true -> ("", parser_ast@zero_location(), parser_ast@nil_list_param(), parser_ast@empty_effect_name_list(), constraint_core@empty_list_slot());
         false -> case trimmed.head.token.kind == lexer_token_kind@token_kind_left_paren() or trimmed.head.token.lexeme == "(" of {
             true -> {
                 after_lparen: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_extract_slots@skip_leading_whitespace_slots(trimmed.tail);
                 case after_lparen.is_nil of {
-                    true -> (parser_ast@nil_list_param(), "", parser_ast@zero_location(), parser_ast@empty_effect_name_list(), constraint_core@empty_list_slot());
+                    true -> ("", parser_ast@zero_location(), parser_ast@nil_list_param(), parser_ast@empty_effect_name_list(), constraint_core@empty_list_slot());
                     false -> case after_lparen.head.token.kind == lexer_token_kind@token_kind_right_paren() or after_lparen.head.token.lexeme == ")" of {
                         true -> {
                             rest_after_rparen: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- after_lparen.tail;
                             (ret_type: string, ret_type_loc: { file: string, line: int64, column: int64, offset: int64 }, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], body_slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- find_type_and_body(rest_after_rparen);
-                            (parser_ast@nil_list_param(), ret_type, ret_type_loc, effects, body_slots)
+                            (ret_type, ret_type_loc, parser_ast@nil_list_param(), effects, body_slots)
                         };
                         false -> {
                             (params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], rest_after_params: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- collect_params_loop(after_lparen, parser_ast@nil_list_param());
                             (ret_type: string, ret_type_loc: { file: string, line: int64, column: int64, offset: int64 }, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], body_slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- find_type_and_body(rest_after_params);
-                            (params, ret_type, ret_type_loc, effects, body_slots)
+                            (ret_type, ret_type_loc, params, effects, body_slots)
                         }
                     }
                 }
             };
             false -> {
                 (ret_type: string, ret_type_loc: { file: string, line: int64, column: int64, offset: int64 }, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], body_slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- find_type_and_body(trimmed);
-                (parser_ast@nil_list_param(), ret_type, ret_type_loc, effects, body_slots)
+                (ret_type, ret_type_loc, parser_ast@nil_list_param(), effects, body_slots)
             }
         }
     }
@@ -281,32 +285,32 @@ fn collect_params_and_find_type_and_body(slots: List[{ token: { kind: int64, lex
 
 
 // `required` trait methods: signature only, terminated by `;`.
-fn collect_params_and_find_type_and_semicolon(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> (List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], string, { file: string, line: int64, column: int64, offset: int64 }, List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) proc[DeviceIO] {
+fn collect_params_and_find_type_and_semicolon(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> (string, { file: string, line: int64, column: int64, offset: int64 }, List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) proc[DeviceIO] {
     trimmed: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_extract_slots@skip_leading_whitespace_slots(slots);
     case trimmed.is_nil of {
-        true -> (parser_ast@nil_list_param(), "", parser_ast@zero_location(), parser_ast@empty_effect_name_list(), constraint_core@empty_list_slot());
+        true -> ("", parser_ast@zero_location(), parser_ast@nil_list_param(), parser_ast@empty_effect_name_list(), constraint_core@empty_list_slot());
         false -> case trimmed.head.token.kind == lexer_token_kind@token_kind_left_paren() or trimmed.head.token.lexeme == "(" of {
             true -> {
                 after_lparen: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_extract_slots@skip_leading_whitespace_slots(trimmed.tail);
                 case after_lparen.is_nil of {
-                    true -> (parser_ast@nil_list_param(), "", parser_ast@zero_location(), parser_ast@empty_effect_name_list(), constraint_core@empty_list_slot());
+                    true -> ("", parser_ast@zero_location(), parser_ast@nil_list_param(), parser_ast@empty_effect_name_list(), constraint_core@empty_list_slot());
                     false -> case after_lparen.head.token.kind == lexer_token_kind@token_kind_right_paren() or after_lparen.head.token.lexeme == ")" of {
                         true -> {
                             rest_after_rparen: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- after_lparen.tail;
                             (ret_type: string, ret_type_loc: { file: string, line: int64, column: int64, offset: int64 }, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], body_slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- find_type_and_semicolon(rest_after_rparen);
-                            (parser_ast@nil_list_param(), ret_type, ret_type_loc, effects, body_slots)
+                            (ret_type, ret_type_loc, parser_ast@nil_list_param(), effects, body_slots)
                         };
                         false -> {
                             (params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], rest_after_params: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- collect_params_loop(after_lparen, parser_ast@nil_list_param());
                             (ret_type: string, ret_type_loc: { file: string, line: int64, column: int64, offset: int64 }, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], body_slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- find_type_and_semicolon(rest_after_params);
-                            (params, ret_type, ret_type_loc, effects, body_slots)
+                            (ret_type, ret_type_loc, params, effects, body_slots)
                         }
                     }
                 }
             };
             false -> {
                 (ret_type: string, ret_type_loc: { file: string, line: int64, column: int64, offset: int64 }, effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], body_slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- find_type_and_semicolon(trimmed);
-                (parser_ast@nil_list_param(), ret_type, ret_type_loc, effects, body_slots)
+                (ret_type, ret_type_loc, parser_ast@nil_list_param(), effects, body_slots)
             }
         }
     }
@@ -561,7 +565,7 @@ fn body_slots_after_semicolon(slots: List[{ token: { kind: int64, lexeme: string
 // Return type and effects are separate: -> int64 proc[device_io] means return_type=int64, effects=[device_io].
 // When proc effects follow, token.lexeme may be empty; derive type from token.kind for type keywords.
 fn find_type_and_body(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> (string, { file: string, line: int64, column: int64, offset: int64 }, List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) {
-    sequence proc[DeviceIO]
+    sequence
         result: (string, { file: string, line: int64, column: int64, offset: int64 }, List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- case slots.is_nil of {
             true -> {
                 zero_loc: { file: string, line: int64, column: int64, offset: int64 } <- parser_ast@zero_location();
@@ -687,7 +691,7 @@ fn find_type_and_body(slots: List[{ token: { kind: int64, lexeme: string, locati
 
 // Same as find_type_and_body but ends with `;` instead of `{` body (trait required methods).
 fn find_type_and_semicolon(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> (string, { file: string, line: int64, column: int64, offset: int64 }, List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) {
-    sequence proc[DeviceIO]
+    sequence
         result: (string, { file: string, line: int64, column: int64, offset: int64 }, List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- case slots.is_nil of {
         true -> {
             zero_loc: { file: string, line: int64, column: int64, offset: int64 } <- parser_ast@zero_location();
@@ -824,7 +828,7 @@ fn find_type_and_semicolon(slots: List[{ token: { kind: int64, lexeme: string, l
 // `{ field: expr, ... }` is a struct literal when the first `ident:` is not a binding (`ident: type <- ...`).
 // Also `{}` (empty). Fails closed when `{` is not followed by `ident:` so `{ sequence ... }` and `{ foo( ... }` are not literals.
 fn is_struct_literal_lbrace_fallback(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> bool {
-    sequence proc[DeviceIO]
+    sequence
         result: bool <- case slots.is_nil of {
             true -> false;
             false -> case slots.head.token.kind == lexer_token_kind@token_kind_left_brace() or slots.head.token.lexeme == "{" of {
@@ -897,7 +901,7 @@ fn is_list_type_binding_start(slots: List[{ token: { kind: int64, lexeme: string
 // `ident : fn(T,) -> R <-` (function type in annotation position): fn-token type without lambda-shaped params,
 // and `<-` follows the full type. Not `ident : fn(x: T) -> R {` (lambda expression / struct field).
 fn binding_start_fn_type(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> bool {
-    sequence proc[DeviceIO]
+    sequence
         ac_kw: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_extract_slots@slots_after_binding_colon(slots);
         result: bool <- case parser_tuples@slots_start_fn_type(ac_kw) of {
             false -> false;
@@ -923,7 +927,7 @@ fn binding_start_fn_type(slots: List[{ token: { kind: int64, lexeme: string, loc
 // Check if slots start with binding pattern: ident : type <-, ident : ( tuple type,
 // or untyped `ident <-` (accepted in the AST; type checker emits E2018).
 fn is_binding_start(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> bool {
-    sequence proc[DeviceIO]
+    sequence
         result: bool <- case slots.is_nil of {
             true -> false;
             false -> case slots.tail.is_nil of {

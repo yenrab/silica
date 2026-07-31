@@ -28,6 +28,8 @@ export emit_var_reg/3;
 export emit_var_reg_outer/4;
 export strip_mov_x2_x1_then_x1_x2/1;
 export emit_var_sp_load/2;
+export emit_ldr_mem_ref/2;
+export emit_str_mem_ref/2;
 export emit_var_with_sp_check/3;
 export find_sp_binding/2;
 export find_sp_binding_bare_or_percent_param/2;
@@ -229,8 +231,60 @@ fn find_sp_binding(outer_reg: string, var_name: string) -> string {
     }
 }
 
+// Parse "[X29, #-N]" -> N (positive byte offset). Returns -1 when not that form.
+// AArch64 unscaled LDR/STR only accept offsets in [-256, 255]; deeper FP spills need
+// address materialization into X16 (AAPCS64 IP0 scratch) before the load/store.
+fn parse_x29_neg_offset_bytes(mem_ref: string) -> int64 {
+    pref: string <- "[X29, #-";
+    plen: int64 <- 8;
+    case len(mem_ref) > plen + 1 and substring(mem_ref, 0, plen) == pref of {
+        true -> case substring(mem_ref, len(mem_ref) - 1, len(mem_ref)) == "]" of {
+            true -> string_parse@string_to_int64(substring(mem_ref, plen, len(mem_ref) - 1));
+            false -> 0 - 1
+        };
+        false -> 0 - 1
+    }
+}
+
+fn emit_x16_addr_fp_minus(offset: int64) -> string {
+    case offset <= 4095 of {
+        true -> concat("    SUB X16, X29, #", concat(atom_table@int64_to_decimal_string(offset), "\n"));
+        false -> case offset <= 65535 of {
+            true -> concat(
+                concat("    MOV X16, #", concat(atom_table@int64_to_decimal_string(offset), "\n")),
+                "    SUB X16, X29, X16\n"
+            );
+            false -> {
+                hi: int64 <- offset / 65536;
+                lo: int64 <- offset % 65536;
+                movz: string <- concat("    MOVZ X16, #", concat(atom_table@int64_to_decimal_string(lo), "\n"));
+                movk: string <- concat("    MOVK X16, #", concat(atom_table@int64_to_decimal_string(hi), ", LSL #16\n"));
+                concat(movz, concat(movk, "    SUB X16, X29, X16\n"))
+            }
+        }
+    }
+}
+
+// LDR dest, mem_ref — expands deep [X29, #-N] spills past the unscaled immediate range.
+fn emit_ldr_mem_ref(dest: string, mem_ref: string) -> string {
+    off: int64 <- parse_x29_neg_offset_bytes(mem_ref);
+    case off > 256 of {
+        true -> concat(emit_x16_addr_fp_minus(off), concat(concat("    LDR ", dest), ", [X16]"));
+        false -> concat(concat("    LDR ", dest), concat(", ", mem_ref))
+    }
+}
+
+// STR src, mem_ref — same deep-spill expansion as emit_ldr_mem_ref (includes trailing newline).
+fn emit_str_mem_ref(src: string, mem_ref: string) -> string {
+    off: int64 <- parse_x29_neg_offset_bytes(mem_ref);
+    case off > 256 of {
+        true -> concat(emit_x16_addr_fp_minus(off), concat(concat("    STR ", src), ", [X16]\n"));
+        false -> concat(concat(concat("    STR ", src), ", "), concat(mem_ref, "\n"))
+    }
+}
+
 fn emit_var_sp_load(dest: string, sp_ref: string) -> string {
-    concat(concat("    LDR ", dest), concat(", ", sp_ref))
+    emit_ldr_mem_ref(dest, sp_ref)
 }
 
 fn sp_offset_for_index(idx_str: string) -> string {

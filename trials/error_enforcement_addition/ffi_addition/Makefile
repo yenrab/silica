@@ -35,6 +35,8 @@ FAIL_CASES := \
 	error_app_sidecar_metadata/dangerous_sidecar_missing_link_library \
 	error_app_sidecar_metadata/dangerous_sidecar_missing_archive \
 	error_app_cast_worker/dangerous_external_danger_in_main \
+	error_app_cast_worker/dangerous_nested_external_danger \
+	error_app_cast_worker/dangerous_nested_external_danger_deep \
 	error_app_cast_worker/dangerous_external_danger_at_spawn_site \
 	error_app_cast_worker/dangerous_direct_call_fail \
 	error_app_cast_worker/dangerous_spawn_plain_bad \

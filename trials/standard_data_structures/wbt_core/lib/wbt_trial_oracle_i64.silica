@@ -209,100 +209,121 @@ fn map_oracle_has_key(xs: List[(int64, int64), mem(normal)], want_key: int64) ->
     }
 }
 
-fn map_oracle_insert_sorted(xs: List[(int64, int64), mem(normal)], want_key: int64, want_value: int64) -> List[(int64, int64), mem(normal)] {
+fn map_oracle_insert_sorted_greater(
+    h: (int64, int64),
+    t: List[(int64, int64), mem(normal)],
+    want_key: int64,
+    want_value: int64
+) -> List[(int64, int64), mem(normal)] {
     sequence proc[mem(normal)]
-        out: List[(int64, int64), mem(normal)] <- case xs of {
-            []: List[(int64, int64), mem(normal)] -> {
-                sequence
-                    pair: (int64, int64) <- (want_key, want_value)
+        kept: (int64, int64) <- h;
+        rest: List[(int64, int64), mem(normal)] <-
+            map_oracle_insert_sorted(t, want_key, want_value);
+        rebuilt: List[(int64, int64), mem(normal)] <-
+            prepend[(int64, int64), mem(normal)](kept, rest)
+    produces
+        pure rebuilt
+    end
+}
+
+fn map_oracle_insert_sorted_cons(
+    h: (int64, int64),
+    t: List[(int64, int64), mem(normal)],
+    want_key: int64,
+    want_value: int64,
+    xs: List[(int64, int64), mem(normal)]
+) -> List[(int64, int64), mem(normal)] {
+    sequence
+        (k: int64, _: int64) <- h
+    produces
+        pure case cmp_i64(want_key, k) of {
+            :less -> {
+                sequence proc[mem(normal)]
+                    pair: (int64, int64) <- (want_key, want_value);
+                    out: List[(int64, int64), mem(normal)] <-
+                        prepend[(int64, int64), mem(normal)](pair, xs)
                 produces
-                    pure prepend[(int64, int64), mem(normal)](pair, empty[(int64, int64), mem(normal)]())
+                    pure out
                 end
             };
-            [h: (int64, int64), t: List[(int64, int64), mem(normal)]] -> {
-                sequence
-                    (k: int64, _: int64) <- h
-                produces
-                    pure case cmp_i64(want_key, k) of {
-                        :less -> {
-                            sequence
-                                pair: (int64, int64) <- (want_key, want_value)
-                            produces
-                                pure prepend[(int64, int64), mem(normal)](pair, xs)
-                            end
-                        };
-                        :equal -> xs;
-                        :greater -> {
-                            sequence proc[mem(normal)]
-                                kept: (int64, int64) <- h;
-                                rest: List[(int64, int64), mem(normal)] <-
-                                    map_oracle_insert_sorted(t, want_key, want_value);
-                                rebuilt: List[(int64, int64), mem(normal)] <-
-                                    prepend[(int64, int64), mem(normal)](kept, rest)
-                            produces
-                                pure rebuilt
-                            end
-                        }
-                    }
-                end
-            }
+            :equal -> xs;
+            :greater -> map_oracle_insert_sorted_greater(h, t, want_key, want_value)
         }
+    end
+}
+
+fn map_oracle_insert_sorted(xs: List[(int64, int64), mem(normal)], want_key: int64, want_value: int64) -> List[(int64, int64), mem(normal)] {
+    case xs of {
+        []: List[(int64, int64), mem(normal)] -> {
+            sequence proc[mem(normal)]
+                pair: (int64, int64) <- (want_key, want_value);
+                out: List[(int64, int64), mem(normal)] <-
+                    prepend[(int64, int64), mem(normal)](pair, empty[(int64, int64), mem(normal)]())
+            produces
+                pure out
+            end
+        };
+        [h: (int64, int64), t: List[(int64, int64), mem(normal)]] ->
+            map_oracle_insert_sorted_cons(h, t, want_key, want_value, xs)
+    }
+}
+
+fn map_oracle_replace_value_rebuild(
+    h: (int64, int64),
+    t: List[(int64, int64), mem(normal)],
+    want_key: int64,
+    want_value: int64
+) -> List[(int64, int64), mem(normal)] {
+    sequence proc[mem(normal)]
+        kept: (int64, int64) <- h;
+        rest: List[(int64, int64), mem(normal)] <-
+            map_oracle_replace_value(t, want_key, want_value);
+        rebuilt: List[(int64, int64), mem(normal)] <-
+            prepend[(int64, int64), mem(normal)](kept, rest)
     produces
-        pure out
+        pure rebuilt
+    end
+}
+
+fn map_oracle_replace_value_cons(
+    h: (int64, int64),
+    t: List[(int64, int64), mem(normal)],
+    want_key: int64,
+    want_value: int64
+) -> List[(int64, int64), mem(normal)] {
+    sequence
+        (k: int64, _: int64) <- h
+    produces
+        pure case cmp_i64(want_key, k) of {
+            :equal -> {
+                sequence proc[mem(normal)]
+                    pair: (int64, int64) <- (k, want_value);
+                    out: List[(int64, int64), mem(normal)] <-
+                        prepend[(int64, int64), mem(normal)](pair, t)
+                produces
+                    pure out
+                end
+            };
+            :less -> map_oracle_replace_value_rebuild(h, t, want_key, want_value);
+            :greater -> map_oracle_replace_value_rebuild(h, t, want_key, want_value)
+        }
     end
 }
 
 fn map_oracle_replace_value(xs: List[(int64, int64), mem(normal)], want_key: int64, want_value: int64) -> List[(int64, int64), mem(normal)] {
-    sequence proc[mem(normal)]
-        out: List[(int64, int64), mem(normal)] <- case xs of {
-            []: List[(int64, int64), mem(normal)] -> {
-                sequence
-                    pair: (int64, int64) <- (want_key, want_value)
-                produces
-                    pure prepend[(int64, int64), mem(normal)](pair, empty[(int64, int64), mem(normal)]())
-                end
-            };
-            [h: (int64, int64), t: List[(int64, int64), mem(normal)]] -> {
-                sequence
-                    (k: int64, _: int64) <- h
-                produces
-                    pure case cmp_i64(want_key, k) of {
-                        :equal -> {
-                            sequence
-                                pair: (int64, int64) <- (k, want_value)
-                            produces
-                                pure prepend[(int64, int64), mem(normal)](pair, t)
-                            end
-                        };
-                        :less -> {
-                            sequence proc[mem(normal)]
-                                kept: (int64, int64) <- h;
-                                rest: List[(int64, int64), mem(normal)] <-
-                                    map_oracle_replace_value(t, want_key, want_value);
-                                rebuilt: List[(int64, int64), mem(normal)] <-
-                                    prepend[(int64, int64), mem(normal)](kept, rest)
-                            produces
-                                pure rebuilt
-                            end
-                        };
-                        :greater -> {
-                            sequence proc[mem(normal)]
-                                kept: (int64, int64) <- h;
-                                rest: List[(int64, int64), mem(normal)] <-
-                                    map_oracle_replace_value(t, want_key, want_value);
-                                rebuilt: List[(int64, int64), mem(normal)] <-
-                                    prepend[(int64, int64), mem(normal)](kept, rest)
-                            produces
-                                pure rebuilt
-                            end
-                        }
-                    }
-                end
-            }
-        }
-    produces
-        pure out
-    end
+    case xs of {
+        []: List[(int64, int64), mem(normal)] -> {
+            sequence proc[mem(normal)]
+                pair: (int64, int64) <- (want_key, want_value);
+                out: List[(int64, int64), mem(normal)] <-
+                    prepend[(int64, int64), mem(normal)](pair, empty[(int64, int64), mem(normal)]())
+            produces
+                pure out
+            end
+        };
+        [h: (int64, int64), t: List[(int64, int64), mem(normal)]] ->
+            map_oracle_replace_value_cons(h, t, want_key, want_value)
+    }
 }
 
 fn map_oracle_insert(xs: List[(int64, int64), mem(normal)], want_key: int64, want_value: int64) -> { list: List[(int64, int64), mem(normal)], inserted: boolean, replaced: boolean } {

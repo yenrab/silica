@@ -63,16 +63,58 @@ fn count_call_args_user_call(expr: Expr) -> int64 {
     }
 }
 
-// Count tag-0 declarations sharing the same operation base name and arity (Phase 0.4 overload set).
-fn count_tag0_same_name_arity(decls: ListDeclaration, fn_base: string, arity: int64) -> int64 {
+// True when `name` is an exported trait in this decl list (tag 5).
+fn trait_name_exported_mangle(decls: ListDeclaration, name: string) -> bool {
     case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 5 and decls.head.name == name of {
+            true -> true;
+            false -> trait_name_exported_mangle(decls.tail, name)
+        }
+    }
+}
+
+// First-param type text (trimmed). ListParam is stored head=last formal; reverse to source order.
+fn first_param_type_mangle(params: ListParam) -> string {
+    source_params: ListParam <- parser_ast@list_param_reverse_with_acc(params, parser_ast@nil_list_param());
+    case source_params.is_nil of {
+        true -> "";
+        false -> type_checker_traits@trim_type_text(source_params.head.type_name)
+    }
+}
+
+// Provided-method templates (tag 0, Self-typed first param) are not link symbols after
+// trait specialization: they are replaced by concrete clones or dropped when overridden.
+// Iface stubs still inject the Self export as tag 0 alongside concrete impl stubs; counting
+// that template as an overload falsely mangles call sites (e.g. ValueTrait@value override).
+fn is_provided_method_template_mangle(d: Declaration, all_decls: ListDeclaration) -> bool {
+    case d.tag == 0 of {
+        false -> false;
+        true -> case d.parameters.is_nil of {
+            true -> false;
+            false -> trait_name_exported_mangle(all_decls, first_param_type_mangle(d.parameters))
+        }
+    }
+}
+
+// Count linkable tag-0 declarations sharing the same operation base name and arity
+// (Phase 0.4 overload set). Skips provided-method templates (see above).
+fn count_tag0_same_name_arity(decls: ListDeclaration, fn_base: string, arity: int64) -> int64 {
+    count_tag0_same_name_arity_scan(decls, decls, fn_base, arity)
+}
+
+fn count_tag0_same_name_arity_scan(scan: ListDeclaration, all_decls: ListDeclaration, fn_base: string, arity: int64) -> int64 {
+    case scan.is_nil of {
         true -> 0;
-        false -> case decls.head.tag == 0 of {
-            true -> case instantiated_fn_name@fn_base_name_before_brackets(decls.head.name) == fn_base and list_param_length_call(decls.head.parameters) == arity of {
-                true -> 1 + count_tag0_same_name_arity(decls.tail, fn_base, arity);
-                false -> count_tag0_same_name_arity(decls.tail, fn_base, arity)
+        false -> case scan.head.tag == 0 of {
+            true -> case instantiated_fn_name@fn_base_name_before_brackets(scan.head.name) == fn_base and list_param_length_call(scan.head.parameters) == arity of {
+                true -> case is_provided_method_template_mangle(scan.head, all_decls) of {
+                    true -> count_tag0_same_name_arity_scan(scan.tail, all_decls, fn_base, arity);
+                    false -> 1 + count_tag0_same_name_arity_scan(scan.tail, all_decls, fn_base, arity)
+                };
+                false -> count_tag0_same_name_arity_scan(scan.tail, all_decls, fn_base, arity)
             };
-            false -> count_tag0_same_name_arity(decls.tail, fn_base, arity)
+            false -> count_tag0_same_name_arity_scan(scan.tail, all_decls, fn_base, arity)
         }
     }
 }

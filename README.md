@@ -136,7 +136,7 @@ Indexed specifications, plans, and design notes in `[compiler/silica-compiler/de
 
 ### Tutorials and how-tos
 
-Hands-on guides in `[compiler/silica-compiler/tutorials_and_howtos/](compiler/silica-compiler/tutorials_and_howtos/)` (actors, regions, lists, blocks, and related topics). For foreign functions, start with [designing apps with foreign functions](compiler/silica-compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md), then use [writing FFI wrappers and Makefiles](compiler/silica-compiler/tutorials_and_howtos/ffi_wrappers_and_makefiles.md) for the build details.
+Hands-on guides in `[compiler/silica-compiler/tutorials_and_howtos/](compiler/silica-compiler/tutorials_and_howtos/)` (actors, regions, lists, blocks, and related topics). For foreign functions, start with [designing apps with foreign functions](compiler/silica-compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md), then use [writing FFI wrappers and Makefiles](compiler/silica-compiler/tutorials_and_howtos/ffi_wrappers_and_makefiles.md) for the build details. To build a general app with the drop-in Makefiles in [`project_makefiles/`](project_makefiles/), see [building apps with project Makefiles](compiler/silica-compiler/tutorials_and_howtos/building_apps_with_project_makefiles.md). To keep **compile-time RAM** down on large apps, see [compiling with less RAM](compiler/silica-compiler/tutorials_and_howtos/compiling_with_less_ram.md) (compilation units, leaf-to-root builds, reclaim loop, open recursion).
 
 ---
 
@@ -144,58 +144,59 @@ Hands-on guides in `[compiler/silica-compiler/tutorials_and_howtos/](compiler/si
 
 Instructions below follow the **roadmap tracks** described earlier (**Track 1** = language and compiler work in flight and the self-hosted toolchain; **Track 2** = runtime platform, including **foreign interoperability** and **brokered IPC**). They do **not** refer to the numbered **bootstrap pipeline phases** inside [build-plan.md](compiler/silica-compiler/design_documents/build-plan.md).
 
-**Platform notice (temporary):** The build and link path is **validated on Apple Silicon (arm64 macOS)** only. Other chips are not supported end-to-end yet. **Early contribution opportunity:** help bring additional targets online by adding or completing an **emitter backend** under `[compiler/silica-compiler/src/emitter/](compiler/silica-compiler/src/emitter/)` (see existing `apple_silicon_mac/`), wiring `TARGET=…` in the `[Makefile](compiler/silica-compiler/src/Makefile)`, and extending toolchain/triple notes in the [build plan](compiler/silica-compiler/design_documents/build-plan.md) as needed. That work is a concrete way to support new CPUs and boards before **Track 2** runtime pieces land.
+**Platform notice (temporary):** The build and link path is **validated on Apple Silicon (arm64 macOS)** only. Other hosts are not supported end-to-end yet. **Early contribution opportunity:** help bring additional emit targets online by adding or completing an **emitter backend** under `[compiler/silica-compiler/src_selfhost/emitter/](compiler/silica-compiler/src_selfhost/emitter/)` (see existing `apple_silicon_mac/` and `aarch64_debian/`), then build with `make TARGET=…`. That work is a concrete way to support new CPUs and boards before **Track 2** runtime pieces land.
 
-### Current build: bootstrap compiler + self-hosted `silica-compiler` (Track 1 toolchain)
+### Current build: seed host + self-hosted `silica-compiler` (Track 1 toolchain)
 
-**1. Install tooling**
+The supported compiler tree is `[compiler/silica-compiler/src_selfhost/](compiler/silica-compiler/src_selfhost/)`. A checked-in **seed** binary under `[binaries/](binaries/)` compiles the Silica sources to assembly; **Clang** assembles and links the result into a new `silica-compiler`.
 
-
-| Requirement                 | Role                                                                                                                                                                                                                                                                                             |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Rust** (`rustc`, `cargo`) | **1.70+** — builds the bootstrap compiler (`[compiler/silica-bootstrap-compiler](compiler/silica-bootstrap-compiler)`).                                                                                                                                                                          |
-| **GNU Make**                | Drives the Silica-in-Silica compiler build under `[compiler/silica-compiler/src](compiler/silica-compiler/src)`.                                                                                                                                                                                 |
-| **LLVM tools**              | `llvm-as` and `llc` assemble and lower the generated LLVM IR; a **C linker** (typically **Clang**) links `main.o` with the bootstrap static runtime. The self-hosted compiler `Makefile` looks for tools on `PATH` and, on Apple Silicon Homebrew installs, under `/opt/homebrew/opt/llvm/bin/`. |
-| **Optional: LLVM 15**       | Enables the bootstrap compiler’s **LLVM bitcode backend** (`llvm_backend` feature). Set `LLVM_SYS_150_PREFIX` to your LLVM 15 prefix if you build with that feature. See `[compiler/silica-bootstrap-compiler/README.md](compiler/silica-bootstrap-compiler/README.md)`.                         |
+**1. Prerequisites**
 
 
-The self-hosted compiler build uses the bootstrap compiler **without** the LLVM backend feature (`cargo build --release --no-default-features`) so the pipeline stays consistent with text IR generation and the LLVM tools above.
+| Requirement | Role |
+| --- | --- |
+| **Seed compiler** | Native host binary at `binaries/silica-compiler` (symlink to a versioned file such as `silica-999998-seed-macos-applesilicon`). `make` refreshes the link if needed; you can also run `binaries/update_silica_compiler_link.bash` and pick your **local host** platform (where the compiler runs—not an emit / cross-compile target). |
+| **GNU Make** | Drives the build under `src_selfhost/`. |
+| **Clang** | Assembles `.sams` → `.o` and links `silica-compiler`. On Apple Silicon Homebrew LLVM installs, the Makefile prefers `/opt/homebrew/opt/llvm/bin/clang` when present. |
+| **Optional: Rust** (`rustc`, `cargo`) | Only if the link step must rebuild the bootstrap static runtime (`libsilica_compiler.a`). Not required for the usual seed → assemble → link path when that library is already available. |
 
-**2. Build the bootstrap compiler (Rust)**
+
+**2. Build**
 
 From the repository root:
 
 ```bash
-cd compiler/silica-bootstrap-compiler
-./build_bootstrap.sh
-```
-
-`build_bootstrap.sh` detects LLVM 15 when present and prints status; you can also build manually:
-
-```bash
-# Default: text LLVM IR (no LLVM 15 required for this mode)
-cargo build --release --no-default-features
-
-# Optional: LLVM bitcode backend (requires LLVM 15; see README in this directory)
-export LLVM_SYS_150_PREFIX=/path/to/llvm-15
-cargo build --release --features llvm_backend
-```
-
-Artifacts used by the next step include `target/release/silica-boot` and `target/release/libsilica_compiler.a`.
-
-**3. Build the self-hosted compiler (Silica sources + link)**
-
-By default, `make` builds for **Apple Silicon** (`TARGET=apple_silicon_mac`, the `emitter/apple_silicon_mac` backend). That is currently the **only** emitter tree shipped for a full build; see the platform notice above for supporting more chips.
-
-```bash
-cd compiler/silica-compiler/src
-make clean   # optional
+cd compiler/silica-compiler/src_selfhost
 make
 ```
 
-When additional backends exist under `emitter/<target>/`, you will select them with `make TARGET=<target>` (the Makefile lists discovered directories in `make help`).
+Plain `make` (same as `make build`) creates or refreshes `silica.config` when needed, runs the seed compiler, assembles, and links `silica-compiler` in that directory.
 
-This produces the `silica-compiler` executable in `compiler/silica-compiler/src/`. For Makefile details and targets, run `make help` in that directory.
+**Useful options and targets**
+
+| Command | What it does |
+| --- | --- |
+| `make` / `make build` | Full build: config → seed compile → objects → link. |
+| `make assembly` | Seed compile only (produce / refresh `.sams`). |
+| `make objects` | Assemble `.sams` → `.o` (runs assembly first if needed). |
+| `make executables` | Link `silica-compiler` (runs objects first if needed). |
+| `make clean` | Remove generated artifacts (`.sams`, `.o`, configs, iface caches, and the local executable). |
+| `make all` | `clean`, then `build`. |
+| `make help` | List targets, the active emit target, and allowable `TARGET` values. |
+| `make TARGET=<name>` | Bake a specific **emit backend** from `emitter/<name>/` into this build (writes `silica.target`). |
+| `make all-targets` | Clean/build once per allowable emit target, producing `silica-compiler-<TARGET>` for each. |
+| `make EXECUTABLE=<name>` | Override the output binary name (default: `silica-compiler`). |
+
+**Emit target (`TARGET`)** selects which `emitter/<TARGET>/` backend is compiled into the binary—the code-generation backend for this build—not a runtime switch inside an already-built compiler, and not the `binaries/` host platform tag (e.g. `macos-applesilicon`). When unset, the Makefile defaults from the current host (`apple_silicon_mac` on Darwin arm64). Examples:
+
+```bash
+make                                    # host-default TARGET + full build
+make TARGET=apple_silicon_mac           # explicit emit backend
+make assembly TARGET=apple_silicon_mac  # seed compile only for that backend
+make all-targets                        # one binary per allowable TARGET
+```
+
+Run `make help` in `src_selfhost/` for the live list of allowable emit targets and the currently active `TARGET`.
 
 ### Track 2 runtime (projected): not yet documented as a single build
 
@@ -205,7 +206,7 @@ This produces the `silica-compiler` executable in `compiler/silica-compiler/src/
 
 The **CI trials** live under `[compiler/silica-compiler/trials/](compiler/silica-compiler/trials/)`. Each subdirectory (e.g. `atoms_addition`, `structs_addition`) holds Silica sources and golden files (`.ascomp` assembly, `.scout` expected output). The top-level `[Makefile](compiler/silica-compiler/trials/Makefile)` drives the same checks automation would: compile every listed `.silica` with the **self-hosted** `silica-compiler`, compare generated assembly to the checked-in baseline, assemble and link, run the binaries, and compare stdout/exit code to `.scout`.
 
-**Prerequisite:** build `compiler/silica-compiler/src/silica-compiler` as in the **self-hosted compiler** steps above. The trials invoke `../src/silica-compiler` by path.
+**Prerequisite:** build `compiler/silica-compiler/src_selfhost/silica-compiler` as in the **self-hosted compiler** steps above, or use the seed at `binaries/silica-compiler` (what the trials Makefile expects by default).
 
 Run the full CI pipeline with `**make integrate`** (compile every trial, diff assembly against `.ascomp`, link, run, diff output against `.scout`). That target is also the Makefile’s default, so plain `make` runs the same steps.
 

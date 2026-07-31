@@ -53,7 +53,7 @@ export parse_effects_iface_string/1;
 
 
 fn iface_format_version() -> string { "1" }
-fn iface_compiler_stamp() -> string { "seed-iface-5" }
+fn iface_compiler_stamp() -> string { "seed-iface-6" }
 
 fn iface_cache_dir() -> string { ".cache/ifaces" }
 
@@ -105,6 +105,10 @@ fn iface_path_from_source(source_path: string) -> string {
 struct IfaceExport {
     name: string,
     arity: int64,
+    // AST declaration tag at publish time (0 = fn/provided/impl, 7 = required).
+    // Stubs must preserve this: tagging provided Self methods as 7 skips trait-site
+    // specialization and breaks process-per-unit reclaim (E2003 on concrete receivers).
+    decl_tag: int64,
     effects: string,
     type_surface: string
 }
@@ -137,7 +141,7 @@ struct ListIfaceString {
 }
 
 fn empty_iface_exports() -> ListIfaceExport {
-    dummy: IfaceExport <- IfaceExport { name: "", arity: 0, effects: "", type_surface: "" };
+    dummy: IfaceExport <- IfaceExport { name: "", arity: 0, decl_tag: 0, effects: "", type_surface: "" };
     nil_e: ListIfaceExport <- ListIfaceExport { is_nil: true, head: dummy, tail: nil_e };
     nil_e
 }
@@ -318,6 +322,7 @@ fn collect_impls_for_export(decls: ListDeclaration, fn_name: string, arity: int6
                                 IfaceExport {
                                     name: fn_name,
                                     arity: arity,
+                                    decl_tag: 0,
                                     effects: effects_to_iface_string(decls.head.declared_effects),
                                     type_surface: ft
                                 },
@@ -380,6 +385,7 @@ fn extract_exports_from_items(items: ListParam, whole: ListDeclaration, acc: Lis
                             e: IfaceExport <- IfaceExport {
                                 name: decl.name,
                                 arity: ar,
+                                decl_tag: decl.tag,
                                 effects: effects_to_iface_string(decl.declared_effects),
                                 type_surface: ft
                             };
@@ -455,6 +461,7 @@ fn write_export_blocks(path: string, exports: ListIfaceExport) -> int64 proc[Dev
             _: int64 <- append_line(path, "---");
             _: int64 <- append_line(path, exports.head.name);
             _: int64 <- append_line(path, atom_table@int64_to_decimal_string(exports.head.arity));
+            _: int64 <- append_line(path, atom_table@int64_to_decimal_string(exports.head.decl_tag));
             _: int64 <- append_line(path, exports.head.effects);
             _: int64 <- append_line(path, exports.head.type_surface);
             write_export_blocks(path, exports.tail)
@@ -693,26 +700,32 @@ fn parse_export_blocks_iface(lines: ListIfaceString, acc: ListIfaceExport) -> (b
                         true -> (false, acc);
                         false -> case lines.tail.tail.tail.tail.is_nil of {
                             true -> (false, acc);
-                            false -> do
-                                name_l: string <- lines.tail.head;
-                                arity_l: string <- lines.tail.tail.head;
-                                eff_l: string <- lines.tail.tail.tail.head;
-                                ty_l: string <- lines.tail.tail.tail.tail.head;
-                                rest: ListIfaceString <- lines.tail.tail.tail.tail.tail;
-                                (ok_ar: bool, ar: int64) <- parse_unsigned_decimal_iface(arity_l);
-                                case ok_ar of {
-                                    false -> (false, acc);
-                                    true -> do
-                                        e: IfaceExport <- IfaceExport {
-                                            name: name_l,
-                                            arity: ar,
-                                            effects: eff_l,
-                                            type_surface: ty_l
-                                        };
-                                        parse_export_blocks_iface(rest, cons_iface_export(e, acc))
-                                    end
-                                }
-                            end
+                            false -> case lines.tail.tail.tail.tail.tail.is_nil of {
+                                true -> (false, acc);
+                                false -> do
+                                    name_l: string <- lines.tail.head;
+                                    arity_l: string <- lines.tail.tail.head;
+                                    tag_l: string <- lines.tail.tail.tail.head;
+                                    eff_l: string <- lines.tail.tail.tail.tail.head;
+                                    ty_l: string <- lines.tail.tail.tail.tail.tail.head;
+                                    rest: ListIfaceString <- lines.tail.tail.tail.tail.tail.tail;
+                                    (ok_ar: bool, ar: int64) <- parse_unsigned_decimal_iface(arity_l);
+                                    (ok_tag: bool, tag_v: int64) <- parse_unsigned_decimal_iface(tag_l);
+                                    case ok_ar and ok_tag of {
+                                        false -> (false, acc);
+                                        true -> do
+                                            e: IfaceExport <- IfaceExport {
+                                                name: name_l,
+                                                arity: ar,
+                                                decl_tag: tag_v,
+                                                effects: eff_l,
+                                                type_surface: ty_l
+                                            };
+                                            parse_export_blocks_iface(rest, cons_iface_export(e, acc))
+                                        end
+                                    }
+                                end
+                            }
                         }
                     }
                 }
@@ -1164,6 +1177,9 @@ fn split_param_types_iface(s: string, i: int64, start: int64, paren: int64, brac
 }
 
 
+// `split_param_types_iface` reverses at the end, so `types` is source order (head = first
+// param). AST `ListParam` is the opposite (head = last; see collect_params_loop). Cons into
+// an accumulator while walking `types` so the stub ends head=last like a full parse.
 fn params_from_type_list(types: ListIfaceString, i: int64, acc: ListParam) -> ListParam {
     case types.is_nil of {
         true -> acc;
@@ -1231,20 +1247,16 @@ fn stub_fn_decl_from_export(e: IfaceExport) -> Declaration {
 }
 
 
-// Trait Self export surfaces must be tag 7 (required), matching a full parse.
-// Emitting them as tag 0 doubles the overload set with concrete impl stubs and
-// triggers SIR mangling that the real module (one tag-0 impl) does not emit.
-fn stub_export_tag_for_surface(export_trait: string, type_surface: string, arity: int64) -> int64 {
+// Prefer the tag recorded at publish (required=7, provided/ordinary=0, impl=0).
+// Falling back to Self-param → 7 wrongly tags provided methods and skips trait-site
+// specialization under iface stubs (E2003 on reclaim).
+fn stub_export_tag_for_export(e: IfaceExport, export_trait: string) -> int64 {
     case len(export_trait) == 0 of {
         true -> 0;
-        false -> do
-            params: ListParam <- params_from_surface(type_surface, arity);
-            p0: string <- first_param_type_name_iface(params);
-            case p0 == export_trait of {
-                true -> 7;
-                false -> 0
-            }
-        end
+        false -> case e.decl_tag == 7 of {
+            true -> 7;
+            false -> 0
+        }
     }
 }
 
@@ -1261,7 +1273,7 @@ fn stub_decls_from_exports_with_trait(exports: ListIfaceExport, export_trait: st
     case exports.is_nil of {
         true -> acc;
         false -> do
-            tag: int64 <- stub_export_tag_for_surface(export_trait, exports.head.type_surface, exports.head.arity);
+            tag: int64 <- stub_export_tag_for_export(exports.head, export_trait);
             stub_decls_from_exports_with_trait(
                 exports.tail,
                 export_trait,

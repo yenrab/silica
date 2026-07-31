@@ -64,6 +64,49 @@ fn trim_type_text(s: string) -> string {
     trim_trailing_spaces(trim_leading_spaces(s))
 }
 
+// Iface stubs reprint impl param types with parser spacing (e.g. `fn ( string , string )`,
+// `field : ty`) while local bindings keep source spacing (`fn(string, string)`, `field: ty`).
+// Exact trim equality then fails under process-per-unit reclaim when the trait module is
+// loaded only as an iface stub. Space-normalized compare keeps coverage stable.
+fn strip_type_spaces_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case is_space_char(substring(s, i, i + 1)) of {
+            true -> strip_type_spaces_from(s, i + 1, acc);
+            false -> strip_type_spaces_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn strip_type_spaces(s: string) -> string {
+    strip_type_spaces_from(s, 0, "")
+}
+
+// Interner prints function types as `(T) -> R`; source/iface often keep `fn (T) -> R`.
+// After space stripping, drop the `fn` keyword before `(`.
+fn erase_fn_keywords_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case i + 2 < len(s) and substring(s, i, i + 2) == "fn" and substring(s, i + 2, i + 3) == "(" of {
+            true -> erase_fn_keywords_from(s, i + 2, acc);
+            false -> erase_fn_keywords_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn normalize_type_text_for_impl_match(s: string) -> string {
+    erase_fn_keywords_from(strip_type_spaces(trim_type_text(s)), 0, "")
+}
+
+fn type_text_matches_impl(a: string, b: string) -> bool {
+    ta: string <- trim_type_text(a);
+    tb: string <- trim_type_text(b);
+    case ta == tb of {
+        true -> true;
+        false -> normalize_type_text_for_impl_match(ta) == normalize_type_text_for_impl_match(tb)
+    }
+}
+
 fn program_has_export_trait_named(decls: ListDeclaration, trait_id: string) -> bool {
     case decls.is_nil of {
         true -> false;
@@ -90,7 +133,7 @@ fn first_param_type_matches_impl(params: ListParam, concrete: string) -> bool {
         true -> false;
         false -> do
             src: ListParam <- parser_ast@list_param_reverse_with_acc(params, parser_ast@nil_list_param());
-            trim_type_text(src.head.type_name) == trim_type_text(concrete)
+            type_text_matches_impl(src.head.type_name, concrete)
         end
     }
 }
@@ -99,7 +142,7 @@ fn marker_impl_covers_concrete(decls: ListDeclaration, concrete: string) -> bool
     case decls.is_nil of {
         true -> false;
         false -> case decls.head.tag == 6 of {
-            true -> case trim_type_text(decls.head.return_type_name) == trim_type_text(concrete) of {
+            true -> case type_text_matches_impl(decls.head.return_type_name, concrete) of {
                 true -> true;
                 false -> marker_impl_covers_concrete(decls.tail, concrete)
             };

@@ -36,7 +36,7 @@ LIB_STDLIB_MODULES := wbt_map OrderedMap
 .DEFAULT_GOAL := build
 
 .PHONY: all clean build assembly objects executables lib-sources \
-	silica.config silica.config.compiler assembly-selfhost build-selfhost \
+	silica.config.regen assembly-selfhost build-selfhost \
 	help --help all-targets check-seed record-compile-start
 
 # Wall-clock compile timing: record epoch seconds at compile start; report
@@ -91,82 +91,129 @@ check-seed:
 	fi
 
 # Stage stdlib WBT/OrderedMap sources into lib/ for config membership (module name = basename).
-lib-sources:
+LIB_STAGED := $(addprefix $(THIS_DIR)lib/,$(addsuffix .silica,$(LIB_STDLIB_MODULES)))
+
+$(THIS_DIR)lib/%.silica: $(STDLIB_DS)/%.silica
 	@mkdir -p "$(THIS_DIR)lib"
-	@for mod in $(LIB_STDLIB_MODULES); do \
-		src="$(STDLIB_DS)/$$mod.silica"; \
-		dst="$(THIS_DIR)lib/$$mod.silica"; \
-		if [ ! -f "$$src" ]; then echo "FAIL: missing $$src"; exit 1; fi; \
-		cp "$$src" "$$dst"; \
-	done
+	@if [ ! -f "$<" ]; then echo "FAIL: missing $<"; exit 1; fi
+	@cp "$<" "$@"
+
+lib-sources: $(LIB_STAGED)
 
 # Canonical batch list (§12). Seed reads the basename `silica.config`.
-# Append constraint_extract_* impl units in dependency order so plain sort does
-# not place them before parser_tuples / other parser deps.
-# Reorder emitter prims with cross-module `use` deps (record → tuple → memory/list/actors).
-silica.config.compiler: check-target silica.target lib-sources
+# Order is a topological sort of module-level `use` edges (topo_silica_config.sh);
+# main.silica is forced last. Regenerates only when membership, a unit, TARGET,
+# or the topo script changes — not on every make.
+TOPO_SILICA_CONFIG := $(THIS_DIR)topo_silica_config.sh
+SILICA_CONFIG_UNITS_FILE := $(THIS_DIR).silica.config.units
+
+# Detect add/delete: refresh membership list at parse time; mtime bumps only on change.
+$(shell \
+	if [ -x "$(TOPO_SILICA_CONFIG)" ]; then \
+		"$(TOPO_SILICA_CONFIG)" --list-units "$(TARGET)" > "$(SILICA_CONFIG_UNITS_FILE).tmp" 2>/dev/null || true; \
+		if [ -f "$(SILICA_CONFIG_UNITS_FILE).tmp" ]; then \
+			if ! cmp -s "$(SILICA_CONFIG_UNITS_FILE).tmp" "$(SILICA_CONFIG_UNITS_FILE)" 2>/dev/null; then \
+				mv "$(SILICA_CONFIG_UNITS_FILE).tmp" "$(SILICA_CONFIG_UNITS_FILE)"; \
+			else \
+				rm -f "$(SILICA_CONFIG_UNITS_FILE).tmp"; \
+			fi; \
+		fi; \
+	fi \
+)
+
+SILICA_CONFIG_UNITS := $(addprefix $(THIS_DIR),$(shell cat "$(SILICA_CONFIG_UNITS_FILE)" 2>/dev/null))
+
+# Membership list (real file). Built when missing; parse-time shell above refreshes on add/delete.
+$(SILICA_CONFIG_UNITS_FILE): $(TOPO_SILICA_CONFIG) $(LIB_STAGED) silica.target
+	@"$(TOPO_SILICA_CONFIG)" --list-units "$(TARGET)" > "$@"
+
+silica.config.compiler: silica.target $(TOPO_SILICA_CONFIG) $(LIB_STAGED) \
+		$(SILICA_CONFIG_UNITS_FILE) $(SILICA_CONFIG_UNITS)
 	@echo "Regenerating silica.config.compiler (TARGET=$(TARGET))..."
-	@cd "$(THIS_DIR)" && { \
-		find . \( -path './_wd_probe' -o -path './emitter' \) -prune -o -type f -name '*.silica' -print; \
-		find ./emitter -maxdepth 1 -type f -name '*.silica' -print 2>/dev/null; \
-		find ./emitter/$(TARGET) -type f -name '*.silica' -print 2>/dev/null; \
-		find ./lib -type f -name '*.silica' -print 2>/dev/null; \
-	} | sed 's|^\./||' \
-	  | grep -v '_struct_parse_test' \
-	  | grep -v 'btree_set_nodeid\.silica' \
-	  | sort -u > silica.config.compiler.raw
-	@cd "$(THIS_DIR)" && \
-	  grep -v '^parser/constraint_extract_' silica.config.compiler.raw \
-	    | grep -Ev '^emitter/[^/]+/terms/prims/prims(_actors_child_table_asm|_actors_runtime_asm|_record|_tuple|_memory|_list|_actors)?\.silica$$' \
-	    > silica.config.compiler && \
-	  awk -v target="$(TARGET)" ' \
-	    $$0 == "emitter/" target "/terms/prims/prims_atom.silica" && !inserted { \
-	      print "emitter/" target "/terms/prims/prims_record.silica"; \
-	      print "emitter/" target "/terms/prims/prims_tuple.silica"; \
-	      print "emitter/" target "/terms/prims/prims_memory.silica"; \
-	      print "emitter/" target "/terms/prims/prims_list.silica"; \
-	      print "emitter/" target "/terms/prims/prims_actors.silica"; \
-	      print "emitter/" target "/terms/prims/prims_actors_child_table_asm.silica"; \
-	      print "emitter/" target "/terms/prims/prims_actors_runtime_asm.silica"; \
-	      inserted = 1; \
-	    } \
-	    $$0 ~ ("^emitter/" target "/terms/prims/prims_uint64\\.silica$$") { \
-	      print; \
-	      print "emitter/" target "/terms/prims/prims.silica"; \
-	      next; \
-	    } \
-	    { print } \
-	  ' silica.config.compiler > silica.config.compiler.prims && \
-	  mv silica.config.compiler.prims silica.config.compiler && \
-	  for u in \
-	    parser/constraint_extract_slots.silica \
-	    parser/constraint_extract_params.silica \
-	    parser/constraint_extract_expr.silica \
-	    parser/constraint_extract_decls.silica \
-	    parser/constraint_extract_lambda_lift.silica \
-	    parser/constraint_extract_hof_wrap.silica \
-	    parser/constraint_extract_validate.silica \
-	  ; do \
-	    grep -qx "$$u" silica.config.compiler.raw && echo "$$u" >> silica.config.compiler; \
-	  done && \
-	  rm -f silica.config.compiler.raw
+	@cd "$(THIS_DIR)" && "$(TOPO_SILICA_CONFIG)" --list-units "$(TARGET)" > "$(SILICA_CONFIG_UNITS_FILE)"
+	@cd "$(THIS_DIR)" && "$(TOPO_SILICA_CONFIG)" "$(TARGET)" > silica.config.compiler.tmp
+	@mv "$(THIS_DIR)silica.config.compiler.tmp" "$(THIS_DIR)silica.config.compiler"
 	@test -s "$(THIS_DIR)silica.config.compiler" || (echo "FAIL: silica.config.compiler empty"; exit 1)
 	@test -n "$$(find "$(THIS_DIR)emitter/$(TARGET)" -type f -name '*.silica' 2>/dev/null | head -n 1)" \
 		|| (echo "FAIL: no .silica files under emitter/$(TARGET)/"; exit 1)
+	@test "$$(tail -n 1 "$(THIS_DIR)silica.config.compiler")" = "main.silica" \
+		|| (echo "FAIL: main.silica must be last in silica.config.compiler (mangler/other deps first)"; exit 1)
 	@echo "  $$(wc -l < "$(THIS_DIR)silica.config.compiler" | tr -d ' ') units (emit target: $(TARGET))"
 
 silica.config: silica.config.compiler
-	@cp "$(THIS_DIR)silica.config.compiler" "$(THIS_DIR)silica.config"
+	@cmp -s "$(THIS_DIR)silica.config.compiler" "$(THIS_DIR)silica.config" 2>/dev/null \
+		|| cp "$(THIS_DIR)silica.config.compiler" "$(THIS_DIR)silica.config"
+
+# Force rebuild of the topo-sorted unit list (ignores incremental timestamps).
+silica.config.regen:
+	@rm -f "$(THIS_DIR)silica.config.compiler" "$(THIS_DIR)silica.config" "$(SILICA_CONFIG_UNITS_FILE)"
+	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config TARGET="$(TARGET)"
 
 # Stage 1: seed reads silica.config → .sams (and optional __silica_runtime.sams / silica.link).
 # Multi-unit batches use process-per-unit hygiene: seed exits 75 between units so the OS
 # reclaims host heap (required for large modules such as lib/wbt_map.silica).
 # Seed failures cover compilation and emitter errors.
+#
+# Incremental: keep .sams / .iface whose mtime is not older than their .silica source.
+# If either artifact is missing or older than .silica, remove both and recompile that unit.
+# Orphan .sams/.iface (no matching .silica) are removed. silica.compile.order lists only
+# units that still need a .sams after this prune.
 assembly: check-seed silica.config record-compile-start
 	@cd "$(THIS_DIR)" && \
-	  find . -name '*.sams' -print | while read -r f; do rm -f "$$f"; done; \
-	  rm -f __silica_runtime.sams silica.link silica.compile.order silica.needs_runtime; \
-	  echo "Compiling with seed host: $(SILICA_COMPILER)"; \
+	  removed=0; \
+	  for art in $$(find . \( -name '*.sams' -o -name '*.iface' \) ! -path './_wd_probe/*' -type f | sed 's|^\./||' | sort); do \
+	    case "$$art" in \
+	      __silica_runtime.sams) continue ;; \
+	    esac; \
+	    case "$$art" in \
+	      *.sams) src="$${art%.sams}.silica" ;; \
+	      *.iface) src="$${art%.iface}.silica" ;; \
+	      *) continue ;; \
+	    esac; \
+	    if [ ! -f "$$src" ]; then \
+	      echo "  orphan: $$art"; \
+	      rm -f "$$art"; \
+	      removed=$$((removed + 1)); \
+	    fi; \
+	  done; \
+	  while IFS= read -r unit || [ -n "$$unit" ]; do \
+	    [ -z "$$unit" ] && continue; \
+	    case "$$unit" in \#*) continue ;; esac; \
+	    [ -f "$$unit" ] || continue; \
+	    base=$${unit%.silica}; \
+	    sams="$$base.sams"; \
+	    iface="$$base.iface"; \
+	    stale=0; \
+	    if [ ! -f "$$sams" ] || [ "$$unit" -nt "$$sams" ]; then stale=1; fi; \
+	    if [ ! -f "$$iface" ] || [ "$$unit" -nt "$$iface" ]; then stale=1; fi; \
+	    if [ "$$stale" -eq 1 ]; then \
+	      if [ -f "$$sams" ] || [ -f "$$iface" ]; then \
+	        echo "  stale: $$base.{sams,iface} (vs $$unit)"; \
+	      fi; \
+	      rm -f "$$sams" "$$iface"; \
+	      removed=$$((removed + 1)); \
+	    fi; \
+	  done < silica.config; \
+	  echo "Invalidated $$removed unit artifact set(s)"; \
+	  rm -f __silica_runtime.sams silica.link silica.needs_runtime; \
+	  : > silica.compile.order; \
+	  while IFS= read -r unit || [ -n "$$unit" ]; do \
+	    [ -z "$$unit" ] && continue; \
+	    case "$$unit" in \#*) continue ;; esac; \
+	    base=$${unit%.silica}; \
+	    if [ ! -f "$$base.sams" ]; then \
+	      echo "$$unit" >> silica.compile.order; \
+	    fi; \
+	  done < silica.config; \
+	  need=$$(wc -l < silica.compile.order | tr -d ' '); \
+	  if [ "$$need" -eq 0 ]; then \
+	    rm -f silica.compile.order; \
+	    echo "All units up to date (.sams/.iface not older than .silica); skipping seed"; \
+	    echo "✅ Assembly generated (.sams)"; \
+	    $(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,assembly); \
+	    exit 0; \
+	  fi; \
+	  echo "Compiling with seed host: $(SILICA_COMPILER) ($$need unit(s) to compile)"; \
 	  echo "Emit target: $(TARGET) (see silica.target)"; \
 	  while true; do \
 	    "$(SILICA_COMPILER)"; \
@@ -199,25 +246,24 @@ objects: assembly
 	fi; \
 	$(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,objects)
 
-# Stage 3: link entry point `main` with all module objects + runtime
+# Stage 3: link entry point `main` with all module objects + runtime.
+# Always link bootstrap libsilica_compiler.a for DeviceIO helpers (_silica_*_path).
+# deviceio_link_thunks.s covers seeds that still emit DeviceIO as module_user calls.
+# main_entry_alias.s provides _main for Apple ld (asm emits `main` without underscore).
 executables: objects
 	@cd "$(THIS_DIR)" && \
 	if [ ! -f main.o ]; then echo "FAIL: main.o missing"; $(REPORT_COMPILE_TIME); exit 1; fi; \
+	if [ ! -f "$(RUNTIME_LIB)" ]; then \
+		echo "Building Silica runtime library (bootstrap)..."; \
+		(cd "$(BOOTSTRAP_DIR)" && cargo build --release --no-default-features) || { $(REPORT_COMPILE_TIME); exit 1; }; \
+	fi; \
+	$(ASSEMBLER) $(ASFLAGS_macos) -c deviceio_link_thunks.s -o deviceio_link_thunks.o || { $(REPORT_COMPILE_TIME); exit 1; }; \
+	$(ASSEMBLER) $(ASFLAGS_macos) -c main_entry_alias.s -o main_entry_alias.o || { $(REPORT_COMPILE_TIME); exit 1; }; \
 	objs=$$(find . -type f -name '*.o' ! -path './_wd_probe/*' | sed 's|^\./||' | sort | tr '\n' ' '); \
 	link_archives=""; \
 	if [ -x "$(SILICA_LINK_SH)" ]; then link_archives=$$("$(SILICA_LINK_SH)" .); fi; \
-	runtime_extra=""; \
-	if [ -f "__silica_runtime.o" ]; then \
-		runtime_extra=""; \
-	elif [ -f "$(RUNTIME_LIB)" ]; then \
-		runtime_extra="$(RUNTIME_LIB)"; \
-	elif [ -d "$(BOOTSTRAP_DIR)" ]; then \
-		echo "Building Silica runtime library (bootstrap)..."; \
-		(cd "$(BOOTSTRAP_DIR)" && cargo build --release --no-default-features); \
-		runtime_extra="$(RUNTIME_LIB)"; \
-	fi; \
 	echo "Linking: $(EXECUTABLE)"; \
-	if ! $(LINKER_CLANG) $$objs $$runtime_extra $$link_archives $(LDFLAGS_STACK) -o $(EXECUTABLE); then \
+	if ! $(LINKER_CLANG) $$objs "$(RUNTIME_LIB)" $$link_archives $(LDFLAGS_STACK) -o $(EXECUTABLE); then \
 		echo "FAIL: linker failed"; \
 		$(REPORT_COMPILE_TIME); \
 		exit 1; \
@@ -225,7 +271,9 @@ executables: objects
 	echo "✅ Built $(EXECUTABLE)"; \
 	$(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,executables)
 
-build: executables
+# Plain `make` / `build`: if silica.config (topo unit list) is missing or stale,
+# build it first; then run the normal assembly → objects → link pipeline.
+build: silica.config executables
 	@$(REPORT_COMPILE_TIME)
 	@$(SELFHOST_COMPLETION_BING)
 
@@ -252,6 +300,8 @@ clean:
 	@cd "$(THIS_DIR)" && \
 	  find . \( -name '*.sams' -o -name '*.o' -o -name '*.ll' -o -name '*.bc' \) ! -path './_wd_probe/*' -delete; \
 	  rm -f $(EXECUTABLE) silica.config silica.config.compiler silica.target silica.link \
+	    silica.compile.order \
+	    .silica.config.units .silica.config.units.tmp silica.config.compiler.tmp \
 	    __silica_runtime.sams __silica_runtime.o "$(COMPILE_START_FILE)"; \
 	  rm -f silica-compiler-* 2>/dev/null || true; \
 	  rm -f lib/wbt_map.silica lib/OrderedMap.silica lib/wbt_map.sams lib/OrderedMap.sams lib/*.o 2>/dev/null || true; \
@@ -297,14 +347,15 @@ help:
 	@echo "    make all-targets              # loop clean/build for each allowable TARGET"
 	@echo ""
 	@echo "Build targets"
-	@echo "  make / build              silica.config → seed → .sams → .o → $(EXECUTABLE)"
-	@echo "  assembly                  seed compile only (.sams)"
+	@echo "  make / build              create silica.config if missing/stale, then seed → .o → $(EXECUTABLE)"
+	@echo "  assembly                  seed compile only (.sams); keeps up-to-date .sams/.iface"
 	@echo "  objects                   assemble .sams → .o"
 	@echo "  executables               link $(EXECUTABLE)"
-	@echo "  silica.config.compiler    regenerate unit list for TARGET"
+	@echo "  silica.config             create/update topo-sorted unit list if missing or stale"
+	@echo "  silica.config.regen       force-regenerate unit list (ignores timestamps)"
 	@echo "  silica.target             rewrite emit_target declaration"
 	@echo "  all-targets               build silica-compiler-<TARGET> for each allowable TARGET"
-	@echo "  clean                     remove generated artifacts (*.sams/*.o, silica.target, *.iface, .cache/ifaces)"
+	@echo "  clean                     remove generated artifacts (*.sams/*.o, silica.target, silica.compile.order, *.iface, .cache/ifaces)"
 	@echo "  check-target              validate TARGET against emitter/*/"
 	@echo "  check-seed                ensure binaries/silica-compiler exists"
 	@echo ""

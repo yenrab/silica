@@ -54,6 +54,7 @@ use instantiated_fn_name;
 
 export collect_expr_effects/2;
 export collect_expr_effects_outside_sequence_blocks/2;
+export collect_sequence_block_direct_effects/2;
 export resolve_call_effects/2;
 export union_effect_lists/2;
 export add_effect_if_absent/2;
@@ -90,41 +91,49 @@ fn collect_expr_effects(expr: Expr, ctx: EffectContext) -> ListEffectName {
 
 {- Effects from calls that appear outside any sequence block (kind 11).
    Used for function-body E3001: nested sequence proc[...] blocks declare their own
-   effects; those must not be attributed to the enclosing function body. -}
+   effects; those must not be attributed to the enclosing function body.
+   Foreign c_wrapper calls are treated as pure here so adapter stubs may invoke them
+   outside sequence blocks; sequence-block checking uses collect_sequence_block_direct_effects. -}
 fn collect_expr_effects_outside_sequence_blocks(expr: Expr, ctx: EffectContext) -> ListEffectName {
-    collect_expr_effects_outside_sequence_blocks_with_binding(expr, ctx, "")
+    collect_expr_effects_outside_sequence_blocks_with_binding(expr, ctx, "", false)
 }
 
-fn collect_expr_effects_outside_sequence_blocks_with_binding(expr: Expr, ctx: EffectContext, binding_type: string) -> ListEffectName {
+{- Same as collect_expr_effects_outside_sequence_blocks, but foreign c_wrapper calls
+   contribute external_danger. Used for sequence-block E3001/E3010 used-effect sets. -}
+fn collect_sequence_block_direct_effects(expr: Expr, ctx: EffectContext) -> ListEffectName {
+    collect_expr_effects_outside_sequence_blocks_with_binding(expr, ctx, "", true)
+}
+
+fn collect_expr_effects_outside_sequence_blocks_with_binding(expr: Expr, ctx: EffectContext, binding_type: string, include_foreign: bool) -> ListEffectName {
     case expr.kind == 11 of {
         true -> parser_ast@empty_effect_name_list();
         false -> case expr.kind == 4 of {
             true -> do
-                callee_effects: ListEffectName <- resolve_call_effects_with_binding(expr.name, ctx, expr.inner, binding_type, expr.location, expr.value, false);
+                callee_effects: ListEffectName <- resolve_call_effects_with_binding(expr.name, ctx, expr.inner, binding_type, expr.location, expr.value, include_foreign);
                 // Walk first arg (inner) and remaining args (right_expr chain: kind-4 name=="" pairs).
-                arg_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "");
-                rest_arg_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, ctx, "");
+                arg_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "", include_foreign);
+                rest_arg_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, ctx, "", include_foreign);
                 union_effect_lists(callee_effects, union_effect_lists(arg_effects, rest_arg_effects))
             end;
             false -> case expr.kind == 3 of {
                 true -> do
-                    left_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "");
-                    right_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, ctx, "");
+                    left_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "", include_foreign);
+                    right_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, ctx, "", include_foreign);
                     union_effect_lists(left_effects, right_effects)
                 end;
                 false -> case expr.kind == 6 of {
                     true -> do
-                        rhs_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, expr.value);
+                        rhs_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, expr.value, include_foreign);
                         extended_ctx: EffectContext <- effect_checker_core@effect_context_with_type_env(ctx, effect_checker_core@add_type_entry(ctx.type_env, expr.name, expr.value));
-                        body_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, extended_ctx, "");
+                        body_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, extended_ctx, "", include_foreign);
                         union_effect_lists(rhs_effects, body_effects)
                     end;
                     false -> case expr.kind == 2 of {
-                        true -> collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type);
+                        true -> collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type, include_foreign);
                         false -> case expr.kind == 10 of {
                             true -> do
-                                rhs_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "");
-                                body_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, ctx, "");
+                                rhs_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "", include_foreign);
+                                body_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, ctx, "", include_foreign);
                                 union_effect_lists(rhs_effects, body_effects)
                             end;
                             false -> case expr.kind == 20 of {
@@ -134,21 +143,21 @@ fn collect_expr_effects_outside_sequence_blocks_with_binding(expr: Expr, ctx: Ef
                                         false -> binding_type
                                     };
                                     lit_effects: ListEffectName <- effect_checker_lists@mem_effects_for_list_literal(lit_type_src, expr.location);
-                                    rest_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "");
+                                    rest_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "", include_foreign);
                                     union_effect_lists(lit_effects, rest_effects)
                                 end;
                                 false -> case expr.kind == 13 of {
                                     true -> do
-                                        scrut_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "");
-                                        branch_effects: ListEffectName <- collect_case_branch_list_effects_outside(expr.right_expr, ctx);
+                                        scrut_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "", include_foreign);
+                                        branch_effects: ListEffectName <- collect_case_branch_list_effects_outside(expr.right_expr, ctx, include_foreign);
                                         union_effect_lists(scrut_effects, branch_effects)
                                     end;
                                     false -> case expr.kind == 9 of {
-                                        true -> collect_tuple_literal_chain_effects_outside(expr, ctx, binding_type);
+                                        true -> collect_tuple_literal_chain_effects_outside(expr, ctx, binding_type, include_foreign);
                                         false -> case expr.kind == 21 of {
-                                            true -> collect_struct_literal_chain_effects_outside(expr, ctx, binding_type);
+                                            true -> collect_struct_literal_chain_effects_outside(expr, ctx, binding_type, include_foreign);
                                             false -> case expr.kind == 22 of {
-                                                true -> collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type);
+                                                true -> collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type, include_foreign);
                                                 false -> parser_ast@empty_effect_name_list();
                                             }
                                         }
@@ -256,16 +265,16 @@ fn collect_tuple_literal_chain_effects(expr: Expr, ctx: EffectContext, binding_t
     }
 }
 
-fn collect_tuple_literal_chain_effects_outside(expr: Expr, ctx: EffectContext, binding_type: string) -> ListEffectName {
+fn collect_tuple_literal_chain_effects_outside(expr: Expr, ctx: EffectContext, binding_type: string, include_foreign: bool) -> ListEffectName {
     case expr.kind == -1 of {
         true -> parser_ast@empty_effect_name_list();
         false -> case expr.kind == 9 of {
             true -> do
-                head_eff: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type);
-                tail_eff: ListEffectName <- collect_tuple_literal_chain_effects_outside(expr.right_expr, ctx, binding_type);
+                head_eff: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type, include_foreign);
+                tail_eff: ListEffectName <- collect_tuple_literal_chain_effects_outside(expr.right_expr, ctx, binding_type, include_foreign);
                 union_effect_lists(head_eff, tail_eff)
             end;
-            false -> collect_expr_effects_outside_sequence_blocks_with_binding(expr, ctx, binding_type)
+            false -> collect_expr_effects_outside_sequence_blocks_with_binding(expr, ctx, binding_type, include_foreign)
         }
     }
 }
@@ -288,16 +297,16 @@ fn collect_struct_literal_chain_effects(expr: Expr, ctx: EffectContext, binding_
     }
 }
 
-fn collect_struct_literal_chain_effects_outside(expr: Expr, ctx: EffectContext, binding_type: string) -> ListEffectName {
+fn collect_struct_literal_chain_effects_outside(expr: Expr, ctx: EffectContext, binding_type: string, include_foreign: bool) -> ListEffectName {
     case expr.kind == -1 of {
         true -> parser_ast@empty_effect_name_list();
         false -> case expr.kind == 21 of {
             true -> do
-                head_eff: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type);
-                tail_eff: ListEffectName <- collect_struct_literal_chain_effects_outside(expr.right_expr, ctx, binding_type);
+                head_eff: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type, include_foreign);
+                tail_eff: ListEffectName <- collect_struct_literal_chain_effects_outside(expr.right_expr, ctx, binding_type, include_foreign);
                 union_effect_lists(head_eff, tail_eff)
             end;
-            false -> collect_expr_effects_outside_sequence_blocks_with_binding(expr, ctx, binding_type)
+            false -> collect_expr_effects_outside_sequence_blocks_with_binding(expr, ctx, binding_type, include_foreign)
         }
     }
 }
@@ -465,20 +474,20 @@ fn collect_case_branch_list_effects(branches: Expr, ctx: EffectContext) -> ListE
 
 {- Case branch RHS only: List[..., mem(S)] in pattern text is a type annotation for
    the type checker and E3011 alignment inside sequence blocks, not list allocation. -}
-fn collect_single_case_branch_effects_outside(branch: Expr, ctx: EffectContext) -> ListEffectName {
+fn collect_single_case_branch_effects_outside(branch: Expr, ctx: EffectContext, include_foreign: bool) -> ListEffectName {
     case branch.kind == 18 of {
-        true -> collect_expr_effects_outside_sequence_blocks_with_binding(branch.right_expr, ctx, "");
-        false -> collect_expr_effects_outside_sequence_blocks_with_binding(branch, ctx, "")
+        true -> collect_expr_effects_outside_sequence_blocks_with_binding(branch.right_expr, ctx, "", include_foreign);
+        false -> collect_expr_effects_outside_sequence_blocks_with_binding(branch, ctx, "", include_foreign)
     }
 }
 
-fn collect_case_branch_list_effects_outside(branches: Expr, ctx: EffectContext) -> ListEffectName {
+fn collect_case_branch_list_effects_outside(branches: Expr, ctx: EffectContext, include_foreign: bool) -> ListEffectName {
     case branches.kind == -1 of {
         true -> parser_ast@empty_effect_name_list();
         false -> case branches.kind == 17 of {
             true -> do
-                one: ListEffectName <- collect_single_case_branch_effects_outside(branches.inner, ctx);
-                rest: ListEffectName <- collect_case_branch_list_effects_outside(branches.right_expr, ctx);
+                one: ListEffectName <- collect_single_case_branch_effects_outside(branches.inner, ctx, include_foreign);
+                rest: ListEffectName <- collect_case_branch_list_effects_outside(branches.right_expr, ctx, include_foreign);
                 union_effect_lists(one, rest)
             end;
             false -> parser_ast@empty_effect_name_list()

@@ -60,3 +60,15 @@ App-design tutorial for engineers new to Silica who must use **foreign functions
 ## [open_recursion_callbacks.md](./open_recursion_callbacks.md)
 
 How to split a **recursive** algorithm across computation units without circular `use`: the facade passes recursive entry points as **callbacks** (`eval_child` / `check_typed` / `emit_child`). Covers when the pattern is needed, a switchboard analogy, a small standalone example, and a do/don’t checklist.
+
+---
+
+## [compiling_with_less_ram.md](./compiling_with_less_ram.md)
+
+Practical guide to **lowering host RAM** when compiling a general app with `silica-compiler`: what a **compilation unit** is, **leaf-to-root** batch order, **smaller units** and splitting large files, following the compiler’s **process-per-unit reclaim** pattern (`silica.config`, exit `75`), and **open recursion** in the Silica sense (recursion via a **captured function argument**, not OO `self`).
+
+---
+
+## [building_apps_with_project_makefiles.md](./building_apps_with_project_makefiles.md)
+
+How to build a **general application** with the drop-in Makefiles under repository-root `project_makefiles/`: what to copy into your app root and subdirectories, prerequisites (`silica-compiler`, Make, Clang), `make` targets and options (`EXECUTABLE`, `SILICA_COMPILER`), how `silica.config` / topo sort / reclaim / link work, and a small multi-module example.

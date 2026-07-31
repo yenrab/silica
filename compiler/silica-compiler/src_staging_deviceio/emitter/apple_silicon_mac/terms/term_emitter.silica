@@ -721,6 +721,15 @@ fn value_has_dot(value: string) -> bool {
     check_dot_from(value, 0, len(value))
 }
 
+// X-class const with '.' → float64 only for numeric-looking types. Strings/atoms/fn_ptrs
+// often contain '.' (paths, messages) and must stay in Xn for ADRP/ADD — never D9.
+fn const_value_dot_implies_float64(type_name: string, value: string) -> bool {
+    case type_name == "string" or type_name == "atom" or type_name == "fn_ptr" of {
+        true -> false;
+        false -> value_has_dot(value)
+    }
+}
+
 // AAPCS64: integer/pointer args use X0–X7 (W* for narrow); float args use separate V0–V7 (H/S/D). Slots advance independently.
 fn user_call_abi_reg_digit(slot: int64) -> string {
     case slot of {
@@ -2964,9 +2973,20 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 var_binding_rp: string <- case len(rp_var_use) > 0 of { true -> var@find_sp_binding(outer_reg, rp_var_use); false -> "" };
                 saved_ptr_reg_rp: string <- case len(rp_var_use) > 0 of { true -> var@find_last_sp_binding(outer_reg, concat("_ptr.", rp_var_use)); false -> "" };
                 tuple_in_reg_rp: bool <- len(var_binding_rp) > 0 and var@is_memory_ref(var_binding_rp) == false;
-                mem_ref_binding_rp: bool <- len(var_binding_rp) > 0 and var@is_memory_ref(var_binding_rp);
+                // Spill slots arrive as bound_reg=[X29,#-N] before (or instead of) outer_reg sp bindings.
+                // Never feed a memory ref into reg_offset_for_byte — that yields LDR X0, [[X29,#-N], #0].
+                bound_mem_rp: bool <- rp_var_use == bound_name and len(bound_reg) > 0 and var@is_memory_ref(bound_reg);
+                saved_ptr_mem_rp: bool <- len(saved_ptr_reg_rp) > 0 and var@is_memory_ref(saved_ptr_reg_rp);
+                mem_ref_src_rp: string <- case len(var_binding_rp) > 0 and var@is_memory_ref(var_binding_rp) of {
+                    true -> var_binding_rp;
+                    false -> case bound_mem_rp of {
+                        true -> bound_reg;
+                        false -> case saved_ptr_mem_rp of { true -> saved_ptr_reg_rp; false -> "" }
+                    }
+                };
+                mem_ref_binding_rp: bool <- len(mem_ref_src_rp) > 0;
                 mem_ref_load_rp: string <- case mem_ref_binding_rp of {
-                    true -> concat(concat("    LDR X11, ", var_binding_rp), "\n");
+                    true -> concat(var@emit_ldr_mem_ref("X11", mem_ref_src_rp), "\n");
                     false -> ""
                 };
                 tuple_base_reg_raw_rp: string <- case call_inner_rp of {
@@ -2975,11 +2995,11 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         true -> "X11";
                         false -> case rp_var_use == bound_name and len(bound_reg) > 0 and var@is_memory_ref(bound_reg) == false of {
                             true -> bound_reg;
-                            false -> case len(saved_ptr_reg_rp) > 0 of {
+                            false -> case len(saved_ptr_reg_rp) > 0 and var@is_memory_ref(saved_ptr_reg_rp) == false of {
                                 true -> saved_ptr_reg_rp;
                                 false -> case tuple_in_reg_rp of {
                                     true -> var_binding_rp;
-                                    false -> case rp_var_use == bound_name of { true -> bound_reg; false -> "" }
+                                    false -> ""
                                 }
                             }
                         }
@@ -3076,18 +3096,31 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 // which is the correct register for the current scope rather than a stale outer binding.
                 saved_ptr_reg: string <- case len(tp_var) > 0 of { true -> var@find_last_sp_binding(outer_reg, concat("_ptr.", tp_var)); false -> "" };
                 tuple_in_reg: bool <- len(var_binding) > 0 and var@is_memory_ref(var_binding) == false;
-                // Priority order for the base register:
-                // 1. bound_reg when tp_var == bound_name and bound_reg is a real register (most up-to-date)
-                // 2. saved_ptr_reg from _ptr. binding in outer_reg (for function params and cross-scope refs)
-                // 3. var_binding from outer_reg
-                // 4. bound_reg fallback (even if memory ref) when tp_var == bound_name
-                tuple_base_reg_raw: string <- case tp_var == bound_name and len(bound_reg) > 0 and var@is_memory_ref(bound_reg) == false of {
-                    true -> bound_reg;
-                    false -> case len(saved_ptr_reg) > 0 of {
-                        true -> saved_ptr_reg;
-                        false -> case tuple_in_reg of {
-                            true -> var_binding;
-                            false -> case tp_var == bound_name of { true -> bound_reg; false -> "" }
+                bound_mem_tp: bool <- tp_var == bound_name and len(bound_reg) > 0 and var@is_memory_ref(bound_reg);
+                saved_ptr_mem_tp: bool <- len(saved_ptr_reg) > 0 and var@is_memory_ref(saved_ptr_reg);
+                mem_ref_src_tp: string <- case len(var_binding) > 0 and var@is_memory_ref(var_binding) of {
+                    true -> var_binding;
+                    false -> case bound_mem_tp of {
+                        true -> bound_reg;
+                        false -> case saved_ptr_mem_tp of { true -> saved_ptr_reg; false -> "" }
+                    }
+                };
+                mem_ref_load_tp: string <- case len(mem_ref_src_tp) > 0 of {
+                    true -> concat(var@emit_ldr_mem_ref("X11", mem_ref_src_tp), "\n");
+                    false -> ""
+                };
+                // Priority: real register bindings only. Spill slots load into X11 first (never
+                // pass [X29,#-N] to reg_offset_for_byte).
+                tuple_base_reg_raw: string <- case len(mem_ref_src_tp) > 0 of {
+                    true -> "X11";
+                    false -> case tp_var == bound_name and len(bound_reg) > 0 and var@is_memory_ref(bound_reg) == false of {
+                        true -> bound_reg;
+                        false -> case len(saved_ptr_reg) > 0 and var@is_memory_ref(saved_ptr_reg) == false of {
+                            true -> saved_ptr_reg;
+                            false -> case tuple_in_reg of {
+                                true -> var_binding;
+                                false -> ""
+                            }
                         }
                     }
                 };
@@ -3127,13 +3160,14 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 };
                 tuple_elem_cnt_proj: int64 <- prims_tuple@count_type_elements(term.inner.type_name);
                 float_indirect_box: bool <- box_tuple_layout and reg_conventions@is_float32_type(term.type_name) and tuple_elem_cnt_proj > 1;
-                case box_tuple_layout of {
+                proj_body_tp: string <- case box_tuple_layout of {
                     true -> case float_indirect_box of {
                         true -> concat(preserve_base, concat(concat(concat("    LDR X11, ", proj_mem_ref), "\n    LDR "), concat(proj_ldr_reg, ", [X11, #0]\n")));
                         false -> concat(preserve_base, concat("    LDR ", concat(proj_ldr_reg, concat(", ", proj_mem_ref))))
                     };
                     false -> concat(preserve_base, concat("    LDR ", concat(proj_ldr_reg, concat(", ", proj_mem_ref))))
-                }
+                };
+                concat(mem_ref_load_tp, proj_body_tp)
             end;
             false -> case term.type_name == "string" and (term.name == "string_substring" or term.name == "string_substring_until_char") and term.right_expr.kind == 6 of {
             true -> do
@@ -4137,7 +4171,7 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
             type_prefix: string <- reg_conventions@reg_prefix_for_type(elem.type_name);
             elem_prefix: string <- case elem_is_agg of {
                 true -> "X";
-                false -> case type_prefix == "X" and elem.kind == 0 and value_has_dot(elem.value) of {
+                false -> case type_prefix == "X" and elem.kind == 0 and const_value_dot_implies_float64(elem.type_name, elem.value) of {
                     true -> "D";
                     false -> type_prefix
                 }
@@ -4200,7 +4234,7 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
             type_prefix2: string <- reg_conventions@reg_prefix_for_type(term.type_name);
             elem_prefix: string <- case elem_is_agg of {
                 true -> "X";
-                false -> case type_prefix2 == "X" and term.kind == 0 and value_has_dot(term.value) of {
+                false -> case type_prefix2 == "X" and term.kind == 0 and const_value_dot_implies_float64(term.type_name, term.value) of {
                     true -> "D";
                     false -> type_prefix2
                 }
@@ -4457,7 +4491,7 @@ fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, field_pre
                             type_prefix: string <- reg_conventions@reg_prefix_for_type(fty);
                             elem_prefix: string <- case elem_is_agg of {
                                 true -> "X";
-                                false -> case type_prefix == "X" and elem.kind == 0 and value_has_dot(elem.value) of {
+                                false -> case type_prefix == "X" and elem.kind == 0 and const_value_dot_implies_float64(elem.type_name, elem.value) of {
                                     true -> "D";
                                     false -> type_prefix
                                 }
@@ -4521,7 +4555,7 @@ fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, field_pre
                             type_prefix: string <- reg_conventions@reg_prefix_for_type(fty);
                             elem_prefix: string <- case elem_is_agg of {
                                 true -> "X";
-                                false -> case type_prefix == "X" and elem.kind == 0 and value_has_dot(elem.value) of {
+                                false -> case type_prefix == "X" and elem.kind == 0 and const_value_dot_implies_float64(elem.type_name, elem.value) of {
                                     true -> "D";
                                     false -> type_prefix
                                 }

@@ -32,7 +32,7 @@ fn dangerous_prefix() -> string {
     "dangerous_"
 }
 
-fn module_name_is_dangerous(mod_name: string) -> bool {
+fn module_name_is_dangerous(mod_name: string) -> boolean {
     pref: string <- dangerous_prefix();
     case len(mod_name) >= len(pref) of {
         false -> false;
@@ -65,8 +65,8 @@ fn collect_per_binding_meta_paths_loop(decls: List[{ tag: int64, name: string, p
     case decls.is_nil of {
         true -> sir_ast@nil_sir_strings();
         false -> case decls.head.tag == 9 of {
-            true -> case len(decls.head.body.name) > 0 of {
-                true -> sir_ast@cons_sir_string(decls.head.body.name, collect_per_binding_meta_paths_loop(decls.tail));
+            true -> case len(parser_ast@expr_root_node(decls.head.body).name) > 0 of {
+                true -> sir_ast@cons_sir_string(parser_ast@expr_root_node(decls.head.body).name, collect_per_binding_meta_paths_loop(decls.tail));
                 false -> collect_per_binding_meta_paths_loop(decls.tail)
             };
             false -> collect_per_binding_meta_paths_loop(decls.tail)
@@ -81,7 +81,8 @@ fn collect_referenced_sidecar_paths(decls: List[{ tag: int64, name: string, para
 }
 
 fn foreign_binding_from_decl(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) -> { local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string } {
-    raw_sym: string <- decl.body.value;
+    body_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(decl.body);
+    raw_sym: string <- body_node.value;
     c_sym: string <- case len(raw_sym) >= 2 and substring(raw_sym, 0, 1) == "\"" and substring(raw_sym, len(raw_sym) - 1, len(raw_sym)) == "\"" of {
         true -> substring(raw_sym, 1, len(raw_sym) - 1);
         false -> raw_sym
@@ -89,14 +90,14 @@ fn foreign_binding_from_decl(decl: { tag: int64, name: string, parameters: List[
     {
         local_name: decl.name,
         c_symbol: c_sym,
-        meta_path: decl.body.name,
+        meta_path: body_node.name,
         return_type: type_checker_traits@trim_type_text(decl.return_type_name),
         param_names: functions@param_names_from_list(decl.parameters),
         param_types: functions@param_types_from_list(decl.parameters)
     }
 }
 
-fn collect_foreign_bindings_loop(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> ListSIRForeignBinding {
+fn collect_foreign_bindings_loop(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] {
     case decls.is_nil of {
         true -> sir_ast@nil_sir_foreign_bindings();
         false -> case decls.head.tag == 9 of {
@@ -106,6 +107,6 @@ fn collect_foreign_bindings_loop(decls: List[{ tag: int64, name: string, paramet
     }
 }
 
-fn collect_foreign_bindings(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> ListSIRForeignBinding {
+fn collect_foreign_bindings(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] {
     collect_foreign_bindings_loop(decls)
 }

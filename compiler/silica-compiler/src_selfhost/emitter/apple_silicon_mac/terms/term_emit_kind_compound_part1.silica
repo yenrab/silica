@@ -40,7 +40,7 @@ fn emit_flat_tuple_stores(term: { nodes: List[{ kind: int64, type_name: string, 
             type_prefix: string <- reg_conventions@reg_prefix_for_type(term_sir_helpers@sir_term_root_node(elem).type_name);
             elem_prefix: string <- case elem_is_agg of {
                 true -> "X";
-                false -> case type_prefix == "X" and term_sir_helpers@sir_term_root_node(elem).kind == 0 and term_user_call_abi@value_has_dot(term_sir_helpers@sir_term_root_node(elem).value) of {
+                false -> case type_prefix == "X" and term_sir_helpers@sir_term_root_node(elem).kind == 0 and term_user_call_abi@const_value_dot_implies_float64(term_sir_helpers@sir_term_root_node(elem).type_name, term_sir_helpers@sir_term_root_node(elem).value) of {
                     true -> "D";
                     false -> type_prefix
                 }
@@ -103,7 +103,7 @@ fn emit_flat_tuple_stores(term: { nodes: List[{ kind: int64, type_name: string, 
             type_prefix2: string <- reg_conventions@reg_prefix_for_type(term_sir_helpers@sir_term_root_node(term).type_name);
             elem_prefix: string <- case elem_is_agg of {
                 true -> "X";
-                false -> case type_prefix2 == "X" and term_sir_helpers@sir_term_root_node(term).kind == 0 and term_user_call_abi@value_has_dot(term_sir_helpers@sir_term_root_node(term).value) of {
+                false -> case type_prefix2 == "X" and term_sir_helpers@sir_term_root_node(term).kind == 0 and term_user_call_abi@const_value_dot_implies_float64(term_sir_helpers@sir_term_root_node(term).type_name, term_sir_helpers@sir_term_root_node(term).value) of {
                     true -> "D";
                     false -> type_prefix2
                 }
@@ -178,7 +178,7 @@ fn emit_flat_record_stores(term: { nodes: List[{ kind: int64, type_name: string,
                             type_prefix: string <- reg_conventions@reg_prefix_for_type(fty);
                             elem_prefix: string <- case elem_is_agg of {
                                 true -> "X";
-                                false -> case type_prefix == "X" and term_sir_helpers@sir_term_root_node(elem).kind == 0 and term_user_call_abi@value_has_dot(term_sir_helpers@sir_term_root_node(elem).value) of {
+                                false -> case type_prefix == "X" and term_sir_helpers@sir_term_root_node(elem).kind == 0 and term_user_call_abi@const_value_dot_implies_float64(term_sir_helpers@sir_term_root_node(elem).type_name, term_sir_helpers@sir_term_root_node(elem).value) of {
                                     true -> "D";
                                     false -> type_prefix
                                 }
@@ -242,7 +242,7 @@ fn emit_flat_record_stores(term: { nodes: List[{ kind: int64, type_name: string,
                             type_prefix: string <- reg_conventions@reg_prefix_for_type(fty);
                             elem_prefix: string <- case elem_is_agg of {
                                 true -> "X";
-                                false -> case type_prefix == "X" and term_sir_helpers@sir_term_root_node(elem).kind == 0 and term_user_call_abi@value_has_dot(term_sir_helpers@sir_term_root_node(elem).value) of {
+                                false -> case type_prefix == "X" and term_sir_helpers@sir_term_root_node(elem).kind == 0 and term_user_call_abi@const_value_dot_implies_float64(term_sir_helpers@sir_term_root_node(elem).type_name, term_sir_helpers@sir_term_root_node(elem).value) of {
                                     true -> "D";
                                     false -> type_prefix
                                 }
@@ -369,9 +369,20 @@ case term_sir_helpers@sir_term_root_node(term).name == "tuple_make" of {
                             var_binding_rp: string <- case len(rp_var_use) > 0 of { true -> var@find_sp_binding(bound.outer_reg, rp_var_use); false -> "" };
                             saved_ptr_reg_rp: string <- case len(rp_var_use) > 0 of { true -> var@find_last_sp_binding(bound.outer_reg, concat("_ptr.", rp_var_use)); false -> "" };
                             tuple_in_reg_rp: bool <- len(var_binding_rp) > 0 and var@is_memory_ref(var_binding_rp) == false;
-                            mem_ref_binding_rp: bool <- len(var_binding_rp) > 0 and var@is_memory_ref(var_binding_rp);
+                            // Spill slots arrive as bound_reg=[X29,#-N] before (or instead of) outer_reg sp bindings.
+                            // Never feed a memory ref into reg_offset_for_byte — that yields LDR X0, [[X29,#-N], #0].
+                            bound_mem_rp: bool <- rp_var_use == bound.bound_name and len(bound.bound_reg) > 0 and var@is_memory_ref(bound.bound_reg);
+                            saved_ptr_mem_rp: bool <- len(saved_ptr_reg_rp) > 0 and var@is_memory_ref(saved_ptr_reg_rp);
+                            mem_ref_src_rp: string <- case len(var_binding_rp) > 0 and var@is_memory_ref(var_binding_rp) of {
+                                true -> var_binding_rp;
+                                false -> case bound_mem_rp of {
+                                    true -> bound.bound_reg;
+                                    false -> case saved_ptr_mem_rp of { true -> saved_ptr_reg_rp; false -> "" }
+                                }
+                            };
+                            mem_ref_binding_rp: bool <- len(mem_ref_src_rp) > 0;
                             mem_ref_load_rp: string <- case mem_ref_binding_rp of {
-                                true -> concat(concat("    LDR X11, ", var_binding_rp), "\n");
+                                true -> concat(var@emit_ldr_mem_ref("X11", mem_ref_src_rp), "\n");
                                 false -> ""
                             };
                             tuple_base_reg_raw_rp: string <- case call_inner_rp of {
@@ -380,11 +391,11 @@ case term_sir_helpers@sir_term_root_node(term).name == "tuple_make" of {
                                     true -> "X11";
                                     false -> case rp_var_use == bound.bound_name and len(bound.bound_reg) > 0 and var@is_memory_ref(bound.bound_reg) == false of {
                                         true -> bound.bound_reg;
-                                        false -> case len(saved_ptr_reg_rp) > 0 of {
+                                        false -> case len(saved_ptr_reg_rp) > 0 and var@is_memory_ref(saved_ptr_reg_rp) == false of {
                                             true -> saved_ptr_reg_rp;
                                             false -> case tuple_in_reg_rp of {
                                                 true -> var_binding_rp;
-                                                false -> case rp_var_use == bound.bound_name of { true -> bound.bound_reg; false -> "" }
+                                                false -> ""
                                             }
                                         }
                                     }
@@ -481,18 +492,31 @@ case term_sir_helpers@sir_term_root_node(term).name == "tuple_make" of {
                             // which is the correct register for the current scope rather than a stale outer binding.
                             saved_ptr_reg: string <- case len(tp_var) > 0 of { true -> var@find_last_sp_binding(bound.outer_reg, concat("_ptr.", tp_var)); false -> "" };
                             tuple_in_reg: bool <- len(var_binding) > 0 and var@is_memory_ref(var_binding) == false;
-                            // Priority order for the base register:
-                            // 1. bound.bound_reg when tp_var == bound.bound_name and bound.bound_reg is a real register (most up-to-date)
-                            // 2. saved_ptr_reg from _ptr. binding in bound.outer_reg (for function params and cross-scope refs)
-                            // 3. var_binding from bound.outer_reg
-                            // 4. bound.bound_reg fallback (even if memory ref) when tp_var == bound.bound_name
-                            tuple_base_reg_raw: string <- case tp_var == bound.bound_name and len(bound.bound_reg) > 0 and var@is_memory_ref(bound.bound_reg) == false of {
-                                true -> bound.bound_reg;
-                                false -> case len(saved_ptr_reg) > 0 of {
-                                    true -> saved_ptr_reg;
-                                    false -> case tuple_in_reg of {
-                                        true -> var_binding;
-                                        false -> case tp_var == bound.bound_name of { true -> bound.bound_reg; false -> "" }
+                            bound_mem_tp: bool <- tp_var == bound.bound_name and len(bound.bound_reg) > 0 and var@is_memory_ref(bound.bound_reg);
+                            saved_ptr_mem_tp: bool <- len(saved_ptr_reg) > 0 and var@is_memory_ref(saved_ptr_reg);
+                            mem_ref_src_tp: string <- case len(var_binding) > 0 and var@is_memory_ref(var_binding) of {
+                                true -> var_binding;
+                                false -> case bound_mem_tp of {
+                                    true -> bound.bound_reg;
+                                    false -> case saved_ptr_mem_tp of { true -> saved_ptr_reg; false -> "" }
+                                }
+                            };
+                            mem_ref_load_tp: string <- case len(mem_ref_src_tp) > 0 of {
+                                true -> concat(var@emit_ldr_mem_ref("X11", mem_ref_src_tp), "\n");
+                                false -> ""
+                            };
+                            // Priority: real register bindings only. Spill slots load into X11 first (never
+                            // pass [X29,#-N] to reg_offset_for_byte).
+                            tuple_base_reg_raw: string <- case len(mem_ref_src_tp) > 0 of {
+                                true -> "X11";
+                                false -> case tp_var == bound.bound_name and len(bound.bound_reg) > 0 and var@is_memory_ref(bound.bound_reg) == false of {
+                                    true -> bound.bound_reg;
+                                    false -> case len(saved_ptr_reg) > 0 and var@is_memory_ref(saved_ptr_reg) == false of {
+                                        true -> saved_ptr_reg;
+                                        false -> case tuple_in_reg of {
+                                            true -> var_binding;
+                                            false -> ""
+                                        }
                                     }
                                 }
                             };
@@ -532,13 +556,14 @@ case term_sir_helpers@sir_term_root_node(term).name == "tuple_make" of {
                             };
                             tuple_elem_cnt_proj: int64 <- prims_tuple@count_type_elements(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name);
                             float_indirect_box: bool <- box_tuple_layout and reg_conventions@is_float32_type(term_sir_helpers@sir_term_root_node(term).type_name) and tuple_elem_cnt_proj > 1;
-                            case box_tuple_layout of {
+                            proj_body_tp: string <- case box_tuple_layout of {
                                 true -> case float_indirect_box of {
                                     true -> concat(preserve_base, concat(concat(concat("    LDR X11, ", proj_mem_ref), "\n    LDR "), concat(proj_ldr_reg, ", [X11, #0]\n")));
                                     false -> concat(preserve_base, concat("    LDR ", concat(proj_ldr_reg, concat(", ", proj_mem_ref))))
                                 };
                                 false -> concat(preserve_base, concat("    LDR ", concat(proj_ldr_reg, concat(", ", proj_mem_ref))))
-                            }
+                            };
+                            concat(mem_ref_load_tp, proj_body_tp)
                         };
     false -> term_emit_kind_compound_part2@emit_kind_compound_part2(term, dest, bound, table, emit_child)
 }

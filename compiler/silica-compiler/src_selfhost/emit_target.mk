@@ -40,7 +40,7 @@ endif
 # True when TARGET was left to host detection (not set by user/env before include).
 TARGET_ORIGIN := $(if $(filter command line environment,$(origin TARGET)),user,host-default)
 
-.PHONY: check-target silica.target
+.PHONY: check-target
 
 check-target:
 	@if [ -z "$(TARGET)" ]; then \
@@ -68,7 +68,14 @@ check-target:
 		exit 1; \
 	fi
 
-# Project-level emit declaration (one per compile root). Regenerated from TARGET.
+# Project-level emit declaration (real file). Recipe may run when check-target
+# is asked for as a prereq path elsewhere; only bump mtime when TARGET changes.
 silica.target: check-target
-	@printf 'emit_target: %s\n' '$(TARGET)' > "$(THIS_DIR)silica.target"
-	@echo "Wrote silica.target (emit_target: $(TARGET); source: $(TARGET_ORIGIN))"
+	@tmp="$(THIS_DIR)silica.target.tmp"; \
+	printf 'emit_target: %s\n' '$(TARGET)' > "$$tmp"; \
+	if ! cmp -s "$$tmp" "$(THIS_DIR)silica.target" 2>/dev/null; then \
+		mv "$$tmp" "$(THIS_DIR)silica.target"; \
+		echo "Wrote silica.target (emit_target: $(TARGET); source: $(TARGET_ORIGIN))"; \
+	else \
+		rm -f "$$tmp"; \
+	fi
