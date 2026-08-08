@@ -8,6 +8,11 @@
 #   make TARGET=apple_silicon_mac   # builds emitter for Apple Silicon
 #   make integrate              # build compiler, then `make integrate` in each trials/*/ Makefile
 
+# A failed assemble/compile must not leave its output behind: the stale file would be
+# newer than nothing and the next build would link it as if current, which hid a broken
+# main.o for four days.
+.DELETE_ON_ERROR:
+
 # Target chip directory under emitter/ (override from command line)
 TARGET ?= apple_silicon_mac
 
@@ -151,12 +156,12 @@ $(MAIN_LL): $(MAIN_FILE) subdirs $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(M
 # main.ll -> main.bc (bitcode)
 $(MAIN_BC): $(MAIN_LL)
 	@echo "Assembling: $< -> $@"
-	@-$(LLVM_AS) $< -o $@
+	@$(LLVM_AS) $< -o $@
 
 # main.bc -> main.o (object file)
 $(MAIN_OBJ): $(MAIN_BC)
 	@echo "Compiling: $< -> $@"
-	@-$(LLC) -filetype=obj $< -o $@
+	@$(LLC) -filetype=obj $< -o $@
 
 # Link main.o + runtime into silica-compiler executable
 # (main.silica is compiled as a single unit with all imports, so main.o contains everything)
@@ -165,7 +170,7 @@ $(EXECUTABLE): $(MAIN_OBJ) $(RUNTIME_LIB)
 	@# -stack_size: the self-hosted lexer/parser recurse over the whole source file,
 	@# so the main-thread stack must be larger than the macOS 8MB default for big
 	@# inputs (e.g. stdlib/data_structures/btree_nodeid.silica). 256MB headroom.
-	@-$(LINKER_CLANG) $(MAIN_OBJ) $(RUNTIME_LIB) -Wl,-stack_size,0x10000000 -o $@
+	@$(LINKER_CLANG) $(MAIN_OBJ) $(RUNTIME_LIB) -Wl,-stack_size,0x10000000 -o $@
 	@echo "✅ Built $(EXECUTABLE)"
 
 # Run each trial area's own integrate target (does not use ../trials/Makefile inline trial runner)

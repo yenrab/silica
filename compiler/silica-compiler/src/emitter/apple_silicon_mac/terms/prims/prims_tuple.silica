@@ -133,7 +133,13 @@ fn tuple_segment_stride_bytes(seg_raw: string, parent_tuple_elem_count: int64) -
         false -> case reg_conventions@is_float32_type(seg) and parent_tuple_elem_count > 1 of {
             true -> 16;
             false -> case substring(seg, 0, 1) == "{" of {
-                true -> prims_record@record_type_value_flat_byte_size(seg);
+                // Record values are heap pointers in the ABI. Tuple slots that hold a record
+                // store that pointer (8 bytes). Using value-flat record size here made
+                // tuple_proj of (Token, Lexer) load the second element at #48 while
+                // construction stored pointers at #0/#8 — corrupting the lexer after the
+                // first token. Keep stride pointer-sized; flat memcpy of record_make into
+                // a tuple slab is disabled in emit_flat_tuple_stores for the same reason.
+                true -> 8;
                 false -> case len(seg) >= 5 and substring(seg, 0, 5) == "List[" of {
                     true -> 8;
                     false -> case substring(seg, 0, 1) == "(" of {

@@ -872,10 +872,17 @@ fn tuple_callee_skips_tuple_ret_dealloc(body: SIRTerm) -> bool {
         true -> true;
         false -> case tuple_return_id_ret_aggregate_var(body) of {
             true -> true;
-            false -> case body.kind == 6 of {
-                // Direct `(…)` body root gets |_tuple_sret=X8 in body_outer_root; let-chain tails do not.
-                true -> tuple_return_tail_aggregate_make(body);
-                false -> false
+            // A case tail leaves a heap pointer in X0 on every arm: an aggregate-make arm is
+            // promoted and popped by branch_cleanup, and a call arm is promoted by the callee.
+            // Nothing survives on SP, so the epilogue ADD SP would pop a slab that never existed.
+            // Strip the let spine first: `x <- e; case … of …` has the same tail shape.
+            false -> case sir_strip_lets_to_tail(body).kind == 3 of {
+                true -> true;
+                false -> case body.kind == 6 of {
+                    // Direct `(…)` body root gets |_tuple_sret=X8 in body_outer_root; let-chain tails do not.
+                    true -> tuple_return_tail_aggregate_make(body);
+                    false -> false
+                }
             }
         }
     }

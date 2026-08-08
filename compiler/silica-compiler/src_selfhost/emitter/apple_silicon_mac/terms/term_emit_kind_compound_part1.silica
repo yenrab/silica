@@ -83,10 +83,11 @@ fn emit_flat_tuple_stores(term: { nodes: List[{ kind: int64, type_name: string, 
                             };
                             false -> {
                                 store_offset: int64 <- idx * 8 + new_adjust;
+                                promote_asm: string <- term_aggregate_helpers@tuple_elem_heap_promote(temp_reg, nested_bytes);
                                 store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", term_aggregate_helpers@tuple_flat_memref(store_base, store_offset))));
                                 next_bc: int64 <- store_offset + 8;
                                 rest_asm: string <- emit_flat_tuple_stores(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), idx + 1, count, new_adjust, next_bc, store_base, bound, emit_child);
-                                concat(concat(elem_asm, concat("\n", store_asm)), concat("\n", rest_asm))
+                                concat(concat(elem_asm, concat("\n", concat(promote_asm, store_asm))), concat("\n", rest_asm))
                             }
                         }
                     };
@@ -124,8 +125,9 @@ fn emit_flat_tuple_stores(term: { nodes: List[{ kind: int64, type_name: string, 
                 false -> case elem_is_agg of {
                     true -> {
                         store_offset: int64 <- idx * 8 + new_adjust;
+                        promote_asm: string <- term_aggregate_helpers@tuple_elem_heap_promote(temp_reg, nested_bytes);
                         store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", term_aggregate_helpers@tuple_flat_memref(store_base, store_offset))));
-                        concat(elem_asm, concat("\n", store_asm))
+                        concat(elem_asm, concat("\n", concat(promote_asm, store_asm)))
                     };
                     false -> {
                         store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", term_aggregate_helpers@tuple_flat_memref(store_base, byte_cursor))));
@@ -351,11 +353,15 @@ case term_sir_helpers@sir_term_root_node(term).name == "tuple_make" of {
     false -> case term_sir_helpers@sir_term_root_node(term).name == "record_proj" of {
     true -> {
                             rp_var: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 of { true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name; false -> "" };
-                            call_inner_rp: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 4 or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 5;
+                            // The chain may bottom out in a value rather than a variable (`slots.head.token.kind`
+                            // roots at a list_head prim, kind 6). Evaluate that base into X0 instead of falling
+                            // through to the variable path, which finds no slot and loads [SP, #0].
+                            call_inner_rp: bool <- term_aggregate_helpers@record_proj_chain_base_is_value(term);
+                            rp_base_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_aggregate_helpers@record_proj_chain_base_term(term);
                             call_inner_asm_rp: string <- case call_inner_rp of {
                                 true -> case bound.debug of {
-                                    true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), "X0", { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
-                                    false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), "X0", { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+                                    true -> { emit_child(rp_base_term, "X0", { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
+                                    false -> emit_child(rp_base_term, "X0", { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
                                 };
                                 false -> ""
                             };
@@ -366,7 +372,12 @@ case term_sir_helpers@sir_term_root_node(term).name == "tuple_make" of {
                             };
                             va_key_rp: string <- concat("_va.", rp_var_use);
                             va_str_rp: string <- case len(rp_var_use) > 0 of { true -> var@find_sp_binding(bound.outer_reg, va_key_rp); false -> "" };
-                            var_binding_rp: string <- case len(rp_var_use) > 0 of { true -> var@find_sp_binding(bound.outer_reg, rp_var_use); false -> "" };
+                            // Last, not first: a tuple destructuring registers the element's slab offset and then
+                            // the register it was actually loaded into, so outer_reg holds `%r=[SP, #8]|%r=X21`.
+                            // The offset points into a slab the callee already promoted to the heap and popped,
+                            // so taking the first binding loads garbage. Variable loads and calls resolve the
+                            // innermost binding for the same reason (see var@find_sp_binding_bare_or_percent_param).
+                            var_binding_rp: string <- case len(rp_var_use) > 0 of { true -> var@find_last_sp_binding(bound.outer_reg, rp_var_use); false -> "" };
                             saved_ptr_reg_rp: string <- case len(rp_var_use) > 0 of { true -> var@find_last_sp_binding(bound.outer_reg, concat("_ptr.", rp_var_use)); false -> "" };
                             tuple_in_reg_rp: bool <- len(var_binding_rp) > 0 and var@is_memory_ref(var_binding_rp) == false;
                             // Spill slots arrive as bound_reg=[X29,#-N] before (or instead of) outer_reg sp bindings.

@@ -4,10 +4,46 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
-# Versioned compilers look like:
-#   silica-<NNNNNN>-<kind>-<platform>
-# e.g. silica-999998-seed-macos-applesilicon
+# Versioned compilers look like either:
+#   silica-<NNNNNN>-<kind>-<platform>   e.g. silica-999998-seed-macos-applesilicon
+#   silica-<NNNNNN>-<platform>          e.g. silica-999991-macos-applesilicon
 # Lower NNNNNN sorts first and is treated as the latest build.
+#
+# <platform> is a canonical host id (may contain hyphens). Optional <kind> is a
+# single hyphen-free token (e.g. seed).
+
+# Host platforms this script understands (must match detect_local_platform).
+CANONICAL_PLATFORMS=$'macos-applesilicon\nmacos-x86_64\ndebian-aarch64\ndebian-x86_64'
+
+is_canonical_platform() {
+    local needle="$1"
+    printf '%s\n' "$CANONICAL_PLATFORMS" | grep -Fxq -- "$needle"
+}
+
+# Print the canonical platform for a versioned filename, or return 1.
+# Accepts silica-NNNNNN-<platform> and silica-NNNNNN-<kind>-<platform>.
+platform_of_file() {
+    local file="$1"
+    local rest
+    rest="$(printf '%s\n' "$file" | sed -nE 's/^silica-[0-9]{6}-(.+)$/\1/p')"
+    if [[ -z "$rest" ]]; then
+        return 1
+    fi
+    # Prefer the full remainder as platform (kind-optional form).
+    if is_canonical_platform "$rest"; then
+        printf '%s\n' "$rest"
+        return 0
+    fi
+    # kind-platform: single-token kind, then canonical platform.
+    if [[ "$rest" =~ ^[^-]+-(.+)$ ]]; then
+        local maybe="${BASH_REMATCH[1]}"
+        if is_canonical_platform "$maybe"; then
+            printf '%s\n' "$maybe"
+            return 0
+        fi
+    fi
+    return 1
+}
 
 versioned_files="$(
     find . \
@@ -21,20 +57,28 @@ versioned_files="$(
 
 if [[ -z "$versioned_files" ]]; then
     echo "No versioned silica compiler file was found in $(pwd)." >&2
-    echo "Expected names like: silica-999998-seed-macos-applesilicon" >&2
+    echo "Expected names like:" >&2
+    echo "  silica-999998-seed-macos-applesilicon" >&2
+    echo "  silica-999991-macos-applesilicon" >&2
     exit 1
 fi
 
-# Extract unique platforms (suffix after silica-NNNNNN-<kind>-).
+# Platforms present among versioned binaries (canonical ids only).
 platforms="$(
-    printf '%s\n' "$versioned_files" |
-        sed -nE 's/^silica-[0-9]{6}-[^-]+-(.+)$/\1/p' |
+    while IFS= read -r file; do
+        platform_of_file "$file" || true
+    done <<< "$versioned_files" |
         LC_ALL=C sort -u
 )"
 
 if [[ -z "$platforms" ]]; then
-    echo "Found versioned silica files, but none include a platform suffix." >&2
-    echo "Expected names like: silica-999998-seed-macos-applesilicon" >&2
+    echo "Found versioned silica files, but none match a known platform suffix." >&2
+    echo "Expected names like:" >&2
+    echo "  silica-999998-seed-macos-applesilicon" >&2
+    echo "  silica-999991-macos-applesilicon" >&2
+    echo >&2
+    echo "Known platforms:" >&2
+    printf '%s\n' "$CANONICAL_PLATFORMS" | sed 's/^/  - /' >&2
     echo >&2
     echo "Files found:" >&2
     printf '%s\n' "$versioned_files" | sed 's/^/  /' >&2
@@ -43,18 +87,31 @@ fi
 
 platform_count="$(printf '%s\n' "$platforms" | grep -c .)"
 
+# Newest binary for a platform: lowest NNNNNN among both naming forms.
 latest_for_platform() {
     local platform="$1"
-    printf '%s\n' "$versioned_files" |
-        grep -E "^silica-[0-9]{6}-[^-]+-${platform}\$" |
-        head -n 1
+    local file plat
+    while IFS= read -r file; do
+        plat="$(platform_of_file "$file" || true)"
+        if [[ "$plat" == "$platform" ]]; then
+            printf '%s\n' "$file"
+            return 0
+        fi
+    done <<< "$versioned_files"
+    return 1
 }
 
 count_for_platform() {
     local platform="$1"
-    printf '%s\n' "$versioned_files" |
-        grep -E "^silica-[0-9]{6}-[^-]+-${platform}\$" |
-        grep -c .
+    local file plat
+    local count=0
+    while IFS= read -r file; do
+        plat="$(platform_of_file "$file" || true)"
+        if [[ "$plat" == "$platform" ]]; then
+            count=$((count + 1))
+        fi
+    done <<< "$versioned_files"
+    printf '%s\n' "$count"
 }
 
 platform_at_index() {
@@ -148,6 +205,10 @@ default — press Enter to accept.
 
 Usage:
   $(basename -- "$0") [local-platform]
+
+Accepted binary names:
+  silica-<NNNNNN>-<kind>-<platform>   (e.g. silica-999998-seed-macos-applesilicon)
+  silica-<NNNNNN>-<platform>          (e.g. silica-999991-macos-applesilicon)
 
 Local platforms found in $(pwd):
 $(printf '%s\n' "$platforms" | sed 's/^/  - /')

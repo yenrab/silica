@@ -51,6 +51,33 @@ export type_context_with_supervisor_types/2;
 export lookup_supervisor_csv/1;
 export type_name_in_supervisor_csv/2;
 export types_equal_type_ids/2;
+export type_id_to_surface/2;
+export TypeContextParseOutcome/0;
+export context_parse_type/2;
+export context_require_type/2;
+export context_surfaces_equal/3;
+export context_surface_matches_type_id/3;
+export invalid_type_id/0;
+export context_tid_int64/1;
+export context_tid_boolean/1;
+export context_tid_string/1;
+export context_tid_discard/1;
+export context_tid_atom/1;
+export context_tid_uint64/1;
+export context_tid_float32/1;
+export context_tid_float16/1;
+export context_tid_char/1;
+export context_tid_actor_ref/1;
+export context_tid_supervisor_ref/1;
+export context_tid_monitor_ref/1;
+export context_tid_list_int64_normal/1;
+export type_id_is_discard/2;
+export type_id_eq_or_discard/3;
+export type_id_is_integer_kind/2;
+export type_id_is_float_kind/2;
+export type_id_accepts_numeric_literal/2;
+export lookup_symbol_type_id/2;
+export lookup_symbol_type_id_found/2;
 
 // Symbol table: name -> type_id + surface type_name, declared_effects
 struct SymbolEntry {
@@ -71,6 +98,12 @@ struct ListSymbolEntry {
 struct TypeContext {
     env: ListSymbolEntry,
     interner: TypeInterner
+}
+
+struct TypeContextParseOutcome {
+    context: TypeContext,
+    type_id: int64,
+    ok: bool
 }
 
 struct ParamConcreteEnv {
@@ -105,6 +138,110 @@ fn symbol_entry_make(name: string, type_name: string, type_id: int64, declared_e
 
 fn types_equal_type_ids(a: int64, b: int64) -> bool {
     a == b
+}
+
+fn type_id_to_surface(ctx: TypeContext, type_id: int64) -> string {
+    type_interner@print_type(type_context_interner(ctx), type_id)
+}
+
+fn context_parse_type(ctx: TypeContext, surface: string) -> TypeContextParseOutcome {
+    pr: TypeInternParseResult <- type_interner@parse_type(type_context_interner(ctx), surface);
+    ctx2: TypeContext <- type_context_make(type_context_env(ctx), type_interner@parse_result_interner(pr));
+    case type_interner@parse_result_ok(pr) of {
+        true -> TypeContextParseOutcome { context: ctx2, type_id: type_interner@parse_result_id(pr), ok: true };
+        false -> TypeContextParseOutcome { context: ctx2, type_id: invalid_type_id(), ok: false }
+    }
+}
+
+fn context_require_type(ctx: TypeContext, surface: string) -> TypeContextParseOutcome {
+    context_parse_type(ctx, surface)
+}
+
+fn context_surfaces_equal(ctx: TypeContext, a: string, b: string) -> bool {
+    case a == b of {
+        true -> true;
+        false -> do
+            pa: TypeContextParseOutcome <- context_parse_type(ctx, a);
+            case pa.ok of {
+                false -> false;
+                true -> do
+                    pb: TypeContextParseOutcome <- context_parse_type(pa.context, b);
+                    case pb.ok of {
+                        false -> false;
+                        true -> types_equal_type_ids(pa.type_id, pb.type_id)
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn context_surface_matches_type_id(ctx: TypeContext, surface: string, expected_type: int64) -> bool {
+    pa: TypeContextParseOutcome <- context_parse_type(ctx, surface);
+    case pa.ok of {
+        false -> false;
+        true -> types_equal_type_ids(pa.type_id, expected_type)
+    }
+}
+
+fn prim_tid(ctx: TypeContext, kind: int64) -> int64 {
+    r: { interner: TypeInterner, id: int64 } <- type_interner@mk_prim(type_context_interner(ctx), kind);
+    r.id
+}
+
+fn context_tid_int64(ctx: TypeContext) -> int64 { prim_tid(ctx, type_interner@kind_int64()) }
+fn context_tid_boolean(ctx: TypeContext) -> int64 { prim_tid(ctx, type_interner@kind_boolean()) }
+fn context_tid_string(ctx: TypeContext) -> int64 { prim_tid(ctx, type_interner@kind_string()) }
+fn context_tid_discard(ctx: TypeContext) -> int64 { prim_tid(ctx, type_interner@kind_discard()) }
+fn context_tid_atom(ctx: TypeContext) -> int64 { prim_tid(ctx, type_interner@kind_atom()) }
+fn context_tid_uint64(ctx: TypeContext) -> int64 { prim_tid(ctx, type_interner@kind_uint64()) }
+fn context_tid_float32(ctx: TypeContext) -> int64 { prim_tid(ctx, type_interner@kind_float32()) }
+fn context_tid_float16(ctx: TypeContext) -> int64 { prim_tid(ctx, type_interner@kind_float16()) }
+fn context_tid_char(ctx: TypeContext) -> int64 { prim_tid(ctx, type_interner@kind_char()) }
+fn context_tid_actor_ref(ctx: TypeContext) -> int64 { prim_tid(ctx, type_interner@kind_actor_ref()) }
+fn context_tid_supervisor_ref(ctx: TypeContext) -> int64 { prim_tid(ctx, type_interner@kind_supervisor_ref()) }
+fn context_tid_monitor_ref(ctx: TypeContext) -> int64 { prim_tid(ctx, type_interner@kind_monitor_ref()) }
+fn context_tid_list_int64_normal(ctx: TypeContext) -> int64 {
+    // Best-effort: parse surface for List[int64, mem(normal)]
+    pa: TypeContextParseOutcome <- context_parse_type(ctx, "List[int64, mem(normal)]");
+    case pa.ok of {
+        true -> pa.type_id;
+        false -> invalid_type_id()
+    }
+}
+
+fn type_id_is_discard(ctx: TypeContext, type_id: int64) -> bool {
+    types_equal_type_ids(type_id, context_tid_discard(ctx))
+}
+
+fn type_id_eq_or_discard(ctx: TypeContext, type_id: int64, target_id: int64) -> bool {
+    case types_equal_type_ids(type_id, target_id) of {
+        true -> true;
+        false -> type_id_is_discard(ctx, type_id)
+    }
+}
+
+fn type_id_is_integer_kind(ctx: TypeContext, type_id: int64) -> bool {
+    k: int64 <- type_interner@node_kind(type_context_interner(ctx), type_id);
+    k == type_interner@kind_int8() or k == type_interner@kind_int16() or k == type_interner@kind_int32() or k == type_interner@kind_int64() or k == type_interner@kind_uint8() or k == type_interner@kind_uint16() or k == type_interner@kind_uint32() or k == type_interner@kind_uint64()
+}
+
+fn type_id_is_float_kind(ctx: TypeContext, type_id: int64) -> bool {
+    k: int64 <- type_interner@node_kind(type_context_interner(ctx), type_id);
+    k == type_interner@kind_float16() or k == type_interner@kind_float32() or k == type_interner@kind_float64()
+}
+
+fn type_id_accepts_numeric_literal(ctx: TypeContext, type_id: int64) -> bool {
+    case type_id_is_discard(ctx, type_id) of {
+        true -> true;
+        false -> case type_id_is_integer_kind(ctx, type_id) of {
+            true -> true;
+            false -> case type_id_is_float_kind(ctx, type_id) of {
+                true -> true;
+                false -> type_id_eq_or_discard(ctx, type_id, context_tid_atom(ctx)) or type_id_eq_or_discard(ctx, type_id, context_tid_char(ctx)) or type_id_eq_or_discard(ctx, type_id, context_tid_string(ctx))
+            }
+        }
+    }
 }
 
 fn add_params_concrete_loop1(st: ParamConcreteEnv) -> TypeContext {

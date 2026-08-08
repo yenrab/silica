@@ -471,28 +471,34 @@ fn next_frame_spill_slot(outer_reg: string) -> string {
 }
 
 fn compute_let_rhs_spill_reg(term: SIRTerm, rhs_reg: string, outer_reg: string) -> string {
-    case is_float_scalar_type(term.inner.type_name) of {
-        true -> case is_caller_saved_fp(rhs_reg) of {
-            true -> fp_spill_reg_chain_from_outer(term.inner.type_name, outer_reg);
-            false -> ""
-        };
-        false -> case is_caller_saved_gpr(rhs_reg) of {
-            false -> "";
-            true -> case let_rhs_type_spills_across_io(term.inner.type_name) of {
-                true -> do
-                    unused: string <- spill_reg_chain_from_outer(outer_reg);
-                    case len(unused) > 0 of {
-                        true -> unused;
-                        false -> do
-                            body_spill: string <- spill_reg_chain_for_body(outer_reg, term.right_expr);
-                            case len(body_spill) > 0 of {
-                                true -> body_spill;
-                                false -> next_frame_spill_slot(outer_reg)
-                            }
-                        end
-                    }
-                end;
+    // Discarded DeviceIO lets (`_: int8 <- println(...)`) must not consume X19–X28.
+    // Spilling them parks 0 into callee-saved regs and later call-arg reloads can
+    // pass junk (e.g. X23) into control@function_prologue instead of a string.
+    case term.name == "_" or term.name == "%_" of {
+        true -> "";
+        false -> case is_float_scalar_type(term.inner.type_name) of {
+            true -> case is_caller_saved_fp(rhs_reg) of {
+                true -> fp_spill_reg_chain_from_outer(term.inner.type_name, outer_reg);
                 false -> ""
+            };
+            false -> case is_caller_saved_gpr(rhs_reg) of {
+                false -> "";
+                true -> case let_rhs_type_spills_across_io(term.inner.type_name) of {
+                    true -> do
+                        unused: string <- spill_reg_chain_from_outer(outer_reg);
+                        case len(unused) > 0 of {
+                            true -> unused;
+                            false -> do
+                                body_spill: string <- spill_reg_chain_for_body(outer_reg, term.right_expr);
+                                case len(body_spill) > 0 of {
+                                    true -> body_spill;
+                                    false -> next_frame_spill_slot(outer_reg)
+                                }
+                            end
+                        }
+                    end;
+                    false -> ""
+                }
             }
         }
     }
@@ -1799,16 +1805,12 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         and sret_n > 0
         and reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name)
         and (len(bound_name) == 0 or use_tail);
-    // Tuple-returning user calls write through caller X8 (AAPCS64 indirect result). Without SUB/MOV X8
-    // the callee stores into whatever X8 held (e.g. silica_rt_wait_root_acb) — flaky SIGKILL after
-    // functions_addition/fn_three_params_tuple_return_print*. Record returns heap-promote in the
-    // callee and do not need a caller sret slab.
+    // Tuple-returning user calls heap-promote in the callee (same as records) and do not
+    // need a caller sret slab. Allocating SUB/MOV X8 without a matching path caused
+    // stack leaks / orphan ADDs under pass-through (see fix_seed_emission.py).
     sret_alloc_bytes: int64 <- case use_pass_through_sret or ffi_found of {
         true -> 0;
-        false -> case reg_conventions@is_tuple_type(term.type_name) of {
-            true -> sret_n;
-            false -> 0
-        }
+        false -> 0
     };
     // Post-BLR ADD is 0: the sret slab is released at let-end via aggregate_callee_return_stack_bytes
     // (immediate ADD here plus let-end ADD double-pops SP).
@@ -1865,9 +1867,18 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
     // arguments.  X17 is caller-saved, so capture it in a stack slot before
     // argument evaluation and reload it afterward.  The offset accounts for
     // tuple arguments that remain allocated until the call completes.
-    save_indirect_callee_around_args: bool <- indirect_via_x9 and use_tail == false and indirect_arg_has_call;
     arg_stack_bytes_before_call: int64 <- call_tuple_args_dealloc_bytes(term.inner)
         + call_tuple_args_dealloc_bytes(term.right_expr);
+    // p5 tail (LDP frame + BR) must not run while call-arg stack slabs are live.
+    // Otherwise LDP pops the arg region (corrupting LR) and post-call ADD SP is unreachable.
+    arg_has_stack_aggregate: bool <- is_aggregate_make(term.inner)
+        or (term.right_expr.kind >= 0 and (is_aggregate_make(term.right_expr)
+            or (term.right_expr.name == "user_call_rest" and is_aggregate_make(term.right_expr.inner))));
+    effective_use_tail: bool <- case use_tail of {
+        true -> arg_stack_bytes_before_call == 0 and arg_has_stack_aggregate == false;
+        false -> false
+    };
+    save_indirect_callee_around_args: bool <- indirect_via_x9 and effective_use_tail == false and indirect_arg_has_call;
     callee_prep: string <- case indirect_via_x9 of {
         true -> case save_indirect_callee_around_args of {
             true -> concat(call@emit_indirect_callee_address_to_x17(outer_reg, term.name), "    STR X17, [SP, #-16]!\n");
@@ -1882,7 +1893,7 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
             false -> concat("    LDR X17, [SP, #", concat(atom_table@int64_to_decimal_string(arg_stack_bytes_before_call), "]\n"))
         }
     };
-    call_asm: string <- case use_tail of {
+    call_asm: string <- case effective_use_tail of {
         true -> case ffi_found and indirect_via_x9 == false of {
             true -> do
                 frame_rel: string <- control@function_tail_frame_release(fn_effects_for_tail);
@@ -2062,7 +2073,7 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         true -> concat("\n    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(dealloc_bytes_call), ""));
         false -> ""
     };
-    fuel: string <- case use_tail of {
+    fuel: string <- case effective_use_tail of {
         true -> recursion_support@emit_fuel_backedge_stub_comment();
         false -> ""
     };
@@ -4632,13 +4643,10 @@ fn aggregate_callee_return_stack_bytes(rhs: SIRTerm) -> int64 {
     }
 }
 
-// Caller sret slab for a let-bound tuple-returning user call (paired with sret_alloc_bytes in
-// emit_generic_user_call_asm_inner). Zero for pass-through / non-tuple.
+// Caller sret slab for a let-bound tuple-returning user call. Always 0: tuple callees
+// heap-promote (no caller X8 slab), matching sret_alloc_bytes in emit_generic_user_call_asm_inner.
 fn let_user_call_tuple_sret_stack_bytes(rhs: SIRTerm) -> int64 {
-    case (rhs.kind == 4 or rhs.kind == 5) and reg_conventions@is_tuple_type(rhs.type_name) of {
-        true -> user_call_aggregate_return_alloc_bytes(rhs.type_name);
-        false -> 0
-    }
+    0
 }
 
 // Sequence/lowering nests lets (child; children; produces tuple). The terminal tuple_make is in

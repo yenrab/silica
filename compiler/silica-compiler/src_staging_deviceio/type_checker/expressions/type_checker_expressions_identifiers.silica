@@ -30,6 +30,9 @@ export check_expr/4;
 export normalize_fn_type_idf/1;
 export find_arrow_idf/5;
 export function_types_compatible/2;
+export function_types_compatible_first_class_closure/2;
+export is_lifted_lambda_symbol_name/1;
+export build_function_type_for_symbol_table/2;
 
 // §3.4 / §15.4.13.2: function-value types. The compiler builds call-site fn types as `(T1,T2) -> R`
 // (see `build_function_type_for_decl_call`), while declared `fn(msg: T1, state: T2) -> R` annotations
@@ -238,7 +241,7 @@ fn function_types_compatible(resolved: string, expected: string) -> bool {
     b: string <- normalize_fn_type_idf(expected);
     case a == b of {
         true -> true;
-        false -> case type_checker_tuple_decompose_helpers@types_equal(a, b) of {
+        false -> case type_checker_tuple_decompose_helpers@types_equal_surface(a, b) of {
             true -> true;
             false -> do
                 // Function results are covariant.  A comparator whose result is
@@ -246,7 +249,7 @@ fn function_types_compatible(resolved: string, expected: string) -> bool {
                 // a helper accepts an arbitrary atom result for validation.
                 (pa: string, ra: string) <- normalized_fn_params_ret(a);
                 (pb: string, rb: string) <- normalized_fn_params_ret(b);
-                same_params: bool <- type_checker_tuple_decompose_helpers@types_equal(pa, pb);
+                same_params: bool <- type_checker_tuple_decompose_helpers@types_equal_surface(pa, pb);
                 resolved_is_atom_union: bool <- len(ra) > 0 and substring(ra, 0, 1) == ":";
                 same_params and rb == "atom" and resolved_is_atom_union
             end
@@ -255,6 +258,8 @@ fn function_types_compatible(resolved: string, expected: string) -> bool {
 }
 
 // Synthetic lifted lambda symbols (parser): "main.__lam0", etc.
+export is_lifted_lambda_symbol_name/1;
+
 fn is_lifted_lambda_symbol_name(m: string) -> bool {
     lifted_lam_sub_at(m, 0)
 }
@@ -321,7 +326,7 @@ fn param_types_prefix_match(li_res: string, li_exp: string, remaining: int64) ->
         false -> do
             (ar, r_res) <- first_param_type_comma_rest(li_res);
             (be, r_exp) <- first_param_type_comma_rest(li_exp);
-            case type_checker_tuple_decompose_helpers@types_equal(ar, be) of {
+            case type_checker_tuple_decompose_helpers@types_equal_surface(ar, be) of {
                 false -> false;
                 true -> param_types_prefix_match(r_res, r_exp, remaining - 1)
             }
@@ -329,8 +334,77 @@ fn param_types_prefix_match(li_res: string, li_exp: string, remaining: int64) ->
     }
 }
 
-// Lifted lambdas appear as symbols with arity formals+captures; source annotations use callee arity only.
-// Compare return types and require the resolved (implementation) param list to start with the expected param types.
+fn take_first_n_param_types(inner: string, remaining: int64) -> string {
+    case remaining == 0 of {
+        true -> "";
+        false -> case len(inner) == 0 of {
+            true -> "";
+            false -> do
+                comma: int64 <- find_comma_idf(inner, 0, 0, 0, 0);
+                case comma < 0 of {
+                    true -> trim_spaces_idf(inner);
+                    false -> do
+                        head: string <- trim_spaces_idf(substring(inner, 0, comma));
+                        rest: string <- take_first_n_param_types(trim_spaces_idf(substring(inner, comma + 1, len(inner))), remaining - 1);
+                        case len(rest) == 0 of {
+                            true -> head;
+                            false -> concat(concat(head, ","), rest)
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
+fn function_type_with_prefix_params(resolved: string, n: int64) -> string {
+    a: string <- normalize_fn_type_idf(resolved);
+    case find_arrow_idf(a, 0, 0, 0, 0) < 0 of {
+        true -> "";
+        false -> do
+            (li_a, ret_a) <- normalized_fn_params_ret(a);
+            prefix_li: string <- take_first_n_param_types(li_a, n);
+            concat(concat(concat("(", prefix_li), ") -> "), ret_a)
+        end
+    }
+}
+
+fn drop_first_n_param_types(inner: string, remaining: int64) -> string {
+    case remaining <= 0 of {
+        true -> trim_spaces_idf(inner);
+        false -> case len(inner) == 0 of {
+            true -> "";
+            false -> do
+                comma: int64 <- find_comma_idf(inner, 0, 0, 0, 0);
+                case comma < 0 of {
+                    true -> "";
+                    false -> drop_first_n_param_types(trim_spaces_idf(substring(inner, comma + 1, len(inner))), remaining - 1)
+                }
+            end
+        }
+    }
+}
+
+fn function_type_with_suffix_params(resolved: string, n: int64) -> string {
+    a: string <- normalize_fn_type_idf(resolved);
+    case find_arrow_idf(a, 0, 0, 0, 0) < 0 of {
+        true -> "";
+        false -> do
+            (li_a, ret_a) <- normalized_fn_params_ret(a);
+            na: int64 <- count_top_level_param_types(li_a);
+            case na < n of {
+                true -> "";
+                false -> do
+                    suffix_li: string <- drop_first_n_param_types(li_a, na - n);
+                    concat(concat(concat("(", suffix_li), ") -> "), ret_a)
+                end
+            }
+        end
+    }
+}
+
+// Lifted lambdas append captures at the ListParam deep end; param_types_str therefore emits captures
+// before formals. Accept either formals-as-prefix or formals-as-suffix of the implementation arity.
 fn function_types_compatible_lifted_implementation(resolved: string, expected: string) -> bool {
     a: string <- normalize_fn_type_idf(resolved);
     b: string <- normalize_fn_type_idf(expected);
@@ -341,19 +415,160 @@ fn function_types_compatible_lifted_implementation(resolved: string, expected: s
             false -> do
                 (li_a, ret_a) <- normalized_fn_params_ret(a);
                 (li_b, ret_b) <- normalized_fn_params_ret(b);
-                case type_checker_tuple_decompose_helpers@types_equal(ret_a, ret_b) of {
+                case type_checker_tuple_decompose_helpers@types_equal_surface(ret_a, ret_b) of {
                     false -> false;
                     true -> do
                         nb: int64 <- count_top_level_param_types(li_b);
                         na: int64 <- count_top_level_param_types(li_a);
                         case na >= nb of {
                             false -> false;
-                            true -> param_types_prefix_match(li_a, li_b, nb)
+                            true -> case param_types_prefix_match(li_a, li_b, nb) of {
+                                true -> true;
+                                false -> case function_types_compatible(function_type_with_prefix_params(resolved, nb), expected) of {
+                                    true -> true;
+                                    false -> function_types_compatible(function_type_with_suffix_params(resolved, nb), expected)
+                                }
+                            }
                         }
                     end
                 }
             end
         }
+    }
+}
+
+// First-class closures: a capturing implementation may have extra trailing capture parameters.
+fn function_types_compatible_first_class_closure(resolved: string, expected: string) -> bool {
+    case function_types_compatible(resolved, expected) of {
+        true -> true;
+        false -> function_types_compatible_lifted_implementation(resolved, expected)
+    }
+}
+
+// ListParam order: head=last param, tail=earlier params (parser cons order).
+fn param_types_str_for_decl(params: ListParam) -> string {
+    case params.is_nil of {
+        true -> "";
+        false -> case params.tail.is_nil of {
+            true -> params.head.type_name;
+            false -> concat(concat(param_types_str_for_decl(params.tail), ","), params.head.type_name)
+        }
+    }
+}
+
+fn build_function_type_from_params(params: ListParam, ret: string) -> string {
+    params_str: string <- param_types_str_for_decl(params);
+    case params.is_nil of {
+        true -> concat("() -> ", ret);
+        false -> concat(concat(concat("(", params_str), ") -> "), ret)
+    }
+}
+
+fn build_function_type_surface(decl: Declaration) -> string {
+    build_function_type_from_params(decl.parameters, decl.return_type_name)
+}
+
+fn list_param_len(ps: ListParam) -> int64 {
+    case ps.is_nil of {
+        true -> 0;
+        false -> 1 + list_param_len(ps.tail)
+    }
+}
+
+// ListParam head = last source param; captures are appended at the linked-list end (deepest tails).
+fn list_param_take_n(ps: ListParam, n: int64) -> ListParam {
+    case n <= 0 of {
+        true -> parser_ast@nil_list_param();
+        false -> case ps.is_nil of {
+            true -> parser_ast@nil_list_param();
+            false -> parser_ast@cons_param(ps.head, list_param_take_n(ps.tail, n - 1))
+        }
+    }
+}
+
+fn list_param_reverse(ps: ListParam, acc: ListParam) -> ListParam {
+    case ps.is_nil of {
+        true -> acc;
+        false -> list_param_reverse(ps.tail, parser_ast@cons_param(ps.head, acc))
+    }
+}
+
+fn param_name_in_list(ps: ListParam, nm: string) -> bool {
+    case ps.is_nil of {
+        true -> false;
+        false -> case ps.head.name == nm of {
+            true -> true;
+            false -> param_name_in_list(ps.tail, nm)
+        }
+    }
+}
+
+// Captures sit at the deep end of ListParam; reverse so they appear as a head prefix.
+fn count_parent_capture_prefix(rev_ps: ListParam, parent_ps: ListParam) -> int64 {
+    case rev_ps.is_nil of {
+        true -> 0;
+        false -> case param_name_in_list(parent_ps, rev_ps.head.name) of {
+            true -> 1 + count_parent_capture_prefix(rev_ps.tail, parent_ps);
+            false -> 0
+        }
+    }
+}
+
+fn count_trailing_parent_capture_params(lam_ps: ListParam, parent_ps: ListParam) -> int64 {
+    rev: ListParam <- list_param_reverse(lam_ps, parser_ast@nil_list_param());
+    count_parent_capture_prefix(rev, parent_ps)
+}
+
+fn lifted_lambda_parent_name(lam_name: string) -> string {
+    case is_lifted_lambda_symbol_name(lam_name) of {
+        true -> parent_prefix_before_lam_marker(lam_name, 0);
+        false -> lam_name
+    }
+}
+
+fn parent_prefix_before_lam_marker(m: string, i: int64) -> string {
+    case i + 6 > len(m) of {
+        true -> m;
+        false -> case substring(m, i, i + 6) == ".__lam" of {
+            true -> substring(m, 0, i);
+            false -> parent_prefix_before_lam_marker(m, i + 1)
+        }
+    }
+}
+
+fn find_program_tag0_decl(decls: ListDeclaration, nm: string) -> (bool, Declaration) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case decls.head.tag == 0 and decls.head.name == nm of {
+            true -> (true, decls.head);
+            false -> find_program_tag0_decl(decls.tail, nm)
+        }
+    }
+}
+
+// Register lifted closure symbols with callee-visible arity (formals only), not formals+captures.
+fn build_function_type_for_symbol_table(decl: Declaration, all_decls: ListDeclaration) -> string {
+    case is_lifted_lambda_symbol_name(decl.name) of {
+        false -> build_function_type_surface(decl);
+        true -> do
+            parent_name: string <- lifted_lambda_parent_name(decl.name);
+            (found: bool, parent_decl: Declaration) <- find_program_tag0_decl(all_decls, parent_name);
+            case found of {
+                false -> build_function_type_surface(decl);
+                true -> do
+                    trailing: int64 <- count_trailing_parent_capture_params(decl.parameters, parent_decl.parameters);
+                    total: int64 <- list_param_len(decl.parameters);
+                    formal_n: int64 <- total - trailing;
+                    case trailing <= 0 of {
+                        true -> build_function_type_surface(decl);
+                        false -> case formal_n <= 0 of {
+                            true -> build_function_type_surface(decl);
+                            false -> build_function_type_from_params(list_param_take_n(decl.parameters, formal_n), decl.return_type_name)
+                        }
+                    }
+                end
+            }
+        end
     }
 }
 
@@ -385,60 +600,77 @@ fn lookup_symbol_found_identifier_module(env: ListSymbolEntry, fn_name: string, 
     }
 }
 
-// Check Expr kind 1 (identifier). Lookup in context.env, verify matches expected_type.
-// Note: "true"/"false" identifiers are routed to boolean checker by type_checker_expressions dispatcher
-fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
-    case expected_type == "discard" of {
+// Spec §19.3 / §3.3.2: `module@fn` is stored as bare `fn` with source_module=module.
+// Type-id lookup must strip the qualifier the same way as surface lookup (Wave C).
+fn lookup_symbol_type_id_found_identifier(env: ListSymbolEntry, name: string) -> (bool, int64) {
+    at: int64 <- first_at_in_identifier_name(name, 0);
+    case at < 0 of {
+        true -> type_checker_core@lookup_symbol_type_id_found(env, name);
+        false -> lookup_symbol_type_id_found_identifier_module(env, substring(name, at + 1, len(name)), substring(name, 0, at))
+    }
+}
+
+fn lookup_symbol_type_id_found_identifier_module(env: ListSymbolEntry, fn_name: string, required_module: string) -> (bool, int64) {
+    case env.is_nil of {
+        true -> (false, type_checker_core@invalid_type_id());
+        false -> case env.head.name == fn_name and env.head.is_effect_alias == false and env.head.source_module == required_module of {
+            true -> (true, env.head.type_id);
+            false -> lookup_symbol_type_id_found_identifier_module(env.tail, fn_name, required_module)
+        }
+    }
+}
+
+// Check Expr kind 1 (identifier). Lookup in context.env, verify matches expected_type (interned id).
+fn check_expr(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
+    case type_checker_core@type_id_is_discard(context, expected_type) of {
         true -> case expr.name == "performance_cores" or expr.name == "efficiency_cores" of {
             true -> type_checker_core@type_check_ok();
             false -> do
-                (found: bool, _: string) <- lookup_symbol_found_identifier(context.env, expr.name);
+                (found: bool, _: int64) <- lookup_symbol_type_id_found_identifier(context.env, expr.name);
                 case found of { true -> type_checker_core@type_check_ok(); false -> type_checker_core@type_check_err("E2002", expr.location, concat("undefined identifier: ", expr.name), "sect6") }
             end
         };
         false -> do
-            (found: bool, resolved_type: string) <- lookup_symbol_found_identifier(context.env, expr.name);
-            case found of {
+            (found: bool, resolved_id: int64) <- lookup_symbol_type_id_found_identifier(context.env, expr.name);
+            (found_name: bool, resolved_type: string) <- lookup_symbol_found_identifier(context.env, expr.name);
+            case found and found_name of {
                 false -> type_checker_core@type_check_err("E2002", expr.location, concat("undefined identifier: ", expr.name), "sect6");
                 true -> case resolved_type of {
-                    "int64" -> case expected_type of { "int64" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
-                    "int32" -> case expected_type of { "int32" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
-                    "int16" -> case expected_type of { "int16" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
-                    "int8" -> case expected_type of { "int8" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
-                    "uint64" -> case expected_type of { "uint64" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
-                    "uint32" -> case expected_type of { "uint32" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
-                    "uint16" -> case expected_type of { "uint16" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
-                    "uint8" -> case expected_type of { "uint8" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
-                    "boolean" -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
                     "unit" -> type_checker_core@type_check_err("E2006", expr.location, "unit is not a valid type for variables or parameters", "sect4");
-                    "atom" -> case expected_type of { "atom" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
-                    _: string -> case function_types_compatible(resolved_type, expected_type) of {
+                    _: string -> case type_checker_core@types_equal_type_ids(resolved_id, expected_type) of {
                         true -> type_checker_core@type_check_ok();
-                        false -> case is_lifted_lambda_symbol_name(expr.name) and function_types_compatible_lifted_implementation(resolved_type, expected_type) of {
-                            true -> type_checker_core@type_check_ok();
-                            false -> case resolved_type == expected_type of {
+                        false -> do
+                            resolved_surface: string <- type_checker_core@type_id_to_surface(context, resolved_id);
+                            expected_surface: string <- type_checker_core@type_id_to_surface(context, expected_type);
+                            case function_types_compatible_first_class_closure(resolved_surface, expected_surface) of {
                                 true -> type_checker_core@type_check_ok();
-                                false -> case type_checker_record_types@record_type_starts(resolved_type) and type_checker_record_types@record_type_starts(expected_type) of {
-                                    true -> case type_checker_tuple_decompose_helpers@types_equal(resolved_type, expected_type) of {
+                                false -> case function_types_compatible_first_class_closure(resolved_type, expected_surface) of {
+                                    true -> type_checker_core@type_check_ok();
+                                    false -> case type_checker_tuple_decompose_helpers@types_equal_surface(resolved_surface, expected_surface) of {
                                         true -> type_checker_core@type_check_ok();
-                                        false -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6")
-                                    };
-                                    false -> case type_checker_lists@list_types_compatible(resolved_type, expected_type) of {
-                                        true -> type_checker_core@type_check_ok();
-                                        false -> case type_checker_collections@is_collection_trait_type(resolved_type) and type_checker_collections@collection_type_fits_concrete_record(resolved_type, expected_type, world) of {
-                                            true -> type_checker_core@type_check_ok();
-                                            false -> case type_checker_collections@is_collection_trait_type(expected_type) and type_checker_collections@collection_type_fits_concrete_record(expected_type, resolved_type, world) of {
+                                        false -> case type_checker_record_types@record_type_starts(resolved_surface) and type_checker_record_types@record_type_starts(expected_surface) of {
+                                            true -> case type_checker_tuple_decompose_helpers@types_equal_surface(resolved_surface, expected_surface) of {
                                                 true -> type_checker_core@type_check_ok();
-                                                false -> case type_checker_traits@actual_type_satisfies_trait_expectation(resolved_type, expected_type, world) of {
+                                                false -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6")
+                                            };
+                                            false -> case type_checker_lists@list_types_compatible(resolved_surface, expected_surface) of {
+                                                true -> type_checker_core@type_check_ok();
+                                                false -> case type_checker_collections@is_collection_trait_type(resolved_surface) and type_checker_collections@collection_type_fits_concrete_record(resolved_surface, expected_surface, world) of {
                                                     true -> type_checker_core@type_check_ok();
-                                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6")
+                                                    false -> case type_checker_collections@is_collection_trait_type(expected_surface) and type_checker_collections@collection_type_fits_concrete_record(expected_surface, resolved_surface, world) of {
+                                                        true -> type_checker_core@type_check_ok();
+                                                        false -> case type_checker_traits@actual_type_satisfies_trait_expectation(resolved_surface, expected_surface, world) of {
+                                                            true -> type_checker_core@type_check_ok();
+                                                            false -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6")
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
+                        end
                     }
                 }
             }

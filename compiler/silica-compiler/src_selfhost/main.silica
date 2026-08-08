@@ -440,7 +440,9 @@ fn parse_use_closure_work(work: List[string, mem(normal)], config: List[string, 
                             use_paths: List[string, mem(normal)] <- resolve_use_names_to_config_paths(uses, config, module_checker_core@empty_list_string());
                             use_paths_need_parse: List[string, mem(normal)] <- filter_use_paths_missing_iface(use_paths, config, module_checker_core@empty_list_string());
                             next_work: List[string, mem(normal)] <- append_list_string_hygiene(use_paths_need_parse, work.tail);
-                            parse_use_closure_work(next_work, config, module_checker_core@cons_parsed_file(work.head, parse_result.program, acc))
+                            work_path: string <- work.head;
+                            next_acc: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] <- module_checker_core@cons_parsed_file(work_path, parse_result.program, acc);
+                            parse_use_closure_work(next_work, config, next_acc)
                         }
                     }
                 }
@@ -506,7 +508,12 @@ fn parse_all_files_recursive(files: List[string, mem(normal)], acc: List[{ path:
                         diagnostics_core@print_compiler_error("ParseError", error_code, parse_result.error_location, parse_result.error_message, spec_section);
                         (false, module_checker_core@empty_parsed_files())
                     };
-                    true -> parse_all_files_recursive(files.tail, module_checker_core@cons_parsed_file(files.head, parse_result.program, acc))
+                    true -> {
+                        file_path: string <- files.head;
+                        rest_files: List[string, mem(normal)] <- files.tail;
+                        next_acc: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] <- module_checker_core@cons_parsed_file(file_path, parse_result.program, acc);
+                        parse_all_files_recursive(rest_files, next_acc)
+                    }
                 }
             }
         }
@@ -588,7 +595,14 @@ fn reverse_list_string(lst: List[string, mem(normal)]) -> List[string, mem(norma
 fn reverse_list_string_acc(lst: List[string, mem(normal)], acc: List[string, mem(normal)]) -> List[string, mem(normal)] {
     case lst.is_nil of {
         true -> acc;
-        false -> reverse_list_string_acc(lst.tail, module_checker_core@cons_string(lst.head, acc))
+        // Stage head/tail/cons before the recursive call: a nested lst.tail plus cons(...)
+        // as call args clobbers the cons result (field access loads offsets into X1).
+        false -> {
+            h: string <- lst.head;
+            t: List[string, mem(normal)] <- lst.tail;
+            new_acc: List[string, mem(normal)] <- module_checker_core@cons_string(h, acc);
+            reverse_list_string_acc(t, new_acc)
+        }
     }
 }
 
@@ -1358,9 +1372,13 @@ fn main() -> int64 {
             true -> read_lines(config_path);
             false -> ""
         };
+        // Stage empty acc before parse_config_lines: a nested empty_list_string() as a call
+        // arg is evaluated after content/start are loaded and clobbers X0/X1 under current
+        // user_call emission, leaving parse_config_lines with nil args.
+        empty_files: List[string, mem(normal)] <- module_checker_core@empty_list_string();
         files_rev: List[string, mem(normal)] <- case len(content) > 0 of {
-            true -> parse_config_lines(content, 0, module_checker_core@empty_list_string());
-            false -> module_checker_core@empty_list_string()
+            true -> parse_config_lines(content, 0, empty_files);
+            false -> empty_files
         };
         files: List[string, mem(normal)] <- reverse_list_string(files_rev);
         result: int64 <- case list_string_length(files) == 0 of {
@@ -1377,9 +1395,10 @@ fn main() -> int64 {
                         case order_exists of {
                             true -> {
                                 order_content: string <- read_lines(compile_order_path());
+                                empty_order: List[string, mem(normal)] <- module_checker_core@empty_list_string();
                                 order_rev: List[string, mem(normal)] <- case len(order_content) > 0 of {
-                                    true -> parse_config_lines(order_content, 0, module_checker_core@empty_list_string());
-                                    false -> module_checker_core@empty_list_string()
+                                    true -> parse_config_lines(order_content, 0, empty_order);
+                                    false -> empty_order
                                 };
                                 order: List[string, mem(normal)] <- reverse_list_string(order_rev);
                                 _: int8 <- println("Resuming compile order; units left: ");
@@ -1391,7 +1410,10 @@ fn main() -> int64 {
                                 _: int8 <- println("Files to compile: ");
                                 _: int8 <- print_int64(list_string_length(files));
                                 _: int8 <- println("");
-                                (ok_parse: bool, parsed_all: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) <- parse_all_files_recursive(files, module_checker_core@empty_parsed_files());
+                                // Stage empty acc: a nested empty_parsed_files() as a call arg clobbers the
+                                // files pointer under current user_call emission.
+                                empty_parsed: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] <- module_checker_core@empty_parsed_files();
+                                (ok_parse: bool, parsed_all: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) <- parse_all_files_recursive(files, empty_parsed);
                                 case ok_parse of {
                                     false -> 1;
                                     true -> {

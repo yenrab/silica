@@ -70,13 +70,21 @@ fn emit_case_one_branch_inner(branch: { nodes: List[{ kind: int64, type_name: st
         true -> 0;
         false -> branch_stack_n
     };
+    // A branch tail that is a plain (non-tail) tuple-returning call allocates a caller sret slab
+    // (SUB SP / MOV X8, SP) that neither let-end nor the scrutinee free pairs with. Promote the
+    // result to the heap so X0 survives the pop, then release the slab so every arm reaches the
+    // join at the same SP as the tuple_make arms.
+    branch_call_sret_n: int64 <- term_aggregate_helpers@branch_tail_user_call_sret_stack_bytes(term_sir_helpers@sir_term_at(branch, term_sir_helpers@sir_term_root_node(branch).right_expr), outer_body, br_bn);
     branch_cleanup: string <- case case_env.dest == "X0" of {
         true -> case branch_stack_n > 0 of {
             true -> concat(term_aggregate_helpers@aggregate_return_heap_promote_x0(branch_stack_n), case branch_dealloc_n > 0 of {
                 true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(branch_dealloc_n), "\n"));
                 false -> ""
             });
-            false -> ""
+            false -> case branch_call_sret_n > 0 of {
+                true -> concat(term_aggregate_helpers@aggregate_return_heap_promote_x0(branch_call_sret_n), concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(branch_call_sret_n), "\n")));
+                false -> ""
+            }
         };
         false -> ""
     };
@@ -142,7 +150,7 @@ fn emit_case_expression(term: { nodes: List[{ kind: int64, type_name: string, va
     done_lbl: string <- concat(done_l, ":\n");
     // Tuple-returning user-call scrutinees allocate a caller sret slab (SUB SP / MOV X8, SP).
     // Let-bound calls free that slab at let-end; case scrutinees must free after the case completes.
-    scrut_sret_n: int64 <- term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+    scrut_sret_n: int64 <- term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), bound.outer_reg, bound.bound_name);
     sret_free: string <- case scrut_sret_n > 0 of {
         true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(scrut_sret_n), "\n"));
         false -> ""

@@ -15,8 +15,9 @@ THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 include $(THIS_DIR)emit_target.mk
 
 BINARIES_DIR := $(abspath $(THIS_DIR)../../../binaries)
-SILICA_COMPILER ?= $(BINARIES_DIR)/silica-compiler
-UPDATE_SILICA_COMPILER_LINK := $(BINARIES_DIR)/update_silica_compiler_link.bash
+# seed-compiler, not silica-compiler: this tree must be built by a known-good seed, and
+# silica-compiler tracks the newest build, which may be a selfhost that cannot build itself.
+SILICA_COMPILER ?= $(BINARIES_DIR)/seed-compiler
 SILICA_LINK_SH := $(abspath $(THIS_DIR)../trials/silica_link.sh)
 STDLIB_DS := $(abspath $(THIS_DIR)../stdlib/data_structures)
 BOOTSTRAP_DIR := $(abspath $(THIS_DIR)../../silica-bootstrap-compiler)
@@ -82,12 +83,12 @@ all: clean build
 
 check-seed:
 	@if [ ! -x "$(SILICA_COMPILER)" ]; then \
-		echo "Missing $(SILICA_COMPILER); running update_silica_compiler_link.bash..."; \
-		"$(UPDATE_SILICA_COMPILER_LINK)" || exit 1; \
-		if [ ! -x "$(SILICA_COMPILER)" ]; then \
-			echo "Missing seed host after update: $(SILICA_COMPILER)"; \
-			exit 1; \
-		fi; \
+		echo "Missing seed host: $(SILICA_COMPILER)"; \
+		echo "Link it to a known-good seed, newest first (lowest NNNNNN):"; \
+		echo "  (cd $(BINARIES_DIR) && ln -sfn silica-<NNNNNN>-seed-<platform> seed-compiler)"; \
+		echo "Available seeds:"; \
+		ls "$(BINARIES_DIR)" | grep -E '^silica-[0-9]{6}-seed-[a-z0-9-]+$$' | sort | sed 's/^/  /' || true; \
+		exit 1; \
 	fi
 
 # Stage stdlib WBT/OrderedMap sources into lib/ for config membership (module name = basename).
@@ -357,7 +358,7 @@ help:
 	@echo "  all-targets               build silica-compiler-<TARGET> for each allowable TARGET"
 	@echo "  clean                     remove generated artifacts (*.sams/*.o, silica.target, silica.compile.order, *.iface, .cache/ifaces)"
 	@echo "  check-target              validate TARGET against emitter/*/"
-	@echo "  check-seed                ensure binaries/silica-compiler exists"
+	@echo "  check-seed                ensure binaries/seed-compiler exists"
 	@echo ""
 	@echo "Paths"
 	@echo "  Seed compiler:  $(SILICA_COMPILER)"

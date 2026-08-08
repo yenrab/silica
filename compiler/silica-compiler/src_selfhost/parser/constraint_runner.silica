@@ -514,6 +514,8 @@ fn has_reserved_keyword_record_field(slots: List[{ token: { kind: int64, lexeme:
 }
 
 // Unbalanced `{` / `}` falls through to a misleading E1040 terminator error; reject early.
+// open_loc is the outermost still-unclosed '{'. Only update when depth goes 0→1 so E1060
+// points at the real unclosed open (e.g. a function body), not the last '{' in the file.
 fn has_unbalanced_braces_walk(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], brace_depth: int64, open_loc: { file: string, line: int64, column: int64, offset: int64 }) -> (bool, { file: string, line: int64, column: int64, offset: int64 }, string) {
     case slots.is_nil of {
         true -> case brace_depth > 0 of {
@@ -521,7 +523,13 @@ fn has_unbalanced_braces_walk(slots: List[{ token: { kind: int64, lexeme: string
             false -> (false, parser_ast@zero_location(), "")
         };
         false -> case slots.head.token.kind == lexer_token_kind@token_kind_left_brace() or slots.head.token.lexeme == "{" of {
-            true -> has_unbalanced_braces_walk(slots.tail, brace_depth + 1, slots.head.token.location);
+            true -> {
+                next_open: { file: string, line: int64, column: int64, offset: int64 } <- case brace_depth == 0 of {
+                    true -> slots.head.token.location;
+                    false -> open_loc
+                };
+                has_unbalanced_braces_walk(slots.tail, brace_depth + 1, next_open)
+            };
             false -> case slots.head.token.kind == lexer_token_kind@token_kind_right_brace() or slots.head.token.lexeme == "}" of {
                 true -> case brace_depth > 0 of {
                     true -> has_unbalanced_braces_walk(slots.tail, brace_depth - 1, open_loc);

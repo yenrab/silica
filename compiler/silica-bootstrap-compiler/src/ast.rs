@@ -278,6 +278,8 @@ pub enum Literal {
     Float(f64),
     Char(char),
     String(Vec<u8>),
+    /// Silica atom literal `:name` (boot: tagged as Named(":name") for typing)
+    Atom(String),
 }
 
 /// If expression
@@ -721,6 +723,8 @@ pub enum Pattern {
     Identifier(String),
     TypedIdentifier { name: String, type_: Type },
     Tuple(Vec<Pattern>),
+    /// List patterns: `[]` or `[head, tail]` (Silica cons form)
+    List { elements: Vec<Pattern> },
     Record(Vec<(String, Pattern)>),
     Variant { constructor: String, payload: Option<Box<Pattern>> },
     Alternative(Vec<Pattern>), // Pattern alternatives: pat1 | pat2 | pat3

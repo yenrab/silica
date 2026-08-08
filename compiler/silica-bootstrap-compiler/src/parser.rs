@@ -91,10 +91,15 @@ impl Parser {
         } else if self.match_token(TokenKind::Trait) {
             self.trait_declaration().map(Declaration::Trait)
         } else if self.match_token(TokenKind::Impl) {
-            // eprintln!("DEBUG PARSER: Matched impl token, calling impl_declaration");
-            let result = self.impl_declaration().map(Declaration::Impl);
-            // eprintln!("DEBUG PARSER: impl_declaration result: {:?}", result.is_ok());
-            result
+            if self.match_token(TokenKind::Fn) {
+                // `impl fn name(...)` — boot treats as a normal function
+                self.function_declaration().map(Declaration::Function)
+            } else {
+                self.impl_declaration().map(Declaration::Impl)
+            }
+        } else if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "required") {
+            self.skip_required_block()?;
+            self.declaration()
         } else {
             let location = self.peek().location.clone();
             let metadata = self.build_parse_error_metadata("E1001", &location, Some("spec:§3.2"), None)
@@ -281,6 +286,27 @@ impl Parser {
         })
     }
 
+    /// Skip a top-level `required { fn ...; ... }` trait-requirements block (boot: no codegen).
+    fn skip_required_block(&mut self) -> Result<()> {
+        self.advance(); // 'required'
+        self.consume(TokenKind::LeftBrace, "Expected '{' after 'required'")?;
+        let mut depth = 1usize;
+        while depth > 0 && !self.is_at_end() {
+            if self.match_token(TokenKind::LeftBrace) {
+                depth += 1;
+            } else if self.match_token(TokenKind::RightBrace) {
+                depth -= 1;
+            } else {
+                self.advance();
+            }
+        }
+        if depth != 0 {
+            let location = self.peek().location.clone();
+            return parse_error(location, "Unterminated 'required' block".to_string());
+        }
+        Ok(())
+    }
+
     /// Parse export declaration: export item/arity, item/arity;
     fn export_declaration(&mut self) -> Result<ExportDecl> {
         let location = self.previous().location.clone();
@@ -302,10 +328,18 @@ impl Parser {
         })
     }
 
-    /// Parse a single export item: name/arity
+    /// Parse a single export item: name/arity or `trait Name`
     fn parse_export_item(&mut self) -> Result<ExportItem> {
         let location = self.peek().location.clone();
-        let name = self.consume_identifier("Expected identifier in export")?;
+        if self.match_token(TokenKind::Trait) {
+            let name = self.consume_identifier("Expected trait name in export")?;
+            return Ok(ExportItem {
+                name,
+                arity: 0,
+                location,
+            });
+        }
+        let name = self.consume_field_name("Expected identifier in export")?;
         self.consume(TokenKind::Slash, "Expected '/' after export name")?;
         let arity = self.consume_integer("Expected arity number after '/'")?;
         let arity = arity as u32;
@@ -343,6 +377,22 @@ impl Parser {
             return Ok(Type::Unit);
         } else if self.match_token(TokenKind::String) {
             return Ok(Type::String);
+        }
+
+        // Atom type: :name  (and flat sums :a | :b | :c)
+        if self.match_token(TokenKind::Colon) {
+            let name = self.consume_identifier("Expected atom name after ':'")?;
+            let mut types = vec![Type::Named(format!(":{}", name))];
+            while self.match_token(TokenKind::Pipe) {
+                self.consume(TokenKind::Colon, "Expected ':' starting next atom in atom sum type")?;
+                let n = self.consume_identifier("Expected atom name after ':'")?;
+                types.push(Type::Named(format!(":{}", n)));
+            }
+            return if types.len() == 1 {
+                Ok(types.into_iter().next().unwrap())
+            } else {
+                Ok(Type::Sum(types))
+            };
         }
 
         // Reference type: &Type
@@ -455,7 +505,7 @@ impl Parser {
             // Record type
             let mut fields = Vec::new();
             while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
-                let field_name = self.consume_identifier("Expected field name")?;
+                let field_name = self.consume_field_name("Expected field name")?;
                 self.consume(TokenKind::Colon, "Expected ':' after field name")?;
                 let field_type = self.parse_type()?;
                 fields.push((field_name, field_type));
@@ -467,48 +517,101 @@ impl Parser {
             self.consume(TokenKind::RightBrace, "Expected '}' after record fields")?;
             Ok(Type::Record(fields))
         } else if self.match_token(TokenKind::Region) {
-            // Region type
+            // region(space) or region(Lifetime, space) — lifetime is erased for boot codegen
             self.consume(TokenKind::LeftParen, "Expected '(' after 'region'")?;
-            let space = self.memory_space()?;
-            self.consume(TokenKind::RightParen, "Expected ')' after memory space")?;
+            let space = if self.is_memory_space_token() {
+                self.memory_space()?
+            } else {
+                let _lifetime = self.consume_identifier("Expected lifetime or memory space after 'region('")?;
+                self.consume(TokenKind::Comma, "Expected ',' after region lifetime")?;
+                self.memory_space_or_param()?
+            };
+            self.consume(TokenKind::RightParen, "Expected ')' after region type")?;
             Ok(Type::Region { space })
         } else if self.match_token(TokenKind::Ref) {
-            // Reference type (suggestion_1: no explicit region)
+            // ref(space, T), ref(L, space, T), ref?(L, space, T) — optional/lifetime erased for boot
+            let _optional = self.match_token(TokenKind::Question);
             self.consume(TokenKind::LeftParen, "Expected '(' after 'ref'")?;
-            let space = self.memory_space()?;
-            self.consume(TokenKind::Comma, "Expected ',' after memory space")?;
-            let element_type = self.parse_type()?;
+            let (space, element_type) = if self.is_memory_space_token() {
+                let space = self.memory_space()?;
+                self.consume(TokenKind::Comma, "Expected ',' after memory space")?;
+                let element_type = self.parse_type()?;
+                (space, element_type)
+            } else {
+                let _lifetime = self.consume_identifier("Expected lifetime or memory space after 'ref('")?;
+                self.consume(TokenKind::Comma, "Expected ',' after reference lifetime")?;
+                let space = self.memory_space_or_param()?;
+                self.consume(TokenKind::Comma, "Expected ',' after memory space")?;
+                let element_type = self.parse_type()?;
+                (space, element_type)
+            };
             self.consume(TokenKind::RightParen, "Expected ')' after reference type")?;
             Ok(Type::Reference {
                 space,
                 element_type: Box::new(element_type),
             })
         } else if self.match_token(TokenKind::Buf) {
-            // Buffer type (suggestion_1: no explicit region)
+            // buf(space, T, N) or buf(L, space, T, N) — lifetime erased for boot codegen
             self.consume(TokenKind::LeftParen, "Expected '(' after 'buf'")?;
-            let space = self.memory_space()?;
+            let space = if self.is_memory_space_token() {
+                self.memory_space()?
+            } else {
+                let _lifetime = self.consume_identifier("Expected lifetime or memory space after 'buf('")?;
+                self.consume(TokenKind::Comma, "Expected ',' after buffer lifetime")?;
+                self.memory_space_or_param()?
+            };
             self.consume(TokenKind::Comma, "Expected ',' after memory space")?;
             let element_type = self.parse_type()?;
             self.consume(TokenKind::Comma, "Expected ',' after element type")?;
-            let capacity = self.consume_integer("Expected buffer capacity")?;
+            let capacity = if let TokenKind::IntegerLiteral(value) = self.peek().kind.clone() {
+                self.advance();
+                value as usize
+            } else if matches!(&self.peek().kind, TokenKind::Identifier(_)) {
+                // Symbolic capacity (e.g. buf(L, normal, T, n)) — erased for boot
+                let _ = self.consume_identifier("Expected buffer capacity")?;
+                0usize
+            } else {
+                self.consume_integer("Expected buffer capacity")? as usize
+            };
             self.consume(TokenKind::RightParen, "Expected ')' after buffer type")?;
             Ok(Type::Buffer {
                 space,
                 element_type: Box::new(element_type),
-                capacity: capacity as usize,
+                capacity,
             })
         } else if self.match_token(TokenKind::ActorRef) {
             // Actor reference type - primitive type (like int, bool)
             Ok(Type::ActorRef)
+        } else if self.match_token(TokenKind::Mem) {
+            // mem(space) used as a type argument (e.g. List[T, mem(normal)])
+            self.consume(TokenKind::LeftParen, "Expected '(' after 'mem'")?;
+            let space = self.memory_space_or_param()?;
+            self.consume(TokenKind::RightParen, "Expected ')' after mem space")?;
+            let space_name = match space {
+                MemorySpace::Normal => "normal",
+                MemorySpace::Atomic => "atomic",
+            };
+            Ok(Type::Named(format!("mem({})", space_name)))
         } else {
             // User-defined type name or type operator
             let name = self.consume_identifier("Expected type name")?;
 
-            // Check if this is a type operator with arguments
-            if self.match_token(TokenKind::Less) {
-                // Type operator: Name<Arg1, Arg2, ...>
+            // Check if this is a type operator with arguments: Name<...> or Name[...]
+            if self.match_token(TokenKind::Less) || self.match_token(TokenKind::LeftBracket) {
+                let close = if self.previous().kind == TokenKind::Less {
+                    TokenKind::Greater
+                } else {
+                    TokenKind::RightBracket
+                };
+                let close_msg = if close == TokenKind::Greater {
+                    "Expected '>' after type arguments"
+                } else {
+                    "Expected ']' after type arguments"
+                };
+                // Type operator: Name<Arg1, Arg2, ...> or Name[Arg1, Arg2, ...]
                 let mut args = Vec::new();
-                if !self.check(TokenKind::Greater) {
+                let end_tok = close;
+                if !self.check(end_tok.clone()) {
                     loop {
                         args.push(self.parse_type()?);
                         if !self.match_token(TokenKind::Comma) {
@@ -516,7 +619,7 @@ impl Parser {
                         }
                     }
                 }
-                self.consume(TokenKind::Greater, "Expected '>' after type arguments")?;
+                self.consume(end_tok, close_msg)?;
                 Ok(Type::TypeOperator { name, args })
             } else {
                 // Check for sum types: Type | Type | Type
@@ -556,6 +659,22 @@ impl Parser {
                 "Expected 'normal' or 'atomic' memory space".to_string(),
                 metadata,
             )
+        }
+    }
+
+    fn is_memory_space_token(&self) -> bool {
+        self.check(TokenKind::Normal) || self.check(TokenKind::Atomic)
+    }
+
+    /// Memory space keyword, or a type-parameter name (erased to Normal for boot codegen).
+    fn memory_space_or_param(&mut self) -> Result<MemorySpace> {
+        if self.is_memory_space_token() {
+            self.memory_space()
+        } else if matches!(self.peek().kind, TokenKind::Identifier(_)) {
+            let _ = self.consume_identifier("Expected memory space or space type parameter")?;
+            Ok(MemorySpace::Normal)
+        } else {
+            self.memory_space()
         }
     }
 
@@ -781,6 +900,19 @@ impl Parser {
         loop {
             if self.match_token(TokenKind::At) {
                 expr = self.finish_module_call(expr)?;
+            } else if self.match_token(TokenKind::LeftBracket) {
+                // Type arguments on a call: f[T, U](...) — erased for boot codegen
+                if !self.check(TokenKind::RightBracket) {
+                    loop {
+                        let _ = self.parse_type()?;
+                        if !self.match_token(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.consume(TokenKind::RightBracket, "Expected ']' after call type arguments")?;
+                self.consume(TokenKind::LeftParen, "Expected '(' after call type arguments")?;
+                expr = self.finish_call(expr)?;
             } else if self.match_token(TokenKind::LeftParen) {
                 expr = self.finish_call(expr)?;
             } else if self.match_token(TokenKind::LeftBrace) {
@@ -821,6 +953,18 @@ impl Parser {
         };
 
         let function_name = self.consume_identifier("Expected function name after '@'")?;
+        // Optional type args: module@fn[T, U](...)
+        if self.match_token(TokenKind::LeftBracket) {
+            if !self.check(TokenKind::RightBracket) {
+                loop {
+                    let _ = self.parse_type()?;
+                    if !self.match_token(TokenKind::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.consume(TokenKind::RightBracket, "Expected ']' after module-call type arguments")?;
+        }
         self.consume(TokenKind::LeftParen, "Expected '(' after function name")?;
 
         let mut arguments = Vec::new();
@@ -875,7 +1019,7 @@ impl Parser {
     /// Finish parsing field access: object.field
     fn finish_field_access(&mut self, object: Expression) -> Result<Expression> {
         let location = self.previous().location.clone();
-        let field = self.consume_identifier("Expected field name after '.'")?;
+        let field = self.consume_field_name("Expected field name after '.'")?;
 
         Ok(Expression::FieldAccess(FieldAccessExpr {
             object: Box::new(object),
@@ -906,7 +1050,7 @@ impl Parser {
 
         // Parse struct literal fields: { field: value, field2: value2 }
         while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
-            let field_name = self.consume_identifier("Expected field name")?;
+            let field_name = self.consume_field_name("Expected field name")?;
             self.consume(TokenKind::Colon, "Expected ':' after field name")?;
             let field_value = self.expression()?;
 
@@ -962,6 +1106,10 @@ impl Parser {
         } else if let TokenKind::CharLiteral(value) = self.peek().kind.clone() {
             self.advance();
             Ok(Expression::Literal(Literal::Char(value)))
+        } else if self.match_token(TokenKind::Colon) {
+            // Atom literal: :name
+            let name = self.consume_identifier("Expected atom name after ':'")?;
+            Ok(Expression::Literal(Literal::Atom(name)))
         } else if self.match_token(TokenKind::LeftParen) {
             if self.match_token(TokenKind::RightParen) {
                 Ok(Expression::Literal(Literal::Unit))
@@ -984,8 +1132,19 @@ impl Parser {
                     Ok(first_expr)
                 }
             }
+        } else if self.match_token(TokenKind::LeftBrace) {
+            let location = self.previous().location.clone();
+            let after_brace = self.current;
+            if let Some(record) = self.try_parse_anonymous_record(location.clone()) {
+                Ok(record)
+            } else {
+                self.current = after_brace;
+                Ok(self.parse_brace_block(location)?)
+            }
         } else if self.match_token(TokenKind::Case) {
             self.case_expression()
+        } else if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "sequence") {
+            self.sequence_expression()
         } else if self.match_token(TokenKind::Do) {
             self.do_expression()
         } else if self.match_token(TokenKind::Fn) {
@@ -1691,7 +1850,7 @@ impl Parser {
 
         let mut fields = Vec::new();
         while !self.check(TokenKind::RightBrace) {
-            let field_name = self.consume_identifier("Expected field name")?;
+            let field_name = self.consume_field_name("Expected field name")?;
             self.consume(TokenKind::Colon, "Expected ':' after field name")?;
             let field_type = self.parse_type()?;
 
@@ -1748,7 +1907,7 @@ impl Parser {
                     let mut fields = Vec::new();
                     if !self.check(TokenKind::RightBrace) {
                         loop {
-                            let field_name = self.consume_identifier("Expected field name")?;
+                            let field_name = self.consume_field_name("Expected field name")?;
                             self.consume(TokenKind::Colon, "Expected ':' after field name")?;
                             let field_type = self.parse_type()?;
                             self.consume(TokenKind::Comma, "Expected ',' after field")?;
@@ -2066,6 +2225,202 @@ impl Parser {
         }))
     }
 
+
+    /// Try `{ field: value, ... }` — fails (None) if a field looks like `name: Type <- expr`.
+    fn try_parse_anonymous_record(&mut self, location: SourceLocation) -> Option<Expression> {
+        let saved = self.current;
+        let mut fields = Vec::new();
+        while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
+            let field_name = match self.consume_field_name("Expected field name in record literal") {
+                Ok(n) => n,
+                Err(_) => {
+                    self.current = saved;
+                    return None;
+                }
+            };
+            if !self.match_token(TokenKind::Colon) {
+                self.current = saved;
+                return None;
+            }
+            let field_value = match self.expression() {
+                Ok(e) => e,
+                Err(_) => {
+                    self.current = saved;
+                    return None;
+                }
+            };
+            // Binding form, not a record field
+            if self.check(TokenKind::LeftArrow) {
+                self.current = saved;
+                return None;
+            }
+            fields.push((field_name, field_value));
+            if !self.match_token(TokenKind::Comma) && !self.check(TokenKind::RightBrace) {
+                break;
+            }
+        }
+        if self.match_token(TokenKind::RightBrace) {
+            Some(Expression::StructLiteral(StructLiteralExpr {
+                type_name: String::new(),
+                fields,
+                location,
+            }))
+        } else {
+            self.current = saved;
+            None
+        }
+    }
+
+    fn parse_brace_block(&mut self, location: SourceLocation) -> Result<Expression> {
+        let mut statements = Vec::new();
+        while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
+            if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "sequence") {
+                let seq = self.sequence_expression()?;
+                self.match_token(TokenKind::Semicolon);
+                statements.push(Statement::Expr(Box::new(seq)));
+                continue;
+            }
+            let could_be_binding = match &self.peek().kind {
+                TokenKind::Identifier(_) => {
+                    self.current + 1 < self.tokens.len()
+                        && matches!(
+                            &self.tokens[self.current + 1].kind,
+                            TokenKind::Colon | TokenKind::LeftArrow
+                        )
+                }
+                _ if self.peek().kind.is_keyword()
+                    && self.current + 1 < self.tokens.len()
+                    && matches!(
+                        &self.tokens[self.current + 1].kind,
+                        TokenKind::Colon | TokenKind::LeftArrow
+                    ) =>
+                {
+                    true
+                }
+                TokenKind::LeftParen | TokenKind::Underscore => true,
+                _ => false,
+            };
+            if could_be_binding {
+                let saved = self.current;
+                let pat_ok = if self.peek().kind.is_keyword()
+                    && !matches!(self.peek().kind, TokenKind::Underscore)
+                {
+                    let name = self.consume_field_name("Expected binding name")?;
+                    Ok(Pattern::Identifier(name))
+                } else {
+                    self.pattern()
+                };
+                if let Ok(pattern) = pat_ok {
+                    if self.match_token(TokenKind::Colon) {
+                        let _ty = self.parse_type()?;
+                    }
+                    if self.match_token(TokenKind::LeftArrow) {
+                        let expr = self.expression()?;
+                        self.match_token(TokenKind::Semicolon);
+                        statements.push(Statement::Bind {
+                            pattern,
+                            expr: Box::new(expr),
+                        });
+                        continue;
+                    }
+                }
+                self.current = saved;
+            }
+            let expr = self.expression()?;
+            self.match_token(TokenKind::Semicolon);
+            statements.push(Statement::Expr(Box::new(expr)));
+        }
+        self.consume(TokenKind::RightBrace, "Expected '}' after block")?;
+        Ok(Expression::Do(DoExpr {
+            statements,
+            location,
+        }))
+    }
+
+    /// sequence [proc[effects]] bindings... produces [pure] expr end
+    /// Boot lowers this to a do-block (bindings + final expression).
+    fn sequence_expression(&mut self) -> Result<Expression> {
+        let location = self.peek().location.clone();
+        // consume 'sequence'
+        self.advance();
+
+        // Optional proc[effects]
+        if self.match_token(TokenKind::Proc) {
+            self.consume(TokenKind::LeftBracket, "Expected '[' after 'proc'")?;
+            let _effects = self.effect_list()?;
+            self.consume(TokenKind::RightBracket, "Expected ']' after proc effects")?;
+        }
+
+        let mut statements = Vec::new();
+        while !self.is_at_end() {
+            if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "produces") {
+                break;
+            }
+            if self.check(TokenKind::End) {
+                break;
+            }
+            // Binding: name: Type <- expr  (or pattern <- expr)
+            let could_be_binding = match &self.peek().kind {
+                TokenKind::Identifier(_) => {
+                    if self.current + 1 < self.tokens.len() {
+                        matches!(
+                            &self.tokens[self.current + 1].kind,
+                            TokenKind::Colon | TokenKind::LeftArrow
+                        )
+                    } else {
+                        false
+                    }
+                }
+                TokenKind::LeftParen | TokenKind::Underscore => true,
+                _ => false,
+            };
+            if could_be_binding {
+                let saved = self.current;
+                if let Ok(pattern) = self.pattern() {
+                    // Optional : Type
+                    if self.match_token(TokenKind::Colon) {
+                        let _ty = self.parse_type()?;
+                    }
+                    if self.match_token(TokenKind::LeftArrow) {
+                        let expr = self.expression()?;
+                        self.match_token(TokenKind::Semicolon);
+                        statements.push(Statement::Bind {
+                            pattern,
+                            expr: Box::new(expr),
+                        });
+                        continue;
+                    }
+                }
+                self.current = saved;
+            }
+            let expr = self.expression()?;
+            self.match_token(TokenKind::Semicolon);
+            statements.push(Statement::Expr(Box::new(expr)));
+        }
+
+        if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "produces") {
+            self.advance();
+        } else {
+            let location = self.peek().location.clone();
+            return parse_error(location, "Expected 'produces' in sequence expression".to_string());
+        }
+
+        // Optional pure
+        if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "pure") {
+            self.advance();
+        }
+
+        let result_expr = self.expression()?;
+        statements.push(Statement::Expr(Box::new(result_expr)));
+
+        self.consume(TokenKind::End, "Expected 'end' after sequence expression")?;
+
+        Ok(Expression::Do(DoExpr {
+            statements,
+            location,
+        }))
+    }
+
     /// Parse do expression
     fn parse_statements(&mut self) -> Result<Vec<Statement>> {
         let mut statements = Vec::new();
@@ -2334,6 +2689,11 @@ impl Parser {
                 self.advance();
                 return Ok(Pattern::Literal(Literal::Char(value)));
             }
+            TokenKind::Colon => {
+                self.advance();
+                let name = self.consume_identifier("Expected atom name after ':'")?;
+                return Ok(Pattern::Literal(Literal::Atom(name)));
+            }
             _ => {} // Fall through to handle other pattern types (identifiers, wildcards, tuples, etc.)
         }
 
@@ -2368,17 +2728,7 @@ impl Parser {
                     return Ok(Pattern::TypedIdentifier { name, type_ });
                 }
             } else {
-                // No type annotation
-                if name == "_" {
-                    let metadata = ErrorMetadataBuilder::new("E1007".to_string())
-                        .severity(ErrorSeverity::Error)
-                        .specification("§3".to_string(), None)  // Display will add "spec:" prefix
-                        .suggestion("Add explicit type annotation: _: Type".to_string())
-                        .suggestion_with_example("Example:".to_string(), "let _: int <- get_value();".to_string())
-                        .build();
-                    return parse_error_with_metadata(start_location, "Wildcards must have explicit type annotations: _: Type".to_string(), metadata);
-                }
-                // Untyped identifier
+                // No type annotation — allow bare `_` wildcards (esp. in tuple patterns)
                 return Ok(Pattern::Identifier(name));
             }
         } else if self.match_token(TokenKind::LeftParen) {
@@ -2393,6 +2743,22 @@ impl Parser {
             }
             self.consume(TokenKind::RightParen, "Expected ')' after tuple pattern")?;
             Ok(Pattern::Tuple(patterns))
+        } else if self.match_token(TokenKind::LeftBracket) {
+            let mut elements = Vec::new();
+            if !self.check(TokenKind::RightBracket) {
+                loop {
+                    elements.push(self.pattern()?);
+                    if !self.match_token(TokenKind::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.consume(TokenKind::RightBracket, "Expected ']' after list pattern")?;
+            // Optional type ascription: []: List[T, mem(normal)]
+            if self.match_token(TokenKind::Colon) {
+                let _ty = self.parse_type()?;
+            }
+            Ok(Pattern::List { elements })
         } else {
             let token = self.peek();
             let full_message = format!("Expected pattern (found token: {:?} '{}')", token.kind, token.lexeme);
@@ -2474,6 +2840,11 @@ impl Parser {
             }
             Pattern::Tuple(patterns) => {
                 for pattern in patterns {
+                    self.collect_bound_vars_from_pattern(pattern, bound_vars);
+                }
+            }
+            Pattern::List { elements } => {
+                for pattern in elements {
                     self.collect_bound_vars_from_pattern(pattern, bound_vars);
                 }
             }
@@ -2621,6 +2992,23 @@ impl Parser {
 
         if let TokenKind::Identifier(name) = &self.peek().kind {
             let name = name.clone();
+            self.advance();
+            Ok(name)
+        } else {
+            let token = self.peek();
+            let full_message = format!("{} (found token: {:?} '{}')", message, token.kind, token.lexeme);
+            parse_error(token.location.clone(), full_message)
+        }
+    }
+
+    /// Field / record labels may be keywords (`region:`, `type:`, …).
+    fn consume_field_name(&mut self, message: &str) -> Result<String> {
+        if let TokenKind::Identifier(name) = &self.peek().kind {
+            let name = name.clone();
+            self.advance();
+            Ok(name)
+        } else if self.peek().kind.is_keyword() {
+            let name = self.peek().lexeme.clone();
             self.advance();
             Ok(name)
         } else {

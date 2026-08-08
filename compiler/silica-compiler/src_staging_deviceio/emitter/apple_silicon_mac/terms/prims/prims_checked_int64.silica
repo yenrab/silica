@@ -14,13 +14,16 @@ fn is_checked_int64_unary_prim(name: string) -> bool {
     name == "checked_int64_add1"
 }
 
+// Materialize (ok, value) as a heap pair pointer in dest.
+// Do NOT leave `SUB SP,#16` live until epilogue: that misaligns callee-saved LDP /
+// fixed-frame teardown (hangs in wbt_map@smart_node after checked_int64_add/add1).
 fn emit_checked_pair_from_regs(dest: string, ok_reg: string, val_reg: string) -> string {
     p0: string <- concat("    SUB SP, SP, #16\n    STR ", ok_reg);
     p1: string <- concat(p0, ", [SP]\n    STR ");
     p2: string <- concat(p1, val_reg);
-    p3: string <- concat(p2, ", [SP, #8]\n    MOV ");
+    p3: string <- concat(p2, ", [SP, #8]\n    MOV X0, SP\n    SUB SP, SP, #16\n    STR X0, [SP, #8]\n    MOV X0, #16\n    BL _silica_rt_region_alloc\n    MOV X4, X0\n    LDR X1, [SP, #8]\n    LDR X3, [X1, #0]\n    STR X3, [X4, #0]\n    LDR X3, [X1, #8]\n    STR X3, [X4, #8]\n    MOV ");
     p4: string <- concat(p3, dest);
-    concat(p4, ", SP\n")
+    concat(p4, ", X4\n    ADD SP, SP, #16\n    ADD SP, SP, #16\n")
 }
 
 fn emit_checked_int64_binary_rt(rt_name: string, dest: string) -> string {

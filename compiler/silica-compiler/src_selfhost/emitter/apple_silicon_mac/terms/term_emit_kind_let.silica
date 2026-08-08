@@ -217,7 +217,7 @@ fn emit_kind_let(term: { nodes: List[{ kind: int64, type_name: string, value: st
                                         agg_n: int64 <- term_aggregate_helpers@aggregate_callee_return_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
                                         case agg_n > 0 of {
                                             true -> agg_n;
-                                            false -> term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))
+                                            false -> term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), bound.outer_reg, bound.bound_name)
                                         }
                                     }
                                 }
@@ -231,10 +231,14 @@ fn emit_kind_let(term: { nodes: List[{ kind: int64, type_name: string, value: st
                                 true -> 0;
                                 false -> case len(tuple_sret_outer_n) > 0 of {
                                     true -> 0;
-                                    false -> case base_stack_eff_n > 0 and tail_stack_raw_n == base_stack_eff_n of {
-                                        true -> 0;
-                                        false -> tail_stack_raw_n
-                                    }
+                                    // No size-equality dedup: let_tail_aggregate_stack_bytes is non-zero only
+                                    // for a tail that is its own tuple_make/record_make, and such a make always
+                                    // emits its own SUB SP, so it never shares the RHS slab. `x <- (a,b); x`
+                                    // returns 0 here because that tail is a variable. Treating equal sizes as one
+                                    // slab dropped a pop whenever both were 16 bytes -- the common case -- which
+                                    // also zeroed tail_ret_n and suppressed the heap promote, returning a pointer
+                                    // into the popped slab.
+                                    false -> tail_stack_raw_n
                                 }
                             };
                             dealloc_bytes: int64 <- base_stack_eff_n + tail_stack_n;
@@ -372,7 +376,7 @@ fn emit_kind_let(term: { nodes: List[{ kind: int64, type_name: string, value: st
                                         agg_tl: int64 <- term_aggregate_helpers@aggregate_callee_return_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
                                         case agg_tl > 0 of {
                                             true -> agg_tl;
-                                            false -> term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))
+                                            false -> term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), bound.outer_reg, bound.bound_name)
                                         }
                                     }
                                 }
@@ -386,10 +390,8 @@ fn emit_kind_let(term: { nodes: List[{ kind: int64, type_name: string, value: st
                                 true -> 0;
                                 false -> case len(tuple_sret_outer_tl) > 0 of {
                                     true -> 0;
-                                    false -> case base_stack_eff_tl > 0 and tail_stack_raw_tl == base_stack_eff_tl of {
-                                        true -> 0;
-                                        false -> tail_stack_raw_tl
-                                    }
+                                    // See the matching comment on tail_stack_n: equal slab sizes are not one slab.
+                                    false -> tail_stack_raw_tl
                                 }
                             };
                             dealloc_bytes_tl: int64 <- base_stack_eff_tl + tail_stack_tl;
