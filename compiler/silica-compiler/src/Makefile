@@ -57,6 +57,14 @@ MAIN_BC := main.bc
 MAIN_OBJ := main.o
 EXECUTABLE := silica-compiler
 
+# A successful build installs itself as the new seed: binaries/silica-<NNNNNN>-seed-<platform>
+# with binaries/seed-compiler pointing at it. src_selfhost is compiled by seed-compiler, so
+# without this step a seed fix stays invisible to the selfhost tree no matter how many times
+# it is rebuilt. Set INSTALL_SEED=0 to build without publishing.
+BINARIES_DIR := $(abspath $(CURDIR)/../../../binaries)
+INSTALL_COMPILER_SH := $(BINARIES_DIR)/install_compiler.bash
+INSTALL_SEED ?= 1
+
 # Output files for lexer, parser, type_checker, and effect_checker modules
 LEXER_LL := $(addsuffix .ll, $(LEXER_MODULES))
 PARSER_LL := $(addsuffix .ll, $(PARSER_MODULES))
@@ -172,6 +180,13 @@ $(EXECUTABLE): $(MAIN_OBJ) $(RUNTIME_LIB)
 	@# inputs (e.g. stdlib/data_structures/btree_nodeid.silica). 256MB headroom.
 	@$(LINKER_CLANG) $(MAIN_OBJ) $(RUNTIME_LIB) -Wl,-stack_size,0x10000000 -o $@
 	@echo "✅ Built $(EXECUTABLE)"
+	@if [ "$(INSTALL_SEED)" = "1" ]; then \
+		if [ -x "$(INSTALL_COMPILER_SH)" ]; then \
+			"$(INSTALL_COMPILER_SH)" seed "$(abspath $@)"; \
+		else \
+			echo "WARN: $(INSTALL_COMPILER_SH) missing; binaries/seed-compiler still points at the previous seed"; \
+		fi; \
+	fi
 
 # Run each trial area's own integrate target (does not use ../trials/Makefile inline trial runner)
 integrate: $(EXECUTABLE)

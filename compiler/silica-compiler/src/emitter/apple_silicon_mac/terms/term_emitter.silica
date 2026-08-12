@@ -63,6 +63,9 @@ export term_to_asm_debug_with_outer/13;
 export type_name_is_list_like/1;
 export aggregate_return_heap_promote_x0/1;
 export record_make_stack_alloc_size/1;
+export flat_tuple_dealloc_size/1;
+export flat_record_dealloc_size/1;
+export term_is_checked_int64_prim/1;
 
 // Any let RHS in a caller-saved GPR (X0–X7, X9–X11, X13–X15) is overwritten by device_io
 // syscalls (write/SVC), print helpers (BL), and later actor_call/actor_cast before the let body runs.
@@ -319,29 +322,27 @@ fn type_name_is_memory_handle_like(type_name: string) -> bool {
     }
 }
 
-// Let tail `name` after binding aggregate tuple/record to `name`; caller passes X8 = sret (|_callee_sret=X8 on outer).
-fn id_ret_aggregate_let(term: SIRTerm) -> bool {
-    term.right_expr.kind == 1 and term.right_expr.name == term.name and reg_conventions@is_aggregate_struct_or_tuple_return_type(term.inner.type_name)
-}
-
-// RHS of the let (term.inner): tuple_make can use |_tuple_sret=X8 (caller buffer survives RET).
-// record_make must use callee stack + promote — X8 is not preserved across BL before the make (structs_addition/07).
-fn aggregate_let_rhs_is_tuple_make(term: SIRTerm) -> bool {
-    term.inner.kind == 6 and term.inner.name == "tuple_make"
-}
-
+// A let whose tail returns the aggregate it just bound used to write that tuple straight into the
+// caller's sret buffer via |_tuple_sret=X8. That is unsound. X8 is the AAPCS64 indirect-result
+// register, so it is caller-saved and any intervening call destroys it -- _silica_rt_region_alloc
+// loads into X8. When the tuple's operands themselves come from a call, as in `(n + 1, f)` where n
+// and f were destructured from a recursive call, the store through X8 hit a dead pointer and
+// faulted; the runtime's signal handler then longjmp'd and retried it forever, which presented as
+// a hang rather than a crash.
+//
+// record_make was already excluded from this optimization for exactly this reason. tuple_make now
+// takes the same route: with no _tuple_sret binding it allocates its own slab and heap-promotes,
+// which is what every other tuple return already does. Callers are unaffected because they read
+// the returned pointer out of X0 rather than their own X8 buffer.
+//
+// Do not reintroduce a caller-X8 fast path here without first proving no call can execute between
+// function entry and the make.
 fn outer_for_aggregate_let_rhs(term: SIRTerm, outer_reg: string) -> string {
-    case id_ret_aggregate_let(term) and len(var@find_sp_binding(outer_reg, "_callee_sret")) > 0 and len(var@find_sp_binding(outer_reg, "_tuple_sret")) == 0 and aggregate_let_rhs_is_tuple_make(term) of {
-        true -> concat(outer_reg, "|_tuple_sret=X8");
-        false -> outer_reg
-    }
+    outer_reg
 }
 
 fn outer_append_id_ret_tuple_sret(term: SIRTerm, partial_outer: string, closure_outer: string) -> string {
-    case id_ret_aggregate_let(term) and len(var@find_sp_binding(closure_outer, "_callee_sret")) > 0 and aggregate_let_rhs_is_tuple_make(term) of {
-        true -> concat(partial_outer, "|_tuple_sret=X8");
-        false -> partial_outer
-    }
+    partial_outer
 }
 
 // Types whose let RHS is a single GPR that must survive across device_io / BL (lists, strings, aggregates).
@@ -1452,10 +1453,22 @@ fn list_cons_head_ptr_reg(head_t: string, ext_for_alloc: string, scrut_reg: stri
         end;
         false -> do
             blocked: string <- list_cons_scalar_head_blocked(ext_for_alloc, scrut_reg);
-            picked: string <- var@next_free_int_reg(blocked);
-            case picked == "X0" of {
-                true -> "X1";
-                false -> picked
+            // Take a callee-saved register, the same way the tail and an aggregate head do.
+            // next_free_int_reg hands out X0-X15 first, so a scalar head landed in X1 and any call
+            // in the branch body destroyed it: `rest <- walk(t); len(h) + rest` measured whatever
+            // the callee left in X1. atom_rodata:emit_lexemes_rodata is that shape, which is why the
+            // selfhost emitted " 0 0" in place of every atom's bytes and no function bodies at all.
+            // See trials/codegen_regressions/list_head_call.silica.
+            cs: string <- spill_reg_chain_from_outer(blocked);
+            case len(cs) > 0 of {
+                true -> cs;
+                false -> do
+                    picked: string <- var@next_free_int_reg(blocked);
+                    case picked == "X0" of {
+                        true -> "X1";
+                        false -> picked
+                    }
+                end
             }
         end
     }
@@ -1760,22 +1773,24 @@ fn emit_case_expression(term: SIRTerm, dest: string, table: AtomTable, int64_tab
     concat(concat(scr_fb, done_lbl), sret_free)
 }
 
-// True when subterm contains a user call (kind 4). Used for two-arg GPR reorder: emitting arg1 into X0
-// before arg2 would clobber X0 while arg2 still needs it (e.g. sum_seg(t, acc + segment_energy(h))).
+// True when a subterm contains a user call. Used for two-arg GPR reorder: emitting arg1 into X0
+// before arg2 would clobber X0 while arg2 still needs it (e.g. sum_seg(t, acc + segment_energy(h))),
+// and to decide whether a prim's left operand must be spilled across its right operand.
+// Both call kinds count: 4 is a call with no arguments, 5 a call with arguments (sir_generator/
+// terms/user_calls.silica builds both). Answering false for kind 5 made every caller treat
+// `f(x)` as call-free, so `concat(one, rest(tail))` kept its left operand in X0 across the call
+// and the fold returned only its base case.
 fn term_subterm_has_user_call(t: SIRTerm) -> bool {
     case t.kind < 0 of {
         true -> false;
         false -> case t.kind of {
             4 -> true;
+            5 -> true;
             2 -> case term_subterm_has_user_call(t.inner) of {
                 true -> true;
                 false -> term_subterm_has_user_call(t.right_expr)
             };
             3 -> case term_subterm_has_user_call(t.inner) of {
-                true -> true;
-                false -> term_subterm_has_user_call(t.right_expr)
-            };
-            5 -> case term_subterm_has_user_call(t.inner) of {
                 true -> true;
                 false -> term_subterm_has_user_call(t.right_expr)
             };
@@ -1837,9 +1852,10 @@ fn simple_gpr_rest_can_stage(rest: SIRTerm, outer_reg: string) -> bool {
 
 // A computed argument (nested call, prim) may be staged too, which is what keeps a
 // nested call from destroying arguments already sitting in caller-saved X0-X7.
-// Staging pushes 16 bytes per argument, so a leaf reloaded from [SP, #N] would read the
-// wrong slot: every leaf must be a constant or a register-resident var. Only a TUPLE return
-// needs a caller sret buffer that the staging release would pop, so just those stay on the
+// Staging pushes a 16-byte STR slot per argument. record_make/tuple_make SUB SP for their
+// payload; emit_simple_gpr_arg_to_stage heap-promotes and reclaims that slab before the STR
+// so slots stay contiguous and release (count*16) is sound. Only a TUPLE
+// return needs a caller sret buffer that the staging release would pop, so just those stay on the
 // sequential path; see sret_alloc_bytes in emit_generic_user_call_asm_inner. A record return
 // heap-promotes in the callee and allocates nothing here, so it must be staged like any other
 // call -- rejecting it left the args in X0-X7 while the nested call overwrote them.
@@ -1907,7 +1923,15 @@ fn emit_simple_gpr_arg_to_stage(
         end;
         false -> term_to_asm_opt_bound(arg, "X16", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
     };
-    concat(concat(value_asm, "\n"), "    STR X16, [SP, #-16]!\n")
+    // record_make/tuple_make SUB SP under the value in X16. If that slab stays live, the
+    // staging STR slots are no longer contiguous and release (count*16) pops the payload.
+    // Heap-promote and reclaim so every staged slot is exactly 16 bytes; call dealloc must
+    // not free these bytes again (see use_simple_gpr_parallel_stage in dealloc_bytes_call).
+    reclaim: string <- case is_aggregate_make(arg) of {
+        true -> tuple_elem_sret_reclaim("X16", flat_tuple_dealloc_size(arg));
+        false -> ""
+    };
+    concat(concat(concat(value_asm, "\n"), reclaim), "    STR X16, [SP, #-16]!\n")
 }
 
 fn emit_simple_gpr_rest_to_stage(
@@ -2060,12 +2084,28 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
     // arguments.  X17 is caller-saved, so capture it in a stack slot before
     // argument evaluation and reload it afterward.  The offset accounts for
     // tuple arguments that remain allocated until the call completes.
-    arg_stack_bytes_before_call: int64 <- call_tuple_args_dealloc_bytes(term.inner)
+    // Parallel staging heap-promotes aggregate-make args before the call, so those
+    // slabs are not live across BLR/BR. Compute staging eligibility before the tail
+    // decision; otherwise a kind-5 body demotes to BLR while the outer emitter still
+    // omits the epilogue (fall-through hang). See trials/codegen_regressions/bound_wrap.
+    staged_arg_count_early: int64 <- 1 + simple_gpr_call_arg_count(term.right_expr);
+    use_simple_gpr_parallel_stage: bool <- staged_arg_count_early <= 8
+        and simple_gpr_arg_tree_can_stage(term.inner, outer_reg)
+        and simple_gpr_rest_tree_can_stage(term.right_expr, outer_reg);
+    arg_stack_bytes_raw: int64 <- call_tuple_args_dealloc_bytes(term.inner)
         + call_tuple_args_dealloc_bytes(term.right_expr);
+    arg_stack_bytes_before_call: int64 <- case use_simple_gpr_parallel_stage of {
+        true -> 0;
+        false -> arg_stack_bytes_raw
+    };
     // p5 tail (LDP frame + BR) must not run while call-arg stack slabs are live.
-    arg_has_stack_aggregate: bool <- is_aggregate_make(term.inner)
+    arg_has_stack_aggregate_raw: bool <- is_aggregate_make(term.inner)
         or (term.right_expr.kind >= 0 and (is_aggregate_make(term.right_expr)
             or (term.right_expr.name == "user_call_rest" and is_aggregate_make(term.right_expr.inner))));
+    arg_has_stack_aggregate: bool <- case use_simple_gpr_parallel_stage of {
+        true -> false;
+        false -> arg_has_stack_aggregate_raw
+    };
     effective_use_tail: bool <- case use_tail of {
         true -> arg_stack_bytes_before_call == 0 and arg_has_stack_aggregate == false;
         false -> false
@@ -2222,10 +2262,6 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         and arg1_reg == "X0"
         and arg2_term_ok
         and arg2_bound_in_x0_or_w0;
-    staged_arg_count: int64 <- 1 + simple_gpr_call_arg_count(term.right_expr);
-    use_simple_gpr_parallel_stage: bool <- staged_arg_count <= 8
-        and simple_gpr_arg_tree_can_stage(term.inner, outer_reg)
-        and simple_gpr_rest_tree_can_stage(term.right_expr, outer_reg);
     args_asm: string <- case use_simple_gpr_parallel_stage of {
         true -> emit_simple_gpr_parallel_args(term.inner, term.right_expr, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
         false -> case len(rest_asm) > 0 of {
@@ -2265,6 +2301,12 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         true -> concat("\n    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(dealloc_bytes_call), ""));
         false -> ""
     };
+    // Kind-5 bodies omit the outer epilogue expecting a BR. If we demoted to BLR
+    // (stack arg still live on the sequential path), restore the frame and RET here.
+    demoted_tail_epilogue: string <- case use_tail and effective_use_tail == false of {
+        true -> concat(control@function_tail_frame_release(fn_effects_for_tail), "    RET\n");
+        false -> ""
+    };
     fuel: string <- case effective_use_tail of {
         true -> recursion_support@emit_fuel_backedge_stub_comment();
         false -> ""
@@ -2273,7 +2315,7 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         true -> concat(line_before_call_asm, "\n");
         false -> ""
     };
-    concat(fuel, concat(sret_setup, concat(callee_prep, concat(concat(concat(concat(args_asm, callee_reload_after_args), before_call), call_asm), dealloc_asm_call))))
+    concat(fuel, concat(sret_setup, concat(callee_prep, concat(concat(concat(concat(concat(args_asm, callee_reload_after_args), before_call), call_asm), dealloc_asm_call), demoted_tail_epilogue))))
 }
 
 // Root function body only: SIR kind 5 tail user call with enclosing function effects for frame release + barriers.
@@ -2302,10 +2344,49 @@ fn term_to_asm_debug_with_outer(term: SIRTerm, dest: string, table: AtomTable, i
     term_to_asm_opt_bound_debug(term, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, "", "", outer_reg, debug)
 }
 
+// `and` / `or` must short-circuit: the spec stops `and` at the first false and `or` at the first
+// true. Evaluating both operands is observably wrong, not merely slower, because the codebase guards
+// unsafe accesses with exactly this idiom, e.g. constraint_runner:has_reserved_keyword_binding
+//   after_name.is_nil == false and token_starts_with_colon(after_name.head.token)
+// where running the right operand on an empty list dereferences a null data pointer.
+//
+// Once the left operand settles the result, the answer IS the right operand: with left true,
+// `left and right` == right, and with left false, `left or right` == right. So the branch can skip
+// straight over the right operand and leave dest holding the left value, which needs no combining
+// instruction, no scratch register, and no spill of the left value. Skipping the operand's assembly
+// wholesale also keeps the stack balanced, because whatever that operand allocates it releases
+// inside the region being skipped.
+//
+// value carries "o<source offset>" from the SIR generator (stamp_short_circuit_id) solely to name
+// the label. Without it there is no unique label to emit, so those terms take the eager path rather
+// than risk colliding labels; same for a dest that is not a plain GPR, which CBZ/CBNZ require.
+fn is_short_circuit_bool_op(term: SIRTerm) -> bool {
+    term.kind == 6 and (term.name == "and" or term.name == "or") and term.type_name == "bool" and len(term.value) > 0
+}
+
+fn short_circuit_dest_is_gpr(dest: string) -> bool {
+    p: string <- substring(dest, 0, 1);
+    (p == "X" or p == "W") and len(dest) <= 3
+}
+
+fn emit_short_circuit_bool_op(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
+    done_l: string <- concat(concat("L_sc_", term.value), "_done");
+    left_asm: string <- term_to_asm_opt_bound(term.inner, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+    right_asm: string <- term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+    skip_op: string <- case term.name == "and" of {
+        true -> "    CBZ ";
+        false -> "    CBNZ "
+    };
+    skip_asm: string <- concat(skip_op, concat(dest, concat(", ", concat(done_l, "\n"))));
+    concat(concat(concat(concat(left_asm, "\n"), skip_asm), concat(right_asm, "\n")), concat(done_l, ":\n"))
+}
+
 fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
     do
     k_rel_case: int64 <- term.kind - 3;
-    case k_rel_case == 0 of {
+    case is_short_circuit_bool_op(term) and short_circuit_dest_is_gpr(dest) of {
+        true -> emit_short_circuit_bool_op(term, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+        false -> case k_rel_case == 0 of {
         true -> emit_case_expression(term, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
         false -> case term.kind + 1 < 2 of {
             true -> case term.kind + 1 == 1 of {
@@ -2382,6 +2463,9 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 spill_b: bool <- len(spill_reg_b) > 0;
                 rhs_bind_b: string <- case spill_b of { true -> spill_reg_b; false -> rhs_reg };
                 mov_spill_b: string <- case spill_b of { true -> mov_spill_from_rhs(rhs_reg, spill_reg_b); false -> "" };
+                // Stack aggregate packed into a tuple in the body: promote once now (register binding),
+                // not on every tuple pack while bound_name is live (that OOMed typecheck).
+                packs_escape_b: bool <- let_stack_agg_escapes_via_tuple(term);
                 adj_str_b: string <- var@find_sp_binding(outer_reg, "_adj");
                 sp_adj_b: int64 <- case len(adj_str_b) > 0 of { true -> string_parse@string_to_int64(adj_str_b); false -> 0 };
                 tm_adj: int64 <- case is_aggregate_make(term.inner) of {
@@ -2410,9 +2494,12 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     };
                     false -> ""
                 };
-                va_b_tm: string <- case is_aggregate_make(term.inner) of {
-                    true -> concat("|_va.", concat(term.name, concat("=", atom_table@int64_to_decimal_string(tm_adj))));
-                    false -> ""
+                va_b_tm: string <- case packs_escape_b of {
+                    true -> "";
+                    false -> case is_aggregate_make(term.inner) of {
+                        true -> concat("|_va.", concat(term.name, concat("=", atom_table@int64_to_decimal_string(tm_adj))));
+                        false -> ""
+                    }
                 };
                 tp_pi_b: string <- case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(va_b_tm) == 0 of {
                     true -> term.inner.right_expr.value;
@@ -2477,15 +2564,18 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 rhs_is_fp_scalar_reg: bool <- rhs_bind_fp_prefix == "S" or rhs_bind_fp_prefix == "D" or rhs_bind_fp_prefix == "H";
                 has_gpr_tuple_root_b: bool <- len(tuple_root_gpr_b) > 0 and var@is_memory_ref(tuple_root_gpr_b) == false and rhs_is_fp_scalar_reg;
                 tp_is_reg_b: bool <- len(tp_ptr_reg_b) > 0 or has_gpr_tuple_root_b;
-                body_bound: string <- case tp_is_reg_b of {
-                    true -> rhs_reg;
-                    false -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 of {
-                        true -> do
-                            pix_b: int64 <- string_parse@string_to_int64(term.inner.right_expr.value);
-                            byte_b: int64 <- prims_tuple@tuple_field_start_byte_offset(term.inner.inner.type_name, pix_b);
-                            var@sp_offset_for_byte_adj(byte_b, proj_sp_adj)
-                        end;
-                        false -> rhs_bind_b
+                body_bound: string <- case packs_escape_b of {
+                    true -> rhs_bind_b;
+                    false -> case tp_is_reg_b of {
+                        true -> rhs_reg;
+                        false -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 of {
+                            true -> do
+                                pix_b: int64 <- string_parse@string_to_int64(term.inner.right_expr.value);
+                                byte_b: int64 <- prims_tuple@tuple_field_start_byte_offset(term.inner.inner.type_name, pix_b);
+                                var@sp_offset_for_byte_adj(byte_b, proj_sp_adj)
+                            end;
+                            false -> rhs_bind_b
+                        }
                     }
                 };
                 tuple_elem_count_b: int64 <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) of { true -> prims_tuple@count_type_elements(term.type_name); false -> 0 };
@@ -2500,18 +2590,21 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> concat("    MOV X12, ", concat(rhs_bind_b, "\n"));
                     false -> ""
                 };
-                reg_binding_inner: string <- case tp_is_reg_b of {
-                    true -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 of {
-                        true -> do
-                            pix_r: int64 <- string_parse@string_to_int64(term.inner.right_expr.value);
-                            byte_r: int64 <- prims_tuple@tuple_field_start_byte_offset(term.inner.inner.type_name, pix_r);
-                            concat("|", concat(term.name, concat("=", var@sp_offset_for_byte_adj(byte_r, proj_sp_adj))))
-                        end;
-                        false -> concat("|", concat(term.name, concat("=", rhs_bind_b)))
-                    };
-                    false -> ""
+                reg_binding_inner: string <- case packs_escape_b of {
+                    true -> concat("|", concat(term.name, concat("=", rhs_bind_b)));
+                    false -> case tp_is_reg_b of {
+                        true -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 of {
+                            true -> do
+                                pix_r: int64 <- string_parse@string_to_int64(term.inner.right_expr.value);
+                                byte_r: int64 <- prims_tuple@tuple_field_start_byte_offset(term.inner.inner.type_name, pix_r);
+                                concat("|", concat(term.name, concat("=", var@sp_offset_for_byte_adj(byte_r, proj_sp_adj))))
+                            end;
+                            false -> concat("|", concat(term.name, concat("=", rhs_bind_b)))
+                        };
+                        false -> ""
+                    }
                 };
-                new_outer_raw: string <- case tp_is_reg_b of {
+                new_outer_raw: string <- case packs_escape_b or tp_is_reg_b of {
                     true -> do
                         nob_r: string <- var@base_reg_of(outer_reg);
                         nosp_r: string <- var@extract_sp_bindings(outer_reg);
@@ -2546,9 +2639,17 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         end
                     }
                 };
+                // Escape promote must NOT reclaim the RHS slab here: a shallow heap copy still
+                // holds pointers into nested stack payloads. Reclaiming before the body ran made
+                // those nested fields dangle mid-let and sent selfhost typecheck into an infinite
+                // recurse in validate_collection_in_type_string. The let epilogue pops once.
                 base_stack_eff_n: int64 <- case let_suppress_base_stack_overlay_rec_flat(term, base_stack_n) of {
                     true -> let_suppressed_base_stack_fixup(term);
                     false -> base_stack_n
+                };
+                early_prom_b: string <- case packs_escape_b of {
+                    true -> let_early_heap_promote_asm(rhs_bind_b, base_stack_n);
+                    false -> ""
                 };
                 tail_stack_raw_n: int64 <- let_tail_aggregate_stack_bytes(term.right_expr);
                 tail_stack_n: int64 <- case term.right_expr.kind == 2 of {
@@ -2586,7 +2687,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> "";
                     false -> "\n"
                 };
-                let_combined: string <- concat(concat(concat(concat(rhs_asm, rhs_sep), mov_spill_b), save_base_b), case len(dealloc) > 0 of {
+                let_prefix_b: string <- concat(concat(concat(concat(rhs_asm, rhs_sep), mov_spill_b), save_base_b), early_prom_b);
+                let_combined: string <- concat(let_prefix_b, case len(dealloc) > 0 of {
                     true -> case len(promote_asm) > 0 of {
                         true -> concat(concat(concat(body_asm, "\n"), promote_asm), dealloc);
                         false -> concat(concat(body_asm, "\n"), dealloc)
@@ -2641,9 +2743,13 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     };
                     false -> ""
                 };
-                vab_tl: string <- case is_aggregate_make(term.inner) of {
-                    true -> concat("|_va.", concat(term.name, concat("=", atom_table@int64_to_decimal_string(tm_adj_tl))));
-                    false -> ""
+                packs_escape_tl: bool <- let_stack_agg_escapes_via_tuple(term);
+                vab_tl: string <- case packs_escape_tl of {
+                    true -> "";
+                    false -> case is_aggregate_make(term.inner) of {
+                        true -> concat("|_va.", concat(term.name, concat("=", atom_table@int64_to_decimal_string(tm_adj_tl))));
+                        false -> ""
+                    }
                 };
                 spill_reg_tl: string <- compute_let_rhs_spill_reg(term, rhs_reg, outer_reg);
                 spill_tl: bool <- len(spill_reg_tl) > 0;
@@ -2656,8 +2762,11 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 // spill GPR for every tuple in a sequence, and made list_cons copy the wrong
                 // head (List[(K,V)] corruption across from_sorted helpers).
                 body_bound_tl: string <- rhs_bind_tl;
-                tp_binding_tl: string <- var@new_tp_binding(term.name, term.inner, 0);
-                reg_binding_tl: string <- case is_simple_tuple_make of {
+                tp_binding_tl: string <- case packs_escape_tl of {
+                    true -> "";
+                    false -> var@new_tp_binding(term.name, term.inner, 0)
+                };
+                reg_binding_tl: string <- case packs_escape_tl or is_simple_tuple_make of {
                     true -> concat("|", concat(term.name, concat("=", rhs_bind_tl)));
                     false -> var@reg_binding(term.name, rhs_bind_tl)
                 };
@@ -2704,9 +2813,14 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         end
                     }
                 };
+                // See packs_escape_b: keep the RHS slab until let-end (early promote is shallow).
                 base_stack_eff_tl: int64 <- case let_suppress_base_stack_overlay_rec_flat(term, base_stack_tl) of {
                     true -> let_suppressed_base_stack_fixup(term);
                     false -> base_stack_tl
+                };
+                early_prom_tl: string <- case packs_escape_tl of {
+                    true -> let_early_heap_promote_asm(rhs_bind_tl, base_stack_tl);
+                    false -> ""
                 };
                 tail_stack_raw_tl: int64 <- let_tail_aggregate_stack_bytes(term.right_expr);
                 tail_stack_tl: int64 <- case term.right_expr.kind == 2 of {
@@ -2739,7 +2853,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> "";
                     false -> "\n"
                 };
-                concat(concat(concat(concat(rhs_asm, rhs_sep), mov_spill_tl), save_base_tl), case len(dealloc) > 0 of {
+                let_prefix_tl: string <- concat(concat(concat(concat(rhs_asm, rhs_sep), mov_spill_tl), save_base_tl), early_prom_tl);
+                concat(let_prefix_tl, case len(dealloc) > 0 of {
                     true -> case len(promote_asm_tl) > 0 of {
                         true -> concat(concat(concat(body_asm, "\n"), promote_asm_tl), dealloc);
                         false -> concat(concat(body_asm, "\n"), dealloc)
@@ -3082,7 +3197,17 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 // safely when the make has no prior BL; record_make often follows region_alloc / other BL.
                 sret_base_r: string <- "";
                 alloc_asm_r: string <- concat("    SUB SP, SP, #", concat(atom_table@int64_to_decimal_string(alloc_sz_r), "\n"));
-                stores_base_asm_r: string <- emit_flat_record_stores(term, Rm, 0, 0, sret_base_r, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+                // Stores start already shifted past the reserved user-call area, because the shell sits ABOVE
+                // it: nested_adjust_r below places the returned base at SP + reserved + self-SUB'd makes.
+                // sp_adjust only tracks SP actually moving, which a memcpy'd user-call return never does, so
+                // starting at 0 shifted a field only from the reserving field onwards. Fields emitted EARLIER
+                // then landed below the shell base and the shell's own slot was never written, so reading the
+                // field back returned whatever the preceding call left on the stack. That is what fed the
+                // slots list into `declarations` in constraint_extract_decls:slots_to_program,
+                //     { declarations: decls, location: program_location_from_decls(decls) }
+                // whose declarations were later walked as if they were declarations. See
+                // trials/codegen_regressions/rec_call_field.silica.
+                stores_base_asm_r: string <- emit_flat_record_stores(term, Rm, flat_record_sum_nested_reserved_in_outer(term), 0, sret_base_r, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
                 hidden_child_tramp_r: string <- emit_child_spec_hidden_trampoline_store(term, Rm);
                 stores_asm_r: string <- case len(hidden_child_tramp_r) > 0 of {
                     true -> concat(stores_base_asm_r, concat("\n", hidden_child_tramp_r));
@@ -3253,7 +3378,12 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 tp_var: string <- case term.inner.kind == 1 of { true -> term.inner.name; false -> "" };
                 va_key: string <- concat("_va.", tp_var);
                 va_str: string <- case len(tp_var) > 0 of { true -> var@find_sp_binding(outer_reg, va_key); false -> "" };
-                var_binding: string <- case len(tp_var) > 0 of { true -> var@find_sp_binding(outer_reg, tp_var); false -> "" };
+                // Last, not first, for the same reason as the _ptr lookup below and as record_proj:
+                // every tuple destructure names its root %_td_0, so two destructures in one scope leave
+                // outer_reg holding `%_td_0=X19|...|%_td_0=X23`. Taking the first match read fields out of
+                // the earlier tuple's pointer -- field 0 happened to be right only because it resolves
+                // through bound_reg instead, which is why the wrong base showed up from field 1 onwards.
+                var_binding: string <- case len(tp_var) > 0 of { true -> var@find_last_sp_binding(outer_reg, tp_var); false -> "" };
                 // Look up the saved tuple pointer using find_last_sp_binding to get the INNERMOST binding.
                 // When nested tuple decompositions reuse the same root variable (e.g. %_td_0 for both
                 // outer and inner destructuring), outer_reg accumulates multiple _ptr.%_td_0=... entries.
@@ -3349,7 +3479,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     false -> term_to_asm_opt_bound(term.right_expr.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                 };
                 op_asm: string <- prims@emit_prim_op(term, dest);
-                guarded_arg3: string <- concat("    STR X1, [SP, #-16]!\n", concat(arg3_asm, "\n    LDR X1, [SP], #16\n"));
+                // arg3 (end) often embeds len/add and clobbers X0/X1. Saving only X1 left
+                // substring(s, i, i+len(kw)) calling substring(kw, ...) — false keyword hits
+                // (Heap/Tree on "int64") and infinite validate_collection recursion.
+                guarded_arg3: string <- concat("    STP X0, X1, [SP, #-16]!\n", concat(arg3_asm, "\n    LDP X0, X1, [SP], #16\n"));
                 concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), guarded_arg3), op_asm)
             end;
             false -> case term.type_name == "bool" and prims_string@is_string_predicate_prim(term.name) of {
@@ -3934,7 +4067,13 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 combined: string <- concat(concat(concat(concat(concat(concat(left_inner, "\n"), save_left), right_inner), "\n"), restore_left), "");
                                 (combined, "")
                             end;
-                            false -> case right_is_prim and is_string_prim == false and is_float64 == false and is_float32 == false and is_float16 == false of {
+                            // Two prim operands: the right one is evaluated after the left and needs the same
+                            // registers, so the left must be spilled. String concat is no exception -- its left
+                            // operand sits in X0 and a nested concat on the right returns into X0 -- and excluding
+                            // it made `concat(concat(".quad ", label), concat(".quad ", len))` emit the right
+                            // operand for both halves: every L_pa_table entry came out as the length twice with
+                            // no atom label. Floats stay out: they need the right operand emitted first.
+                            false -> case right_is_prim and is_float64 == false and is_float32 == false and is_float16 == false of {
                                 true -> do
                                     temp_reg2: string <- left_reg;
                                     left_2p: string <- case debug of {
@@ -3971,8 +4110,15 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                             false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                         }
                                     };
+                                    // Anything but a const or a var on the right needs the registers the left operand
+                                    // is sitting in, so spill it. String concat keeps its left operand in X0, which
+                                    // every call and every nested concat returns into: without the spill the emitted
+                                    // code was left-into-X0, the right operand, then MOV X1, X0 / BL L_concat_helper,
+                                    // so both operands became the right one. That is why the selfhost emitted " 0 0"
+                                    // per atom instead of the atom's bytes.
+                                    // See trials/codegen_regressions/concat_call_operand.silica.
                                     right_simple_for_left_prim: bool <- term.right_expr.kind == 0 or term.right_expr.kind == 1;
-                                    preserve_left_for_right: bool <- right_simple_for_left_prim == false and is_string_prim == false and is_float64 == false and is_float32 == false and is_float16 == false;
+                                    preserve_left_for_right: bool <- right_simple_for_left_prim == false and is_float64 == false and is_float32 == false and is_float16 == false;
                                     case preserve_left_for_right of {
                                         true -> do
                                             save_left_np: string <- concat(concat("    STR ", left_reg), ", [SP, #-16]!\n");
@@ -4048,7 +4194,16 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 // When right operand is a call (kind 4), save/restore left_reg across it (AAPCS64: X9-X15 are caller-saved).
                                 left_is_call: bool <- term.inner.kind == 4;
                                 right_is_call: bool <- term.right_expr.kind == 4;
-                                case right_is_call and is_string_prim == false of {
+                                // A call anywhere inside the right operand clobbers the left operand's register,
+                                // not just a call at its root, and string concat is no exception: its left operand
+                                // sits in X0, which every call returns into. `concat(one, rest(tail))` --
+                                // print_atom_inline:emit_rodata_entries -- emitted the left, then the call, then
+                                // MOV X1, X0 / BL L_concat_helper, so both operands became the call's result and
+                                // the fold collapsed to its base case "". That is why the selfhost emitted an
+                                // empty L_pa_table and no function bodies.
+                                // See trials/codegen_regressions/concat_call_operand.silica.
+                                right_calls_here: bool <- term_subterm_has_user_call(term.right_expr);
+                                case right_calls_here or right_is_call of {
                                     true -> do
                                         save_left: string <- concat(concat("    STR ", left_reg), ", [SP, #-16]!\n");
                                         restore_left: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");
@@ -4095,6 +4250,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
         };
         _: int64 -> concat("    ; unsupported term kind ", "?")
         }
+    }
     }
     }
     end
@@ -4377,41 +4533,28 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
                 end;
                 false -> case elem_is_agg of {
                     true -> do
-                        // Always store record elements as pointers (matches tuple_proj stride of 8).
-                        // Former rec_flat memcpy inlined idx-0 record_make into the tuple slab and
-                        // required value-flat proj offsets, which disagreed with heap (Token*, Lexer*)
-                        // returns used by the lexer and similar APIs.
-                        rec_flat: bool <- false;
-                        case rec_flat of {
-                            true -> do
-                                rec_R: string <- elem.type_name;
-                                rsz: int64 <- prims_record@record_type_value_flat_byte_size(rec_R);
-                                qw: int64 <- rsz / 8;
-                                rec_sp_round: int64 <- record_make_stack_alloc_size(rec_R);
-                                dest_base: int64 <- case len(store_base) > 0 of {
-                                    true -> byte_cursor;
-                                    false -> byte_cursor + rec_sp_round
-                                };
-                                memcpy_asm: string <- emit_reg_to_flat_qwords_memcpy_loop(0, qw, temp_reg, store_base, dest_base);
-                                next_bc: int64 <- byte_cursor + rsz;
-                                restore_rec_sp: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(rec_sp_round), "\n"));
-                                rest_asm: string <- emit_flat_tuple_stores(term.right_expr, idx + 1, count, new_adjust, next_bc, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
-                                concat(concat(elem_asm, concat("\n", memcpy_asm)), concat(concat("\n", restore_rec_sp), concat("\n", rest_asm)))
-                            end;
-                            false -> do
-                                store_offset: int64 <- idx * 8 + new_adjust;
-                                promote_asm: string <- tuple_elem_heap_promote(temp_reg, nested_bytes);
-                                store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))));
-                                next_bc: int64 <- store_offset + 8;
-                                rest_asm: string <- emit_flat_tuple_stores(term.right_expr, idx + 1, count, new_adjust, next_bc, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
-                                concat(concat(elem_asm, concat("\n", concat(promote_asm, store_asm))), concat("\n", rest_asm))
-                            end
-                        }
+                        // Heap-promote nested make, then reclaim its self-SUB so the outer tuple’s
+                        // SP base stays put (tuple_proj stride 8). Leaving the nested slab up and
+                        // widening the outer SUB leaked 16B per `(record, …)` and crashed on RET.
+                        store_offset: int64 <- idx * 8 + sp_adjust;
+                        promote_asm: string <- tuple_elem_heap_promote(temp_reg, nested_bytes);
+                        reclaim_nested: string <- case nested_bytes > 0 of {
+                            true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nested_bytes), "\n"));
+                            false -> ""
+                        };
+                        store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))));
+                        next_bc: int64 <- store_offset + 8;
+                        rest_asm: string <- emit_flat_tuple_stores(term.right_expr, idx + 1, count, sp_adjust, next_bc, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+                        concat(concat(elem_asm, concat("\n", concat(promote_asm, concat(reclaim_nested, store_asm)))), concat("\n", rest_asm))
                     end;
                     false -> do
+                        // Escape of a let-bound stack aggregate is handled once at the let
+                        // (let_stack_agg_escapes_via_tuple), not on every pack here.
+                        promote_var_asm: string <- tuple_elem_heap_promote(temp_reg, tuple_elem_var_aggregate_promote_bytes(elem, bound_name));
+                        reclaim_asm: string <- tuple_elem_sret_reclaim(temp_reg, let_user_call_tuple_sret_stack_bytes(elem, outer_reg, bound_name));
                         store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, byte_cursor))));
                         rest_asm: string <- emit_flat_tuple_stores(term.right_expr, idx + 1, count, new_adjust, byte_cursor + 8, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
-                        concat(concat(elem_asm, concat("\n", store_asm)), concat("\n", rest_asm))
+                        concat(concat(elem_asm, concat("\n", concat(promote_var_asm, concat(reclaim_asm, store_asm)))), concat("\n", rest_asm))
                     end
                 }
             }
@@ -4435,23 +4578,96 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
                 true -> agg_alloc_inner(term);
                 false -> 0
             };
-            new_adjust: int64 <- sp_adjust + nested_bytes;
             box_f32_last: bool <- count > 1 and elem_is_agg == false and reg_conventions@is_float32_type(term.type_name);
             case box_f32_last of {
                 true -> concat(elem_asm, concat("\n", emit_flat_float32_boxed_pair(store_base, byte_cursor, temp_reg)));
                 false -> case elem_is_agg of {
                     true -> do
-                        store_offset: int64 <- idx * 8 + new_adjust;
+                        store_offset: int64 <- idx * 8 + sp_adjust;
                         promote_asm: string <- tuple_elem_heap_promote(temp_reg, nested_bytes);
+                        reclaim_nested: string <- case nested_bytes > 0 of {
+                            true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nested_bytes), "\n"));
+                            false -> ""
+                        };
                         store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))));
-                        concat(elem_asm, concat("\n", concat(promote_asm, store_asm)))
+                        concat(elem_asm, concat("\n", concat(promote_asm, concat(reclaim_nested, store_asm))))
                     end;
                     false -> do
+                        promote_var_asm: string <- tuple_elem_heap_promote(temp_reg, tuple_elem_var_aggregate_promote_bytes(term, bound_name));
+                        reclaim_asm: string <- tuple_elem_sret_reclaim(temp_reg, let_user_call_tuple_sret_stack_bytes(term, outer_reg, bound_name));
                         store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, byte_cursor))));
-                        concat(elem_asm, concat("\n", store_asm))
+                        concat(elem_asm, concat("\n", concat(promote_var_asm, concat(reclaim_asm, store_asm))))
                     end
                 }
             }
+        end
+    }
+}
+
+// Per-pack promote of every `bound_name` aggregate in a tuple was retired: with the arena never
+// freeing, typecheck of `fn main(){42}` hit ~7GB RSS. Escape is handled once at the let
+// (`let_stack_agg_escapes_via_tuple` + early heap promote) before the body runs.
+fn tuple_elem_var_aggregate_promote_bytes(elem: SIRTerm, bound_name: string) -> int64 {
+    0
+}
+
+// True when a tuple_make spine (or nested tuple element) stores `name` as a var element.
+fn flat_tuple_spine_packs_var(t: SIRTerm, name: string) -> bool {
+    case t.kind == 6 and t.name == "tuple_make" of {
+        true -> case t.inner.kind == 1 and t.inner.name == name of {
+            true -> true;
+            false -> case expr_tuple_packs_var(t.inner, name) of {
+                true -> true;
+                false -> flat_tuple_spine_packs_var(t.right_expr, name)
+            }
+        };
+        false -> t.kind == 1 and t.name == name
+    }
+}
+
+// Walk a let body / RHS for a tuple that packs `name` (lets and case branches included).
+fn expr_tuple_packs_var(t: SIRTerm, name: string) -> bool {
+    case t.kind == 6 and t.name == "tuple_make" of {
+        true -> flat_tuple_spine_packs_var(t, name);
+        false -> case t.kind == 2 of {
+            true -> case expr_tuple_packs_var(t.inner, name) of {
+                true -> true;
+                false -> expr_tuple_packs_var(t.right_expr, name)
+            };
+            false -> case t.kind == 3 of {
+                true -> case expr_tuple_packs_var(t.inner, name) of {
+                    true -> true;
+                    false -> expr_tuple_packs_var(t.right_expr, name)
+                };
+                false -> false
+            }
+        }
+    }
+}
+
+// Retired: early let-promote of escaping stack records (even without immediate ADD SP) still
+// left shallow heap copies whose nested field pointers dangled after let-end and hung selfhost
+// typecheck in validate_collection_in_type_string. Prefer packing a nested record_make literal
+// in the tuple (tuple_elem_heap_promote) — see extract_function and tup_let_rec.
+fn let_stack_agg_escapes_via_tuple(term: SIRTerm) -> bool {
+    false
+}
+
+// Shallow region copy of a let-bound stack record; does not ADD SP — nested field pointers still
+// address the RHS slab until the let’s epilogue pops it (see base_stack_eff_*).
+fn let_early_heap_promote_asm(rhs_bind: string, nbytes: int64) -> string {
+    case nbytes <= 0 of {
+        true -> "";
+        false -> do
+            to_x0: string <- case rhs_bind == "X0" of {
+                true -> "";
+                false -> concat("    MOV X0, ", concat(rhs_bind, "\n"))
+            };
+            from_x0: string <- case rhs_bind == "X0" of {
+                true -> "";
+                false -> concat("    MOV ", concat(rhs_bind, ", X0\n"))
+            };
+            concat(concat(to_x0, aggregate_return_heap_promote_x0(nbytes)), from_x0)
         end
     }
 }
@@ -4471,21 +4687,9 @@ fn flat_tuple_total_alloc(term: SIRTerm) -> int64 {
     }
 }
 
-// True when emit_flat_tuple_stores memcpy-copies idx-0 record_make into the tuple outer slab (`rec_flat`, arity ≥ 2).
+// Retired with heap-pointer nested elements: never widen the outer SUB for an inlined record head.
 fn tuple_make_memcpy_record_flat_head(term: SIRTerm) -> bool {
-    case term.kind == 6 of {
-        false -> false;
-        true -> case term.name != "tuple_make" of {
-            true -> false;
-            false -> do
-                c: int64 <- prims_tuple@count_flat_elements(term);
-                case c >= 2 of {
-                    false -> false;
-                    true -> term.inner.kind == 6 and term.inner.name == "record_make"
-                }
-            end
-        }
-    }
+    false
 }
 
 
@@ -4506,16 +4710,14 @@ fn tuple_make_scalar_rec_flat_first(term: SIRTerm, count: int64) -> bool {
     }
 }
 
-// Outer SUB SP bytes for tuple_make: flat pairing slots, widened when (record_make, …) memcpy head needs more.
-// emit_flat_tuple_stores uses memcpy for any idx-0 record_make when arity ≥ 2 (`rec_flat`). Supervisors_phase_e
-// init tuples embed a `{ strategy: atom , … }` record — atoms are non–value-flat leaves, but emit still memcpy-copies rsz bytes.
+// Outer SUB SP bytes for tuple_make: flat pairing slots, widened when (record_make, …) head
+// still accounts for the nested record slab in flat_tuple_total_alloc / nested_adjust (rec_flat trim).
 fn tuple_make_rec_flat_outer_alloc_bytes(term: SIRTerm, count: int64) -> int64 {
     base: int64 <- prims_tuple@flat_alloc_size(count);
     case tuple_make_memcpy_record_flat_head(term) of {
         false -> base;
         true -> do
             rsz: int64 <- prims_record@record_type_value_flat_byte_size(term.inner.type_name);
-            // Second field sits at byte offset rsz after memcpy; trailing slots are pointer-sized for flat tuple tails.
             need: int64 <- stack_alloc_round16(rsz + 8 * (count - 1));
             case need > base of { true -> need; false -> base }
         end
@@ -4548,14 +4750,18 @@ fn flat_record_sum_nested_inners(term: SIRTerm) -> int64 {
             true -> 0;
             false -> do
                 // 2-element tuple fields are emitted inline in emit_flat_record_stores (no nested SUB).
-                // A scalar-only nested record field is inlined the same way: record_make_stack_alloc_size
-                // already reserves its words inside the shell, so counting it again over-stated the slab
-                // and the branch popped SP past the saved registers.
-                inner_inline_rec: bool <- term.inner.kind == 6 and term.inner.name == "record_make" and prims_record@record_type_has_only_scalar_fields(term.inner.type_name);
+                // A nested record field is inlined the same way: record_make_stack_alloc_size already reserves
+                // its words inside the shell (its value-flat size recurses), so counting it again over-stated
+                // the slab and the branch popped SP past the saved registers. This must stay in step with
+                // inline_nested_rec in emit_flat_record_stores -- the two decide the same thing.
+                inner_inline_rec: bool <- term.inner.kind == 6 and term.inner.name == "record_make";
                 here: int64 <- case (term.inner.kind == 6 and term.inner.name == "tuple_make" and prims_tuple@count_flat_elements(term.inner) == 2) or inner_inline_rec of {
                     true -> 0;
                     false -> case term.inner.kind == 4 or term.inner.kind == 5 of {
-                        true -> user_call_aggregate_return_alloc_bytes(term.inner.type_name);
+                        true -> case record_field_call_reclaims_own_sret(term.inner) of {
+                            true -> 0;
+                            false -> user_call_aggregate_return_alloc_bytes(term.inner.type_name)
+                        };
                         false -> agg_alloc_inner(term.inner)
                     }
                 };
@@ -4581,7 +4787,10 @@ fn flat_record_sum_nested_reserved_in_outer(term: SIRTerm) -> int64 {
                 here: int64 <- case term.inner.kind == 6 and term.inner.name == "tuple_make" and prims_tuple@count_flat_elements(term.inner) == 2 of {
                     true -> 0;
                     false -> case term.inner.kind == 4 or term.inner.kind == 5 of {
-                        true -> user_call_aggregate_return_alloc_bytes(term.inner.type_name);
+                        true -> case record_field_call_reclaims_own_sret(term.inner) of {
+                            true -> 0;
+                            false -> user_call_aggregate_return_alloc_bytes(term.inner.type_name)
+                        };
                         false -> 0
                     }
                 };
@@ -4595,8 +4804,17 @@ fn flat_record_sum_nested_reserved_in_outer(term: SIRTerm) -> int64 {
     }
 }
 
-fn record_field_user_call_inline_return(elem: SIRTerm, fty: string) -> bool {
-    reg_conventions@is_inline_struct_type(fty) and (elem.kind == 4 or elem.kind == 5)
+// A tuple-returning call in record-field position SUBs its own caller sret slab and hands back a
+// heap pointer, and the field store then reclaims that slab (tuple_elem_sret_reclaim), so the make
+// is back on its own SP by the time the next field is stored. Neither the outer SUB nor the
+// nested-inner sums may count those bytes: reserving them shifted every later field and left the
+// callee's slab unpopped, so the frame grew by the sret size and the epilogue restored X29/X30 from
+// the wrong slots -- `{ p: pair(), b: 9 }` returned to a garbage address and hung.
+// An inline-struct (record) return is different: the callee heap-promotes, SP does not move, and the
+// result is memcpy'd into bytes the outer SUB reserved. Those still count.
+// See trials/codegen_regressions/rec_tuple_call_field.silica.
+fn record_field_call_reclaims_own_sret(elem: SIRTerm) -> bool {
+    (elem.kind == 4 or elem.kind == 5) and reg_conventions@is_tuple_type(elem.type_name)
 }
 
 fn record_field_inline_pointer_value(elem: SIRTerm, fty: string) -> bool {
@@ -4612,13 +4830,15 @@ fn record_field_inline_pointer_value(elem: SIRTerm, fty: string) -> bool {
     }
 }
 
+// How far SP moves while this field is emitted, which is what later fields must add to their
+// SP-relative offsets. Only a nested make self-SUBs. A user-call inline return does not move SP --
+// it is memcpy'd out of the returned pointer into space the outer SUB already reserved -- so it is
+// counted once up front, for every field, via flat_record_sum_nested_reserved_in_outer at the
+// emit_flat_record_stores call. Counting it here as well would shift the fields after it twice.
 fn record_field_nested_return_bytes(elem: SIRTerm, fty: string, elem_is_agg: bool) -> int64 {
     case elem_is_agg of {
         true -> agg_alloc_inner(elem);
-        false -> case record_field_user_call_inline_return(elem, fty) of {
-            true -> user_call_aggregate_return_alloc_bytes(fty);
-            false -> 0
-        }
+        false -> 0
     }
 }
 
@@ -4654,8 +4874,27 @@ fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, field_pre
                 fty: string <- prims_record@find_field_type_in_record(R, fname);
                 base_off: int64 <- prims_record@offset_bytes_before_field(R, fname);
                 elem_is_agg: bool <- elem.kind == 6 and (elem.name == "tuple_make" or elem.name == "record_make");
-                inline_scalar_rec: bool <- elem_is_agg and elem.name == "record_make" and prims_record@record_type_has_only_scalar_fields(fty);
-                case inline_scalar_rec of {
+                // Inline EVERY nested record literal into the outer slab, whatever its fields hold. This is the
+                // layout every reader already assumes: offset_bytes_before_field and
+                // record_type_value_flat_byte_size both recurse into a nested record field unconditionally, so
+                // a field after one is placed as if it were inlined. Storing a pointer instead put one word
+                // where several were expected AND leaked a pointer to a stack copy that dies with the frame,
+                // so reading `outer.nested.field` yielded the nested record's address.
+                // type_checker_core:parse_type_into_context returns
+                //     { context: { env: ctx.env, interner: pr.interner }, id: pr.id, ok: pr.ok }
+                // whose `context` holds a List and a record, so create_type_context handed that address to
+                // prepend as a list handle -- the fault that stopped type checking.
+                //
+                // This is only affordable because strip_spaces_rt no longer rebuilds an already-stripped
+                // string: placing fields this way asks for record_type_starts and flat sizes far more often,
+                // and with the old quadratic strip the seed was OOM-killed emitting
+                // parser/constraint_extract_expr.silica. That unit now costs the same 40s it did before.
+                //
+                // Records only: tuples keep a uniform 8-byte stride with heap-promoted pointers, which is what
+                // the lexer's Token*/Lexer* returns need (see the rec_flat note in emit_flat_tuple_stores).
+                // See trials/codegen_regressions/rec_nested_nonscalar.silica.
+                inline_nested_rec: bool <- elem_is_agg and elem.name == "record_make";
+                case inline_nested_rec of {
                     true -> emit_flat_record_stores(elem, fty, sp_adjust, field_prefix + base_off, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
                     false -> case elem.kind == 6 and elem.name == "tuple_make" and prims_tuple@count_flat_elements(elem) == 2 of {
                         true -> do
@@ -4701,7 +4940,8 @@ fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, field_pre
                                 true -> emit_inline_record_field_copy_words(temp_reg, store_base, store_offset, 0, prims_record@record_type_value_flat_byte_size(fty) / 8);
                                 false -> concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))))
                             };
-                            concat(elem_asm, concat("\n", store_asm))
+                            reclaim_asm: string <- tuple_elem_sret_reclaim(temp_reg, let_user_call_tuple_sret_stack_bytes(elem, outer_reg, bound_name));
+                            concat(elem_asm, concat("\n", concat(reclaim_asm, store_asm)))
                         end
                     }
                 }
@@ -4712,8 +4952,27 @@ fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, field_pre
                 fty: string <- prims_record@find_field_type_in_record(R, fname);
                 base_off: int64 <- prims_record@offset_bytes_before_field(R, fname);
                 elem_is_agg: bool <- elem.kind == 6 and (elem.name == "tuple_make" or elem.name == "record_make");
-                inline_scalar_rec: bool <- elem_is_agg and elem.name == "record_make" and prims_record@record_type_has_only_scalar_fields(fty);
-                case inline_scalar_rec of {
+                // Inline EVERY nested record literal into the outer slab, whatever its fields hold. This is the
+                // layout every reader already assumes: offset_bytes_before_field and
+                // record_type_value_flat_byte_size both recurse into a nested record field unconditionally, so
+                // a field after one is placed as if it were inlined. Storing a pointer instead put one word
+                // where several were expected AND leaked a pointer to a stack copy that dies with the frame,
+                // so reading `outer.nested.field` yielded the nested record's address.
+                // type_checker_core:parse_type_into_context returns
+                //     { context: { env: ctx.env, interner: pr.interner }, id: pr.id, ok: pr.ok }
+                // whose `context` holds a List and a record, so create_type_context handed that address to
+                // prepend as a list handle -- the fault that stopped type checking.
+                //
+                // This is only affordable because strip_spaces_rt no longer rebuilds an already-stripped
+                // string: placing fields this way asks for record_type_starts and flat sizes far more often,
+                // and with the old quadratic strip the seed was OOM-killed emitting
+                // parser/constraint_extract_expr.silica. That unit now costs the same 40s it did before.
+                //
+                // Records only: tuples keep a uniform 8-byte stride with heap-promoted pointers, which is what
+                // the lexer's Token*/Lexer* returns need (see the rec_flat note in emit_flat_tuple_stores).
+                // See trials/codegen_regressions/rec_nested_nonscalar.silica.
+                inline_nested_rec: bool <- elem_is_agg and elem.name == "record_make";
+                case inline_nested_rec of {
                     true -> do
                         inner_asm: string <- emit_flat_record_stores(elem, fty, sp_adjust, field_prefix + base_off, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
                         rest_asm: string <- emit_flat_record_stores(term.right_expr, R, sp_adjust, field_prefix, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
@@ -4765,8 +5024,9 @@ fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, field_pre
                                 true -> emit_inline_record_field_copy_words(temp_reg, store_base, store_offset, 0, prims_record@record_type_value_flat_byte_size(fty) / 8);
                                 false -> concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))))
                             };
+                            reclaim_asm: string <- tuple_elem_sret_reclaim(temp_reg, let_user_call_tuple_sret_stack_bytes(elem, outer_reg, bound_name));
                             rest_asm: string <- emit_flat_record_stores(term.right_expr, R, new_adjust, field_prefix, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
-                            concat(concat(elem_asm, concat("\n", store_asm)), concat("\n", rest_asm))
+                            concat(concat(elem_asm, concat("\n", concat(reclaim_asm, store_asm))), concat("\n", rest_asm))
                         end
                     }
                 }
@@ -4780,27 +5040,26 @@ fn stack_alloc_round16(nbytes: int64) -> int64 {
     (nbytes + 15) / 16 * 16
 }
 
-// Sum nested tuple element allocations within a tuple_make chain of `count` elements.
+// Nested record_make/tuple_make elements self-SUB, then emit_flat_tuple_stores heap-promotes and
+// immediately ADD-reclaims them — they must not also enlarge the outer tuple SUB.
 fn flat_tuple_nested_alloc(term: SIRTerm, remaining: int64, acc: int64) -> int64 {
     case remaining <= 1 of {
-        // At remaining <= 1 `term` is the last element itself (a 2-element tuple stores it in
-        // right_expr rather than another chain node), so a tuple_make here is a nested tuple and
-        // its full allocation counts.
-        true -> case term.kind == 6 and term.name == "tuple_make" of {
-            true -> acc + flat_tuple_total_alloc(term);
-            false -> case term.kind == 6 and term.name == "record_make" of {
-                true -> acc + flat_record_total_alloc(term);
-                false -> acc
-            }
-        };
+        true -> acc;
         false -> case term.kind == 6 and term.name == "tuple_make" of {
-            true -> do
-                elem_bytes: int64 <- agg_alloc_inner(term.inner);
-                flat_tuple_nested_alloc(term.right_expr, remaining - 1, acc + elem_bytes)
-            end;
+            true -> flat_tuple_nested_alloc(term.right_expr, remaining - 1, acc);
             false -> acc
         }
     }
+}
+
+// What a direct `{…}` body actually pushed: the shell, plus the bytes the SUB reserved below it for
+// user-call inline returns, plus any nested make that self-SUBs. The return type describes only the
+// shell, so popping that alone leaked the reserved area; the epilogue's LDP restores then read the
+// wrong slots and the function returned to a garbage address. Same authority the let path uses for
+// its dealloc, and the counterpart of flat_tuple_dealloc_size for tuples.
+// See trials/codegen_regressions/rec_call_field_direct.silica.
+fn flat_record_dealloc_size(term: SIRTerm) -> int64 {
+    flat_record_total_alloc(term)
 }
 
 fn flat_tuple_dealloc_size(term: SIRTerm) -> int64 {
@@ -4810,19 +5069,33 @@ fn flat_tuple_dealloc_size(term: SIRTerm) -> int64 {
     }
 }
 
+// Whether a term is a checked-int64 prim, which owns its own stack slab: see the 0 case in
+// aggregate_callee_return_stack_bytes below for why nobody else may pop it. Exported so the epilogue
+// can ask the same question about a function's return-position tail without importing the prim module.
+fn term_is_checked_int64_prim(term: SIRTerm) -> bool {
+    term.kind == 6 and prims_checked_int64@is_checked_int64_prim(term.name)
+}
+
 // Stack bytes for let dealloc: tuple_make/record_make use flat layout on caller SP.
 // Tuple-returning user calls: caller SUB/MOV X8 is paired in let emission (see base_stack_n),
 // not here — case-branch bare calls use pass-through X8 and must stay at 0 (wbt weight_subtree).
 // Record-returning user calls heap-promote in the callee — no caller sret slab.
+// A checked-int64 prim is also 0: emit_checked_pair_from_regs builds its (ok, value) pair in a
+// 16-byte stack slab but copies it to the region and pops the slab itself, handing back a heap
+// pointer, so there is nothing left for the let to own. Claiming those 16 bytes here popped a slab
+// that no longer existed, and the caller then ran on an SP 16 bytes per prim too high: its next push
+// landed on its own callee-saved save area and its epilogue restored X29/X30 from the wrong slots.
+// wbt_map:smart_node has two such lets (+32) and it destroyed wbt_map:insert_singleton_map, which is
+// where type checking hung; sum_lr_ok, sum_lr_partial, partial_add1_ok, partial_add1_size,
+// weight_le_3x, weight_lt_2x and node_weight_from_ref have one each. The prim comment already warns
+// against leaving that SUB live to the epilogue -- this is the other half of the same agreement.
+// See trials/codegen_regressions/prim_tuple_let.silica.
 fn aggregate_callee_return_stack_bytes(rhs: SIRTerm) -> int64 {
     case reg_conventions@is_aggregate_struct_or_tuple_return_type(rhs.type_name) of {
         false -> 0;
         true -> case rhs.kind == 6 and (rhs.name == "tuple_make" or rhs.name == "record_make") of {
             true -> flat_tuple_dealloc_size(rhs);
-            false -> case rhs.kind == 6 and prims_checked_int64@is_checked_int64_prim(rhs.name) of {
-                true -> 16;
-                false -> 0
-            }
+            false -> 0
         }
     }
 }
@@ -5029,6 +5302,22 @@ fn emit_inline_record_field_copy_words(src_reg: string, store_base: string, dest
 // Only literals take this path: elem_is_agg is kind 6 tuple_make/record_make, so call results
 // that are already heap pointers (Token*, Lexer*, ...) are untouched and tuple elements remain
 // pointers with a stride of 8. That is what keeps tuple_proj readers unchanged.
+// A tuple-returning call in element position leaves its caller sret slab on the stack: the post-BLR
+// ADD is 0 because a let-bound call pops it at let-end, and an element has no let. Nothing else
+// accounts for it -- flat_tuple_nested_alloc and emit_flat_tuple_stores only shift for elements that
+// are themselves a tuple_make / record_make -- so the remaining elements were stored through an SP
+// sitting inside that slab and the tuple's ADD popped less than it pushed, returning on a wrong SP.
+// Copy the aggregate to the heap (the element is stored as a pointer either way) and give the slab
+// back, which keeps every offset and the dealloc size authority correct.
+// See trials/codegen_regressions/tup_call_elem.silica.
+fn tuple_elem_sret_reclaim(reg: string, nbytes: int64) -> string {
+    case nbytes <= 0 of {
+        true -> "";
+        false -> concat(tuple_elem_heap_promote(reg, nbytes),
+                        concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nbytes), "\n")))
+    }
+}
+
 fn tuple_elem_heap_promote(reg: string, nbytes: int64) -> string {
     case nbytes <= 0 of {
         true -> "";

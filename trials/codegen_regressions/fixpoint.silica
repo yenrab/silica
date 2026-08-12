@@ -1,0 +1,76 @@
+// Models constraint_core:propagate_pass + propagate_until_fixed, the loop base/test.silica now
+// spins in. `pass` returns (List, bool) where the bool is combined with the bool from a nested
+// tuple destructure of its own recursive call -- the same shape as constraint_core.silica:223.
+// `until_fixed` recurses while that flag is true.
+//
+// Fuel makes a runaway observable instead of hanging: want 3 (three passes to reach the fixed
+// point for [2, 1]). 999 means `changed` never went false.
+
+fn empty_ints() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_int(x: int64, xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+    produces
+        pure result
+    end
+}
+
+fn list_int_equal(a: List[int64, mem(normal)], b: List[int64, mem(normal)]) -> bool {
+    case a.is_nil of {
+        true -> b.is_nil;
+        false -> case b.is_nil of {
+            true -> false;
+            false -> case a.head == b.head of {
+                true -> list_int_equal(a.tail, b.tail);
+                false -> false
+            }
+        }
+    }
+}
+
+fn dec(x: int64) -> int64 {
+    case x > 0 of { true -> x - 1; false -> 0 }
+}
+
+// One narrowing pass. Returns the new list plus whether anything changed, where "changed" is
+// decided by list_int_equal over per-element role lists, as the real code does.
+fn pass(xs: List[int64, mem(normal)]) -> (List[int64, mem(normal)], bool) {
+    case xs.is_nil of {
+        true -> (xs, false);
+        false -> {
+            h: int64 <- xs.head;
+            nh: int64 <- dec(h);
+            old_roles: List[int64, mem(normal)] <- cons_int(h, empty_ints());
+            new_roles: List[int64, mem(normal)] <- cons_int(nh, empty_ints());
+            changed_here: bool <- case list_int_equal(old_roles, new_roles) of { true -> false; false -> true };
+            (rest_result: List[int64, mem(normal)], changed_rest: bool) <- pass(xs.tail);
+            result: (List[int64, mem(normal)], bool) <- (cons_int(nh, rest_result), case changed_here of { true -> true; false -> changed_rest });
+            result
+        }
+    }
+}
+
+fn until_fixed(xs: List[int64, mem(normal)], passes: int64, fuel: int64) -> int64 {
+    case fuel <= 0 of {
+        true -> 999;
+        false -> {
+            (new_xs: List[int64, mem(normal)], changed: bool) <- pass(xs);
+            case changed of {
+                true -> until_fixed(new_xs, passes + 1, fuel - 1);
+                false -> passes + 1
+            }
+        }
+    }
+}
+
+fn main() -> int64 {
+    xs: List[int64, mem(normal)] <- cons_int(2, cons_int(1, empty_ints()));
+    until_fixed(xs, 0, 20)
+}

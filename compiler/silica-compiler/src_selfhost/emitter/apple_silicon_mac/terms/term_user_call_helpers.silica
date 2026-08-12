@@ -37,6 +37,7 @@ fn term_subterm_has_user_call(t: { nodes: List[{ kind: int64, type_name: string,
         true -> false;
         false -> case term_sir_helpers@sir_term_root_node(t).kind of {
             4 -> true;
+            5 -> true;
             2 -> case term_subterm_has_user_call(term_sir_helpers@sir_term_at(t, term_sir_helpers@sir_term_root_node(t).inner)) of {
                 true -> true;
                 false -> term_subterm_has_user_call(term_sir_helpers@sir_term_at(t, term_sir_helpers@sir_term_root_node(t).right_expr))
@@ -107,9 +108,10 @@ fn simple_gpr_rest_can_stage(rest: { nodes: List[{ kind: int64, type_name: strin
 
 // A computed argument (nested call, prim) may be staged too, which is what keeps a
 // nested call from destroying arguments already sitting in caller-saved X0-X7.
-// Staging pushes 16 bytes per argument, so a leaf reloaded from [SP, #N] would read the
-// wrong slot: every leaf must be a constant or a register-resident var. Only a TUPLE return
-// needs a caller sret buffer that the staging release would pop, so just those stay on the
+// Staging pushes a 16-byte STR slot per argument. record_make/tuple_make SUB SP for their
+// payload; emit_simple_gpr_stage_chain heap-promotes and reclaims that slab before the STR
+// so slots stay contiguous and release (count*16) is sound. Only a TUPLE
+// return needs a caller sret buffer that the staging release would pop, so just those stay on the
 // sequential path; see sret_alloc_bytes in emit_generic_user_call_asm_inner. A record return
 // heap-promotes in the callee and allocates nothing here, so it must be staged like any other
 // call -- rejecting it left the args in X0-X7 while the nested call overwrote them.

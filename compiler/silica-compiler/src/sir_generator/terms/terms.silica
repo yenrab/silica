@@ -1566,7 +1566,7 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
             right_operand_type: string <- case is_shift_op_lexeme(expr.value) of { true -> "int64"; false -> operand_type };
             left: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, operand_type);
             right: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, right_operand_type);
-            build_prim_for_type(expr.value, left, right, operand_type)
+            build_prim_for_type(expr.value, left, right, operand_type, short_circuit_label_id(expr))
         end;
         4 -> do
             call_base: string <- type_checker_core@user_call_base_function_name(expr.name);
@@ -2201,8 +2201,19 @@ fn arg_expected_type(call_name: string, expected_type: string) -> string {
     }
 }
 
-fn build_prim_for_type(op_lexeme: string, left: SIRTerm, right: SIRTerm, expected_type: string) -> SIRTerm {
-    case expected_type of {
+// `and` / `or` must short-circuit (spec sect6: guard evaluation stops at the first false / first
+// true), so the emitter branches over the right operand instead of evaluating it. That branch needs
+// a label unique to this expression; the source offset already serves that purpose for recursion
+// metadata, so sc_id carries "o<offset>" in value, which is otherwise unused on binary-op prims.
+// The emitter falls back to eager evaluation when it is absent, so an unstamped path stays
+// compilable rather than emitting a duplicate label.
+//
+// Both operands of and / or are bool regardless of expected_type, so these build directly instead of
+// going through the per-width modules, which is also the only way to place sc_id in value.
+fn build_prim_for_type(op_lexeme: string, left: SIRTerm, right: SIRTerm, expected_type: string, sc_id: string) -> SIRTerm {
+    case op_lexeme == "and" or op_lexeme == "or" of {
+        true -> SIRTerm { kind: 6, type_name: "bool", value: sc_id, name: op_lexeme, inner: left, right_expr: right };
+        false -> case expected_type of {
         "int32" -> int32_binary_ops@build_prim_from_sir(op_lexeme, left, right);
         "int16" -> int16_binary_ops@build_prim_from_sir(op_lexeme, left, right);
         "int8" -> int8_binary_ops@build_prim_from_sir(op_lexeme, left, right);
@@ -2214,7 +2225,12 @@ fn build_prim_for_type(op_lexeme: string, left: SIRTerm, right: SIRTerm, expecte
         "float32" -> float32_binary_ops@build_prim_from_sir(op_lexeme, left, right);
         "float16" -> float16_binary_ops@build_prim_from_sir(op_lexeme, left, right);
         _: string -> int64_binary_ops@build_prim_from_sir(op_lexeme, left, right)
+        }
     }
+}
+
+fn short_circuit_label_id(expr: Expr) -> string {
+    concat("o", literals@int64_to_decimal_string(expr.location.offset))
 }
 
 fn lower_list_literal_elems(context: TypeContext, expr: Expr, elem_t: string, list_t: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
@@ -2470,7 +2486,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
             right_operand_type: string <- case is_shift_op_lexeme(expr.value) of { true -> "int64"; false -> operand_type };
             left: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, operand_type);
             right: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, right_operand_type);
-            build_prim_for_type(expr.value, left, right, operand_type)
+            build_prim_for_type(expr.value, left, right, operand_type, short_circuit_label_id(expr))
         end;
         4 -> do
             call_base: string <- type_checker_core@user_call_base_function_name(expr.name);

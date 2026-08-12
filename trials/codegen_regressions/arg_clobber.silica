@@ -1,0 +1,48 @@
+// Minimal repro of the base/test.silica hang, modelling constraint_runner:has_unbalanced_braces.
+//
+// `entry` receives xs in X0 and passes it as arg0 to `walk`, while arg2 is zero_loc() -- a
+// zero-argument call returning an aggregate. Staging is refused for aggregate-returning args, so
+// the emitter writes the ABI registers first and then calls zero_loc(), which overwrites X0.
+// `walk` then recurses over a location record as if it were the list.
+//
+// Want 3 (three elements walked). 0 means X0 was clobbered and the walk saw an empty list.
+
+fn zero_loc() -> { line: int64, col: int64 } {
+    { line: 0, col: 0 }
+}
+
+fn empty_ints() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_int(x: int64, xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+    produces
+        pure result
+    end
+}
+
+// Reports how many elements were actually walked, so a clobbered list is visible: the garbage
+// pointer reads as a zero-length list and terminates immediately, giving 0 instead of 3.
+fn walk(xs: List[int64, mem(normal)], depth: int64, loc: { line: int64, col: int64 }) -> (bool, { line: int64, col: int64 }) {
+    case xs.is_nil of {
+        true -> (false, { line: depth, col: 3 });
+        false -> walk(xs.tail, depth + 1, loc)
+    }
+}
+
+// The shape that matters: a parameter in X0 alongside an aggregate-returning call argument.
+fn entry(xs: List[int64, mem(normal)]) -> (bool, { line: int64, col: int64 }) {
+    walk(xs, 0, zero_loc())
+}
+
+fn main() -> int64 {
+    xs: List[int64, mem(normal)] <- cons_int(1, cons_int(2, cons_int(3, empty_ints())));
+    (bad: bool, where: { line: int64, col: int64 }) <- entry(xs);
+    where.line
+}

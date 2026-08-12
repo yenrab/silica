@@ -1,0 +1,61 @@
+// A function whose first parameter is a RECORD and whose body is a single call gets the parameter
+// shadowed into X20 (aggregate_x11_mov) but no X19/X20 save, because the frame decision keyed on the
+// body being a tail user call. X20 is callee-saved, so the caller loses whatever it was holding.
+//
+// ffi_sidecar_loader:collect_program_foreign_symbols is this shape, and it destroyed the accumulator
+// that ffi_link_manifest:collect_closure_foreign_symbols kept across the call, producing foreign
+// symbols for a file that has none.
+//
+// walk keeps `acc` live across the call to depth_of, which is what exposes the clobber. Want 30:
+// three elements, each adding depth_of({a: 10, b: 0}) == 10.
+
+fn empty_ints() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_int(x: int64, xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+    produces
+        pure result
+    end
+}
+
+fn add_pair(x: int64, y: int64) -> int64 {
+    x + y
+}
+
+fn zero() -> int64 {
+    0
+}
+
+// One record parameter, body a lone user call with a nested call in it. The nested call is what makes
+// the parameter get shadowed into X20 rather than the scratch X11 (first_param_aggregate_needs_x11_base
+// requires body_has_bl_producing_prim), and the tail-call body is what suppressed the X19/X20 save.
+// collect_program_foreign_symbols has the same two properties: `loop(program.declarations, nil())`.
+fn depth_of(r: { a: int64, b: int64 }) -> int64 {
+    add_pair(r.a, zero())
+}
+
+fn walk(xs: List[int64, mem(normal)], acc: int64) -> int64 {
+    case xs.is_nil of {
+        true -> acc;
+        false -> {
+            d: int64 <- depth_of({ a: 10, b: 0 });
+            walk(xs.tail, acc + d)
+        }
+    }
+}
+
+fn main() -> int64 {
+    sequence
+        xs: List[int64, mem(normal)] <- cons_int(1, cons_int(2, cons_int(3, empty_ints())));
+        result: int64 <- walk(xs, 0)
+    produces
+        pure result
+    end
+}

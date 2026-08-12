@@ -286,31 +286,28 @@ fn type_name_is_memory_handle_like(type_name: string) -> bool {
     }
 }
 
-// Let tail `name` after binding aggregate tuple/record to `name`; caller passes X8 = sret (|_callee_sret=X8 on outer).
-
-fn id_ret_aggregate_let(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
-    term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 1 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).name == term_sir_helpers@sir_term_root_node(term).name and reg_conventions@is_aggregate_struct_or_tuple_return_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name)
-}
-
-// RHS of the let (term_sir_helpers@sir_term_at(term, sir_term_root_node(term).inner)): tuple_make can use |_tuple_sret=X8 (caller buffer survives RET).
-// record_make must use callee stack + promote — X8 is not preserved across BL before the make (structs_addition/07).
-
-fn aggregate_let_rhs_is_tuple_make(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
-    term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make"
-}
+// A let whose tail returns the aggregate it just bound used to write that tuple straight into the
+// caller's sret buffer via |_tuple_sret=X8. That is unsound. X8 is the AAPCS64 indirect-result
+// register, so it is caller-saved and any intervening call destroys it -- _silica_rt_region_alloc
+// loads into X8. When the tuple's operands themselves come from a call, as in `(n + 1, f)` where n
+// and f were destructured from a recursive call, the store through X8 hit a dead pointer and
+// faulted; the runtime's signal handler then longjmp'd and retried it forever, which presented as
+// a hang rather than a crash.
+//
+// record_make was already excluded from this optimization for exactly this reason. tuple_make now
+// takes the same route: with no _tuple_sret binding it allocates its own slab and heap-promotes,
+// which is what every other tuple return already does. Callers are unaffected because they read
+// the returned pointer out of X0 rather than their own X8 buffer.
+//
+// Do not reintroduce a caller-X8 fast path here without first proving no call can execute between
+// function entry and the make.
 
 fn outer_for_aggregate_let_rhs(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, outer_reg: string) -> string {
-    case id_ret_aggregate_let(term) and len(var@find_sp_binding(outer_reg, "_callee_sret")) > 0 and len(var@find_sp_binding(outer_reg, "_tuple_sret")) == 0 and aggregate_let_rhs_is_tuple_make(term) of {
-        true -> concat(outer_reg, "|_tuple_sret=X8");
-        false -> outer_reg
-    }
+    outer_reg
 }
 
 fn outer_append_id_ret_tuple_sret(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, partial_outer: string, closure_outer: string) -> string {
-    case id_ret_aggregate_let(term) and len(var@find_sp_binding(closure_outer, "_callee_sret")) > 0 and aggregate_let_rhs_is_tuple_make(term) of {
-        true -> concat(partial_outer, "|_tuple_sret=X8");
-        false -> partial_outer
-    }
+    partial_outer
 }
 
 // Types whose let RHS is a single GPR that must survive across device_io / BL (lists, strings, aggregates).

@@ -1,0 +1,52 @@
+// A record literal whose FIRST field is a plain value and whose LATER field is a CALL returning a
+// record, which is the shape of constraint_extract_decls:slots_to_program:
+//     { declarations: decls, location: program_location_from_decls(decls) }
+//
+// A call returning an inline struct gets bytes reserved below the shell and its result copied in,
+// so the shell base sits at SP + those bytes. But the store offsets only pick up that shift from
+// the field that reserves it onwards, so `items` here is written below the shell base while the
+// shell's own field 0 is never initialized. Reading it back yields whatever the previous call left
+// on the stack -- in the compiler, the slots list, which then got walked as if it were declarations.
+//
+// Want 14: 5 from the list plus 9 from the location.
+
+fn empty_ints() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_int(x: int64, xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+    produces
+        pure result
+    end
+}
+
+fn loc_of(n: int64) -> { file: string, line: int64, column: int64, offset: int64 } {
+    { file: "f", line: n, column: 2, offset: 3 }
+}
+
+// sequence/produces, not a direct `{...}` body, so the let path owns the dealloc and pops the whole
+// slab. A direct body pops only the shell and leaks the reserved bytes, which is a separate defect
+// that would otherwise mask this one; see repros/rec_call_field_direct.
+fn build(xs: List[int64, mem(normal)]) -> { items: List[int64, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } {
+    sequence
+        result: { items: List[int64, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } <- { items: xs, location: loc_of(9) }
+    produces
+        pure result
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        xs: List[int64, mem(normal)] <- cons_int(5, empty_ints());
+        p: { items: List[int64, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } <- build(xs);
+        result: int64 <- p.items.head + p.location.line
+    produces
+        pure result
+    end
+}

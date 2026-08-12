@@ -1718,7 +1718,15 @@ fn emit_simple_gpr_arg_to_stage(
         end;
         false -> term_to_asm_opt_bound(arg, "X16", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
     };
-    concat(concat(value_asm, "\n"), "    STR X16, [SP, #-16]!\n")
+    // record_make/tuple_make SUB SP under the value in X16. If that slab stays live, the
+    // staging STR slots are no longer contiguous and release (count*16) pops the payload.
+    // Heap-promote and reclaim so every staged slot is exactly 16 bytes; call dealloc must
+    // not free these bytes again (see use_simple_gpr_parallel_stage in dealloc_bytes_call).
+    reclaim: string <- case is_aggregate_make(arg) of {
+        true -> tuple_elem_sret_reclaim("X16", flat_tuple_dealloc_size(arg));
+        false -> ""
+    };
+    concat(concat(concat(value_asm, "\n"), reclaim), "    STR X16, [SP, #-16]!\n")
 }
 
 fn emit_simple_gpr_rest_to_stage(
@@ -1867,13 +1875,29 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
     // arguments.  X17 is caller-saved, so capture it in a stack slot before
     // argument evaluation and reload it afterward.  The offset accounts for
     // tuple arguments that remain allocated until the call completes.
-    arg_stack_bytes_before_call: int64 <- call_tuple_args_dealloc_bytes(term.inner)
+    // Parallel staging heap-promotes aggregate-make args before the call, so those
+    // slabs are not live across BLR/BR. Compute staging eligibility before the tail
+    // decision; otherwise a kind-5 body demotes to BLR while the outer emitter still
+    // omits the epilogue (fall-through hang). See trials/codegen_regressions/bound_wrap.
+    staged_arg_count_early: int64 <- 1 + simple_gpr_call_arg_count(term.right_expr);
+    use_simple_gpr_parallel_stage: bool <- staged_arg_count_early <= 8
+        and simple_gpr_call_arg_can_stage(term.inner, outer_reg)
+        and simple_gpr_rest_can_stage(term.right_expr, outer_reg);
+    arg_stack_bytes_raw: int64 <- call_tuple_args_dealloc_bytes(term.inner)
         + call_tuple_args_dealloc_bytes(term.right_expr);
+    arg_stack_bytes_before_call: int64 <- case use_simple_gpr_parallel_stage of {
+        true -> 0;
+        false -> arg_stack_bytes_raw
+    };
     // p5 tail (LDP frame + BR) must not run while call-arg stack slabs are live.
     // Otherwise LDP pops the arg region (corrupting LR) and post-call ADD SP is unreachable.
-    arg_has_stack_aggregate: bool <- is_aggregate_make(term.inner)
+    arg_has_stack_aggregate_raw: bool <- is_aggregate_make(term.inner)
         or (term.right_expr.kind >= 0 and (is_aggregate_make(term.right_expr)
             or (term.right_expr.name == "user_call_rest" and is_aggregate_make(term.right_expr.inner))));
+    arg_has_stack_aggregate: bool <- case use_simple_gpr_parallel_stage of {
+        true -> false;
+        false -> arg_has_stack_aggregate_raw
+    };
     effective_use_tail: bool <- case use_tail of {
         true -> arg_stack_bytes_before_call == 0 and arg_has_stack_aggregate == false;
         false -> false
@@ -2030,10 +2054,6 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         and arg1_reg == "X0"
         and arg2_term_ok
         and arg2_bound_in_x0_or_w0;
-    staged_arg_count: int64 <- 1 + simple_gpr_call_arg_count(term.right_expr);
-    use_simple_gpr_parallel_stage: bool <- staged_arg_count <= 8
-        and simple_gpr_call_arg_can_stage(term.inner, outer_reg)
-        and simple_gpr_rest_can_stage(term.right_expr, outer_reg);
     args_asm: string <- case use_simple_gpr_parallel_stage of {
         true -> emit_simple_gpr_parallel_args(term.inner, term.right_expr, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
         false -> case len(rest_asm) > 0 of {
@@ -2073,6 +2093,12 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         true -> concat("\n    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(dealloc_bytes_call), ""));
         false -> ""
     };
+    // Kind-5 bodies omit the outer epilogue expecting a BR. If we demoted to BLR
+    // (stack arg still live on the sequential path), restore the frame and RET here.
+    demoted_tail_epilogue: string <- case use_tail and effective_use_tail == false of {
+        true -> concat(control@function_tail_frame_release(fn_effects_for_tail), "    RET\n");
+        false -> ""
+    };
     fuel: string <- case effective_use_tail of {
         true -> recursion_support@emit_fuel_backedge_stub_comment();
         false -> ""
@@ -2081,7 +2107,7 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         true -> concat(line_before_call_asm, "\n");
         false -> ""
     };
-    concat(fuel, concat(sret_setup, concat(callee_prep, concat(concat(concat(concat(args_asm, callee_reload_after_args), before_call), call_asm), dealloc_asm_call))))
+    concat(fuel, concat(sret_setup, concat(callee_prep, concat(concat(concat(concat(concat(args_asm, callee_reload_after_args), before_call), call_asm), dealloc_asm_call), demoted_tail_epilogue))))
 }
 
 // Root function body only: SIR kind 5 tail user call with enclosing function effects for frame release + barriers.
@@ -3195,7 +3221,9 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     false -> term_to_asm_opt_bound(term.right_expr.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                 };
                 op_asm: string <- prims@emit_prim_op(term, dest);
-                guarded_arg3: string <- concat("    STR X1, [SP, #-16]!\n", concat(arg3_asm, "\n    LDR X1, [SP], #16\n"));
+                // arg3 (end) often embeds len/add and clobbers X0/X1. Saving only X1 left
+                // substring(s, i, i+len(kw)) calling substring(kw, ...) — false keyword hits.
+                guarded_arg3: string <- concat("    STP X0, X1, [SP, #-16]!\n", concat(arg3_asm, "\n    LDP X0, X1, [SP], #16\n"));
                 concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), guarded_arg3), op_asm)
             end;
             false -> case prims_list@is_list_prim(term.name) of {

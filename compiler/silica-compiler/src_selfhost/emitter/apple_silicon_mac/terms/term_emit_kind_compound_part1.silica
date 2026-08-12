@@ -64,37 +64,23 @@ fn emit_flat_tuple_stores(term: { nodes: List[{ kind: int64, type_name: string, 
                 };
                 false -> case elem_is_agg of {
                     true -> {
-                        rec_flat: bool <- term_sir_helpers@sir_term_root_node(elem).kind == 6 and term_sir_helpers@sir_term_root_node(elem).name == "record_make" and idx == 0 and count >= 2;
-                        case rec_flat of {
-                            true -> {
-                                rec_R: string <- term_sir_helpers@sir_term_root_node(elem).type_name;
-                                rsz: int64 <- prims_record@record_type_value_flat_byte_size(rec_R);
-                                qw: int64 <- rsz / 8;
-                                rec_sp_round: int64 <- term_record_layout@record_make_stack_alloc_size(rec_R);
-                                dest_base: int64 <- case len(store_base) > 0 of {
-                                    true -> byte_cursor;
-                                    false -> byte_cursor + rec_sp_round
-                                };
-                                memcpy_asm: string <- term_aggregate_helpers@emit_reg_to_flat_qwords_memcpy_loop(0, qw, temp_reg, store_base, dest_base);
-                                next_bc: int64 <- byte_cursor + rsz;
-                                restore_rec_sp: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(rec_sp_round), "\n"));
-                                rest_asm: string <- emit_flat_tuple_stores(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), idx + 1, count, new_adjust, next_bc, store_base, bound, emit_child);
-                                concat(concat(elem_asm, concat("\n", memcpy_asm)), concat(concat("\n", restore_rec_sp), concat("\n", rest_asm)))
-                            };
-                            false -> {
-                                store_offset: int64 <- idx * 8 + new_adjust;
-                                promote_asm: string <- term_aggregate_helpers@tuple_elem_heap_promote(temp_reg, nested_bytes);
-                                store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", term_aggregate_helpers@tuple_flat_memref(store_base, store_offset))));
-                                next_bc: int64 <- store_offset + 8;
-                                rest_asm: string <- emit_flat_tuple_stores(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), idx + 1, count, new_adjust, next_bc, store_base, bound, emit_child);
-                                concat(concat(elem_asm, concat("\n", concat(promote_asm, store_asm))), concat("\n", rest_asm))
-                            }
-                        }
+                        store_offset: int64 <- idx * 8 + sp_adjust;
+                        promote_asm: string <- term_aggregate_helpers@tuple_elem_heap_promote(temp_reg, nested_bytes);
+                        reclaim_nested: string <- case nested_bytes > 0 of {
+                            true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nested_bytes), "\n"));
+                            false -> ""
+                        };
+                        store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", term_aggregate_helpers@tuple_flat_memref(store_base, store_offset))));
+                        next_bc: int64 <- store_offset + 8;
+                        rest_asm: string <- emit_flat_tuple_stores(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), idx + 1, count, sp_adjust, next_bc, store_base, bound, emit_child);
+                        concat(concat(elem_asm, concat("\n", concat(promote_asm, concat(reclaim_nested, store_asm)))), concat("\n", rest_asm))
                     };
                     false -> {
+                        promote_var_asm: string <- term_aggregate_helpers@tuple_elem_heap_promote(temp_reg, term_aggregate_helpers@tuple_elem_var_aggregate_promote_bytes(elem, bound.bound_name));
+                        reclaim_asm: string <- term_aggregate_helpers@tuple_elem_sret_reclaim(temp_reg, term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(elem, bound.outer_reg, bound.bound_name));
                         store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", term_aggregate_helpers@tuple_flat_memref(store_base, byte_cursor))));
                         rest_asm: string <- emit_flat_tuple_stores(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), idx + 1, count, new_adjust, byte_cursor + 8, store_base, bound, emit_child);
-                        concat(concat(elem_asm, concat("\n", store_asm)), concat("\n", rest_asm))
+                        concat(concat(elem_asm, concat("\n", concat(promote_var_asm, concat(reclaim_asm, store_asm)))), concat("\n", rest_asm))
                     }
                 }
             }
@@ -118,20 +104,25 @@ fn emit_flat_tuple_stores(term: { nodes: List[{ kind: int64, type_name: string, 
                 true -> term_aggregate_helpers@agg_alloc_inner(term);
                 false -> 0
             };
-            new_adjust: int64 <- sp_adjust + nested_bytes;
             box_f32_last: bool <- count > 1 and elem_is_agg == false and reg_conventions@is_float32_type(term_sir_helpers@sir_term_root_node(term).type_name);
             case box_f32_last of {
                 true -> concat(elem_asm, concat("\n", term_aggregate_helpers@emit_flat_float32_boxed_pair(store_base, byte_cursor, temp_reg)));
                 false -> case elem_is_agg of {
                     true -> {
-                        store_offset: int64 <- idx * 8 + new_adjust;
+                        store_offset: int64 <- idx * 8 + sp_adjust;
                         promote_asm: string <- term_aggregate_helpers@tuple_elem_heap_promote(temp_reg, nested_bytes);
+                        reclaim_nested: string <- case nested_bytes > 0 of {
+                            true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nested_bytes), "\n"));
+                            false -> ""
+                        };
                         store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", term_aggregate_helpers@tuple_flat_memref(store_base, store_offset))));
-                        concat(elem_asm, concat("\n", concat(promote_asm, store_asm)))
+                        concat(elem_asm, concat("\n", concat(promote_asm, concat(reclaim_nested, store_asm))))
                     };
                     false -> {
+                        promote_var_asm: string <- term_aggregate_helpers@tuple_elem_heap_promote(temp_reg, term_aggregate_helpers@tuple_elem_var_aggregate_promote_bytes(term, bound.bound_name));
+                        reclaim_asm: string <- term_aggregate_helpers@tuple_elem_sret_reclaim(temp_reg, term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(term, bound.outer_reg, bound.bound_name));
                         store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", term_aggregate_helpers@tuple_flat_memref(store_base, byte_cursor))));
-                        concat(elem_asm, concat("\n", store_asm))
+                        concat(elem_asm, concat("\n", concat(promote_var_asm, concat(reclaim_asm, store_asm))))
                     }
                 }
             }
@@ -151,8 +142,27 @@ fn emit_flat_record_stores(term: { nodes: List[{ kind: int64, type_name: string,
                 fty: string <- prims_record@find_field_type_in_record(R, fname);
                 base_off: int64 <- prims_record@offset_bytes_before_field(R, fname);
                 elem_is_agg: bool <- term_sir_helpers@sir_term_root_node(elem).kind == 6 and (term_sir_helpers@sir_term_root_node(elem).name == "tuple_make" or term_sir_helpers@sir_term_root_node(elem).name == "record_make");
-                inline_scalar_rec: bool <- elem_is_agg and term_sir_helpers@sir_term_root_node(elem).name == "record_make" and prims_record@record_type_has_only_scalar_fields(fty);
-                case inline_scalar_rec of {
+                // Inline EVERY nested record literal into the outer slab, whatever its fields hold. This is the
+                // layout every reader already assumes: offset_bytes_before_field and
+                // record_type_value_flat_byte_size both recurse into a nested record field unconditionally, so
+                // a field after one is placed as if it were inlined. Storing a pointer instead put one word
+                // where several were expected AND leaked a pointer to a stack copy that dies with the frame,
+                // so reading `outer.nested.field` yielded the nested record's address.
+                // type_checker_core:parse_type_into_context returns
+                //     { context: { env: ctx.env, interner: pr.interner }, id: pr.id, ok: pr.ok }
+                // whose `context` holds a List and a record, so create_type_context handed that address to
+                // prepend as a list handle -- the fault that stopped type checking.
+                //
+                // This is only affordable because strip_spaces_rt no longer rebuilds an already-stripped
+                // string: placing fields this way asks for record_type_starts and flat sizes far more often,
+                // and with the old quadratic strip the seed was OOM-killed emitting
+                // parser/constraint_extract_expr.silica. That unit now costs the same 40s it did before.
+                //
+                // Records only: tuples keep a uniform 8-byte stride with heap-promoted pointers, which is what
+                // the lexer's Token*/Lexer* returns need (see the rec_flat note in emit_flat_tuple_stores).
+                // See trials/codegen_regressions/rec_nested_nonscalar.silica.
+                inline_nested_rec: bool <- elem_is_agg and term_sir_helpers@sir_term_root_node(elem).name == "record_make";
+                case inline_nested_rec of {
                     true -> emit_flat_record_stores(elem, fty, sp_adjust, field_prefix + base_off, store_base, bound, emit_child);
                     false -> case term_sir_helpers@sir_term_root_node(elem).kind == 6 and term_sir_helpers@sir_term_root_node(elem).name == "tuple_make" and prims_tuple@count_flat_elements(elem) == 2 of {
                         true -> {
@@ -198,7 +208,8 @@ fn emit_flat_record_stores(term: { nodes: List[{ kind: int64, type_name: string,
                                 true -> term_aggregate_helpers@emit_inline_record_field_copy_words(temp_reg, store_base, store_offset, 0, prims_record@record_type_value_flat_byte_size(fty) / 8);
                                 false -> concat("    STR ", concat(temp_reg, concat(", ", term_aggregate_helpers@tuple_flat_memref(store_base, store_offset))))
                             };
-                            concat(elem_asm, concat("\n", store_asm))
+                            reclaim_asm: string <- term_aggregate_helpers@tuple_elem_sret_reclaim(temp_reg, term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(elem, bound.outer_reg, bound.bound_name));
+                            concat(elem_asm, concat("\n", concat(reclaim_asm, store_asm)))
                         }
                     }
                 }
@@ -209,8 +220,27 @@ fn emit_flat_record_stores(term: { nodes: List[{ kind: int64, type_name: string,
                 fty: string <- prims_record@find_field_type_in_record(R, fname);
                 base_off: int64 <- prims_record@offset_bytes_before_field(R, fname);
                 elem_is_agg: bool <- term_sir_helpers@sir_term_root_node(elem).kind == 6 and (term_sir_helpers@sir_term_root_node(elem).name == "tuple_make" or term_sir_helpers@sir_term_root_node(elem).name == "record_make");
-                inline_scalar_rec: bool <- elem_is_agg and term_sir_helpers@sir_term_root_node(elem).name == "record_make" and prims_record@record_type_has_only_scalar_fields(fty);
-                case inline_scalar_rec of {
+                // Inline EVERY nested record literal into the outer slab, whatever its fields hold. This is the
+                // layout every reader already assumes: offset_bytes_before_field and
+                // record_type_value_flat_byte_size both recurse into a nested record field unconditionally, so
+                // a field after one is placed as if it were inlined. Storing a pointer instead put one word
+                // where several were expected AND leaked a pointer to a stack copy that dies with the frame,
+                // so reading `outer.nested.field` yielded the nested record's address.
+                // type_checker_core:parse_type_into_context returns
+                //     { context: { env: ctx.env, interner: pr.interner }, id: pr.id, ok: pr.ok }
+                // whose `context` holds a List and a record, so create_type_context handed that address to
+                // prepend as a list handle -- the fault that stopped type checking.
+                //
+                // This is only affordable because strip_spaces_rt no longer rebuilds an already-stripped
+                // string: placing fields this way asks for record_type_starts and flat sizes far more often,
+                // and with the old quadratic strip the seed was OOM-killed emitting
+                // parser/constraint_extract_expr.silica. That unit now costs the same 40s it did before.
+                //
+                // Records only: tuples keep a uniform 8-byte stride with heap-promoted pointers, which is what
+                // the lexer's Token*/Lexer* returns need (see the rec_flat note in emit_flat_tuple_stores).
+                // See trials/codegen_regressions/rec_nested_nonscalar.silica.
+                inline_nested_rec: bool <- elem_is_agg and term_sir_helpers@sir_term_root_node(elem).name == "record_make";
+                case inline_nested_rec of {
                     true -> {
                         inner_asm: string <- emit_flat_record_stores(elem, fty, sp_adjust, field_prefix + base_off, store_base, bound, emit_child);
                         rest_asm: string <- emit_flat_record_stores(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), R, sp_adjust, field_prefix, store_base, bound, emit_child);
@@ -263,7 +293,8 @@ fn emit_flat_record_stores(term: { nodes: List[{ kind: int64, type_name: string,
                                 false -> concat("    STR ", concat(temp_reg, concat(", ", term_aggregate_helpers@tuple_flat_memref(store_base, store_offset))))
                             };
                             rest_asm: string <- emit_flat_record_stores(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), R, new_adjust, field_prefix, store_base, bound, emit_child);
-                            concat(concat(elem_asm, concat("\n", store_asm)), concat("\n", rest_asm))
+                            reclaim_asm: string <- term_aggregate_helpers@tuple_elem_sret_reclaim(temp_reg, term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(elem, bound.outer_reg, bound.bound_name));
+                            concat(concat(elem_asm, concat("\n", concat(reclaim_asm, store_asm))), concat("\n", rest_asm))
                         }
                     }
                 }
@@ -324,7 +355,17 @@ case term_sir_helpers@sir_term_root_node(term).name == "tuple_make" of {
                             // safely when the make has no prior BL; record_make often follows region_alloc / other BL.
                             sret_base_r: string <- "";
                             alloc_asm_r: string <- concat("    SUB SP, SP, #", concat(atom_table@int64_to_decimal_string(alloc_sz_r), "\n"));
-                            stores_base_asm_r: string <- emit_flat_record_stores(term, Rm, 0, 0, sret_base_r, bound, emit_child);
+                            // Stores start already shifted past the reserved user-call area, because the shell sits ABOVE
+                            // it: nested_adjust_r below places the returned base at SP + reserved + self-SUB'd makes.
+                            // sp_adjust only tracks SP actually moving, which a memcpy'd user-call return never does, so
+                            // starting at 0 shifted a field only from the reserving field onwards. Fields emitted EARLIER
+                            // then landed below the shell base and the shell's own slot was never written, so reading the
+                            // field back returned whatever the preceding call left on the stack. That is what fed the
+                            // slots list into `declarations` in constraint_extract_decls:slots_to_program,
+                            //     { declarations: decls, location: program_location_from_decls(decls) }
+                            // whose declarations were later walked as if they were declarations. See
+                            // trials/codegen_regressions/rec_call_field.silica.
+                            stores_base_asm_r: string <- emit_flat_record_stores(term, Rm, term_aggregate_helpers@flat_record_sum_nested_reserved_in_outer(term), 0, sret_base_r, bound, emit_child);
                             hidden_child_tramp_r: string <- term_child_spec@emit_child_spec_hidden_trampoline_store(term, Rm);
                             stores_asm_r: string <- case len(hidden_child_tramp_r) > 0 of {
                                 true -> concat(stores_base_asm_r, concat("\n", hidden_child_tramp_r));
@@ -495,7 +536,13 @@ case term_sir_helpers@sir_term_root_node(term).name == "tuple_make" of {
                             tp_var: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 of { true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name; false -> "" };
                             va_key: string <- concat("_va.", tp_var);
                             va_str: string <- case len(tp_var) > 0 of { true -> var@find_sp_binding(bound.outer_reg, va_key); false -> "" };
-                            var_binding: string <- case len(tp_var) > 0 of { true -> var@find_sp_binding(bound.outer_reg, tp_var); false -> "" };
+                            // Last, not first, for the same reason as the _ptr lookup below and as record_proj:
+                            // every tuple destructure names its root %_td_0, so two destructures in one scope leave
+                            // bound.outer_reg holding `%_td_0=X19|...|%_td_0=X23`. Taking the first match read fields
+                            // out of the earlier tuple's pointer -- field 0 happened to be right only because it
+                            // resolves through bound.bound_reg instead, which is why the wrong base showed up from
+                            // field 1 onwards.
+                            var_binding: string <- case len(tp_var) > 0 of { true -> var@find_last_sp_binding(bound.outer_reg, tp_var); false -> "" };
                             // Look up the saved tuple pointer using find_last_sp_binding to get the INNERMOST binding.
                             // When nested tuple decompositions reuse the same root variable (e.g. %_td_0 for both
                             // outer and inner destructuring), bound.outer_reg accumulates multiple _ptr.%_td_0=... entries.

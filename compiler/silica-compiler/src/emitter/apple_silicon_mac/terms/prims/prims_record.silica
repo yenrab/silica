@@ -134,30 +134,52 @@ fn list_cons_stack_round16(nbytes: int64) -> int64 {
     (nbytes + 15) / 16 * 16
 }
 
-// Bytes copied from SP into list cons cells for inline record heads. Must match record_make stack
-// allocation (term_emitter ~1890): scalar-only records → round16(value-flat); else →
-// flat_alloc_size(field_count). record_type_flat_stack_bytes can be larger (nested shell), which
-// made list_cons copy past the record_make frame (e.g. supervisor child_spec: 64 vs 48) and
-// corrupted tail pointers.
+// Bytes copied from SP into list cons cells for inline record heads. This must equal what record_make
+// actually lays out, which is term_emitter:record_make_stack_alloc_size, i.e.
+// round16(record_type_value_flat_byte_size) -- so both go through record_type_value_flat_byte_size and
+// there is a single authority for the size. record_type_flat_stack_bytes must not be used: it can be
+// larger (nested shell), which made list_cons copy past the record_make frame and corrupt tail pointers.
+//
+// Records with a non-scalar field used to get one word per field instead. That silently truncated any
+// element with a nested record field, because record_make INLINES such a field rather than storing a
+// pointer to it: the parser's token slot
+//     { token: { kind, lexeme, location }, possible_roles: List[int64] }
+// is 8 + 8 + 32 + 8 = 56 bytes rounded to 64, but two fields gave 16, so consecutive elements
+// overlapped and every field past the first two was lost. slot.possible_roles then read as 0 and
+// constraint_core:slot_role faulted on it, which is what hung the compiler on `fn main() { 42 }`.
+// See trials/codegen_regressions/list_rec_nested.silica.
 fn record_type_list_cons_payload_bytes(record_str: string) -> int64 {
     R: string <- strip_spaces_rt(record_str);
     case record_type_starts(R) of {
         false -> 8;
         true -> case record_type_is_child_spec(R) of {
             true -> 56;
-            false -> case record_type_has_only_scalar_fields(R) of {
-                true -> list_cons_stack_round16(record_type_value_flat_byte_size(R));
-                false -> do
-                    c: int64 <- count_record_fields(R);
-                    (c + 1) / 2 * 16
-                end
-            }
+            false -> list_cons_stack_round16(record_type_value_flat_byte_size(R))
         }
     }
 }
 
+// strip_spaces_rt_from appends one character at a time, so it allocates O(n^2) bytes for an
+// n-character string and none of it is ever reclaimed. The emitter strips a record type once and then
+// passes substrings of that stripped text down, so the overwhelmingly common case is a string that has
+// no spaces left to remove -- returning it untouched costs a linear scan and no allocation at all.
+// Without this, emitting the compiler's own record types (thousands of characters, five levels deep,
+// re-stripped at every field of every nesting level) exhausted memory.
 fn strip_spaces_rt(s: string) -> string {
-    strip_spaces_rt_from(s, 0, "")
+    case string_has_space_rt(s, 0) of {
+        true -> strip_spaces_rt_from(s, 0, "");
+        false -> s
+    }
+}
+
+fn string_has_space_rt(s: string, i: int64) -> bool {
+    case i >= len(s) of {
+        true -> false;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> true;
+            false -> string_has_space_rt(s, i + 1)
+        }
+    }
 }
 
 fn strip_spaces_rt_from(s: string, i: int64, acc: string) -> string {
@@ -170,9 +192,22 @@ fn strip_spaces_rt_from(s: string, i: int64, acc: string) -> string {
     }
 }
 
+// Only the first non-space character matters, so do not build a stripped copy of the whole type to
+// look at it. This is asked once per field per nesting level while placing a record's fields, which on
+// the compiler's own types meant stripping a multi-thousand-character string thousands of times.
 fn record_type_starts(s: string) -> bool {
-    t: string <- strip_spaces_rt(s);
-    len(t) > 0 and substring(t, 0, 1) == "{"
+    i: int64 <- first_non_space_index_rt(s, 0);
+    i < len(s) and substring(s, i, i + 1) == "{"
+}
+
+fn first_non_space_index_rt(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> i;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> first_non_space_index_rt(s, i + 1);
+            false -> i
+        }
+    }
 }
 
 fn extract_inner_from_brace(t: string, i: int64, depth: int64) -> string {

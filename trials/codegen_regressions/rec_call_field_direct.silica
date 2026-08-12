@@ -1,0 +1,40 @@
+// The direct-body variant of rec_call_field: `build`'s body IS the record literal, with no
+// sequence/produces around it. The slab is SUB'd as shell + reserved-call bytes but the epilogue
+// pops only the shell, so those bytes leak, the LDP restores read the wrong slots and the function
+// returns to a garbage address. That is a defect distinct from the store-offset one that
+// rec_call_field isolates, and it is not what the compiler tripped over, because slots_to_program
+// has a sequence body. Want 14.
+
+fn empty_ints() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_int(x: int64, xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+    produces
+        pure result
+    end
+}
+
+fn loc_of(n: int64) -> { file: string, line: int64, column: int64, offset: int64 } {
+    { file: "f", line: n, column: 2, offset: 3 }
+}
+
+fn build(xs: List[int64, mem(normal)]) -> { items: List[int64, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } {
+    { items: xs, location: loc_of(9) }
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        xs: List[int64, mem(normal)] <- cons_int(5, empty_ints());
+        p: { items: List[int64, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } <- build(xs);
+        result: int64 <- p.items.head + p.location.line
+    produces
+        pure result
+    end
+}

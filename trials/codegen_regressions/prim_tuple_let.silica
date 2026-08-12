@@ -1,0 +1,68 @@
+// A let-bound tuple returned by a checked-int64 PRIMITIVE, then destructured. The primitive hands its
+// result back in registers, so the emitter builds a 16-byte tuple on the stack and heap-promotes it,
+// popping the slab as part of that promotion. The let scope then pops the same slab a second time at
+// the end of the body, so the function RETs with SP 16 bytes too high per let-bound primitive tuple.
+//
+// A callee that over-pops leaves its caller running on a wrong SP: the caller's next push lands on its
+// own callee-saved save area, and its epilogue restores X29/X30 from the wrong slots and returns to a
+// garbage address. wbt_map:smart_node has two such tuples (+32) and it wrecked
+// wbt_map:insert_singleton_map, which is how type checking hung. sum_lr_ok, sum_lr_partial,
+// partial_add1_ok, partial_add1_size, weight_le_3x, weight_lt_2x and node_weight_from_ref have one
+// each (+16).
+//
+// The same slab is claimed twice on two independent paths: a let-bound prim (the let's dealloc, via
+// term_emitter:aggregate_callee_return_stack_bytes) and a prim in return position (the epilogue's
+// tuple_ret_promote / tuple_ret_dealloc, via emitter_core:tuple_callee_skips_tuple_ret_dealloc).
+//
+// sp_check.py on this test.sams is the precise check; the exit code is the visible symptom.
+// Want 40: 3 + 30 + 7.
+
+fn sum_ok(a: int64, b: int64) -> boolean {
+    p: (boolean, int64) <- checked_int64_add(a, b);
+    (ok: boolean, _: int64) <- p;
+    ok
+}
+
+fn sum_value(a: int64, b: int64) -> int64 {
+    p: (boolean, int64) <- checked_int64_add(a, b);
+    (_: boolean, v: int64) <- p;
+    v
+}
+
+// Two let-bound primitive tuples in one body, the shape of wbt_map:smart_node.
+fn sum_twice(a: int64, b: int64) -> int64 {
+    p1: (boolean, int64) <- checked_int64_add(a, b);
+    (ok1: boolean, v1: int64) <- p1;
+    p2: (boolean, int64) <- checked_int64_add(v1, 10);
+    (ok2: boolean, v2: int64) <- p2;
+    case ok1 of {
+        false -> 0;
+        true -> case ok2 of {
+            false -> 0;
+            true -> v2
+        }
+    }
+}
+
+// The prim in RETURN position rather than let-bound: the function's own result IS the prim's pair, so
+// the epilogue (not a let) decides who promotes and pops it. wbt_map:node_weight_from_ref is this shape.
+fn add1_pair_of(x: int64) -> (boolean, int64) {
+    y: int64 <- x + 0;
+    checked_int64_add1(y)
+}
+
+fn add1_value(x: int64) -> int64 {
+    p: (boolean, int64) <- add1_pair_of(x);
+    (_: boolean, v: int64) <- p;
+    v
+}
+
+fn main() -> int64 {
+    a: int64 <- sum_value(1, 2);
+    b: int64 <- sum_twice(10, 10);
+    c: int64 <- add1_value(6);
+    case sum_ok(1, 2) of {
+        false -> 0;
+        true -> a + b + c
+    }
+}

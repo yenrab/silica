@@ -1,0 +1,19 @@
+// The record counterpart of tup_call_elem: a record literal whose field is a TUPLE-returning call.
+// Such a call SUBs its own caller sret slab and hands back a heap pointer, but
+// flat_record_sum_nested_reserved_in_outer also reserved those bytes in the outer record SUB. That is
+// right for a record-returning call (the callee heap-promotes, SP does not move, the result is
+// memcpy'd into the reserved area) and wrong here: the bytes were claimed twice, the callee's slab was
+// never popped, and the fields after it shifted. main then returned on an SP 16 bytes too low, so the
+// epilogue restored X29/X30 from the wrong slots and the program jumped to a garbage address and hung.
+// The field store now reclaims the slab the way tuple elements do (tuple_elem_sret_reclaim), and
+// neither the outer SUB nor the nested-inner sums count those bytes.
+// Want 9.
+
+fn pair() -> (int64, int64) {
+    (5, 6)
+}
+
+fn main() -> int64 {
+    r: { p: (int64, int64), b: int64 } <- { p: pair(), b: 9 };
+    r.b
+}

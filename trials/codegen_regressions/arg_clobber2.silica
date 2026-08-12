@@ -1,0 +1,42 @@
+// arg_clobber, but with constraint_runner:has_unbalanced_braces's exact signature shape: a 4-field
+// record containing a string, and a 3-tuple return containing a string. arg_clobber (2-field record,
+// 2-tuple return) stages correctly and passes; the real function does not stage and reads X0 after
+// zero_location() clobbered it. Want 3 (three elements walked).
+
+fn empty_ints() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_int(x: int64, xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+    produces
+        pure result
+    end
+}
+
+fn zero_location() -> { file: string, line: int64, column: int64, offset: int64 } {
+    { file: "", line: 0, column: 0, offset: 0 }
+}
+
+fn walk(slots: List[int64, mem(normal)], depth: int64, open_loc: { file: string, line: int64, column: int64, offset: int64 }) -> (bool, { file: string, line: int64, column: int64, offset: int64 }, string) {
+    case slots.is_nil of {
+        true -> (false, { file: "", line: depth, column: 3, offset: 0 }, "");
+        false -> walk(slots.tail, depth + 1, open_loc)
+    }
+}
+
+// The shape that matters: arg0 is a pass-through parameter in X0, arg2 is a record-returning call.
+fn entry(slots: List[int64, mem(normal)]) -> (bool, { file: string, line: int64, column: int64, offset: int64 }, string) {
+    walk(slots, 0, zero_location())
+}
+
+fn main() -> int64 {
+    xs: List[int64, mem(normal)] <- cons_int(5, cons_int(6, cons_int(7, empty_ints())));
+    (bad: bool, where: { file: string, line: int64, column: int64, offset: int64 }, msg: string) <- entry(xs);
+    where.line
+}

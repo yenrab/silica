@@ -20,6 +20,7 @@
 
 use prims;
 use term_sir_helpers;
+use term_user_call_helpers;
 
 export emit_kind_compound_compare/4;
 
@@ -379,7 +380,13 @@ op_asm: string <- prims@emit_prim_op(term, dest);
                                                     }
                                                 };
                                                 right_simple_for_left_prim: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 0 or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 1;
-                                                preserve_left_for_right: bool <- right_simple_for_left_prim == false and is_string_prim == false and is_float64 == false and is_float32 == false and is_float16 == false;
+                                                // String concat keeps its left operand in X0, which a call in the right operand
+                                                // destroys: the emitted code was `BL L_concat_helper` (left in X0), the call, then
+                                                // `MOV X1, X0 / BL L_concat_helper`, so both operands became the right one. That is
+                                                // half of why the selfhost emitted " 0 0" per atom instead of the atom's bytes.
+                                                // See trials/codegen_regressions/concat_call_operand.silica.
+                                                right_calls_for_left_prim: bool <- term_user_call_helpers@term_subterm_has_user_call(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
+                                                preserve_left_for_right: bool <- right_simple_for_left_prim == false and (is_string_prim == false or right_calls_for_left_prim) and is_float64 == false and is_float32 == false and is_float16 == false;
                                                 case preserve_left_for_right of {
                                                     true -> {
                                                         save_left_np: string <- concat(concat("    STR ", left_reg), ", [SP, #-16]!\n");
@@ -455,7 +462,16 @@ op_asm: string <- prims@emit_prim_op(term, dest);
                                             // When right operand is a call (kind 4), save/restore left_reg across it (AAPCS64: X9-X15 are caller-saved).
                                             left_is_call: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 4;
                                             right_is_call: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 4;
-                                            case right_is_call and is_string_prim == false of {
+                                            // A call anywhere inside the right operand clobbers the left operand's register,
+                                            // not just a call at its root, and string concat is no exception: its left operand
+                                            // sits in X0, which every call returns into. `concat(one, rest(tail))` --
+                                            // print_atom_inline:emit_rodata_entries -- emitted the left, then the call, then
+                                            // MOV X1, X0 / BL L_concat_helper, so both operands became the call's result and
+                                            // the fold collapsed to its base case "". That is why the selfhost emitted an
+                                            // empty L_pa_table and no function bodies.
+                                            // See trials/codegen_regressions/concat_fold_call.silica.
+                                            right_calls_here: bool <- term_user_call_helpers@term_subterm_has_user_call(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
+                                            case right_calls_here or right_is_call of {
                                                 true -> {
                                                     save_left: string <- concat(concat("    STR ", left_reg), ", [SP, #-16]!\n");
                                                     restore_left: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");

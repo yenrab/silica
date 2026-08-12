@@ -1,0 +1,61 @@
+// Models constraint_runner:has_unbalanced_braces_walk, the function base/test.silica now
+// spins in. Tail-recursive walk over a list returning a 3-tuple (bool, record, string),
+// where one arm is a let-spine ending in the recursive call and the others are bare tail
+// calls. Every arm advances via xs.tail, so a correct compile must terminate. Want 42.
+
+fn zero_loc() -> { line: int64, col: int64 } {
+    { line: 0, col: 0 }
+}
+
+fn empty_ints() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_int(x: int64, xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+    produces
+        pure result
+    end
+}
+
+fn walk3(xs: List[int64, mem(normal)], depth: int64, loc: { line: int64, col: int64 }) -> (bool, { line: int64, col: int64 }, string) {
+    case xs.is_nil of {
+        true -> case depth > 0 of {
+            true -> (true, loc, "unclosed");
+            false -> (false, zero_loc(), "")
+        };
+        false -> case xs.head == 1 of {
+            // Let-spine arm whose tail is the recursive call.
+            true -> {
+                next_loc: { line: int64, col: int64 } <- case depth == 0 of {
+                    true -> { line: xs.head, col: 7 };
+                    false -> loc
+                };
+                walk3(xs.tail, depth + 1, next_loc)
+            };
+            false -> case xs.head == 2 of {
+                true -> case depth > 0 of {
+                    true -> walk3(xs.tail, depth - 1, loc);
+                    false -> (true, loc, "unexpected")
+                };
+                false -> walk3(xs.tail, depth, loc)
+            }
+        }
+    }
+}
+
+fn main() -> int64 {
+    // [1, 3, 2] -> open, other, close -> balanced, depth 0 at end.
+    xs: List[int64, mem(normal)] <- cons_int(1, cons_int(3, cons_int(2, empty_ints())));
+    z0: { line: int64, col: int64 } <- zero_loc();
+    (bad: bool, where: { line: int64, col: int64 }, msg: string) <- walk3(xs, 0, z0);
+    case bad of {
+        true -> 1 + where.line;
+        false -> 42
+    }
+}

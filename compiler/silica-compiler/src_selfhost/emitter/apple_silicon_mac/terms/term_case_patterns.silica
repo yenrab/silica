@@ -440,10 +440,22 @@ fn list_cons_head_ptr_reg(head_t: string, ext_for_alloc: string, scrut_reg: stri
         };
         false -> {
             blocked: string <- list_cons_scalar_head_blocked(ext_for_alloc, scrut_reg);
-            picked: string <- var@next_free_int_reg(blocked);
-            case picked == "X0" of {
-                true -> "X1";
-                false -> picked
+            // Take a callee-saved register, the same way the tail and an aggregate head do.
+            // next_free_int_reg hands out X0-X15 first, so a scalar head landed in X1 and any call
+            // in the branch body destroyed it: `rest <- walk(t); len(h) + rest` measured whatever
+            // the callee left in X1. atom_rodata:emit_lexemes_rodata is that shape, which is why the
+            // selfhost emitted " 0 0" in place of every atom's bytes and no function bodies at all.
+            // See trials/codegen_regressions/list_head_call.silica.
+            cs: string <- term_reg_spill@spill_reg_chain_from_outer(blocked);
+            case len(cs) > 0 of {
+                true -> cs;
+                false -> {
+                    picked: string <- var@next_free_int_reg(blocked);
+                    case picked == "X0" of {
+                        true -> "X1";
+                        false -> picked
+                    }
+                }
             }
         }
     }

@@ -4,9 +4,23 @@
 # Override on the command line if needed:
 #   make SILICA_COMPILER=/path/to/silica-compiler
 
+# Prefer binaries/silica-compiler, found by walking up from the project root so this works at
+# any nesting depth, and fall back to PATH only when there is no binaries/ above (an app built
+# against an installed compiler). Inside a silica checkout the link must win: a PATH lookup
+# picks whichever silica-compiler comes first, which can be an unrelated checkout on another
+# volume, and then a fix made here appears to have no effect at all.
+#
+# binaries/silica-compiler is the SELFHOST compiler, which is what compiles application .silica
+# files. binaries/seed-compiler is the seed and is only for building src_selfhost; see
+# binaries/install_compiler.bash.
 ifeq ($(filter command line,$(origin SILICA_COMPILER)),)
   ifeq ($(origin SILICA_COMPILER),undefined)
-    SILICA_COMPILER := $(shell command -v silica-compiler 2>/dev/null)
+    SILICA_BINARIES_DIR := $(shell d="$(abspath $(THIS_DIR))"; while [ "$$d" != "/" ]; do if [ -d "$$d/binaries" ]; then echo "$$d/binaries"; break; fi; d=$$(dirname "$$d"); done)
+    ifeq ($(SILICA_BINARIES_DIR),)
+      SILICA_COMPILER := $(shell command -v silica-compiler 2>/dev/null)
+    else
+      SILICA_COMPILER := $(SILICA_BINARIES_DIR)/silica-compiler
+    endif
   endif
 endif
 
@@ -14,8 +28,15 @@ endif
 
 ensure-silica-compiler:
 	@if [ -z "$(SILICA_COMPILER)" ]; then \
-		echo "FAIL: silica-compiler not found on PATH."; \
-		echo "Install or build silica-compiler, or pass SILICA_COMPILER=/path/to/silica-compiler"; \
+		echo "FAIL: no binaries/ directory above $(abspath $(THIS_DIR)) and no silica-compiler on PATH."; \
+		echo "Build the selfhost compiler (make -C compiler/silica-compiler/src_selfhost),"; \
+		echo "or pass SILICA_COMPILER=/path/to/silica-compiler"; \
+		exit 1; \
+	fi; \
+	if [ ! -e "$(SILICA_COMPILER)" ]; then \
+		echo "FAIL: $(SILICA_COMPILER) does not exist."; \
+		echo "Build the selfhost compiler to create it: make -C compiler/silica-compiler/src_selfhost"; \
+		echo "(that installs binaries/silica-<NNNNNN>-<platform> and links silica-compiler to it)"; \
 		exit 1; \
 	fi; \
 	if [ ! -x "$(SILICA_COMPILER)" ]; then \

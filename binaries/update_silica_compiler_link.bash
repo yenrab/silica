@@ -87,13 +87,30 @@ fi
 
 platform_count="$(printf '%s\n' "$platforms" | grep -c .)"
 
-# Newest binary for a platform: lowest NNNNNN among both naming forms.
+# silica-compiler must resolve to a SELFHOST build and never to a seed. The two are not
+# interchangeable: seed-compiler builds src_selfhost, silica-compiler compiles applications and
+# trials, and comparing the two is how miscompiles get found. Because a lower NNNNNN is newer and
+# both kinds share one countdown, an unfiltered scan picks silica-<NNNNNN>-seed-<platform>
+# whenever the seed is newer than the selfhost -- as it is at 999989-seed against 999990 -- and
+# would silently compile everything with the wrong compiler.
+#
+# Only the kind-less form silica-<NNNNNN>-<platform> is a selfhost build. Anchoring both ends also
+# rejects archived variants such as silica-999990-macos-applesilicon.smoke-aug6.
+#
+# Builds normally publish and link themselves through binaries/install_compiler.bash; this script
+# is the recovery path for a missing or stale link.
+is_selfhost_file() {
+    local file="$1" platform="$2"
+    [[ "$file" =~ ^silica-[0-9]{6}-${platform}$ ]]
+}
+
+# Newest selfhost binary for a platform: lowest NNNNNN.
 latest_for_platform() {
     local platform="$1"
     local file plat
     while IFS= read -r file; do
         plat="$(platform_of_file "$file" || true)"
-        if [[ "$plat" == "$platform" ]]; then
+        if [[ "$plat" == "$platform" ]] && is_selfhost_file "$file" "$platform"; then
             printf '%s\n' "$file"
             return 0
         fi
@@ -107,7 +124,7 @@ count_for_platform() {
     local count=0
     while IFS= read -r file; do
         plat="$(platform_of_file "$file" || true)"
-        if [[ "$plat" == "$platform" ]]; then
+        if [[ "$plat" == "$platform" ]] && is_selfhost_file "$file" "$platform"; then
             count=$((count + 1))
         fi
     done <<< "$versioned_files"
@@ -312,7 +329,10 @@ fi
 latest_file="$(latest_for_platform "$selected_platform")"
 
 if [[ -z "$latest_file" ]]; then
-    echo "No compiler binary found for local platform: $selected_platform" >&2
+    echo "No selfhost compiler binary found for local platform: $selected_platform" >&2
+    echo "Expected silica-<NNNNNN>-$selected_platform (seed builds carry a -seed- token and are" >&2
+    echo "reached through seed-compiler instead). Build one with:" >&2
+    echo "  make -C compiler/silica-compiler/src_selfhost" >&2
     exit 1
 fi
 
@@ -325,4 +345,5 @@ echo "silica-compiler -> $latest_file"
 echo
 echo "silica-compiler is now the native compiler binary for this local host."
 echo "This selection is not a cross-compile target."
-echo "Rebuild or re-run this script after adding a newer silica-NNNNNN-*-$selected_platform binary."
+echo "Rebuild or re-run this script after adding a newer silica-NNNNNN-$selected_platform binary."
+echo "A build publishes and links itself; see binaries/install_compiler.bash."

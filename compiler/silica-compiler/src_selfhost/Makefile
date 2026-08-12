@@ -24,6 +24,15 @@ BOOTSTRAP_DIR := $(abspath $(THIS_DIR)../../silica-bootstrap-compiler)
 RUNTIME_LIB := $(BOOTSTRAP_DIR)/target/release/libsilica_compiler.a
 
 EXECUTABLE := silica-compiler
+
+# A successful build installs itself as the new selfhost: binaries/silica-<NNNNNN>-<platform>
+# with binaries/silica-compiler pointing at it, which is what compiles base and the trials.
+# Only the default EXECUTABLE is published; the per-emit-target builds from `make all-targets`
+# produce silica-compiler-<target> binaries that do not run on this host.
+# Set INSTALL_SELFHOST=0 to build without publishing.
+INSTALL_COMPILER_SH := $(BINARIES_DIR)/install_compiler.bash
+INSTALL_SELFHOST ?= 1
+
 ASSEMBLER := clang
 MACOS_MIN_VERSION ?= 26.0
 ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
@@ -155,12 +164,21 @@ silica.config.regen:
 # reclaims host heap (required for large modules such as lib/wbt_map.silica).
 # Seed failures cover compilation and emitter errors.
 #
-# Incremental: keep .sams / .iface whose mtime is not older than their .silica source.
-# If either artifact is missing or older than .silica, remove both and recompile that unit.
-# Orphan .sams/.iface (no matching .silica) are removed. silica.compile.order lists only
-# units that still need a .sams after this prune.
+# Incremental: keep .sams / .iface whose mtime is not older than their .silica source AND not
+# older than the seed that produced them. If either artifact is missing or outdated, remove both
+# and recompile that unit. Orphan .sams/.iface (no matching .silica) are removed.
+# silica.compile.order lists only units that still need a .sams after this prune.
+#
+# The seed is a staleness input because it decides layout, not just instruction selection: a seed
+# fix that moves a record field affects every unit it compiles, so keeping .sams built by an older
+# seed links writers using the old offsets against readers using the new ones. That is a silent
+# wrong-answer build, and it is exactly what a record-field-offset fix produced here -- the emitter
+# modules were recompiled and the rest were not. Comparing against $(SILICA_COMPILER) follows the
+# seed-compiler symlink to the binary it currently names, so publishing a new seed invalidates the
+# tree on the next build without anyone having to remember to clean.
 assembly: check-seed silica.config record-compile-start
 	@cd "$(THIS_DIR)" && \
+	  SEED_BIN="$(SILICA_COMPILER)"; \
 	  removed=0; \
 	  for art in $$(find . \( -name '*.sams' -o -name '*.iface' \) ! -path './_wd_probe/*' -type f | sed 's|^\./||' | sort); do \
 	    case "$$art" in \
@@ -185,11 +203,13 @@ assembly: check-seed silica.config record-compile-start
 	    sams="$$base.sams"; \
 	    iface="$$base.iface"; \
 	    stale=0; \
+	    reason="$$unit"; \
 	    if [ ! -f "$$sams" ] || [ "$$unit" -nt "$$sams" ]; then stale=1; fi; \
 	    if [ ! -f "$$iface" ] || [ "$$unit" -nt "$$iface" ]; then stale=1; fi; \
+	    if [ "$$SEED_BIN" -nt "$$sams" ] || [ "$$SEED_BIN" -nt "$$iface" ]; then stale=1; reason="$$SEED_BIN"; fi; \
 	    if [ "$$stale" -eq 1 ]; then \
 	      if [ -f "$$sams" ] || [ -f "$$iface" ]; then \
-	        echo "  stale: $$base.{sams,iface} (vs $$unit)"; \
+	        echo "  stale: $$base.{sams,iface} (vs $$reason)"; \
 	      fi; \
 	      rm -f "$$sams" "$$iface"; \
 	      removed=$$((removed + 1)); \
@@ -209,7 +229,7 @@ assembly: check-seed silica.config record-compile-start
 	  need=$$(wc -l < silica.compile.order | tr -d ' '); \
 	  if [ "$$need" -eq 0 ]; then \
 	    rm -f silica.compile.order; \
-	    echo "All units up to date (.sams/.iface not older than .silica); skipping seed"; \
+	    echo "All units up to date (.sams/.iface newer than both .silica and the seed); skipping seed"; \
 	    echo "✅ Assembly generated (.sams)"; \
 	    $(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,assembly); \
 	    exit 0; \
@@ -270,6 +290,13 @@ executables: objects
 		exit 1; \
 	fi; \
 	echo "✅ Built $(EXECUTABLE)"; \
+	if [ "$(INSTALL_SELFHOST)" = "1" ] && [ "$(EXECUTABLE)" = "silica-compiler" ]; then \
+		if [ -x "$(INSTALL_COMPILER_SH)" ]; then \
+			"$(INSTALL_COMPILER_SH)" selfhost "$(THIS_DIR)$(EXECUTABLE)" || { $(REPORT_COMPILE_TIME); exit 1; }; \
+		else \
+			echo "WARN: $(INSTALL_COMPILER_SH) missing; binaries/silica-compiler still points at the previous selfhost"; \
+		fi; \
+	fi; \
 	$(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,executables)
 
 # Plain `make` / `build`: if silica.config (topo unit list) is missing or stale,

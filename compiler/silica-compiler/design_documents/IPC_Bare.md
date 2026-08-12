@@ -86,25 +86,47 @@ Applications agree on logical names and message types at compile time or through
 
 ---
 
+# Datagram Model
+
+On bare metal there is no kernel socket buffer. A **datagram** is one complete, boundary-preserving message: a fixed header plus `length` payload bytes, enqueued and dequeued as a single unit.
+
+Unlike a byte stream, the transport never splices bytes across messages. Unlike `IPC_OS.md` (Unix domain `SOCK_DGRAM`), the circular mailbox *is* the datagram queue.
+
+Properties:
+
+- Message boundaries are preserved end to end.
+- Delivery is local to the device only.
+- Payloads are opaque bytes; the transport does not interpret them.
+- Capacity is bounded at compile time (see Payload Capacity).
+
+---
+
 # Mailboxes
 
 Each actor owns one circular mailbox.
 
 ```
-Mailbox
+Mailbox (circular ring of fixed slots)
 
-+-----+
-| Msg |
-+-----+
-| Msg |
-+-----+
-| Msg |
-+-----+
++--------+--------+--------+-----+
+| Slot 0 | Slot 1 | Slot 2 | …   |
++--------+--------+--------+-----+
+     ^                    ^
+   head                 tail
+ (dequeue)            (enqueue)
 ```
 
 Only the owning actor removes messages.
 
 Many actors may enqueue messages.
+
+Each slot stores one full message record (header plus payload capacity). Head and tail indices (or equivalent) advance modulo the slot count. All mailbox storage is allocated statically with the actor.
+
+Concurrency:
+
+- Brief interrupt masking, or lock-free head/tail updates, protect enqueue against ISR and peer actors.
+- Dequeue runs only on the owning actor under the scheduler.
+- ISR producers should use a short critical section: build the record, enqueue, return.
 
 ---
 
@@ -135,6 +157,13 @@ msg: {
 }
 ```
 
+Field roles:
+
+- `type` — application or runtime message kind
+- `sender` — logical sender identity (not a memory address)
+- `length` — number of valid payload bytes (`0 … MAX_PAYLOAD`)
+- `payload` — storage of `MAX_PAYLOAD` bytes; only the first `length` bytes are meaningful
+
 Application-level text uses Silica `string` at the API boundary; the runtime encodes it into `payload` as UTF-8 bytes before send and decodes after receive:
 
 ```silica
@@ -142,6 +171,28 @@ log_line: Line { text: string } <- Line { text: greeting }
 ```
 
 The `length` field is the **byte length** of the UTF-8 (or other opaque) bytes copied into `payload`, not a Unicode character count.
+
+Suggested layout practice: align each slot to 4 or 8 bytes; keep the header packed (6 bytes) ahead of the payload buffer.
+
+---
+
+# Payload Capacity
+
+Mailbox slots use a **fixed compile-time capacity** (`MAX_PAYLOAD`). Message sizes vary within that ceiling.
+
+| Aspect | Rule |
+| --- | --- |
+| Minimum payload | `length = 0` |
+| Maximum payload | `length = MAX_PAYLOAD` |
+| Variable size | Any `length` in `0 … MAX_PAYLOAD` is valid |
+| Oversized send | Rejected by the runtime (or split only if applications define multi-part framing) |
+| Slot footprint | Every occupied slot consumes the full slot size, regardless of `length` |
+
+Typical MCU defaults are `MAX_PAYLOAD` of 64–256 bytes, chosen for the largest common message rather than the largest conceivable one.
+
+This is intentional for bare metal: zero heap use, deterministic RAM cost, and interrupt-safe enqueue via a single slot copy. The tradeoff is internal fragmentation (a 4-byte message still occupies one full slot).
+
+Larger logical transfers require an **application-defined multi-part protocol** (sequence numbers, end marker, reassembly in private state), or a future extension such as DMA / shared large-buffer transport. The base runtime delivers only single-datagram messages.
 
 ---
 
@@ -169,10 +220,13 @@ send(destination, message)
 
 Runtime steps
 
-1. Locate destination mailbox.
-2. Copy message.
-3. Mark destination actor ready.
-4. Return immediately.
+1. Locate destination mailbox (logical name → actor → mailbox).
+2. Reject if encoded payload length exceeds `MAX_PAYLOAD`.
+3. If the mailbox has a free slot, copy the header and `length` payload bytes into the next slot; advance the enqueue index.
+4. Mark the destination actor ready.
+5. Return immediately (success, full, or oversized—never block waiting for the receiver).
+
+The sender never waits for the receiver to process the message.
 
 ---
 
@@ -184,13 +238,52 @@ receive()
 
 Runtime steps
 
-1. Remove oldest message.
-2. Process message.
-3. Return to scheduler.
-
-Actors never block.
+1. If the mailbox is empty, return control to the scheduler (actors never block).
+2. Remove the oldest message (advance the dequeue index).
+3. Process the message using only the first `length` payload bytes.
+4. Return to the scheduler.
 
 If no message exists, the scheduler selects another ready actor.
+
+---
+
+# Mailbox Full Policy
+
+When every slot is occupied, `send` must not grow storage. The runtime uses a compile-time policy, for example:
+
+- **Reject** — return a full/busy result to the sender (preferred for actor-to-actor sends).
+- **Drop-newest** — discard the message being sent.
+- **Drop-oldest** — overwrite the oldest queued message (use only where loss is acceptable).
+
+ISR producers should prefer **reject** or **drop-newest** so interrupt handlers stay bounded and never wait. Supervised restart clears the mailbox, so a full ring does not permanently stall an actor after recovery.
+
+---
+
+# Cross-Application Transport
+
+Within one runtime image, `send` copies directly into the destination actor’s mailbox.
+
+When independent applications on the same MCU do not share ordinary mutable heap—MPU-isolated regions, dual-core runtimes, or separately linked images—the same datagram record crosses a thin shared transport:
+
+| Mechanism | Role |
+| --- | --- |
+| Shared SRAM ring | Fixed slots in a dedicated region; producer copies a datagram, consumer dequeues into a local mailbox |
+| Hardware mailbox / FIFO | Small control words or slot indices (e.g. RP2040 FIFO, STM32 IPCC); payload body in the shared ring if needed |
+| Doorbell IRQ | After posting a slot, raise an interrupt or event so the peer scheduler marks the receiving actor ready |
+
+Rules for the shared path:
+
+- Copy bytes; never pass pointers into another application’s private memory.
+- Preserve the same header and `length` semantics as in-process mailboxes.
+- Use generation or sequence metadata so a restarted peer does not consume stale slots.
+- Keep the shared region minimal: rings and registry entries only, not application heaps.
+
+```
+Application A                    Shared transport                 Application B
+─────────────                    ────────────────                 ─────────────
+encode datagram  →  copy into slot / ring  →  IRQ / event  →  enqueue local mailbox
+                                                              →  schedule actor
+```
 
 ---
 
@@ -296,18 +389,18 @@ Interrupt
 
 ↓
 
-Create Message
+Create Message  (header + payload ≤ MAX_PAYLOAD)
 
 ↓
 
-Queue Message
+Queue Message   (enqueue one mailbox slot; apply full policy if needed)
 
 ↓
 
 Return
 ```
 
-The scheduler later delivers the message to the appropriate actor.
+The scheduler later delivers the message to the appropriate actor. The ISR path must remain bounded: one slot copy, no heap, no wait for the consumer.
 
 ---
 
@@ -315,12 +408,20 @@ The scheduler later delivers the message to the appropriate actor.
 
 Each actor owns
 
-- mailbox
+- mailbox (fixed slot count × fixed slot size)
 - private state
 
 All memory is statically allocated.
 
 No heap allocation is required.
+
+Cross-application rings, if present, are also sized at compile time and live in a dedicated shared region—not in either application’s private heap.
+
+Approximate mailbox cost per actor:
+
+```
+mailbox_bytes ≈ SLOT_COUNT × (HEADER_BYTES + MAX_PAYLOAD + ALIGNMENT_PADDING)
+```
 
 ---
 
@@ -331,6 +432,7 @@ No heap allocation is required.
 - Very small footprint
 - No shared mutable state
 - Local-only messaging on one device
+- Variable payload sizes within a fixed compile-time ceiling
 - Full Unicode text without an OS locale or socket stack
 - Automatic supervision
 - Automatic restart
@@ -347,14 +449,16 @@ No heap allocation is required.
 - Publish/Subscribe
 - DMA message producers
 - Multi-core support
+- Optional large-payload path (shared buffer or DMA) alongside fixed slots
+- Compact payload arenas to reduce internal fragmentation
 
 ---
 
 # Summary
 
-Each actor owns private state and one mailbox.
+Each actor owns private state and one circular mailbox of fixed-size slots.
 
-Independent applications on the same hardware communicate through bounded local datagrams—never through shared mutable memory or off-device networking.
+Independent applications on the same hardware communicate through bounded local datagrams—never through shared mutable heaps or off-device networking. Payload length may vary from zero up to `MAX_PAYLOAD` bytes per message; larger transfers need an explicit multi-part or future large-buffer path.
 
 Text payloads use UTF-8 so applications can exchange non-ASCII and full Unicode strings consistently with Silica `string`.
 

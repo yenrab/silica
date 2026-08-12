@@ -25,6 +25,7 @@ use ffi_foreign;
 use reg_conventions;
 use recursion_support;
 use term_aggregate_helpers;
+use term_reg_spill;
 use term_sir_helpers;
 use term_user_call_abi;
 use term_user_call_helpers;
@@ -130,30 +131,31 @@ fn emit_rest_args(rest: { nodes: List[{ kind: int64, type_name: string, value: s
 }
 
 // Stage GPR call args onto the stack (X16 temp). Parallel staging is inlined at the
+fn emit_simple_gpr_stage_one(arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }, emit_child: fn({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, string, { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string) -> string {
+    value_asm: string <- case bound.debug of {
+        true -> {
+            emit_child(arg, "X16", { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true })
+        };
+        false -> emit_child(arg, "X16", { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
+    };
+    // record_make/tuple_make SUB SP under X16. Reclaim so staging STR slots stay contiguous.
+    reclaim: string <- case term_reg_spill@is_aggregate_make(arg) of {
+        true -> term_aggregate_helpers@tuple_elem_sret_reclaim("X16", term_aggregate_helpers@flat_tuple_dealloc_size(arg));
+        false -> ""
+    };
+    concat(concat(concat(value_asm, "\n"), reclaim), "    STR X16, [SP, #-16]!\n")
+}
+
 fn emit_simple_gpr_stage_chain(node: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }, emit_child: fn({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, string, { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string) -> string {
     case node.root < 0 of {
         true -> "";
         false -> case term_sir_helpers@sir_term_root_node(node).name == "user_call_rest" of {
             true -> {
                 arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@sir_term_at(node, term_sir_helpers@sir_term_root_node(node).inner);
-                value_asm: string <- case bound.debug of {
-                    true -> {
-                        emit_child(arg, "X16", { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true })
-                    };
-                    false -> emit_child(arg, "X16", { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
-                };
-                head: string <- concat(concat(value_asm, "\n"), "    STR X16, [SP, #-16]!\n");
+                head: string <- emit_simple_gpr_stage_one(arg, bound, emit_child);
                 concat(head, emit_simple_gpr_stage_chain(term_sir_helpers@sir_term_at(node, term_sir_helpers@sir_term_root_node(node).right_expr), bound, emit_child))
             };
-            false -> {
-                value_asm: string <- case bound.debug of {
-                    true -> {
-                        emit_child(node, "X16", { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true })
-                    };
-                    false -> emit_child(node, "X16", { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
-                };
-                concat(concat(value_asm, "\n"), "    STR X16, [SP, #-16]!\n")
-            }
+            false -> emit_simple_gpr_stage_one(node, bound, emit_child)
         }
     }
 }
@@ -239,8 +241,17 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
     // argument evaluation and reload it afterward.  The offset accounts for
     // tuple arguments that remain allocated until the call completes.
     save_indirect_callee_around_args: bool <- indirect_via_x9 and use_tail == false and indirect_arg_has_call;
-    arg_stack_bytes_before_call: int64 <- term_aggregate_helpers@call_tuple_args_dealloc_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))
+    staged_arg_count: int64 <- 1 + term_user_call_helpers@simple_gpr_call_arg_count(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
+    use_simple_gpr_parallel_stage: bool <- staged_arg_count <= 8
+        and term_user_call_helpers@simple_gpr_arg_tree_can_stage(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), bound.outer_reg)
+        and term_user_call_helpers@simple_gpr_rest_tree_can_stage(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), bound.outer_reg);
+    arg_stack_bytes_raw: int64 <- term_aggregate_helpers@call_tuple_args_dealloc_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))
         + term_aggregate_helpers@call_tuple_args_dealloc_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
+    // Parallel staging reclaims aggregate-make slabs before the call.
+    arg_stack_bytes_before_call: int64 <- case use_simple_gpr_parallel_stage of {
+        true -> 0;
+        false -> arg_stack_bytes_raw
+    };
     callee_prep: string <- case indirect_via_x9 of {
         true -> case save_indirect_callee_around_args of {
             true -> concat(call@emit_indirect_callee_address_to_x17(bound.outer_reg, term_sir_helpers@sir_term_root_node(term).name), "    STR X17, [SP, #-16]!\n");
@@ -395,10 +406,6 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
         and arg1_reg == "X0"
         and arg2_term_ok
         and arg2_bound_in_x0_or_w0;
-    staged_arg_count: int64 <- 1 + term_user_call_helpers@simple_gpr_call_arg_count(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
-    use_simple_gpr_parallel_stage: bool <- staged_arg_count <= 8
-        and term_user_call_helpers@simple_gpr_arg_tree_can_stage(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), bound.outer_reg)
-        and term_user_call_helpers@simple_gpr_rest_tree_can_stage(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), bound.outer_reg);
     args_asm: string <- case use_simple_gpr_parallel_stage of {
         true -> {
             first_sg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner);

@@ -202,9 +202,9 @@ fn emit_module_with_atom_and_debug(sir_module: { module_name: string, used_modul
         string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } <- string_literal_pool@build_string_literal_table(sir_module);
         ctx: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }, debug: bool, module_name: string, foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] } <- { table: table, int64_table: int64_table, int32_table: int32_table, int16_table: int16_table, int8_table: int8_table, literal_table: literal_table, float64_literal_table: float64_literal_table, float32_literal_table: float32_literal_table, string_literal_table: string_literal_table, debug: emitter_debug, module_name: sir_module.module_name, foreign_bindings: sir_module.foreign_bindings };
         funcs: string <- emit_functions(sir_module.functions, sir_module.functions, ctx);
-        needs_region_overflow_helper: bool <- prims_memory@module_uses_region_allocation(sir_module);
-        region_overflow_helper: string <- case needs_region_overflow_helper of {
-            true -> concat("\n", prims_memory@emit_region_overflow_helper());
+        needs_region_helpers: bool <- prims_memory@module_uses_region_allocation(sir_module);
+        region_helpers: string <- case needs_region_helpers of {
+            true -> concat("\n", prims_memory@emit_region_helpers());
             false -> ""
         };
         needs_pi_helper: bool <- int_rodata@module_uses_signed_print_var(sir_module);
@@ -322,7 +322,7 @@ fn emit_module_with_atom_and_debug(sir_module: { module_name: string, used_modul
             true -> false;
             false -> case needs_list_helpers of {
                 true -> true;
-                false -> case needs_region_overflow_helper of {
+                false -> case needs_region_helpers of {
                     true -> true;
                     false -> case needs_alloc_region_stub of {
                         true -> true;
@@ -359,7 +359,7 @@ fn emit_module_with_atom_and_debug(sir_module: { module_name: string, used_modul
         fwh_11b: string <- concat(fwh_11a, list_helpers_asm);
         fwh_11c: string <- concat(fwh_11b, actor_rt_helper_asm);
         fwh_11d: string <- concat(fwh_11c, region_alloc_stub_asm);
-        funcs_with_helper: string <- concat(fwh_11d, region_overflow_helper);
+        funcs_with_helper: string <- concat(fwh_11d, region_helpers);
         atom_rodata_str: string <- atom_rodata@emit_atom_rodata_section(table);
         bool_rodata: string <- boolean_rodata@emit_boolean_rodata_section();
         pa_table_rodata: string <- print_atom_inline@emit_print_atom_rodata_table(table);
@@ -894,12 +894,27 @@ fn tuple_return_stack_already_freed_in_body(body: { nodes: List[{ kind: int64, t
     }
 }
 
-// `let r = aggregate_make ...; r` (possibly nested in a let spine) — body already heap-promoted /
-// freed the stack slot; skip epilogue promote + ADD SP.
+// `let r = <anything>; r` (possibly nested in a let spine): whatever produced r already owns it. An
+// aggregate-make bound value heap-promotes and pops in the let emitter, an aggregate-returning callee's
+// slab is popped by the let itself (term_aggregate_helpers:aggregate_callee_return_stack_bytes), and a
+// case arm is handled by branch_cleanup -- so the epilogue must not promote or pop.
+//
+// This deliberately does not ask what the bound value is. It used to require the bound value's own
+// type_name to be the aggregate type, which fails whenever that value is a block rather than a single
+// term: main.compile_to_sir_module is `result <- { …; case … }; result`, whose bound value is another let
+// spine carrying no type_name, so this returned false and the epilogue popped 16 bytes nothing had pushed.
+// The callee-saved LDP restores then read one slot too high and the function returned to address 0. The
+// check is redundant anyway -- the caller only consults this for a tuple-returning function, and r *is*
+// that return value. See trials/codegen_regressions/tuple_let_case.silica.
+//
+// Only the id tail is safe to treat this way. A call tail still reserves its sret slab in this frame and
+// needs the epilogue pop: lexer_integer_literals.read_hex_literal is a let spine ending in
+// read_hex_digits(…), and skipping its pop leaked 16 bytes per call until the lexer exhausted the stack.
+// See trials/codegen_regressions/tuple_let_calltail.silica.
 fn tuple_return_id_ret_aggregate_var(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case sir_term_root_node(body).kind == 2 of {
         false -> false;
-        true -> case sir_term_root_node(sir_term_at(body, sir_term_root_node(body).right_expr)).kind == 1 and sir_term_root_node(sir_term_at(body, sir_term_root_node(body).right_expr)).name == sir_term_root_node(body).name and reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(sir_term_at(body, sir_term_root_node(body).inner)).type_name) of {
+        true -> case sir_term_root_node(sir_term_at(body, sir_term_root_node(body).right_expr)).kind == 1 and sir_term_root_node(sir_term_at(body, sir_term_root_node(body).right_expr)).name == sir_term_root_node(body).name of {
             true -> true;
             false -> tuple_return_id_ret_aggregate_var(sir_term_at(body, sir_term_root_node(body).right_expr))
         }
@@ -924,21 +939,42 @@ fn tuple_return_tail_aggregate_make(body: { nodes: List[{ kind: int64, type_name
     sir_tail_is_aggregate_tuple_or_record_make(sir_strip_lets_to_tail(body))
 }
 
+// A checked-int64 prim tail already hands back a heap pointer: emit_checked_pair_from_regs copies its
+// (ok, value) pair out of the 16-byte stack slab into the region and pops the slab itself. So the
+// epilogue must do neither step -- the promote would copy the pair a second time, and the ADD SP would
+// take 16 bytes off the frame, after which the callee-saved LDP restores read the wrong slots and the
+// function returns to a garbage address. wbt_map:node_weight_from_ref is exactly this shape
+// (`pure checked_int64_add1(sz)` after a let spine); the let-bound counterpart is the 0 case in
+// term_aggregate_helpers:aggregate_callee_return_stack_bytes. Stripping the let spine first also covers
+// a bare prim body. See trials/codegen_regressions/prim_tuple_let.silica.
+fn tuple_return_tail_is_checked_int64_prim(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    term_aggregate_helpers@term_is_checked_int64_prim(sir_strip_lets_to_tail(body))
+}
+
 fn tuple_callee_skips_tuple_ret_dealloc(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
-    case tuple_return_stack_already_freed_in_body(body) of {
+    case tuple_return_tail_is_checked_int64_prim(body) of {
         true -> true;
-        false -> case tuple_return_id_ret_aggregate_var(body) of {
+        false -> case tuple_return_stack_already_freed_in_body(body) of {
             true -> true;
-            // A case tail leaves a heap pointer in X0 on every arm: an aggregate-make arm is
-            // promoted and popped by branch_cleanup, and a call arm is promoted by the callee.
-            // Nothing survives on SP, so the epilogue ADD SP would pop a slab that never existed.
-            // Strip the let spine first: `x <- e; case … of …` has the same tail shape.
-            false -> case sir_term_root_node(sir_strip_lets_to_tail(body)).kind == 3 of {
+            false -> case tuple_return_id_ret_aggregate_var(body) of {
                 true -> true;
-                false -> case sir_term_root_node(body).kind == 6 of {
-                    // Direct `(…)` body root gets |_tuple_sret=X8 in body_outer_root; let-chain tails do not.
-                    true -> tuple_return_tail_aggregate_make(body);
-                    false -> false
+                // A case tail leaves a heap pointer in X0 on every arm: an aggregate-make arm is
+                // promoted and popped by branch_cleanup, and a call arm is promoted by the callee.
+                // Nothing survives on SP, so the epilogue ADD SP would pop a slab that never existed.
+                // Strip the let spine first: `x <- e; case … of …` has the same tail shape.
+                false -> case sir_term_root_node(sir_strip_lets_to_tail(body)).kind == 3 of {
+                    true -> true;
+                    false -> case sir_term_root_node(body).kind == 6 of {
+                        // A direct `(…)` body used to write into the caller's X8 buffer, so there was nothing
+                        // of its own to promote or pop. It now builds on its own slab like a direct record
+                        // body, so the epilogue owns both steps -- mirroring
+                        // record_callee_skips_ret_promote_dealloc, which returns false for the same reason.
+                        true -> case sir_term_root_node(body).name == "tuple_make" of {
+                            true -> false;
+                            false -> tuple_return_tail_aggregate_make(body)
+                        };
+                        false -> false
+                    }
                 }
             }
         }
@@ -1384,10 +1420,30 @@ fn use_full_param_shadow(fn_val: { name: string, return_type: string, effects: s
 
 // Extra callee-saved register pressure contributed by shadowed params, so the existing
 // frame predicates save enough X19–X28 pairs to cover both params and let-spills.
+//
+// The entry shadow claims its registers before the body's first let gets one, so the count of
+// shadowed params has to be part of every frame decision, not just the full-shadow one. A
+// two-parameter string shadow holds X19 and X20, which puts a body's single let on X21 -- and a
+// prologue that saved only X19/X20 then destroyed its caller's X21. atom_table:cons_lexeme is
+// exactly that function, and the record atom_table:add_atom was holding across the call came back
+// as the head of the list cons_lexeme had just built.
+// See trials/codegen_regressions/shadow_x21.silica.
 fn full_shadow_pressure_bump(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> int64 {
     case use_full_param_shadow(fn_val) of {
         true -> fs_count_params(fn_val.param_names);
-        false -> 0
+        false -> shadowed_param_reg_count(fn_val)
+    }
+}
+
+// How many callee-saved registers the X19/X20 entry shadow occupies. first_param_x0_shadow_enabled
+// is false for a tail-call body, so this stays 0 there and the tail BR's single LDP is unaffected.
+fn shadowed_param_reg_count(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> int64 {
+    case first_param_x0_shadow_enabled(fn_val.param_types, sir_term_root_node(fn_val.body).kind) of {
+        false -> 0;
+        true -> case second_param_shadow_enabled(fn_val.param_types, true) of {
+            true -> 2;
+            false -> 1
+        }
     }
 }
 
@@ -1578,12 +1634,27 @@ fn needs_callee_d14_d15_frame(fn_val: { name: string, return_type: string, effec
 // tiny generic helpers whose source-level return type does not reveal that pressure.
 // Save them for every non-tail function unless the string/list shadow prologue
 // already emits this exact pair.
+//
+// The save must cover every frame that WRITES X19/X20, which is not the same question as whether the
+// body is big enough to need scratch registers. An aggregate first parameter is shadowed into X20 by
+// aggregate_x11_mov regardless of body kind, so a body that is a single tail user call (kind 5) took
+// the no-frame path while still clobbering X20, and returned with the caller's copy destroyed.
+// ffi_sidecar_loader:collect_program_foreign_symbols is exactly that shape and it wrecked the
+// accumulator ffi_link_manifest:collect_closure_foreign_symbols held across it, yielding foreign
+// symbols for a file with no FFI at all. See trials/codegen_regressions/agg_param_tailcall.silica.
+//
+// first_param_aggregate_needs_x11_base is the same predicate aggregate_x11_mov consults, so the two
+// cannot drift apart. Such a frame can no longer exit through a tail BR, which releases only the
+// X29/X30 pair; kind5_frame_blocks_tail in emit_sir_function routes it to a BLR plus real epilogue.
 fn function_needs_callee_saved_x19_x20_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case sir_term_root_node(fn_val.body).kind == 5 of {
-        true -> false;
-        false -> case first_param_x0_shadow_enabled(fn_val.param_types, sir_term_root_node(fn_val.body).kind) of {
+    case first_param_aggregate_needs_x11_base(fn_val) of {
+        true -> true;
+        false -> case sir_term_root_node(fn_val.body).kind == 5 of {
             true -> false;
-            false -> true
+            false -> case first_param_x0_shadow_enabled(fn_val.param_types, sir_term_root_node(fn_val.body).kind) of {
+                true -> false;
+                false -> true
+            }
         }
     }
 }
@@ -1721,7 +1792,24 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
             };
             false -> ""
         };
-        kind5_tail_returns_directly: bool <- sir_term_root_node(fn_val.body).kind == 5 and main_kind5_no_tail == false;
+        // A tail BR releases only the X29/X30 pair (control@function_tail_frame_release), so it is a legal
+        // exit only from a frame that saved nothing else. A frame that also saves X19/X20 pushes them BELOW
+        // X29/X30, so the BR's single LDP pops the saved X19/X20 into X29/X30 and leaves SP 16 bytes low --
+        // the callee then returns to a garbage LR. Emit a BLR and fall through to the real epilogue instead,
+        // which restores every pair it pushed in reverse order.
+        //
+        // This is reachable because an aggregate first parameter is shadowed into the callee-saved X20 by
+        // aggregate_x11_mov (X11 will not do: a call inside the body clobbers it), which is exactly what a
+        // body like ffi_sidecar_loader:collect_program_foreign_symbols needs while it evaluates
+        //     loop(program.declarations, nil_sir_strings())
+        // whose nested call is what forces X20 over X11. See trials/codegen_regressions/agg_param_tailcall.silica.
+        //
+        // Giving up the BR costs one frame on a path that was already going to build one. Preserving the
+        // tail transfer instead would mean teaching function_tail_frame_release the whole callee-saved set,
+        // duplicating the epilogue's ordering in a second place for no benefit.
+        kind5_frame_blocks_tail: bool <- sir_term_root_node(fn_val.body).kind == 5 and function_needs_callee_saved_x19_x20_frame(fn_val);
+        kind5_no_tail: bool <- main_kind5_no_tail or kind5_frame_blocks_tail;
+        kind5_tail_returns_directly: bool <- sir_term_root_node(fn_val.body).kind == 5 and kind5_no_tail == false;
         // Inject _silica_pid_registry_init at the start of every program entry-point. The routine
         // (prims_actors_runtime_asm.silica) spawns the global primitive PID registry behavior and
         // stores the actor_ref in _silica_pid_registry_ref.
@@ -1730,20 +1818,25 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
             true -> "    BL _silica_pid_registry_init\n    BL _silica_dangerous_pid_registry_init\n";
             false -> ""
         };
-        // Direct body: tuple_make may use |_tuple_sret=X8 (no BL inside the make). record_make always uses stack
-        // in term_emitter; do not tag X8 here so epilogue/dealloc paths stay consistent.
-        body_outer_root: string <- case sir_term_root_node(fn_val.body).kind == 6 and (sir_term_root_node(fn_val.body).name == "tuple_make" or sir_term_root_node(fn_val.body).name == "record_make") and reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) of {
-            true -> case use_actor_reply_sret_buffer(fn_val) of {
-                true -> param_outer_emit_fnret;
-                false -> case sir_term_root_node(fn_val.body).name == "tuple_make" of {
-                    true -> concat(param_outer_emit_fnret, "|_tuple_sret=X8");
-                    false -> param_outer_emit_fnret
-                }
-            };
-            false -> param_outer_emit_fnret
-        };
+        // A function whose body IS a tuple literal used to get |_tuple_sret=X8, making the make store its
+        // elements straight into the caller's indirect-result buffer. That was guarded only by an assumption
+        // that no BL runs inside the make, and the assumption does not hold: `(f(x), g(y))` calls, and even
+        // `(false, {a:1,b:2}, "x")` calls, because a nested aggregate literal is heap-promoted. X8 is
+        // caller-saved and _silica_rt_region_alloc loads into it, so every store after the first went to a
+        // garbage address. It also left the nested literal's slab unpopped, which desynchronized the
+        // epilogue's LDP restores and hung on a garbage return address.
+        //
+        // So a direct tuple body now takes the same route a direct record body already takes: build on the
+        // callee's own slab, then let the epilogue heap-promote X0 and pop the slab (see
+        // tuple_callee_skips_tuple_ret_dealloc). That also fixes the element-0 offset, which was written at
+        // X8+0 while the returned base was X8+nested_bytes; on the stack path the elements and the returned
+        // base share one SP-relative frame, so they agree by construction.
+        //
+        // The actor reply buffer (|_tuple_sret=X20) is unrelated and still applies: the runtime, not this
+        // frame, owns that buffer, and X20 is callee-saved.
+        body_outer_root: string <- param_outer_emit_fnret;
         body: string <- case sir_term_root_node(fn_val.body).kind == 5 of {
-            true -> case main_kind5_no_tail of {
+            true -> case kind5_no_tail of {
                 true -> term_emitter@emit_function_non_tail_user_call_root(fn_val.body, dest_reg, { table: ctx.table, int64_table: ctx.int64_table, int32_table: ctx.int32_table, int16_table: ctx.int16_table, int8_table: ctx.int8_table, literal_table: ctx.literal_table, float64_literal_table: ctx.float64_literal_table, float32_literal_table: ctx.float32_literal_table, string_literal_table: ctx.string_literal_table }, param_outer_emit_fnret, fn_val.effects, ctx.debug, main_k5_asm_line_before_call);
                 false -> term_emitter@emit_function_tail_user_call_root(fn_val.body, dest_reg, { table: ctx.table, int64_table: ctx.int64_table, int32_table: ctx.int32_table, int16_table: ctx.int16_table, int8_table: ctx.int8_table, literal_table: ctx.literal_table, float64_literal_table: ctx.float64_literal_table, float32_literal_table: ctx.float32_literal_table, string_literal_table: ctx.string_literal_table }, param_outer_emit_fnret, fn_val.effects, ctx.debug)
             };
@@ -1800,7 +1893,13 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
                         true -> "";
                         false -> {
                             tc: int64 <- prims_tuple@count_type_elements(fn_val.return_type);
-                            ts: int64 <- prims_tuple@flat_alloc_size(tc);
+                            // The return type describes only the outer shell, but a direct `(…)` body also
+                            // pushes slabs for any nested aggregate literals it builds. Pop what the body
+                            // actually allocated; other bodies keep the type-based size they already used.
+                            ts: int64 <- case sir_term_root_node(fn_val.body).kind == 6 and sir_term_root_node(fn_val.body).name == "tuple_make" of {
+                                true -> term_aggregate_helpers@flat_tuple_dealloc_size(fn_val.body);
+                                false -> prims_tuple@flat_alloc_size(tc)
+                            };
                             concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(ts), "\n"))
                         }
                     }
@@ -1811,7 +1910,13 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
                         false -> case record_callee_skips_ret_promote_dealloc(fn_val.body) of {
                             true -> "";
                             false -> {
-                                rs: int64 <- term_record_layout@record_make_stack_alloc_size(fn_val.return_type);
+                                // Pop what a direct `{...}` body actually pushed, not just the shell the return
+                                // type describes; see flat_record_dealloc_size. Other bodies keep the
+                                // type-based size they already used, exactly as the tuple path above does.
+                                rs: int64 <- case sir_term_root_node(fn_val.body).kind == 6 and sir_term_root_node(fn_val.body).name == "record_make" of {
+                                    true -> term_aggregate_helpers@flat_record_dealloc_size(fn_val.body);
+                                    false -> term_record_layout@record_make_stack_alloc_size(fn_val.return_type)
+                                };
                                 concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(rs), "\n"))
                             }
                         }

@@ -1,0 +1,55 @@
+// A List whose element is a record with a NESTED RECORD field, the shape of the parser's token slot:
+//     { token: { kind, lexeme, location }, possible_roles: List[int64] }
+// record_make lays such a record out with the nested record INLINED, so the value is
+// 4 words (t) + 1 word (roles) = 40 bytes, rounded to 48. But the list cons element size was computed
+// as one word per field, (2+1)/2*16 = 16, so consecutive elements overlapped and every field past the
+// first two was lost. In the compiler that made slot.possible_roles read as 0 and faulted in
+// constraint_core:slot_role. Want 7: the roles list must survive a round trip through the list.
+
+fn empty_ints() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_int(x: int64, xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+    produces
+        pure result
+    end
+}
+
+fn empty_slots() -> List[{ t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)] }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)] }, mem(normal)] <- empty[{ t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)] }, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_slot(s: { t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)] }, ss: List[{ t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)] }, mem(normal)]) -> List[{ t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)] }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)] }, mem(normal)] <- prepend[{ t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)] }, mem(normal)](s, ss)
+    produces
+        pure result
+    end
+}
+
+fn make_slot(t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)]) -> { t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)] } {
+    sequence
+        result: { t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)] } <- { t: t, roles: roles }
+    produces
+        pure result
+    end
+}
+
+fn main() -> int64 {
+    inner: { a: int64, b: int64, c: int64, d: int64 } <- { a: 1, b: 2, c: 3, d: 4 };
+    roles: List[int64, mem(normal)] <- cons_int(7, empty_ints());
+    slot: { t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)] } <- make_slot(inner, roles);
+    slots: List[{ t: { a: int64, b: int64, c: int64, d: int64 }, roles: List[int64, mem(normal)] }, mem(normal)] <- cons_slot(slot, empty_slots());
+    slots.head.roles.head
+}

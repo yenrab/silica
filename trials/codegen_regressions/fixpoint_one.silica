@@ -1,0 +1,66 @@
+// Splits the fixpoint repro: calls `pass` exactly ONCE, no fixed-point loop, no fuel.
+// pass([2,1]) should give ([1,0], changed=true) -> sum 1, flag 1 -> want 11.
+// A hang here means `pass` itself does not terminate; a clean answer means the fault is in
+// until_fixed's destructure-and-recurse.
+
+fn empty_ints() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_int(x: int64, xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+    produces
+        pure result
+    end
+}
+
+fn list_int_equal(a: List[int64, mem(normal)], b: List[int64, mem(normal)]) -> bool {
+    case a.is_nil of {
+        true -> b.is_nil;
+        false -> case b.is_nil of {
+            true -> false;
+            false -> case a.head == b.head of {
+                true -> list_int_equal(a.tail, b.tail);
+                false -> false
+            }
+        }
+    }
+}
+
+fn dec(x: int64) -> int64 {
+    case x > 0 of { true -> x - 1; false -> 0 }
+}
+
+fn sum_list(xs: List[int64, mem(normal)]) -> int64 {
+    case xs.is_nil of {
+        true -> 0;
+        false -> xs.head + sum_list(xs.tail)
+    }
+}
+
+fn pass(xs: List[int64, mem(normal)]) -> (List[int64, mem(normal)], bool) {
+    case xs.is_nil of {
+        true -> (xs, false);
+        false -> {
+            h: int64 <- xs.head;
+            nh: int64 <- dec(h);
+            old_roles: List[int64, mem(normal)] <- cons_int(h, empty_ints());
+            new_roles: List[int64, mem(normal)] <- cons_int(nh, empty_ints());
+            changed_here: bool <- case list_int_equal(old_roles, new_roles) of { true -> false; false -> true };
+            (rest_result: List[int64, mem(normal)], changed_rest: bool) <- pass(xs.tail);
+            result: (List[int64, mem(normal)], bool) <- (cons_int(nh, rest_result), case changed_here of { true -> true; false -> changed_rest });
+            result
+        }
+    }
+}
+
+fn main() -> int64 {
+    xs: List[int64, mem(normal)] <- cons_int(2, cons_int(1, empty_ints()));
+    (new_xs: List[int64, mem(normal)], changed: bool) <- pass(xs);
+    sum_list(new_xs) * 10 + case changed of { true -> 1; false -> 0 }
+}

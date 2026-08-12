@@ -1,0 +1,28 @@
+// A two-parameter function whose first parameter is a string gets both parameters shadowed into the
+// callee-saved X19/X20 at entry, so the body's first let binding lands on X21. The frame decision
+// counted only let bindings, saw one, stayed below the threshold for the X21/X22 pair, and emitted a
+// prologue that saved X19/X20 alone -- while the body still wrote X21 and destroyed it for the caller.
+//
+// atom_table:cons_lexeme is exactly this shape (`s: string, t: List[string]`, one let for the prepend
+// result). It ran inside atom_table:add_atom while add_atom held the record from
+// compiler_maps:map_insert_or_get_index in X21, so add_atom went on to read the list cons_lexeme had
+// just built as if it were that record: the atom table's index_map came back with a list length where
+// its root pointer belonged, and the next lookup dereferenced 1.
+//
+// caller keeps `a` live across the call, which is what exposes the clobber. Want 17: a == 10 plus
+// tag("ab", 5) == 7. A clobbered X21 leaves tag's own result in a, giving 14.
+
+fn tag(s: string, n: int64) -> int64 {
+    result: int64 <- n + len(s);
+    result
+}
+
+fn caller(s: string, k: int64) -> int64 {
+    a: int64 <- k * 2;
+    b: int64 <- tag(s, k);
+    a + b
+}
+
+fn main() -> int64 {
+    caller("ab", 5)
+}

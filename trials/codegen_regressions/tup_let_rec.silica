@@ -1,0 +1,47 @@
+// Nested record_make in a returned pair must be heap-promoted (tuple_elem_heap_promote).
+// Let-bound `d <- {…}; (d, 1)` was retired: early let-promote hung selfhost typecheck.
+// `pack` pins the nested-literal promote in .ascomp; make_and_check exercises survival across a call.
+// Want 42.
+
+fn read_rec(r: { tag: int64, val: int64 }) -> int64 {
+    case r.tag == 0 of {
+        true -> case r.val == 7 of {
+            true -> 42;
+            false -> 3
+        };
+        false -> 2
+    }
+}
+
+fn sink(p: ({ tag: int64, val: int64 }, int64)) -> int64 {
+    0
+}
+
+fn clobber() -> int64 {
+    sequence
+        junk: { tag: int64, val: int64 } <- { tag: 99, val: 99 };
+        result: int64 <- junk.tag + junk.val
+    produces
+        pure result
+    end
+}
+
+fn pack() -> ({ tag: int64, val: int64 }, int64) {
+    ({ tag: 0, val: 7 }, 1)
+}
+
+fn make_and_check() -> int64 {
+    sequence
+        p: ({ tag: int64, val: int64 }, int64) <- pack();
+        _s: int64 <- sink(p);
+        _c: int64 <- clobber();
+        d2: { tag: int64, val: int64 } <- { tag: 0, val: 7 };
+        result: int64 <- read_rec(d2) + _s
+    produces
+        pure result
+    end
+}
+
+fn main() -> int64 {
+    make_and_check()
+}

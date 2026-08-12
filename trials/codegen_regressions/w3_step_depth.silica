@@ -1,0 +1,41 @@
+// w3_step_param with ONE change: the `depth > 0` arm returns a record LITERAL reporting depth
+// instead of returning the incoming parameter record `loc`.
+//   returns 7  -> depth is fine; the bug is specifically about returning the parameter record
+//   returns N  -> depth itself is corrupted across the recursion (N is the bogus depth)
+
+fn zero_loc() -> { line: int64, col: int64 } {
+    { line: 0, col: 0 }
+}
+
+fn empty_ints() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_int(x: int64, xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+    produces
+        pure result
+    end
+}
+
+fn walk(xs: List[int64, mem(normal)], depth: int64, loc: { line: int64, col: int64 }) -> (bool, { line: int64, col: int64 }) {
+    case xs.is_nil of {
+        true -> case depth > 0 of {
+            true -> (true, { line: depth, col: 9 });
+            false -> (false, { line: 7, col: 3 })
+        };
+        false -> walk(xs.tail, depth, loc)
+    }
+}
+
+fn main() -> int64 {
+    xs: List[int64, mem(normal)] <- cons_int(1, cons_int(2, cons_int(3, empty_ints())));
+    z0: { line: int64, col: int64 } <- zero_loc();
+    (bad: bool, where: { line: int64, col: int64 }) <- walk(xs, 0, z0);
+    where.line
+}

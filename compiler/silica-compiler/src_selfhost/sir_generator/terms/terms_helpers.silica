@@ -51,7 +51,7 @@ export arg_expected_type/2;
 export build_bnot_from_sir/1;
 export build_float_predicate_from_sir/2;
 export build_float_special_const/1;
-export build_prim_for_type/4;
+export build_prim_for_type/5;
 export build_single_arg_call/3;
 export float_predicate_arg_type/1;
 export is_float_predicate_name/1;
@@ -792,8 +792,19 @@ fn arg_expected_type(call_name: string, expected_type: string) -> string {
     }
 }
 
-fn build_prim_for_type(op_lexeme: string, left: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, right: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, expected_type: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    case expected_type of {
+// `and` / `or` must short-circuit (spec sect6: guard evaluation stops at the first false / first
+// true), so the emitter branches over the right operand instead of evaluating it. That branch needs
+// a label unique to this expression; the source offset already serves that purpose for recursion
+// metadata, so sc_id carries "o<offset>" in value, which is otherwise unused on binary-op prims.
+// The emitter falls back to eager evaluation when it is absent, so an unstamped path stays
+// compilable rather than emitting a duplicate label.
+//
+// Both operands of and / or are bool regardless of expected_type, so these build directly instead of
+// going through the per-width modules, which is also the only way to place sc_id in value.
+fn build_prim_for_type(op_lexeme: string, left: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, right: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, expected_type: string, sc_id: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    case op_lexeme == "and" or op_lexeme == "or" of {
+        true -> sir_ast@make_sir_term(6, "bool", sc_id, op_lexeme, left, right);
+        false -> case expected_type of {
         "int32" -> int32_binary_ops@build_prim_from_sir(op_lexeme, left, right);
         "int16" -> int16_binary_ops@build_prim_from_sir(op_lexeme, left, right);
         "int8" -> int8_binary_ops@build_prim_from_sir(op_lexeme, left, right);
@@ -805,6 +816,7 @@ fn build_prim_for_type(op_lexeme: string, left: { nodes: List[{ kind: int64, typ
         "float32" -> float32_binary_ops@build_prim_from_sir(op_lexeme, left, right);
         "float16" -> float16_binary_ops@build_prim_from_sir(op_lexeme, left, right);
         _: string -> int64_binary_ops@build_prim_from_sir(op_lexeme, left, right)
+        }
     }
 }
 

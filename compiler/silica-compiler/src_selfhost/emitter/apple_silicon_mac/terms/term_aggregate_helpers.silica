@@ -18,8 +18,8 @@
 // Flat tuple/record layout, projection, and aggregate return helpers for term emission.
 
 use atom_table;
-use prims_checked_int64;
 use prims_tuple;
+use prims_checked_int64;
 use prims_record;
 use reg_conventions;
 use term_child_spec;
@@ -34,7 +34,6 @@ export emit_reg_to_flat_qwords_memcpy_loop/5;
 export tuple_make_rec_flat_outer_alloc_bytes/2;
 export tuple_make_rec_flat_nested_trim_bytes/2;
 export flat_record_sum_nested_reserved_in_outer/1;
-export record_field_user_call_inline_return/2;
 export record_field_inline_pointer_value/2;
 export let_user_call_tuple_sret_stack_bytes/3;
 export branch_tail_user_call_sret_stack_bytes/3;
@@ -47,7 +46,11 @@ export record_proj_chain_base_term/1;
 export record_proj_chain_base_is_value/1;
 export emit_inline_record_field_copy_words/5;
 export aggregate_return_heap_promote_x0/1;
+export tuple_elem_sret_reclaim/2;
 export tuple_elem_heap_promote/2;
+export tuple_elem_var_aggregate_promote_bytes/2;
+export let_stack_agg_escapes_via_tuple/1;
+export let_early_heap_promote_asm/2;
 export call_tuple_args_dealloc_bytes/1;
 export compute_inner_adj_bindings_record/5;
 export compute_inner_adj_bindings/5;
@@ -58,7 +61,9 @@ export record_field_nested_return_bytes/3;
 export flat_record_total_alloc/1;
 export flat_tuple_nested_alloc/3;
 export flat_tuple_dealloc_size/1;
+export flat_record_dealloc_size/1;
 export aggregate_callee_return_stack_bytes/1;
+export term_is_checked_int64_prim/1;
 export let_tail_aggregate_stack_bytes/1;
 
 fn tuple_flat_memref(store_base: string, offset: int64) -> string {
@@ -110,20 +115,9 @@ fn emit_reg_to_flat_qwords_memcpy_loop(i: int64, qwords: int64, src_reg: string,
 // idx/count/sp_adjust: legacy path for nested aggregate elements (idx*8 + sp_adjust).
 // store_base: empty -> stack; non-empty -> sret / reply buffer register.
 
+// Retired: nested elements are heap pointers; do not widen the outer tuple SUB for rec_flat.
 fn tuple_make_memcpy_record_flat_head(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
-    case term_sir_helpers@sir_term_root_node(term).kind == 6 of {
-        false -> false;
-        true -> case term_sir_helpers@sir_term_root_node(term).name != "tuple_make" of {
-            true -> false;
-            false -> {
-                c: int64 <- prims_tuple@count_flat_elements(term);
-                case c >= 2 of {
-                    false -> false;
-                    true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_make"
-                }
-            }
-        }
-    }
+    false
 }
 
 
@@ -145,9 +139,8 @@ fn tuple_make_scalar_rec_flat_first(term: { nodes: List[{ kind: int64, type_name
     }
 }
 
-// Outer SUB SP bytes for tuple_make: flat pairing slots, widened when (record_make, …) memcpy head needs more.
-// emit_flat_tuple_stores uses memcpy for any idx-0 record_make when arity ≥ 2 (`rec_flat`). Supervisors_phase_e
-// init tuples embed a `{ strategy: atom , … }` record — atoms are non–value-flat leaves, but emit still memcpy-copies rsz bytes.
+// Outer SUB SP bytes for tuple_make: flat pairing slots, widened when (record_make, …) head
+// still accounts for the nested record slab in flat_tuple_total_alloc / nested_adjust (rec_flat trim).
 
 fn tuple_make_rec_flat_outer_alloc_bytes(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, count: int64) -> int64 {
     base: int64 <- prims_tuple@flat_alloc_size(count);
@@ -155,7 +148,6 @@ fn tuple_make_rec_flat_outer_alloc_bytes(term: { nodes: List[{ kind: int64, type
         false -> base;
         true -> {
             rsz: int64 <- prims_record@record_type_value_flat_byte_size(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name);
-            // Second field sits at byte offset rsz after memcpy; trailing slots are pointer-sized for flat tuple tails.
             need: int64 <- term_record_layout@stack_alloc_round16(rsz + 8 * (count - 1));
             case need > base of { true -> need; false -> base }
         }
@@ -178,7 +170,10 @@ fn flat_record_sum_nested_reserved_in_outer(term: { nodes: List[{ kind: int64, t
                 here: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make" and prims_tuple@count_flat_elements(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) == 2 of {
                     true -> 0;
                     false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 4 or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 5 of {
-                        true -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name);
+                        true -> case record_field_call_reclaims_own_sret(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of {
+                            true -> 0;
+                            false -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name)
+                        };
                         false -> 0
                     }
                 };
@@ -192,8 +187,17 @@ fn flat_record_sum_nested_reserved_in_outer(term: { nodes: List[{ kind: int64, t
     }
 }
 
-fn record_field_user_call_inline_return(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fty: string) -> bool {
-    reg_conventions@is_inline_struct_type(fty) and (term_sir_helpers@sir_term_root_node(elem).kind == 4 or term_sir_helpers@sir_term_root_node(elem).kind == 5)
+// A tuple-returning call in record-field position SUBs its own caller sret slab and hands back a
+// heap pointer, and the field store then reclaims that slab (tuple_elem_sret_reclaim), so the make
+// is back on its own SP by the time the next field is stored. Neither the outer SUB nor the
+// nested-inner sums may count those bytes: reserving them shifted every later field and left the
+// callee's slab unpopped, so the frame grew by the sret size and the epilogue restored X29/X30 from
+// the wrong slots -- `{ p: pair(), b: 9 }` returned to a garbage address and hung.
+// An inline-struct (record) return is different: the callee heap-promotes, SP does not move, and the
+// result is memcpy'd into bytes the outer SUB reserved. Those still count.
+// See trials/codegen_regressions/rec_tuple_call_field.silica.
+fn record_field_call_reclaims_own_sret(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    (term_sir_helpers@sir_term_root_node(elem).kind == 4 or term_sir_helpers@sir_term_root_node(elem).kind == 5) and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(elem).type_name)
 }
 
 fn record_field_inline_pointer_value(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fty: string) -> bool {
@@ -405,12 +409,96 @@ fn emit_inline_record_field_copy_words(src_reg: string, store_base: string, dest
 // Only literals take this path: elem_is_agg is kind 6 tuple_make/record_make, so call results
 // that are already heap pointers (Token*, Lexer*, ...) are untouched and tuple elements remain
 // pointers with a stride of 8. That is what keeps tuple_proj readers unchanged.
+// A tuple-returning call in element position leaves its caller sret slab on the stack: the post-BLR
+// ADD is 0 because a let-bound call pops it at let-end, and an element has no let. Nothing else
+// accounts for it -- flat_tuple_nested_alloc and emit_flat_tuple_stores only shift for elements that
+// are themselves a tuple_make / record_make -- so the remaining elements were stored through an SP
+// sitting inside that slab and the tuple's ADD popped less than it pushed, returning on a wrong SP.
+// Copy the aggregate to the heap (the element is stored as a pointer either way) and give the slab
+// back, which keeps every offset and the dealloc size authority correct.
+// See trials/codegen_regressions/tup_call_elem.silica.
+fn tuple_elem_sret_reclaim(reg: string, nbytes: int64) -> string {
+    case nbytes <= 0 of {
+        true -> "";
+        false -> concat(tuple_elem_heap_promote(reg, nbytes),
+                        concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nbytes), "\n")))
+    }
+}
+
 fn tuple_elem_heap_promote(reg: string, nbytes: int64) -> string {
     case nbytes <= 0 of {
         true -> "";
         false -> concat(concat("    MOV X0, ", concat(reg, "\n")),
                         concat(aggregate_return_heap_promote_x0(nbytes),
                                concat("    MOV ", concat(reg, ", X0\n"))))
+    }
+}
+
+// Retired: per-pack promote OOMed typecheck. Let-emit promotes once via
+// let_stack_agg_escapes_via_tuple; keep the symbol returning 0 for call sites.
+fn tuple_elem_var_aggregate_promote_bytes(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, bound_name: string) -> int64 {
+    0
+}
+
+fn flat_tuple_spine_packs_var(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name: string) -> bool {
+    n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(t);
+    case n.kind == 6 and n.name == "tuple_make" of {
+        true -> {
+            inner: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@sir_term_at(t, n.inner);
+            in: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(inner);
+            case in.kind == 1 and in.name == name of {
+                true -> true;
+                false -> case expr_tuple_packs_var(inner, name) of {
+                    true -> true;
+                    false -> flat_tuple_spine_packs_var(term_sir_helpers@sir_term_at(t, n.right_expr), name)
+                }
+            }
+        };
+        false -> n.kind == 1 and n.name == name
+    }
+}
+
+fn expr_tuple_packs_var(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name: string) -> bool {
+    n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(t);
+    case n.kind == 6 and n.name == "tuple_make" of {
+        true -> flat_tuple_spine_packs_var(t, name);
+        false -> case n.kind == 2 of {
+            true -> case expr_tuple_packs_var(term_sir_helpers@sir_term_at(t, n.inner), name) of {
+                true -> true;
+                false -> expr_tuple_packs_var(term_sir_helpers@sir_term_at(t, n.right_expr), name)
+            };
+            false -> case n.kind == 3 of {
+                true -> case expr_tuple_packs_var(term_sir_helpers@sir_term_at(t, n.inner), name) of {
+                    true -> true;
+                    false -> expr_tuple_packs_var(term_sir_helpers@sir_term_at(t, n.right_expr), name)
+                };
+                false -> false
+            }
+        }
+    }
+}
+
+// Retired: early let-promote hung selfhost typecheck (dangling nested fields after let-end).
+// Pack nested record_make literals instead (see extract_function / tup_let_rec).
+fn let_stack_agg_escapes_via_tuple(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    false
+}
+
+// Shallow region copy; does not ADD SP — let epilogue pops the RHS slab.
+fn let_early_heap_promote_asm(rhs_bind: string, nbytes: int64) -> string {
+    case nbytes <= 0 of {
+        true -> "";
+        false -> {
+            to_x0: string <- case rhs_bind == "X0" of {
+                true -> "";
+                false -> concat("    MOV X0, ", concat(rhs_bind, "\n"))
+            };
+            from_x0: string <- case rhs_bind == "X0" of {
+                true -> "";
+                false -> concat("    MOV ", concat(rhs_bind, ", X0\n"))
+            };
+            concat(concat(to_x0, aggregate_return_heap_promote_x0(nbytes)), from_x0)
+        }
     }
 }
 
@@ -586,14 +674,18 @@ fn flat_record_sum_nested_inners(term: { nodes: List[{ kind: int64, type_name: s
             true -> 0;
             false -> {
                 // 2-element tuple fields are emitted inline in emit_flat_record_stores (no nested SUB).
-                // A scalar-only nested record field is inlined the same way: record_make_stack_alloc_size
-                // already reserves its words inside the shell, so counting it again over-stated the slab
-                // and the branch popped SP past the saved registers.
-                inner_inline_rec: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_make" and prims_record@record_type_has_only_scalar_fields(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name);
+                // A nested record field is inlined the same way: record_make_stack_alloc_size already reserves
+                // its words inside the shell (its value-flat size recurses), so counting it again over-stated
+                // the slab and the branch popped SP past the saved registers. This must stay in step with
+                // inline_nested_rec in emit_flat_record_stores -- the two decide the same thing.
+                inner_inline_rec: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_make";
                 here: int64 <- case (term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make" and prims_tuple@count_flat_elements(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) == 2) or inner_inline_rec of {
                     true -> 0;
                     false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 4 or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 5 of {
-                        true -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name);
+                        true -> case record_field_call_reclaims_own_sret(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of {
+                            true -> 0;
+                            false -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name)
+                        };
                         false -> agg_alloc_inner(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))
                     }
                 };
@@ -616,13 +708,15 @@ fn flat_record_sum_nested_inners(term: { nodes: List[{ kind: int64, type_name: s
 // memcpy'd into this frame (from_sorted_err). Nested record_make/tuple_make emit their own SUB —
 // counting them here double-subtracts SP (structs_addition/04 hang).
 
+// How far SP moves while this field is emitted, which is what later fields must add to their
+// SP-relative offsets. Only a nested make self-SUBs. A user-call inline return does not move SP --
+// it is memcpy'd out of the returned pointer into space the outer SUB already reserved -- so it is
+// counted once up front, for every field, via flat_record_sum_nested_reserved_in_outer at the
+// emit_flat_record_stores call. Counting it here as well would shift the fields after it twice.
 fn record_field_nested_return_bytes(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fty: string, elem_is_agg: bool) -> int64 {
     case elem_is_agg of {
         true -> agg_alloc_inner(elem);
-        false -> case record_field_user_call_inline_return(elem, fty) of {
-            true -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(fty);
-            false -> 0
-        }
+        false -> 0
     }
 }
 
@@ -653,25 +747,28 @@ fn flat_record_total_alloc(term: { nodes: List[{ kind: int64, type_name: string,
 
 // Darwin AAPCS64: SP must be 16-byte aligned at BL boundaries; round stack slots up.
 
+// Nested makes self-SUB then are heap-promoted and reclaimed in emit_flat_tuple_stores —
+// they must not enlarge the outer tuple SUB.
 fn flat_tuple_nested_alloc(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, remaining: int64, acc: int64) -> int64 {
     case remaining <= 1 of {
-        true -> case term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "tuple_make" of {
-            true -> acc + flat_tuple_total_alloc(term);
-            false -> case term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "record_make" of {
-                true -> acc + flat_record_total_alloc(term);
-                false -> acc
-            }
-        };
+        true -> acc;
         false -> case term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "tuple_make" of {
-            true -> {
-                elem_bytes: int64 <- agg_alloc_inner(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
-                flat_tuple_nested_alloc(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), remaining - 1, acc + elem_bytes)
-            };
+            true -> flat_tuple_nested_alloc(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), remaining - 1, acc);
             false -> acc
         }
     }
 }
 
+
+// What a direct `{...}` body actually pushed: the shell, plus the bytes the SUB reserved below it for
+// user-call inline returns, plus any nested make that self-SUBs. The return type describes only the
+// shell, so popping that alone leaked the reserved area; the epilogue's LDP restores then read the
+// wrong slots and the function returned to a garbage address. Same authority the let path uses for
+// its dealloc, and the counterpart of flat_tuple_dealloc_size for tuples.
+// See trials/codegen_regressions/rec_call_field_direct.silica.
+fn flat_record_dealloc_size(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
+    flat_record_total_alloc(term)
+}
 
 fn flat_tuple_dealloc_size(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
     case term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "record_make" of {
@@ -690,16 +787,30 @@ fn flat_tuple_dealloc_size(term: { nodes: List[{ kind: int64, type_name: string,
 // Tuple-returning user calls: caller SUB/MOV X8 is paired in let emission (see base_stack_n),
 // not here — case-branch bare calls use pass-through X8 and must stay at 0 (wbt weight_subtree).
 // Record-returning user calls heap-promote in the callee — no caller sret slab.
+// A checked-int64 prim is also 0: emit_checked_pair_from_regs builds its (ok, value) pair in a
+// 16-byte stack slab but copies it to the region and pops the slab itself, handing back a heap
+// pointer, so there is nothing left for the let to own. Claiming those 16 bytes here popped a slab
+// that no longer existed, and the caller then ran on an SP 16 bytes per prim too high: its next push
+// landed on its own callee-saved save area and its epilogue restored X29/X30 from the wrong slots.
+// wbt_map:smart_node has two such lets (+32) and it destroyed wbt_map:insert_singleton_map, which is
+// where type checking hung; sum_lr_ok, sum_lr_partial, partial_add1_ok, partial_add1_size,
+// weight_le_3x, weight_lt_2x and node_weight_from_ref have one each. The prim comment already warns
+// against leaving that SUB live to the epilogue -- this is the other half of the same agreement.
+// See trials/codegen_regressions/prim_tuple_let.silica.
+
+// Whether a term is a checked-int64 prim, which owns its own stack slab: see the 0 case in
+// aggregate_callee_return_stack_bytes for why nobody else may pop it. Exported so the epilogue can ask
+// the same question about a function's return-position tail without importing the prim module.
+fn term_is_checked_int64_prim(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    term_sir_helpers@sir_term_root_node(term).kind == 6 and prims_checked_int64@is_checked_int64_prim(term_sir_helpers@sir_term_root_node(term).name)
+}
 
 fn aggregate_callee_return_stack_bytes(rhs: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
     case reg_conventions@is_aggregate_struct_or_tuple_return_type(term_sir_helpers@sir_term_root_node(rhs).type_name) of {
         false -> 0;
         true -> case term_sir_helpers@sir_term_root_node(rhs).kind == 6 and (term_sir_helpers@sir_term_root_node(rhs).name == "tuple_make" or term_sir_helpers@sir_term_root_node(rhs).name == "record_make") of {
             true -> flat_tuple_dealloc_size(rhs);
-            false -> case term_sir_helpers@sir_term_root_node(rhs).kind == 6 and prims_checked_int64@is_checked_int64_prim(term_sir_helpers@sir_term_root_node(rhs).name) of {
-                true -> 16;
-                false -> 0
-            }
+            false -> 0
         }
     }
 }
