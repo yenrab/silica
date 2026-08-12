@@ -1267,6 +1267,75 @@ fn token_is_list_type_name(tok: Token) -> bool {
     token_is_bracketed_collection_type_name(tok)
 }
 
+// `List[ { stmts; result }, mem(R) ]` as a *value* (case arm / expression): not a List type and not a
+// generic call. Without this, `List` (list_keyword) falls through to extract_body_expr as const "List",
+// leaves `[...]` unconsumed, and the branch collapses to a dummy (seed emits `MOV X0, #0; RET`).
+// Desugars to `sequence proc[mem(R)]` (name `__list_typed_block__`) so direct prepend/empty satisfy
+// E3001; effect checker skips E3010 unused-mem for that marker when callees already encapsulate mem.
+fn slots_start_list_value_block(slots: ListTokenSlot) -> bool proc[DeviceIO] {
+    case slots.is_nil of {
+        true -> false;
+        false -> case slots.head.token.kind == lexer_token_kind@token_kind_list_keyword() of {
+            true -> do
+                after_kw: ListTokenSlot <- skip_leading_whitespace_slots(slots.tail);
+                case after_kw.is_nil of {
+                    true -> false;
+                    false -> case after_kw.head.token.kind == lexer_token_kind@token_kind_left_bracket() of {
+                        true -> do
+                            after_lbr: ListTokenSlot <- skip_leading_whitespace_slots(after_kw.tail);
+                            case after_lbr.is_nil of {
+                                true -> false;
+                                false -> case after_lbr.head.token.kind == lexer_token_kind@token_kind_left_brace() or after_lbr.head.token.lexeme == "{" of {
+                                    true -> case is_struct_literal_lbrace_fallback(after_lbr) of {
+                                        true -> false;
+                                        false -> true
+                                    };
+                                    false -> false
+                                }
+                            }
+                        end;
+                        false -> false
+                    }
+                }
+            end;
+            false -> false
+        }
+    }
+}
+
+fn extract_list_value_block(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
+    case slots_start_list_value_block(slots) of {
+        false -> (parser_ast@dummy_expr(), slots);
+        true -> do
+            after_kw: ListTokenSlot <- skip_leading_whitespace_slots(slots.tail);
+            after_lbr: ListTokenSlot <- skip_leading_whitespace_slots(after_kw.tail);
+            inner: ListTokenSlot <- after_lbr.tail;
+            (body_expr: Expr, rest_after: ListTokenSlot) <- extract_function_body(inner);
+            case rest_after.is_nil of {
+                true -> (parser_ast@dummy_expr(), slots);
+                false -> case rest_after.head.token.kind == lexer_token_kind@token_kind_right_brace() or rest_after.head.token.lexeme == "}" or constraint_core@slot_role(rest_after.head) == role_right_brace() of {
+                    true -> do
+                        after_rbrace: ListTokenSlot <- skip_leading_whitespace_slots(rest_after.tail);
+                        case after_rbrace.is_nil of {
+                            true -> (parser_ast@dummy_expr(), slots);
+                            false -> case after_rbrace.head.token.kind == lexer_token_kind@token_kind_comma() or after_rbrace.head.token.lexeme == "," of {
+                                true -> do
+                                    after_comma: ListTokenSlot <- skip_leading_whitespace_slots(after_rbrace.tail);
+                                    (declared_effects: ListEffectName, rest_final: ListTokenSlot) <- collect_effects_until_right_bracket(after_comma, parser_ast@empty_effect_name_list());
+                                    seq_expr: Expr <- Expr { kind: 11, value: "", name: "__list_typed_block__", location: slots.head.token.location, inner: parser_ast@dummy_expr(), right_expr: body_expr, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: declared_effects };
+                                    (seq_expr, rest_final)
+                                end;
+                                false -> (parser_ast@dummy_expr(), slots)
+                            }
+                        }
+                    end;
+                    false -> (parser_ast@dummy_expr(), slots)
+                }
+            }
+        end
+    }
+}
+
 // `[` usually has role_list_lit_lbracket after constraint propagation; if that role is missing, still treat as a
 // list literal when the next token clearly starts list elements ([] or an operand or `{` struct), so RHS and
 // tuple elements like `(0, [ { a: 1 } ])` do not fall through to extract_expr_with_precedence (E1040).
@@ -3254,7 +3323,9 @@ fn extract_case_rhs_primary_nonempty(trimmed: ListTokenSlot) -> (Expr, ListToken
     first: TokenSlot <- trimmed.head;
     rest: ListTokenSlot <- trimmed.tail;
     first_kind: int64 <- first.token.kind;
-    case constraint_core@slot_role(first) == capability_case@role_case_rhs_unary_minus() of {
+    case slots_start_list_value_block(trimmed) of {
+        true -> extract_list_value_block(trimmed);
+        false -> case constraint_core@slot_role(first) == capability_case@role_case_rhs_unary_minus() of {
         true -> do
             (operand: Expr, rest_after: ListTokenSlot) <- extract_case_rhs_with_precedence(rest, 3);
             dummy: Expr <- parser_ast@dummy_expr();
@@ -3319,6 +3390,7 @@ fn extract_case_rhs_primary_nonempty(trimmed: ListTokenSlot) -> (Expr, ListToken
             }
         }
         }
+    }
     }
 }
 
@@ -3674,7 +3746,9 @@ fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO]
     // `fn` before case probe: slot_role can mark `fn` with role_case_keyword in type/record regions,
     // which would route to extract_case_expression and misparse `(msg:...) ->` as statements (E1040).
     // Also reject `identifier`+lexeme`fn`+`(` as a call — use opaque function-type expr (kind 992).
-    case parser_tuples@slots_start_fn_type(slots) of {
+    case slots_start_list_value_block(slots) of {
+        true -> extract_list_value_block(slots);
+        false -> case parser_tuples@slots_start_fn_type(slots) of {
         true -> case lambda_introduces_body_after_sig(slots) of {
             true -> extract_lambda_expression(slots);
             false -> expr_fn_type_opaque_from_slots(slots)
@@ -3747,6 +3821,7 @@ fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO]
             end
         }
         }
+    }
     }
 }
 

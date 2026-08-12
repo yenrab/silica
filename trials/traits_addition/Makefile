@@ -33,7 +33,7 @@ silica.config:
 
 compile: clean silica.config
 	@cd "$(THIS_DIR)" && \
-	rm -f *.sams silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams traits/*.sams && \
+	rm -f *.sams *.iface silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams traits/*.sams && \
 	echo "Compiling with silica-compiler..." && \
 	if ! { $(RUN_SILICA_COMPILER); }; then \
 		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
@@ -210,7 +210,7 @@ integrate:
 
 clean:
 	@cd "$(THIS_DIR)" && \
-	rm -f *.sout traits/*.sams traits/*.o *.sams __silica_runtime.o && \
+	rm -f *.sout traits/*.sams traits/*.o *.iface *.sams __silica_runtime.o && \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
 		base=$${line%.silica}; \
 		rm -f "$$base" "$$base.o"; \

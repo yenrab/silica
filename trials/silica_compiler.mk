@@ -49,6 +49,13 @@ integrate: ensure-silica-compiler
 compile: ensure-silica-compiler
 assembly: ensure-silica-compiler
 
+# Merged into every including Makefile's clean: drop published unit iface caches under
+# that trial's CURDIR (make -C <trial> clean). Nested *.iface are included.
+.PHONY: clean-silica-ifaces
+clean: clean-silica-ifaces
+clean-silica-ifaces:
+	@find "$(CURDIR)" -name '*.iface' -type f -delete 2>/dev/null || true
+
 # So prerequisites like `integrate: $(SILICA_COMPILER)` create the binaries/ link if needed.
 $(SILICA_COMPILER):
 	@$(ENSURE_SILICA_COMPILER)

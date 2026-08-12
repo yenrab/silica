@@ -41,7 +41,7 @@ trial_fault_obj: $(TRIAL_FAULT_OBJ)
 integrate: fixtures
 	@ln -sf "$(FIXTURES_DIR)/dangerous_exposure_source" "$(APP_TRIAL_DIR)/dangerous_exposure_source"
 	@test -f "$(FFI_LEGACY_ARCHIVE)" || { echo "  ❌ $(APP_LABEL): missing legacy archive"; exit 1; }
-	@cd "$(APP_TRIAL_DIR)" && rm -f *.sams *.o $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime
+	@cd "$(APP_TRIAL_DIR)" && rm -f *.sams *.o *.iface $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime
 	@$(MAKE) trial_fault_obj
 	@cd "$(APP_TRIAL_DIR)" && { \
 		find "$(APP_TRIAL_DIR)" -maxdepth 1 -name '*.silica' | sed "s|^$(APP_TRIAL_DIR)/||" | sort; \
@@ -128,4 +128,4 @@ integrate: fixtures
 	exit $$failed
 
 clean:
-	@cd "$(THIS_DIR)" && rm -f *.sams *.o $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime *.sout dangerous_exposure_source silica_ffi_fault.o silica_supervisor_trial_guarded_fault.o
+	@cd "$(THIS_DIR)" && rm -f *.sams *.o *.iface $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime *.sout dangerous_exposure_source silica_ffi_fault.o silica_supervisor_trial_guarded_fault.o

@@ -33,7 +33,7 @@ define APP_INTEGRATE_BODY
 	@for ar in $(FFI_WRAPPER_ARCHIVES); do \
 		test -f "$$ar" || { echo "  ❌ $(APP_LABEL): missing wrapper archive $$ar (run make fixtures)"; exit 1; }; \
 	done
-	@cd "$(APP_TRIAL_DIR)" && rm -f *.sams *.o $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime
+	@cd "$(APP_TRIAL_DIR)" && rm -f *.sams *.o *.iface $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime
 	@cd "$(APP_TRIAL_DIR)" && find "$(APP_TRIAL_DIR)" -maxdepth 1 -name '*.silica' | sed "s|^$(APP_TRIAL_DIR)/||" | sort > silica.config
 	@cd "$(APP_TRIAL_DIR)" && if ! { $(RUN_SILICA_COMPILER); }; then echo "❌❌ $(APP_LABEL): compilation failed"; printf '%d %d\n' 0 1 > .integrate_counts; exit 1; fi
 	@failed=0; ok=0; ko=0; \

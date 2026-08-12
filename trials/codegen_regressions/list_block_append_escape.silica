@@ -1,0 +1,57 @@
+// Seed must lower `List[{...}, mem(normal)]` as sequence proc[mem] (not dummy #0).
+// Covers both selfhost shapes: direct prepend (expr_nodes_reverse_acc) and encapsulated
+// helpers (list_param_reverse_acc / cons_param). Want exit 42.
+
+fn empty_ns() -> List[{ k: int64, v: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        r: List[{ k: int64, v: string }, mem(normal)] <- empty[{ k: int64, v: string }, mem(normal)]()
+    produces
+        pure r
+    end
+}
+
+fn append_direct(a: List[{ k: int64, v: string }, mem(normal)], b: List[{ k: int64, v: string }, mem(normal)]) -> List[{ k: int64, v: string }, mem(normal)] {
+    case a.is_nil of {
+        true -> b;
+        false -> List[ {
+            stepped: List[{ k: int64, v: string }, mem(normal)] <- prepend[{ k: int64, v: string }, mem(normal)](a.head, append_direct(a.tail, b));
+            stepped
+        }, mem(normal)]
+    }
+}
+
+fn cons_ns(h: { k: int64, v: string }, t: List[{ k: int64, v: string }, mem(normal)]) -> List[{ k: int64, v: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        r: List[{ k: int64, v: string }, mem(normal)] <- prepend[{ k: int64, v: string }, mem(normal)](h, t)
+    produces
+        pure r
+    end
+}
+
+fn append_encap(a: List[{ k: int64, v: string }, mem(normal)], b: List[{ k: int64, v: string }, mem(normal)]) -> List[{ k: int64, v: string }, mem(normal)] {
+    case a.is_nil of {
+        true -> b;
+        false -> List[ {
+            stepped: List[{ k: int64, v: string }, mem(normal)] <- cons_ns(a.head, append_encap(a.tail, b));
+            stepped
+        }, mem(normal)]
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        n: { k: int64, v: string } <- { k: 0, v: "42" };
+        one: List[{ k: int64, v: string }, mem(normal)] <- prepend[{ k: int64, v: string }, mem(normal)](n, empty_ns());
+        xs: List[{ k: int64, v: string }, mem(normal)] <- append_direct(empty_ns(), one);
+        ys: List[{ k: int64, v: string }, mem(normal)] <- append_encap(empty_ns(), one);
+        code: int64 <- case xs.is_nil of {
+            true -> 1;
+            false -> case ys.is_nil of {
+                true -> 3;
+                false -> case xs.head.v == "42" and ys.head.v == "42" of { true -> 42; false -> 2 }
+            }
+        }
+    produces
+        pure code
+    end
+}

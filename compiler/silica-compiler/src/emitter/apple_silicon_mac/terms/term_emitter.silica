@@ -1794,9 +1794,14 @@ fn term_subterm_has_user_call(t: SIRTerm) -> bool {
                 true -> true;
                 false -> term_subterm_has_user_call(t.right_expr)
             };
-            6 -> case term_subterm_has_user_call(t.inner) of {
+            // list_cons lowers to BL L_list_prepend_helper and clobbers X0 just like a user call.
+            // append(combined, prepend(node, empty)) must reorder/stage around it (make_expr).
+            6 -> case t.name == "list_cons" of {
                 true -> true;
-                false -> term_subterm_has_user_call(t.right_expr)
+                false -> case term_subterm_has_user_call(t.inner) of {
+                    true -> true;
+                    false -> term_subterm_has_user_call(t.right_expr)
+                }
             };
             7 -> case term_subterm_has_user_call(t.inner) of {
                 true -> true;
@@ -1827,8 +1832,11 @@ fn simple_gpr_call_arg_can_stage(term: SIRTerm, outer_reg: string) -> bool {
                 false -> false;
                 true -> do
                     binding: string <- var@find_sp_binding_bare_or_percent_param(outer_reg, term.name);
+                    // Register or spilled stack slot: both stage via X16. Refusing memory_ref
+                    // forced sequential emit; nested list_cons then clobbered a spilled X0 arg
+                    // (parser_ast@make_expr: append(combined, prepend(...)) → dummy body → #0).
                     case len(binding) > 0 of {
-                        true -> var@is_memory_ref(binding) == false;
+                        true -> true;
                         false -> var@type_name_is_function(term.type_name)
                     }
                 end
@@ -2564,10 +2572,13 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 rhs_is_fp_scalar_reg: bool <- rhs_bind_fp_prefix == "S" or rhs_bind_fp_prefix == "D" or rhs_bind_fp_prefix == "H";
                 has_gpr_tuple_root_b: bool <- len(tuple_root_gpr_b) > 0 and var@is_memory_ref(tuple_root_gpr_b) == false and rhs_is_fp_scalar_reg;
                 tp_is_reg_b: bool <- len(tp_ptr_reg_b) > 0 or has_gpr_tuple_root_b;
+                // Prefer rhs_bind_b (post-spill) over rhs_reg. Tuple-proj lets of scalars spill
+                // X0/X1 into X19+; keeping body_bound on the caller-saved load reg made
+                // `(d, n) <- p; … + n` after a BL read a clobbered X1 (extract_function readers).
                 body_bound: string <- case packs_escape_b of {
                     true -> rhs_bind_b;
                     false -> case tp_is_reg_b of {
-                        true -> rhs_reg;
+                        true -> rhs_bind_b;
                         false -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 of {
                             true -> do
                                 pix_b: int64 <- string_parse@string_to_int64(term.inner.right_expr.value);

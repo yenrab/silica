@@ -38,7 +38,7 @@ silica.config:
 
 compile: clean silica.config
 	@cd "$(THIS_DIR)" && \
-	rm -f *.sams silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams traits/*.sams __silica_runtime.o && \
+	rm -f *.sams *.iface silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams traits/*.sams __silica_runtime.o && \
 	echo "Compiling with silica-compiler..." && \
 	if ! { $(RUN_SILICA_COMPILER); }; then \
 		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
@@ -266,7 +266,7 @@ stress-j2:
 # *.scout.multiset, *.scout.alt, *.ascomp.
 clean:
 	@cd "$(THIS_DIR)" && \
-	rm -f *.sout traits/*.sams traits/*.o *.sams __silica_runtime.o && \
+	rm -f *.sout traits/*.sams traits/*.o *.iface *.sams __silica_runtime.o && \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/silica-compiler/stdlib/'); do \
 		base=$${line%.silica}; \
 		rm -f "$$base" "$$base.o"; \

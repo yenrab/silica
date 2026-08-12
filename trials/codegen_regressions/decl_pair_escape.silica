@@ -1,0 +1,54 @@
+// extract_function returns `({ tag, name, params, loc, body }, rest)` with nested record_make
+// heap-promoted inside the pair. Readers must see tag/name/list/loc/body after the call, and a
+// spilled tuple element `n` must survive a later BL (body_bound uses the spill reg, not X1).
+// Want 42.
+
+fn empty_ints() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn cons_int(x: int64, xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+    produces
+        pure result
+    end
+}
+
+fn pack() -> ({ tag: int64, name: string, params: List[int64, mem(normal)], loc: { file: string, line: int64, column: int64, offset: int64 }, body: int64 }, int64) {
+    params: List[int64, mem(normal)] <- cons_int(1, cons_int(2, empty_ints()));
+    loc: { file: string, line: int64, column: int64, offset: int64 } <- { file: "t.silica", line: 1, column: 2, offset: 3 };
+    ({ tag: 0, name: "main", params: params, loc: loc, body: 37 }, 2)
+}
+
+fn sum2(xs: List[int64, mem(normal)]) -> int64 {
+    case xs.is_nil of {
+        true -> 0;
+        false -> xs.head + (case xs.tail.is_nil of { true -> 0; false -> xs.tail.head })
+    }
+}
+
+fn clobber() -> int64 {
+    junk: { tag: int64, val: int64 } <- { tag: 99, val: 99 };
+    junk.tag + junk.val
+}
+
+fn main() -> int64 {
+    p: ({ tag: int64, name: string, params: List[int64, mem(normal)], loc: { file: string, line: int64, column: int64, offset: int64 }, body: int64 }, int64) <- pack();
+    (d, n) <- p;
+    _: int64 <- clobber();
+    case d.tag == 0 of {
+        true -> case d.name == "main" of {
+            true -> case d.loc.line == 1 of {
+                true -> d.body + sum2(d.params) + n;
+                false -> 3
+            };
+            false -> 2
+        };
+        false -> 1
+    }
+}

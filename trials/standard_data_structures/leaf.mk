@@ -31,7 +31,7 @@ POSITIVE_SILICA := $(sort $(patsubst $(THIS_DIR)%,%,$(filter-out $(_EXCLUDED_SIL
 
 # Remove stale assembly/link artifacts before compile (used inline — not via `clean` prerequisite).
 INTEGRATE_PRE_CLEAN = cd "$(THIS_DIR)" && \
-	rm -f .integrate_counts *.sams lib/*.sams *.o lib/*.o __silica_runtime.o *.sout \
+	rm -f .integrate_counts *.sams lib/*.sams *.o lib/*.o *.iface lib/*.iface __silica_runtime.o *.sout \
 		silica.compile.order silica.needs_runtime silica.link && \
 	for s in *.sams; do \
 		[ -f "$$s" ] || continue; \
@@ -275,7 +275,7 @@ record-positive-golden: silica.config
 		base=$${trial%.silica}; \
 		rm -f "$$base" "$$base.o"; \
 	done
-	@cd "$(THIS_DIR)" && rm -f __silica_runtime.o lib/*.o *.sams lib/*.sams *.sout .integrate_counts
+	@cd "$(THIS_DIR)" && rm -f __silica_runtime.o lib/*.o *.iface lib/*.iface *.sams lib/*.sams *.sout .integrate_counts
 	@echo "✅ $(MSG_PREFIX)record-positive-golden complete"
 
 record-golden: record-positive-golden
@@ -286,7 +286,7 @@ clean:
 		[ -f "$$s" ] || continue; \
 		rm -f "$${s%.sams}"; \
 	done
-	@cd "$(THIS_DIR)" && rm -f *.sams lib/*.sams *.o lib/*.o __silica_runtime.o smoke_harness_ready *.sout silica.config .integrate_counts silica.compile.order silica.needs_runtime silica.link
+	@cd "$(THIS_DIR)" && rm -f *.sams lib/*.sams *.o lib/*.o *.iface lib/*.iface __silica_runtime.o smoke_harness_ready *.sout silica.config .integrate_counts silica.compile.order silica.needs_runtime silica.link
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:

@@ -1,0 +1,93 @@
+// Stick-the-landing for parser_ast@make_expr:
+//   append(combined, prepend(new_node, empty))
+// make_expr keeps 8 params live in X19–X26 through new_node packing; two lengths take
+// X27/X28; combined spills to [X29,#-N]. Staging used to refuse memory_ref bindings, so
+// sequential emit loaded combined into X0 then ran list_cons (BL prepend), clobbering X0.
+// append saw the wrong list → root OOB → placeholder_body → MOV X0,#0 for base/test.
+// Want exit 42.
+
+fn empty_nodes() -> List[{ kind: int64, value: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ kind: int64, value: string }, mem(normal)] <- empty[{ kind: int64, value: string }, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+fn append_nodes(a: List[{ kind: int64, value: string }, mem(normal)], b: List[{ kind: int64, value: string }, mem(normal)]) -> List[{ kind: int64, value: string }, mem(normal)] {
+    case a.is_nil of {
+        true -> b;
+        false -> List[ {
+            stepped: List[{ kind: int64, value: string }, mem(normal)] <- prepend[{ kind: int64, value: string }, mem(normal)](a.head, append_nodes(a.tail, b));
+            stepped
+        }, mem(normal)]
+    }
+}
+
+fn len_nodes(xs: List[{ kind: int64, value: string }, mem(normal)]) -> int64 {
+    case xs.is_nil of {
+        true -> 0;
+        false -> 1 + len_nodes(xs.tail)
+    }
+}
+
+// Params must stay live through the append (like make_expr's kind/value/name/location).
+fn make_bin(
+    k0: int64, k1: int64, k2: int64, k3: int64,
+    k4: int64, k5: int64, k6: int64, k7: int64
+) -> int64 {
+    sequence proc[mem(normal)]
+        left_len: int64 <- k0;
+        right_len: int64 <- k1;
+        left: List[{ kind: int64, value: string }, mem(normal)] <- prepend[{ kind: int64, value: string }, mem(normal)]({ kind: k2, value: "41" }, empty_nodes());
+        right: List[{ kind: int64, value: string }, mem(normal)] <- prepend[{ kind: int64, value: string }, mem(normal)]({ kind: k3, value: "1" }, empty_nodes());
+        combined: List[{ kind: int64, value: string }, mem(normal)] <- append_nodes(left, right);
+        empty_n: List[{ kind: int64, value: string }, mem(normal)] <- empty_nodes();
+        new_node: { kind: int64, value: string } <- { kind: k4, value: "+" };
+        with_new: List[{ kind: int64, value: string }, mem(normal)] <- append_nodes(combined, prepend[{ kind: int64, value: string }, mem(normal)](new_node, empty_n));
+        n: int64 <- len_nodes(with_new);
+        live: int64 <- k0 + k1 + k2 + k3 + k4 + k5 + k6 + k7 + left_len + right_len;
+        code: int64 <- case n == 3 of {
+            true -> case live > 0 of {
+                true -> 40;
+                false -> 10
+            };
+            false -> n
+        }
+    produces
+        pure code
+    end
+}
+
+fn make_leaf(
+    k0: int64, k1: int64, k2: int64, k3: int64,
+    k4: int64, k5: int64, k6: int64, k7: int64
+) -> int64 {
+    sequence proc[mem(normal)]
+        left_len: int64 <- k0;
+        right_len: int64 <- k1;
+        combined: List[{ kind: int64, value: string }, mem(normal)] <- empty_nodes();
+        empty_n: List[{ kind: int64, value: string }, mem(normal)] <- empty_nodes();
+        new_node: { kind: int64, value: string } <- { kind: k2, value: "42" };
+        with_new: List[{ kind: int64, value: string }, mem(normal)] <- append_nodes(combined, prepend[{ kind: int64, value: string }, mem(normal)](new_node, empty_n));
+        live: int64 <- k0 + k1 + k2 + k3 + k4 + k5 + k6 + k7 + left_len + right_len;
+        code: int64 <- case with_new.is_nil of {
+            true -> 1;
+            false -> case with_new.head.value == "42" of {
+                true -> case live > 0 of {
+                    true -> 2;
+                    false -> 11
+                };
+                false -> 3
+            }
+        }
+    produces
+        pure code
+    end
+}
+
+fn main() -> int64 {
+    b: int64 <- make_bin(1, 2, 0, 0, 3, 4, 5, 6);
+    l: int64 <- make_leaf(1, 2, 0, 3, 4, 5, 6, 7);
+    b + l
+}

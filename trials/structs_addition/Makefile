@@ -43,7 +43,7 @@ all: executables
 assembly: clean silica.config
 	@echo "Compiling with silica-compiler..."
 	@cd "$(MAKEFILE_DIR)" && test -s silica.config || (echo "Error: no .silica files in $(MAKEFILE_DIR)"; exit 1)
-	@cd "$(MAKEFILE_DIR)" && rm -f *.sams silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams; \
+	@cd "$(MAKEFILE_DIR)" && rm -f *.sams *.iface silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams; \
 	$(RUN_SILICA_COMPILER)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
@@ -82,7 +82,7 @@ integrate:
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
-	rm -f *.sams silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams; \
+	rm -f *.sams *.iface silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams; \
 	echo "Compiling with silica-compiler..."; \
 	if ! { $(RUN_SILICA_COMPILER); }; then \
 		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
@@ -166,7 +166,7 @@ clean:
 		[ -f "$$s" ] || continue; \
 		rm -f $${s%.sams}; \
 	done
-	@cd "$(MAKEFILE_DIR)" && rm -f *.sams *.o silica.config silica.compile.order silica.needs_runtime silica.link .integrate_counts
+	@cd "$(MAKEFILE_DIR)" && rm -f *.sams *.o *.iface silica.config silica.compile.order silica.needs_runtime silica.link .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:

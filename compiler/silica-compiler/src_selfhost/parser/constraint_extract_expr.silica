@@ -1388,11 +1388,79 @@ fn extract_binding_struct_for_sequence(slots: List[{ token: { kind: int64, lexem
 
 
 
+
+// `List[ { stmts; result }, mem(R) ]` → sequence proc[mem(R)] named `__list_typed_block__` (E3001/E3010).
+fn slots_start_list_value_block(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> bool {
+    case slots.is_nil of {
+        true -> false;
+        false -> case slots.head.token.kind == lexer_token_kind@token_kind_list_keyword() of {
+            true -> {
+                after_kw: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_extract_slots@skip_leading_whitespace_slots(slots.tail);
+                case after_kw.is_nil of {
+                    true -> false;
+                    false -> case after_kw.head.token.kind == lexer_token_kind@token_kind_left_bracket() of {
+                        true -> {
+                            after_lbr: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_extract_slots@skip_leading_whitespace_slots(after_kw.tail);
+                            case after_lbr.is_nil of {
+                                true -> false;
+                                false -> case after_lbr.head.token.kind == lexer_token_kind@token_kind_left_brace() or after_lbr.head.token.lexeme == "{" of {
+                                    true -> case constraint_extract_params@is_struct_literal_lbrace_fallback(after_lbr) of {
+                                        true -> false;
+                                        false -> true
+                                    };
+                                    false -> false
+                                }
+                            }
+                        };
+                        false -> false
+                    }
+                }
+            };
+            false -> false
+        }
+    }
+}
+
+fn extract_list_value_block(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> ({ nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) proc[DeviceIO] {
+    case slots_start_list_value_block(slots) of {
+        false -> (parser_ast@dummy_expr(), slots);
+        true -> {
+            after_kw: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_extract_slots@skip_leading_whitespace_slots(slots.tail);
+            after_lbr: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_extract_slots@skip_leading_whitespace_slots(after_kw.tail);
+            inner: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- after_lbr.tail;
+            (body_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, rest_after: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- extract_function_body(inner);
+            case rest_after.is_nil of {
+                true -> (parser_ast@dummy_expr(), slots);
+                false -> case rest_after.head.token.kind == lexer_token_kind@token_kind_right_brace() or rest_after.head.token.lexeme == "}" or constraint_core@slot_role(rest_after.head) == constraint_extract_slots@role_right_brace() of {
+                    true -> {
+                        after_rbrace: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_extract_slots@skip_leading_whitespace_slots(rest_after.tail);
+                        case after_rbrace.is_nil of {
+                            true -> (parser_ast@dummy_expr(), slots);
+                            false -> case after_rbrace.head.token.kind == lexer_token_kind@token_kind_comma() or after_rbrace.head.token.lexeme == "," of {
+                                true -> {
+                                    after_comma: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_extract_slots@skip_leading_whitespace_slots(after_rbrace.tail);
+                                    (declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], rest_final: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- constraint_extract_params@collect_effects_until_right_bracket(after_comma, parser_ast@empty_effect_name_list());
+                                    seq_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@make_expr(11, "", "__list_typed_block__", slots.head.token.location, parser_ast@dummy_expr(), body_expr, parser_ast@nil_tuple_decompose_bindings(), declared_effects);
+                                    (seq_expr, rest_final)
+                                };
+                                false -> (parser_ast@dummy_expr(), slots)
+                            }
+                        }
+                    };
+                    false -> (parser_ast@dummy_expr(), slots)
+                }
+            }
+        }
+    }
+}
+
 fn extract_case_rhs_primary_nonempty(trimmed: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> ({ nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) proc[DeviceIO] {
     first: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] } <- trimmed.head;
     rest: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- trimmed.tail;
     first_kind: int64 <- first.token.kind;
-    case constraint_core@slot_role(first) == capability_case@role_case_rhs_unary_minus() of {
+    case slots_start_list_value_block(trimmed) of {
+        true -> extract_list_value_block(trimmed);
+        false -> case constraint_core@slot_role(first) == capability_case@role_case_rhs_unary_minus() of {
         true -> {
             (operand: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, rest_after: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) <- extract_case_rhs_with_precedence(rest, 3);
             dummy: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@dummy_expr();
@@ -1457,6 +1525,7 @@ fn extract_case_rhs_primary_nonempty(trimmed: List[{ token: { kind: int64, lexem
             }
         }
         }
+    }
     }
 }
 
@@ -1702,7 +1771,9 @@ fn extract_primary(slots: List[{ token: { kind: int64, lexeme: string, location:
     // `fn` before case probe: slot_role can mark `fn` with role_case_keyword in type/record regions,
     // which would route to extract_case_expression and misparse `(msg:...) ->` as statements (E1040).
     // Also reject `identifier`+lexeme`fn`+`(` as a call — use opaque function-type expr (kind 992).
-    case parser_tuples@slots_start_fn_type(slots) of {
+    case slots_start_list_value_block(slots) of {
+        true -> extract_list_value_block(slots);
+        false -> case parser_tuples@slots_start_fn_type(slots) of {
         true -> case constraint_extract_params@lambda_introduces_body_after_sig(slots) of {
             true -> extract_lambda_expression(slots);
             false -> constraint_extract_params@expr_fn_type_opaque_from_slots(slots)
@@ -1775,6 +1846,7 @@ fn extract_primary(slots: List[{ token: { kind: int64, lexeme: string, location:
             }
         }
         }
+    }
     }
 }
 

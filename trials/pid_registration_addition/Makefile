@@ -42,7 +42,7 @@ all: executables
 # Stage 1: silica-compiler generates .sams (reads silica.config in THIS_DIR)
 assembly: clean silica.config
 	@echo "Compiling with silica-compiler..."
-	@cd "$(THIS_DIR)" && rm -f *.sams silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams; \
+	@cd "$(THIS_DIR)" && rm -f *.sams *.iface silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams; \
 	$(RUN_SILICA_COMPILER)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
@@ -86,7 +86,7 @@ integrate:
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
-	rm -f *.sams silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams; \
+	rm -f *.sams *.iface silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams; \
 	echo "Compiling with silica-compiler..."; \
 	if ! { $(RUN_SILICA_COMPILER); }; then \
 		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
@@ -174,7 +174,7 @@ clean:
 		[ -f "$$s" ] || continue; \
 		rm -f $${s%.sams}; \
 	done; \
-	rm -f *.sams *.o *.sout silica.compile.order silica.needs_runtime silica.link .integrate_counts silica.config; \
+	rm -f *.sams *.o *.iface *.sout silica.compile.order silica.needs_runtime silica.link .integrate_counts silica.config; \
 	echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
