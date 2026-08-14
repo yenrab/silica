@@ -1336,6 +1336,52 @@ fn extract_list_value_block(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[
     }
 }
 
+// `string { stmts; result }` (and other `Type { ... }` value blocks) as a case-arm / expression.
+// Without this, `string` (string_keyword) is taken as the whole primary and `{ ... }` is left
+// unconsumed; the arm collapses to a dummy and seed emits placeholder_body `"0"`. That made
+// selfhost's `fn_base_name_scan` always return `"0"`, so every same-arity function looked
+// overloaded and `fn main()` was labeled `main__ret_int64` (no linker entry).
+// Not a struct literal: `is_binding_start` (`name: Type <-`) keeps `{ c: string <- ... }` as a block.
+fn slots_start_typed_value_block(slots: ListTokenSlot) -> bool proc[DeviceIO] {
+    case slots.is_nil of {
+        true -> false;
+        false -> case is_type_keyword(slots.head.token.kind) or lexer_token_kind@is_identifier_lexeme_token(slots.head.token.kind) of {
+            true -> do
+                after_ty: ListTokenSlot <- skip_leading_whitespace_slots(slots.tail);
+                case after_ty.is_nil of {
+                    true -> false;
+                    false -> case after_ty.head.token.kind == lexer_token_kind@token_kind_left_brace() or after_ty.head.token.lexeme == "{" of {
+                        true -> case is_struct_literal_lbrace_fallback(after_ty) of {
+                            true -> false;
+                            false -> true
+                        };
+                        false -> false
+                    }
+                }
+            end;
+            false -> false
+        }
+    }
+}
+
+fn extract_typed_value_block(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
+    case slots_start_typed_value_block(slots) of {
+        false -> (parser_ast@dummy_expr(), slots);
+        true -> do
+            after_ty: ListTokenSlot <- skip_leading_whitespace_slots(slots.tail);
+            inner: ListTokenSlot <- after_ty.tail;
+            (body_expr: Expr, rest_after: ListTokenSlot) <- extract_function_body(inner);
+            case rest_after.is_nil of {
+                true -> (parser_ast@dummy_expr(), slots);
+                false -> case rest_after.head.token.kind == lexer_token_kind@token_kind_right_brace() or rest_after.head.token.lexeme == "}" or constraint_core@slot_role(rest_after.head) == role_right_brace() of {
+                    true -> (body_expr, rest_after.tail);
+                    false -> (parser_ast@dummy_expr(), slots)
+                }
+            }
+        end
+    }
+}
+
 // `[` usually has role_list_lit_lbracket after constraint propagation; if that role is missing, still treat as a
 // list literal when the next token clearly starts list elements ([] or an operand or `{` struct), so RHS and
 // tuple elements like `(0, [ { a: 1 } ])` do not fall through to extract_expr_with_precedence (E1040).
@@ -3325,6 +3371,8 @@ fn extract_case_rhs_primary_nonempty(trimmed: ListTokenSlot) -> (Expr, ListToken
     first_kind: int64 <- first.token.kind;
     case slots_start_list_value_block(trimmed) of {
         true -> extract_list_value_block(trimmed);
+        false -> case slots_start_typed_value_block(trimmed) of {
+        true -> extract_typed_value_block(trimmed);
         false -> case constraint_core@slot_role(first) == capability_case@role_case_rhs_unary_minus() of {
         true -> do
             (operand: Expr, rest_after: ListTokenSlot) <- extract_case_rhs_with_precedence(rest, 3);
@@ -3390,6 +3438,7 @@ fn extract_case_rhs_primary_nonempty(trimmed: ListTokenSlot) -> (Expr, ListToken
             }
         }
         }
+    }
     }
     }
 }
@@ -3748,6 +3797,8 @@ fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO]
     // Also reject `identifier`+lexeme`fn`+`(` as a call — use opaque function-type expr (kind 992).
     case slots_start_list_value_block(slots) of {
         true -> extract_list_value_block(slots);
+        false -> case slots_start_typed_value_block(slots) of {
+        true -> extract_typed_value_block(slots);
         false -> case parser_tuples@slots_start_fn_type(slots) of {
         true -> case lambda_introduces_body_after_sig(slots) of {
             true -> extract_lambda_expression(slots);
@@ -3821,6 +3872,7 @@ fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO]
             end
         }
         }
+    }
     }
     }
 }

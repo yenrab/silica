@@ -42,6 +42,7 @@ export is_list_type_binding_start/1;
 export is_binding_start/1;
 export trailing_semicolon_marker/2;
 export wrap_let_or_return/2;
+export expr_same_source_span/2;
 export statement_boundary_error_wrapper/4;
 export tuple_decompose_build_expr/5;
 export extract_optional_generic_type_args_after_name/1;
@@ -1018,22 +1019,48 @@ fn trailing_semicolon_marker(semi_loc: { file: string, line: int64, column: int6
 
 
 
+// True when both trees are the same source span (same kind and offset). Used to
+// refuse `let _ = E in E` when leftover tokens still start at E.
+fn expr_same_source_span(a: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, b: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> bool {
+    case a.root < 0 or b.root < 0 of {
+        true -> false;
+        false -> {
+            na: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(a);
+            nb: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(b);
+            na.kind == nb.kind and na.location.offset == nb.location.offset
+        }
+    }
+}
+
+
+
 // Chain first_expr with rest_body: if first_expr is a let or tuple_decompose, chain rest_body into its continuation (so we keep the body and add rest_body after it);
 // otherwise wrap first_expr in a let _ : unit <- first_expr in rest_body so the statement executes before the return.
 fn wrap_let_or_return(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, rest_body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } {
     sequence
+        result: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- case expr.root < 0 of {
+            true -> rest_body;
+            false -> {
         node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
-        result: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- case node.kind == 6 of {
-            true -> {
-                new_continuation: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- wrap_let_or_return(parser_ast@expr_at(expr, node.right_expr), rest_body);
-                parser_ast@make_expr(6, node.value, node.name, node.location, parser_ast@expr_at(expr, node.inner), new_continuation, parser_ast@nil_tuple_decompose_bindings(), parser_ast@empty_effect_name_list())
-            };
-            false -> case node.kind == 10 of {
+        case node.kind < 0 of {
+            true -> rest_body;
+            false -> case expr_same_source_span(expr, rest_body) of {
+            true -> expr;
+            false -> case node.kind == 6 of {
                 true -> {
                     new_continuation: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- wrap_let_or_return(parser_ast@expr_at(expr, node.right_expr), rest_body);
-                    parser_ast@make_expr(10, node.value, node.name, node.location, parser_ast@expr_at(expr, node.inner), new_continuation, parser_ast@as_list_tuple_decompose_bindings(node.pattern_bindings), parser_ast@empty_effect_name_list())
+                    parser_ast@make_expr(6, node.value, node.name, node.location, parser_ast@expr_at(expr, node.inner), new_continuation, parser_ast@nil_tuple_decompose_bindings(), parser_ast@empty_effect_name_list())
                 };
-                false -> parser_ast@make_expr(6, "unit", "_", node.location, expr, rest_body, parser_ast@nil_tuple_decompose_bindings(), parser_ast@empty_effect_name_list())
+                false -> case node.kind == 10 of {
+                    true -> {
+                        new_continuation: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- wrap_let_or_return(parser_ast@expr_at(expr, node.right_expr), rest_body);
+                        parser_ast@make_expr(10, node.value, node.name, node.location, parser_ast@expr_at(expr, node.inner), new_continuation, parser_ast@as_list_tuple_decompose_bindings(node.pattern_bindings), parser_ast@empty_effect_name_list())
+                    };
+                    false -> parser_ast@make_expr(6, "unit", "_", node.location, expr, rest_body, parser_ast@nil_tuple_decompose_bindings(), parser_ast@empty_effect_name_list())
+                }
+            }
+        }
+            }
             }
         }
     produces

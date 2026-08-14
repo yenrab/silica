@@ -452,6 +452,54 @@ fn sir_infer_tuple_chain(context: { env: List[{ name: string, type_name: string,
     }
 }
 
+fn sir_infer_struct_lit_chain(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, acc: string, need_comma: bool) -> string {
+    kind: int64 <- type_checker_expressions_helpers@expr_kind(expr);
+    case kind == -1 or kind == 999 of {
+        true -> case acc == "" of {
+            true -> "";
+            false -> concat(acc, "}")
+        };
+        false -> case kind == 21 of {
+            true -> {
+                it: string <- sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
+                case it == "" of {
+                    true -> "";
+                    false -> {
+                        fname: string <- type_checker_expressions_helpers@expr_name(expr);
+                        chunk: string <- case need_comma of {
+                            true -> concat(concat(concat(",", fname), ":"), it);
+                            false -> concat(concat(concat("{", fname), ":"), it)
+                        };
+                        sir_infer_struct_lit_chain(context, type_checker_expressions_helpers@expr_child_right(expr), concat(acc, chunk), true)
+                    }
+                }
+            };
+            false -> ""
+        }
+    }
+}
+
+fn sir_infer_struct_literal_type(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> string {
+    case type_checker_expressions_helpers@expr_kind(expr) == -1 of {
+        true -> "";
+        false -> sir_infer_struct_lit_chain(context, expr, "", false)
+    }
+}
+
+fn sir_infer_field_access_type(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> string {
+    base_t: string <- sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
+    field: string <- type_checker_expressions_helpers@expr_name(expr);
+    exp: string <- type_checker_record_types@expand_named_topology_type(base_t);
+    effective: string <- case type_checker_record_types@record_type_starts(exp) of {
+        true -> exp;
+        false -> base_t
+    };
+    case type_checker_record_types@record_type_starts(effective) of {
+        true -> type_checker_record_types@find_field_type_in_record(effective, field);
+        false -> type_checker_lists@list_field_access_type(effective, field)
+    }
+}
+
 fn sir_infer_expr_type(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> string {
     kind: int64 <- type_checker_expressions_helpers@expr_kind(expr);
     case kind of {
@@ -490,6 +538,8 @@ fn sir_infer_expr_type(context: { env: List[{ name: string, type_name: string, d
         9 -> concat("(", concat(sir_infer_tuple_chain(context, expr), ")"));
         13 -> sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_right(expr));
         19 -> sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(type_checker_expressions_helpers@expr_child_right(expr)));
+        21 -> sir_infer_struct_literal_type(context, expr);
+        22 -> sir_infer_field_access_type(context, expr);
         991 -> type_checker_expressions_helpers@expr_value(expr);
         992 -> type_checker_expressions_helpers@expr_value(expr);
         _: int64 -> ""
@@ -526,13 +576,55 @@ fn sir_context_after_sequence_body(body: { nodes: List[{ kind: int64, value: str
     }
 }
 
+fn sir_is_arith_op(op: string) -> bool {
+    op == "+" or op == "-" or op == "*" or op == "/" or op == "%"
+}
+
+fn sir_is_floatish_type(t: string) -> bool {
+    t == "float16" or t == "float32" or t == "float64" or t == "float"
+}
+
+fn sir_is_narrow_int_type(t: string) -> bool {
+    t == "int32" or t == "int16" or t == "int8" or t == "uint32" or t == "uint16" or t == "uint8"
+}
+
+fn sir_infer_binop_left_preferred(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }) -> string {
+    case type_checker_expressions_helpers@expr_kind(expr) == 3 of {
+        true -> {
+            op: string <- type_checker_expressions_helpers@expr_value(expr);
+            lt: string <- sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
+            rt: string <- sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_right(expr));
+            case sir_is_arith_op(op) or sir_is_cmp_op(op) of {
+                true -> case sir_is_floatish_type(lt) of {
+                    true -> lt;
+                    false -> case sir_is_floatish_type(rt) of {
+                        true -> rt;
+                        false -> case len(lt) > 0 of {
+                            true -> lt;
+                            false -> rt
+                        }
+                    }
+                };
+                false -> lt
+            }
+        };
+        false -> sir_infer_expr_type(context, expr)
+    }
+}
+
 fn sir_infer_binop_operand_type_for_sir(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, enclosing_expected: string) -> string {
     op: string <- type_checker_expressions_helpers@expr_value(expr);
     case op == "&" or op == "|" or op == "^" or op == "<<" or op == ">>" or op == ">>>" of {
         true -> "uint64";
-        false -> case len(enclosing_expected) > 0 of {
-            true -> enclosing_expected;
-            false -> sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr))
+        false -> case sir_is_arith_op(op) of {
+            true -> case sir_is_floatish_type(enclosing_expected) of {
+                true -> enclosing_expected;
+                false -> case sir_is_narrow_int_type(enclosing_expected) of {
+                    true -> enclosing_expected;
+                    false -> sir_infer_binop_left_preferred(expr, context)
+                }
+            };
+            false -> sir_infer_binop_left_preferred(expr, context)
         }
     }
 }
