@@ -33,6 +33,9 @@ the emitter's output legitimately changes; refresh them with
 | `agg_param_tailcall` | A function with an aggregate first parameter shadows it in X20, so it must save X19/X20 even when its body is a tail call | 30 |
 | `and_shortcircuit` | `and` must not evaluate its right operand when the left one is false | 2 |
 | `arg_clobber`, `arg_clobber2` | Argument marshalling must not write X0–X7 before every argument has been evaluated | 3, 3 |
+| `kind5_arg_clobber` | A kind-5 (whole-body tail call) wrapper must shadow later GPR params before nested argument calls clobber X1–X7 | 17 |
+| `hof_callee_spill` | A later let must not steal the callee-saved register holding a function parameter; `f(...)` is a live use of `f` | 28 |
+| `hof_record_indirect` | An indirect callee in X17 must survive `region_alloc` when an argument is a heap-promoted `record_make` (not a user call); save/reload around args, including before a kind-5 tail BR | 7 |
 | `bound_wrap` | Parallel GPR staging must heap-promote an inline `record_make` before STR slots (the `term_to_asm_debug_with_outer` shape); interleaved payload + omitted demoted-tail RET hung emit | 42 |
 | `decl_pair_escape` | `extract_function`'s `({tag,name,params,loc,body}, rest)` shape: nested `record_make` in a returned pair must be heap-promoted, and a spilled tuple element `n` must survive a later `BL` (`body_bound` is the spill reg, not X1). Selfhost emitting `MOV X0, #0` for `fn main(){42}` when decls were corrupted | 42 |
 | `make_expr_append_stage` | `append(combined, prepend(node, empty))` with 8 live params so `combined` spills: staging must accept memory_ref bindings and treat `list_cons` as a clobbering arg (else root OOB → placeholder `#0`) | 42 |
@@ -47,11 +50,17 @@ the emitter's output legitimately changes; refresh them with
 | `rec_call_field_direct` | A direct `{…}` body's epilogue must pop the shell plus every nested allocation | 14 |
 | `rec_nested_nonscalar` | A nested record literal is inlined into the outer record even when its fields are not all scalars; storing a pointer left it dangling | 22 |
 | `region_case_arm` | A region allocation reachable only inside a case arm still counts as region use, so the region helpers get emitted | 9 |
+| `or_continued_line` | A line-ending `or` plus a blank (whitespace-only) line is one expression; newline/tab/CR/space are lexer whitespace, not E1040 statement breaks (`prims_record` `value_flat_leaf_field_type_p`). `//` stops at newline; `/` is division | 7 |
+| `seq_literal_rhs` | Sequence `<- 7 produces` with no `;` (newlines are not tokens): `produces` must stay a legal follower of a binding RHS so propagate does not empty the literal's roles | 7 |
+| `line_comments` | Whole-line `//` and end-of-line `//` must stop at the newline (not eat `main` / the next statement); a lone `/` is still division | 7 |
+| `case_string_newline` | Case patterns must unescape like string expressions so `"\n"` matches a real newline (`skip_line_comment`); otherwise `//` eats the rest of the file | 7 |
+| `case_string_quote` | Case patterns must skip `\"` when finding the closer so `"\""` is a quote, not a backslash (selfhost `case peek of { "\"" -> read_string }` otherwise never lexes strings → false E1040 on `bound_wrap`) | 1 |
 | `region_grow` | A region outgrows its first block: allocation attaches another block instead of aborting, and refs from earlier blocks stay readable and still test in-region | 42 |
 | `shadow_x21` | Parameters shadowed into X19/X20 push the body's first let onto X21, so the frame must count them when deciding which callee-saved pairs to save | 17 |
 | `tuple_let_case` | A let-spine body whose tail is an id bound to a block ending in a case leaves nothing on the frame, so the epilogue must not pop | 14 |
 | `concat_call_operand` | `concat`'s left operand is staged in X0, so a call in the right operand must not be allowed to overwrite it, or both operands become the right one | 8 |
 | `concat_fold_call` | The same clobber when the right operand is a call *with arguments* (SIR kind 5): the call detection counted only zero-argument calls, so a `concat(head, recurse(tail))` fold collapsed to its base case | 6 |
+| `concat_third_param` | `string_concat` must trigger full param shadow so a third string argument survives `BL L_concat_helper` (`emit_compare_op`'s `reg_prefix`) | 3 |
 | `list_head_call` | A scalar list head must live in a callee-saved register: recursing on the tail before using the head destroyed it when it sat in X1 | 6 |
 | `tup_call_elem` | A tuple-returning call in tuple-element position must give its caller sret slab back, or the later elements are stored through a shifted SP and the tuple pops less than it pushed | 77 |
 | `tup_let_rec` | Nested `record_make` in a returned pair must be heap-promoted and its self-SUB reclaimed (`extract_function`); let-bound early promote hung typecheck | 42 |

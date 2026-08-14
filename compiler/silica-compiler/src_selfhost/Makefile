@@ -40,6 +40,10 @@ LINKER_CLANG := $(or $(LINKER_CLANG), $(shell test -x /opt/homebrew/opt/llvm/bin
 # Self-host lexer/parser recurse over whole files; raise main-thread stack (macOS default 8MB).
 LDFLAGS_STACK := -Wl,-stack_size,0x10000000
 
+# Parallel .sams → .o assembly (Stage 2). Silica emission (Stage 1) stays serial
+# (leaf-to-root + process-per-unit). Override: make build JOBS=4
+JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+
 # Stdlib modules pulled in by compiler_maps (staged under lib/ like trial leaves).
 LIB_STDLIB_MODULES := wbt_map OrderedMap
 
@@ -251,19 +255,24 @@ assembly: check-seed silica.config record-compile-start
 	  echo "✅ Assembly generated (.sams)"; \
 	  $(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,assembly)
 
-# Stage 2: .sams → .o (clang assembler), including nested paths and lib/
+# Stage 2: .sams → .o (clang assembler), including nested paths and lib/.
+# Invoked in parallel via sub-make -j$(JOBS) after Stage 1 finishes.
+%.o: %.sams
+	@echo "Assembling: $< -> $@"
+	@$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$<" -o "$@"
+
 objects: assembly
 	@cd "$(THIS_DIR)" && \
-	failed=0; \
-	for sams in $$(find . -type f -name '*.sams' | sed 's|^\./||' | sort); do \
-		[ -f "$$sams" ] || continue; \
-		base=$${sams%.sams}; \
-		echo "Assembling: $$sams -> $$base.o"; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || failed=1; \
-	done; \
-	if [ $$failed -ne 0 ]; then \
-		$(REPORT_COMPILE_TIME); \
-		exit 1; \
+	obj_targets=$$(find . -type f -name '*.sams' ! -path './_wd_probe/*' \
+		| sed 's|^\./||' | sed 's|\.sams$$|.o|' | LC_ALL=C sort | tr '\n' ' '); \
+	if [ -z "$$obj_targets" ]; then \
+		echo "FAIL: no .sams files found after assembly"; \
+		$(REPORT_COMPILE_TIME); exit 1; \
+	fi; \
+	nobj=$$(find . -type f -name '*.sams' ! -path './_wd_probe/*' | wc -l | tr -d ' '); \
+	echo "Assembling $$nobj .sams file(s) with -j$(JOBS)..."; \
+	if ! $(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" -j$(JOBS) $$obj_targets; then \
+		$(REPORT_COMPILE_TIME); exit 1; \
 	fi; \
 	$(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,objects)
 
@@ -377,7 +386,7 @@ help:
 	@echo "Build targets"
 	@echo "  make / build              create silica.config if missing/stale, then seed → .o → $(EXECUTABLE)"
 	@echo "  assembly                  seed compile only (.sams); keeps up-to-date .sams/.iface"
-	@echo "  objects                   assemble .sams → .o"
+	@echo "  objects                   assemble .sams → .o (parallel -j$(JOBS); override with JOBS=N)"
 	@echo "  executables               link $(EXECUTABLE)"
 	@echo "  silica.config             create/update topo-sorted unit list if missing or stale"
 	@echo "  silica.config.regen       force-regenerate unit list (ignores timestamps)"

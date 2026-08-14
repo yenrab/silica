@@ -32,6 +32,7 @@ export outer_append_id_ret_tuple_sret/3;
 export compute_let_rhs_spill_reg/3;
 export mov_spill_from_rhs/2;
 export is_aggregate_make/1;
+export outer_reg_keep_callee_saved/1;
 
 fn spill_reg_chain_from_outer(outer_reg: string) -> string {
     case var@is_reg_bound(outer_reg, "X19") of {
@@ -84,12 +85,16 @@ fn sir_term_references_binding(term: { nodes: List[{ kind: int64, type_name: str
     case term.root < 0 of {
         true -> false;
         false -> {
+            // Kind 4/5 callees live in `.name`. Omitting them lets a later let steal the
+            // register holding a function parameter, then BLR to garbage.
             local_ref: bool <- case term_sir_helpers@sir_term_root_node(term).kind of {
                 1 -> binding_name_matches_ref(binding_name, term_sir_helpers@sir_term_root_node(term).name);
                 0 -> case term_sir_helpers@sir_term_root_node(term).type_name == "fn_ptr" of {
                     true -> binding_name_matches_ref(binding_name, term_sir_helpers@sir_term_root_node(term).value);
                     false -> false
                 };
+                4 -> binding_name_matches_ref(binding_name, term_sir_helpers@sir_term_root_node(term).name);
+                5 -> binding_name_matches_ref(binding_name, term_sir_helpers@sir_term_root_node(term).name);
                 _: int64 -> false
             };
             case local_ref of {
@@ -154,6 +159,13 @@ fn spill_reg_unavailable_for_body(outer_reg: string, reg: string, body: { nodes:
 }
 
 fn spill_reg_chain_for_body(outer_reg: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    case var@find_sp_binding(outer_reg, "_keep_cs") == "1" of {
+        true -> "";
+        false -> spill_reg_chain_for_body_liveness(outer_reg, body)
+    }
+}
+
+fn spill_reg_chain_for_body_liveness(outer_reg: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
     case spill_reg_unavailable_for_body(outer_reg, "X19", body) of {
         false -> "X19";
         true -> case spill_reg_unavailable_for_body(outer_reg, "X20", body) of {
@@ -184,6 +196,18 @@ fn spill_reg_chain_for_body(outer_reg: string, body: { nodes: List[{ kind: int64
                 }
             }
         }
+    }
+}
+
+// Lets inside a case arm only see the arm remainder as the let's right_expr. A param
+// used after the case join is live but does not appear in that remainder, so
+// spill_reg_chain_for_body would reuse its callee-saved home. One flag is enough:
+// per-register `|_keep.Xn=Xn` copies made emit of case-heavy units (constraint_runner)
+// allocate tens of gigabytes.
+fn outer_reg_keep_callee_saved(outer_reg: string) -> string {
+    case var@find_sp_binding(outer_reg, "_keep_cs") == "1" of {
+        true -> outer_reg;
+        false -> concat(outer_reg, "|_keep_cs=1")
     }
 }
 
@@ -407,7 +431,7 @@ fn frame_spill_ref(spill_ref: string) -> bool {
     len(spill_ref) > 7 and substring(spill_ref, 0, 7) == "[X29, #"
 }
 
-fn frame_spill_binding_count_from(outer_reg: string, start: int64) -> int64 {
+fn max_frame_spill_offset_from(outer_reg: string, start: int64) -> int64 {
     pipe: int64 <- var@find_pipe_from(outer_reg, start);
     case pipe < 0 of {
         true -> 0;
@@ -419,22 +443,33 @@ fn frame_spill_binding_count_from(outer_reg: string, start: int64) -> int64 {
             eq: int64 <- find_equals_from_binding(segment, 0);
             here: int64 <- case eq < 1 of {
                 true -> 0;
-                false -> case frame_spill_ref(substring(segment, eq + 1, len(segment))) of {
-                    true -> 1;
-                    false -> 0
+                false -> {
+                    mem_ref: string <- substring(segment, eq + 1, len(segment));
+                    case frame_spill_ref(mem_ref) of {
+                        true -> {
+                            off: int64 <- var@parse_x29_neg_offset_bytes(mem_ref);
+                            case off > 0 of { true -> off; false -> 0 }
+                        };
+                        false -> 0
+                    }
                 }
             };
             rest: int64 <- case next_pipe < 0 of {
                 true -> 0;
-                false -> frame_spill_binding_count_from(outer_reg, next_pipe)
+                false -> max_frame_spill_offset_from(outer_reg, next_pipe)
             };
-            here + rest
+            case here > rest of { true -> here; false -> rest }
         }
     }
 }
 
 fn next_frame_spill_slot(outer_reg: string) -> string {
-    n: int64 <- frame_spill_binding_count_from(outer_reg, 0) + 1;
+    // enclosing_sp_binding re-appends the parent's [X29,#-N] on every nested
+    // let, so a binding-count n jumped 1,2,4,6. STUR [x29,#-96] then landed
+    // on the callee-saved save area (caller's X21). Address from the deepest
+    // offset already used. See trials/codegen_regressions/frame_spill_x21.silica.
+    off: int64 <- max_frame_spill_offset_from(outer_reg, 0);
+    n: int64 <- off / 16 + 1;
     concat("[X29, #-", concat(atom_table@int64_to_decimal_string(n * 16), "]"))
 }
 

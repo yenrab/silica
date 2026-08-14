@@ -58,6 +58,14 @@ fn four_roles(r1: int64, r2: int64, r3: int64, r4: int64) -> List[int64, mem(nor
     constraint_core@cons_int(r1, three_roles(r2, r3, r4))
 }
 
+fn five_roles(r1: int64, r2: int64, r3: int64, r4: int64, r5: int64) -> List[int64, mem(normal)] {
+    constraint_core@cons_int(r1, four_roles(r2, r3, r4, r5))
+}
+
+fn six_roles(r1: int64, r2: int64, r3: int64, r4: int64, r5: int64, r6: int64) -> List[int64, mem(normal)] {
+    constraint_core@cons_int(r1, five_roles(r2, r3, r4, r5, r6))
+}
+
 fn constraints() -> List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] {
     // sequence keyword can follow left_brace, stmt_sep, or bind_arrow (sequence as first stmt, next stmt, or RHS of binding)
     c1: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_left_brace(), next_token_roles: single_role(role_seq_sequence()), prev_token_roles: constraint_core@empty_list_int(), constraint_id: 70 };
@@ -65,8 +73,11 @@ fn constraints() -> List[{ trigger_role: int64, next_token_roles: List[int64, me
     c3: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_bind_arrow(), next_token_roles: single_role(role_seq_sequence()), prev_token_roles: constraint_core@empty_list_int(), constraint_id: 72 };
     // sequence -> produces (minimal) or proc (sequence proc[ε])
     c4: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_seq_sequence(), next_token_roles: two_roles(role_seq_produces(), capability_fn_decl@role_proc_keyword()), prev_token_roles: three_roles(role_left_brace(), role_stmt_sep(), role_bind_arrow()), constraint_id: 73 };
-    // produces -> pure; produces can follow sequence or right_bracket (after proc[ε])
-    c5: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_seq_produces(), next_token_roles: single_role(role_seq_pure()), prev_token_roles: two_roles(role_seq_sequence(), capability_fn_decl@role_right_bracket()), constraint_id: 74 };
+    // produces -> pure. Prev includes a binding RHS (operand / call_rparen /
+    // seq_result) because newlines are lexer whitespace, not tokens: `<- 7 produces`
+    // is adjacent. Without that, propagate empties the literal's roles and
+    // slot_role(.head) faults.
+    c5: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_seq_produces(), next_token_roles: single_role(role_seq_pure()), prev_token_roles: six_roles(role_seq_sequence(), capability_fn_decl@role_right_bracket(), role_operand(), role_call_rparen(), role_seq_result(), role_stmt_sep()), constraint_id: 74 };
     // pure -> result expr (seq_result, operand, or call_name for f(args))
     c6: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_seq_pure(), next_token_roles: three_roles(role_seq_result(), role_operand(), role_call_name()), prev_token_roles: single_role(role_seq_produces()), constraint_id: 75 };
     // seq_result (single-token expr) -> end
@@ -81,14 +92,20 @@ fn constraints() -> List[{ trigger_role: int64, next_token_roles: List[int64, me
     c11: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_call_lparen(), next_token_roles: single_role(role_operand()), prev_token_roles: two_roles(role_seq_result(), role_call_name()), constraint_id: 80 };
     // call_name can follow seq_pure (e.g. sequence produces pure f(42) end)
     c11b: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_call_name(), next_token_roles: single_role(role_call_lparen()), prev_token_roles: single_role(role_seq_pure()), constraint_id: 83 };
-    // call_rparen can be followed by seq_end (e.g. sequence produces pure f(42) end)
-    c11c: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_call_rparen(), next_token_roles: single_role(role_seq_end()), prev_token_roles: single_role(role_operand()), constraint_id: 84 };
+    // call_rparen can be followed by seq_end or produces (`<- go() produces`)
+    c11c: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_call_rparen(), next_token_roles: two_roles(role_seq_end(), role_seq_produces()), prev_token_roles: single_role(role_operand()), constraint_id: 84 };
     // operand can follow seq_pure (first token of result when it's operand, e.g. ( expr ) or call)
     c12: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_operand(), next_token_roles: two_roles(role_op(), role_call_rparen()), prev_token_roles: single_role(role_seq_pure()), constraint_id: 81 };
     // seq_end -> nothing (end of sequence); prev can be seq_result, operand, or call_rparen (e.g. f(42) end)
     c13: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_seq_end(), next_token_roles: constraint_core@empty_list_int(), prev_token_roles: three_roles(role_seq_result(), role_operand(), role_call_rparen()), constraint_id: 82 };
+    c14: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_operand(), next_token_roles: single_role(role_seq_produces()), prev_token_roles: two_roles(role_bind_arrow(), role_stmt_sep()), constraint_id: 87 };
+    c15: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_call_rparen(), next_token_roles: single_role(role_seq_produces()), prev_token_roles: single_role(role_operand()), constraint_id: 88 };
+    c16: { trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 } <- {  trigger_role: role_seq_result(), next_token_roles: single_role(role_seq_produces()), prev_token_roles: two_roles(role_bind_arrow(), role_stmt_sep()), constraint_id: 89 };
     r13: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] <- constraint_core@cons_constraint(c13, constraint_core@empty_list_constraint());
-    r12: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] <- constraint_core@cons_constraint(c12, r13);
+    r16: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] <- constraint_core@cons_constraint(c16, r13);
+    r15: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] <- constraint_core@cons_constraint(c15, r16);
+    r14: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] <- constraint_core@cons_constraint(c14, r15);
+    r12: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] <- constraint_core@cons_constraint(c12, r14);
     r11c: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] <- constraint_core@cons_constraint(c11c, r12);
     r11b: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] <- constraint_core@cons_constraint(c11b, r11c);
     r11: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] <- constraint_core@cons_constraint(c11, r11b);

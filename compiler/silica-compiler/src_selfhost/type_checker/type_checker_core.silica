@@ -291,18 +291,28 @@ fn user_call_base_function_name(composite: string) -> string {
     }
 }
 
+// Call-site name match: use inline `==` (same as identifier lookup / infer helpers).
+// Do not call instantiated_fn_name@decl_name_matches here — cross-module bool returns have been
+// observed always-true under seed-built selfhost, so `__silica_tc_in_main` (surface "boolean")
+// matched every callee and produced E2005 "X is not a function".
+// Skip empty surfaces (effect aliases) instead of reading is_effect_alias (bool field after a
+// List in the symbol row has also been unreliable on that path). `source_module == ""` is
+// unreliable on bootstrap; use len == 0 (see lookup_symbol_found comment).
 fn lookup_fn_type_by_name_and_module(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], fn_name: string, required_module: string) -> int64 {
     case env.is_nil of {
         true -> type_interner@invalid_type_id();
-        false -> case instantiated_fn_name@decl_name_matches(env.head.name, fn_name) and env.head.is_effect_alias == false of {
-            true -> case len(required_module) == 0 of {
-                true -> case env.head.source_module == "" of {
-                    true -> env.head.type_id;
-                    false -> lookup_fn_type_by_name_and_module(env.tail, fn_name, required_module)
-                };
-                false -> case env.head.source_module == required_module of {
-                    true -> env.head.type_id;
-                    false -> lookup_fn_type_by_name_and_module(env.tail, fn_name, required_module)
+        false -> case env.head.name == fn_name of {
+            true -> case len(env.head.surface_type) == 0 of {
+                true -> lookup_fn_type_by_name_and_module(env.tail, fn_name, required_module);
+                false -> case len(required_module) == 0 of {
+                    true -> case len(env.head.source_module) == 0 of {
+                        true -> env.head.type_id;
+                        false -> lookup_fn_type_by_name_and_module(env.tail, fn_name, required_module)
+                    };
+                    false -> case env.head.source_module == required_module of {
+                        true -> env.head.type_id;
+                        false -> lookup_fn_type_by_name_and_module(env.tail, fn_name, required_module)
+                    }
                 }
             };
             false -> lookup_fn_type_by_name_and_module(env.tail, fn_name, required_module)
@@ -313,15 +323,18 @@ fn lookup_fn_type_by_name_and_module(env: List[{ name: string, type_id: int64, s
 fn lookup_fn_surface_by_name_and_module(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], fn_name: string, required_module: string) -> string {
     case env.is_nil of {
         true -> "";
-        false -> case instantiated_fn_name@decl_name_matches(env.head.name, fn_name) and env.head.is_effect_alias == false of {
-            true -> case len(required_module) == 0 of {
-                true -> case env.head.source_module == "" of {
-                    true -> env.head.surface_type;
-                    false -> lookup_fn_surface_by_name_and_module(env.tail, fn_name, required_module)
-                };
-                false -> case env.head.source_module == required_module of {
-                    true -> env.head.surface_type;
-                    false -> lookup_fn_surface_by_name_and_module(env.tail, fn_name, required_module)
+        false -> case env.head.name == fn_name of {
+            true -> case len(env.head.surface_type) == 0 of {
+                true -> lookup_fn_surface_by_name_and_module(env.tail, fn_name, required_module);
+                false -> case len(required_module) == 0 of {
+                    true -> case len(env.head.source_module) == 0 of {
+                        true -> env.head.surface_type;
+                        false -> lookup_fn_surface_by_name_and_module(env.tail, fn_name, required_module)
+                    };
+                    false -> case env.head.source_module == required_module of {
+                        true -> env.head.surface_type;
+                        false -> lookup_fn_surface_by_name_and_module(env.tail, fn_name, required_module)
+                    }
                 }
             };
             false -> lookup_fn_surface_by_name_and_module(env.tail, fn_name, required_module)

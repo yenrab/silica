@@ -80,19 +80,30 @@ fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: strin
 }
 
 fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
-    case idx <= 0 of {
-        true -> nodes.head;
-        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    case nodes.is_nil of {
+        true -> { kind: -1, type_name: "", value: "", name: "", inner: -1, right_expr: -1 };
+        false -> case idx <= 0 of {
+            true -> nodes.head;
+            false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+        }
     }
 }
 
 fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
-    n: int64 <- sir_term_nodes_len(nodes);
-    sir_term_node_at_from_head(nodes, n - 1 - idx)
+    case idx < 0 of {
+        true -> { kind: -1, type_name: "", value: "", name: "", inner: -1, right_expr: -1 };
+        false -> {
+            n: int64 <- sir_term_nodes_len(nodes);
+            sir_term_node_at_from_head(nodes, n - 1 - idx)
+        }
+    }
 }
 
 fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
-    sir_term_node_at(term.nodes, term.root)
+    case term.root < 0 of {
+        true -> { kind: -1, type_name: "", value: "", name: "", inner: -1, right_expr: -1 };
+        false -> sir_term_node_at(term.nodes, term.root)
+    }
 }
 
 fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
@@ -960,20 +971,27 @@ fn tuple_callee_skips_tuple_ret_dealloc(body: { nodes: List[{ kind: int64, type_
                 true -> true;
                 // A case tail leaves a heap pointer in X0 on every arm: an aggregate-make arm is
                 // promoted and popped by branch_cleanup, and a call arm is promoted by the callee.
-                // Nothing survives on SP, so the epilogue ADD SP would pop a slab that never existed.
+                // A whole-body tail call (kind 5 root) is the same: the callee already produced the
+                // return, so the epilogue must not copy-from-X0 or ADD SP (that pops a slab that
+                // never existed and hangs on a garbage LR). Let-spines that *end* in a tail call
+                // still own a slab (tuple_let_calltail). See arg_clobber.silica once kind-5
+                // wrappers keep a callee-saved frame.
                 // Strip the let spine first: `x <- e; case … of …` has the same tail shape.
-                false -> case sir_term_root_node(sir_strip_lets_to_tail(body)).kind == 3 of {
+                false -> case sir_term_root_node(body).kind == 5 of {
                     true -> true;
-                    false -> case sir_term_root_node(body).kind == 6 of {
-                        // A direct `(…)` body used to write into the caller's X8 buffer, so there was nothing
-                        // of its own to promote or pop. It now builds on its own slab like a direct record
-                        // body, so the epilogue owns both steps -- mirroring
-                        // record_callee_skips_ret_promote_dealloc, which returns false for the same reason.
-                        true -> case sir_term_root_node(body).name == "tuple_make" of {
-                            true -> false;
-                            false -> tuple_return_tail_aggregate_make(body)
-                        };
-                        false -> false
+                    false -> case sir_term_root_node(sir_strip_lets_to_tail(body)).kind == 3 of {
+                        true -> true;
+                        false -> case sir_term_root_node(body).kind == 6 of {
+                            // A direct `(…)` body used to write into the caller's X8 buffer, so there was nothing
+                            // of its own to promote or pop. It now builds on its own slab like a direct record
+                            // body, so the epilogue owns both steps -- mirroring
+                            // record_callee_skips_ret_promote_dealloc, which returns false for the same reason.
+                            true -> case sir_term_root_node(body).name == "tuple_make" of {
+                                true -> false;
+                                false -> tuple_return_tail_aggregate_make(body)
+                            };
+                            false -> false
+                        }
                     }
                 }
             }
@@ -1281,7 +1299,8 @@ fn count_float_spill_eligible_lets_in_term(term: { nodes: List[{ kind: int64, ty
 // callee-saved registers after the params, and the prologue/epilogue frame machinery is
 // reused by bumping the spill-pressure count by the shadowed-param count.
 
-// True when subtree contains a user call (kind 4). Mirrors term_emitter@term_subterm_has_user_call.
+// True when the subtree performs a BL that clobbers X0–X18. Kind 4 is a zero-arg user call.
+// Kind 6 string_concat / list_cons lower to helpers that destroy later incoming params.
 fn fs_subtree_has_user_call(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case t.root < 0 of {
         true -> false;
@@ -1290,7 +1309,10 @@ fn fs_subtree_has_user_call(t: { nodes: List[{ kind: int64, type_name: string, v
             2 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) };
             3 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) };
             5 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) };
-            6 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            6 -> case sir_term_root_node(t).name == "list_cons" or sir_term_root_node(t).name == "string_concat" of {
+                true -> true;
+                false -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) }
+            };
             7 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) };
             8 -> case fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_subtree_has_user_call(sir_term_at(t, sir_term_root_node(t).right_expr)) };
             _: int64 -> false
@@ -1381,40 +1403,42 @@ fn fs_is_program_main_name(name: string) -> bool {
     name == "main" or name == "main.main" or name == "main.m"
 }
 
-// Gate: shadow whenever a non-tail body contains a user call, every param fits in one GPR, and the function
-// has no float spills / actor-reply-sret / concurrency.  High spill pressure is not a reason to leave
-// parameters in caller-saved registers; those are exactly the functions where helper calls are most likely
-// to clobber still-live params before the body can rebuild aggregate values.
+// Gate: shadow whenever the body contains a user call or case, every param fits in one GPR, and the
+// function has no float spills / actor-reply-sret / concurrency.  High spill pressure is not a
+// reason to leave parameters in caller-saved registers; those are exactly the functions where
+// helper calls are most likely to clobber still-live params before the body can rebuild aggregate
+// values.
 // A call in any expression can clobber a parameter that remains live afterward; restricting
 // this to calls inside case scrutinees leaves ordinary callback/fold helpers unsound.
+// Kind 5 (whole-body tail call) is the same hazard when a nested call sits in an earlier
+// argument: later params still live in X1–X7 and the nested BL clobbers them. Pure forwarding
+// `g(x, y)` has no nested call, so fs_subtree_has_user_call is false and the BR is kept.
 // Aggregate returns use X8 as their independent return buffer and do not conflict with
 // callee-saved parameter shadows; excluding them leaves parameters vulnerable while a
 // helper call constructs the aggregate result.
+// See trials/codegen_regressions/kind5_arg_clobber.silica.
 fn use_full_param_shadow(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case sir_term_root_node(fn_val.body).kind == 5 of {
+    case fs_is_program_main_name(fn_val.name) of {
         true -> false;
-        false -> case fs_is_program_main_name(fn_val.name) of {
-            true -> false;
-            false -> case use_actor_reply_sret_buffer(fn_val) of {
+        false -> case use_actor_reply_sret_buffer(fn_val) of {
+                true -> false;
+                false -> case emitter_effects@has_concurrency(fn_val.effects) of {
                     true -> false;
-                    false -> case emitter_effects@has_concurrency(fn_val.effects) of {
+                    false -> case count_float_spill_eligible_lets_in_term(fn_val.body) >= 1 of {
                         true -> false;
-                        false -> case count_float_spill_eligible_lets_in_term(fn_val.body) >= 1 of {
-                            true -> false;
-                            false -> {
-                                n: int64 <- fs_count_params(fn_val.param_names);
-                                case n >= 1 and n <= 8 of {
+                        false -> {
+                            n: int64 <- fs_count_params(fn_val.param_names);
+                            case n >= 1 and n <= 8 of {
+                                false -> false;
+                                true -> case fs_all_params_simple_gpr(fn_val.param_types) of {
                                     false -> false;
-                                    true -> case fs_all_params_simple_gpr(fn_val.param_types) of {
-                                        false -> false;
-                                        true -> fs_subtree_has_user_call(fn_val.body) or fs_term_has_case(fn_val.body)
-                                    }
+                                    true -> fs_subtree_has_user_call(fn_val.body) or fs_term_has_case(fn_val.body)
                                 }
                             }
                         }
                     }
                 }
-        }
+            }
     }
 }
 
@@ -1511,7 +1535,7 @@ fn fs_build_param_outer(param_names: string, n: int64) -> string {
 // STP/LDP X21,X22 when spill pressure (lets + weighted list-cons tails) reaches 2, or when X21 holds the second GPR parameter (actor reply sret + int64 shadow).
 fn needs_actor_ref_x21_x22_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case sir_term_root_node(fn_val.body).kind == 5 of {
-        true -> false;
+        true -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2;
         false -> case actor_reply_sret_second_param_uses_x21(fn_val) of {
             true -> true;
             false -> case needs_second_param_x21_bl_survival(fn_val) of {
@@ -1526,26 +1550,17 @@ fn needs_actor_ref_x21_x22_frame(fn_val: { name: string, return_type: string, ef
 // bindings beyond the source-level let count. Keep the frame thresholds four
 // registers ahead of the nominal pressure so emitted X23-X29 uses obey AAPCS64.
 fn needs_callee_x23_x24_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case sir_term_root_node(fn_val.body).kind == 5 of {
-        true -> false;
-        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2
-    }
+    count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2
 }
 
 // STP/LDP X25,X26 when pressure reaches 6.
 fn needs_callee_x25_x26_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case sir_term_root_node(fn_val.body).kind == 5 of {
-        true -> false;
-        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2
-    }
+    count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2
 }
 
 // STP/LDP X27,X28 when pressure reaches 8.
 fn needs_callee_x27_x28_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case sir_term_root_node(fn_val.body).kind == 5 of {
-        true -> false;
-        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 4
-    }
+    count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 4
 }
 
 // X29 is the frame base for overflow spill slots, not a value spill register.
@@ -1649,10 +1664,10 @@ fn needs_callee_d14_d15_frame(fn_val: { name: string, return_type: string, effec
 fn function_needs_callee_saved_x19_x20_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
     case first_param_aggregate_needs_x11_base(fn_val) of {
         true -> true;
-        false -> case sir_term_root_node(fn_val.body).kind == 5 of {
+        false -> case first_param_x0_shadow_enabled(fn_val.param_types, sir_term_root_node(fn_val.body).kind) of {
             true -> false;
-            false -> case first_param_x0_shadow_enabled(fn_val.param_types, sir_term_root_node(fn_val.body).kind) of {
-                true -> false;
+            false -> case sir_term_root_node(fn_val.body).kind == 5 of {
+                true -> use_full_param_shadow(fn_val);
                 false -> true
             }
         }
@@ -1807,7 +1822,7 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
         // Giving up the BR costs one frame on a path that was already going to build one. Preserving the
         // tail transfer instead would mean teaching function_tail_frame_release the whole callee-saved set,
         // duplicating the epilogue's ordering in a second place for no benefit.
-        kind5_frame_blocks_tail: bool <- sir_term_root_node(fn_val.body).kind == 5 and function_needs_callee_saved_x19_x20_frame(fn_val);
+        kind5_frame_blocks_tail: bool <- sir_term_root_node(fn_val.body).kind == 5 and (function_needs_callee_saved_x19_x20_frame(fn_val) or needs_actor_ref_x21_x22_frame(fn_val) or needs_callee_x23_x24_frame(fn_val) or needs_callee_x25_x26_frame(fn_val) or needs_callee_x27_x28_frame(fn_val) or frame_spill_bytes(fn_val) > 0);
         kind5_no_tail: bool <- main_kind5_no_tail or kind5_frame_blocks_tail;
         kind5_tail_returns_directly: bool <- sir_term_root_node(fn_val.body).kind == 5 and kind5_no_tail == false;
         // Inject _silica_pid_registry_init at the start of every program entry-point. The routine

@@ -36,6 +36,7 @@ use ffi_foreign;
 use prims_list;
 use prims_string;
 use string_parse;
+use string_escapes;
 use let_dispatcher;
 use print_atom_inline;
 use print_bool_inline;
@@ -121,12 +122,18 @@ fn sir_term_references_binding(term: SIRTerm, binding_name: string) -> bool {
     case term.kind < 0 of {
         true -> false;
         false -> do
+            // Kind 4/5 callees live in `.name` (see call@sir_call_targets_bound_callee).
+            // Treating only vars/fn_ptr constants as uses lets a later let steal the
+            // callee-saved register holding a function parameter, then BLR to garbage.
+            // See trials/codegen_regressions/hof_callee_spill.silica.
             local_ref: bool <- case term.kind of {
                 1 -> binding_name_matches_ref(binding_name, term.name);
                 0 -> case term.type_name == "fn_ptr" of {
                     true -> binding_name_matches_ref(binding_name, term.value);
                     false -> false
                 };
+                4 -> binding_name_matches_ref(binding_name, term.name);
+                5 -> binding_name_matches_ref(binding_name, term.name);
                 _: int64 -> false
             };
             case local_ref of {
@@ -191,6 +198,16 @@ fn spill_reg_unavailable_for_body(outer_reg: string, reg: string, body: SIRTerm)
 }
 
 fn spill_reg_chain_for_body(outer_reg: string, body: SIRTerm) -> string {
+    // Case arms reach here only after spill_reg_chain_from_outer found no free
+    // X19–X28. Do not reuse those homes: the arm remainder is not a sound
+    // live-out set (see outer_reg_keep_callee_saved).
+    case var@find_sp_binding(outer_reg, "_keep_cs") == "1" of {
+        true -> "";
+        false -> spill_reg_chain_for_body_liveness(outer_reg, body)
+    }
+}
+
+fn spill_reg_chain_for_body_liveness(outer_reg: string, body: SIRTerm) -> string {
     case spill_reg_unavailable_for_body(outer_reg, "X19", body) of {
         false -> "X19";
         true -> case spill_reg_unavailable_for_body(outer_reg, "X20", body) of {
@@ -221,6 +238,18 @@ fn spill_reg_chain_for_body(outer_reg: string, body: SIRTerm) -> string {
                 }
             }
         }
+    }
+}
+
+// Lets inside a case arm only see the arm remainder as `term.right_expr`. A param
+// used after the case join is live but does not appear in that remainder, so
+// spill_reg_chain_for_body would reuse its callee-saved home. One flag is enough:
+// per-register `|_keep.Xn=Xn` copies made emit of case-heavy units (constraint_runner)
+// allocate tens of gigabytes. See trials/codegen_regressions/nested_tuple_case_spill.silica.
+fn outer_reg_keep_callee_saved(outer_reg: string) -> string {
+    case var@find_sp_binding(outer_reg, "_keep_cs") == "1" of {
+        true -> outer_reg;
+        false -> concat(outer_reg, "|_keep_cs=1")
     }
 }
 
@@ -441,7 +470,7 @@ fn frame_spill_ref(spill_ref: string) -> bool {
     len(spill_ref) > 7 and substring(spill_ref, 0, 7) == "[X29, #"
 }
 
-fn frame_spill_binding_count_from(outer_reg: string, start: int64) -> int64 {
+fn max_frame_spill_offset_from(outer_reg: string, start: int64) -> int64 {
     pipe: int64 <- var@find_pipe_from(outer_reg, start);
     case pipe < 0 of {
         true -> 0;
@@ -453,22 +482,33 @@ fn frame_spill_binding_count_from(outer_reg: string, start: int64) -> int64 {
             eq: int64 <- find_equals_from_binding(segment, 0);
             here: int64 <- case eq < 1 of {
                 true -> 0;
-                false -> case frame_spill_ref(substring(segment, eq + 1, len(segment))) of {
-                    true -> 1;
-                    false -> 0
-                }
+                false -> do
+                    mem_ref: string <- substring(segment, eq + 1, len(segment));
+                    case frame_spill_ref(mem_ref) of {
+                        true -> do
+                            off: int64 <- var@parse_x29_neg_offset_bytes(mem_ref);
+                            case off > 0 of { true -> off; false -> 0 }
+                        end;
+                        false -> 0
+                    }
+                end
             };
             rest: int64 <- case next_pipe < 0 of {
                 true -> 0;
-                false -> frame_spill_binding_count_from(outer_reg, next_pipe)
+                false -> max_frame_spill_offset_from(outer_reg, next_pipe)
             };
-            here + rest
+            case here > rest of { true -> here; false -> rest }
         end
     }
 }
 
 fn next_frame_spill_slot(outer_reg: string) -> string {
-    n: int64 <- frame_spill_binding_count_from(outer_reg, 0) + 1;
+    // enclosing_sp_binding re-appends the parent's [X29,#-N] on every nested
+    // let, so a binding-count n jumped 1,2,4,6. STUR [x29,#-96] then landed
+    // on the callee-saved save area (caller's X21). Address from the deepest
+    // offset already used. See trials/codegen_regressions/frame_spill_x21.silica.
+    off: int64 <- max_frame_spill_offset_from(outer_reg, 0);
+    n: int64 <- off / 16 + 1;
     concat("[X29, #-", concat(atom_table@int64_to_decimal_string(n * 16), "]"))
 }
 
@@ -1244,9 +1284,15 @@ fn is_int_literal_pat_emit(t: string) -> bool {
 fn case_close_quote_index_emit(s: string, i: int64) -> int64 {
     case i >= len(s) of {
         true -> -1;
-        false -> case substring(s, i, i + 1) == "\"" of {
-            true -> i;
-            false -> case_close_quote_index_emit(s, i + 1)
+        false -> case substring(s, i, i + 1) == "\\" of {
+            true -> case i + 1 >= len(s) of {
+                true -> -1;
+                false -> case_close_quote_index_emit(s, i + 2)
+            };
+            false -> case substring(s, i, i + 1) == "\"" of {
+                true -> i;
+                false -> case_close_quote_index_emit(s, i + 1)
+            }
         }
     }
 }
@@ -1259,7 +1305,7 @@ fn extract_string_pat_content_emit(s: string) -> string {
                 cq: int64 <- case_close_quote_index_emit(s, 1);
                 case cq < 0 of {
                     true -> "";
-                    false -> substring(s, 1, cq)
+                    false -> string_escapes@resolve_string_escapes(substring(s, 1, cq))
                 }
             end;
             false -> ""
@@ -1755,7 +1801,9 @@ fn emit_case_expression(term: SIRTerm, dest: string, table: AtomTable, int64_tab
     case_name: string <- term.name;
     done_l: string <- case_emit_done_label(case_name);
     fb_l: string <- case_emit_fb_label(case_name);
-    branches_asm: string <- emit_case_branch_seq(term.right_expr, term.value, scrut_reg, lit_reg, guard_reg, dest, done_l, fb_l, case_name, 0, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+    // Arm lets must not steal callee-saved homes live after this join.
+    arm_outer: string <- outer_reg_keep_callee_saved(outer_reg);
+    branches_asm: string <- emit_case_branch_seq(term.right_expr, term.value, scrut_reg, lit_reg, guard_reg, dest, done_l, fb_l, case_name, 0, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, arm_outer, debug);
     fb_head: string <- concat(fb_l, ":\n    BL _silica_rt_case_clause\n");
     fb_tail: string <- concat(concat(concat("    MOV ", dest), ", #0\n    B "), concat(done_l, "\n"));
     fb_asm: string <- concat(fb_head, fb_tail);
@@ -1909,6 +1957,20 @@ fn simple_gpr_call_arg_count(rest: SIRTerm) -> int64 {
     }
 }
 
+// Incoming X0-X7 still hold unstaged later arguments. Heap-promoting a
+// record_make/tuple_make arg BLs region_alloc and clobbers those GPRs.
+// Kind-5 tails skip param shadow (fs_subtree_has_user_call ignores the tail
+// call node), so wrap(a,b,{c,d},e,f) staged e/f from dead X4/X5. Save around
+// the aggregate eval; X16 is not in this set.
+// See trials/codegen_regressions/kind5_record_arg.silica.
+fn simple_gpr_stage_save_caller_gprs() -> string {
+    "    STP X0, X1, [SP, #-16]!\n    STP X2, X3, [SP, #-16]!\n    STP X4, X5, [SP, #-16]!\n    STP X6, X7, [SP, #-16]!\n"
+}
+
+fn simple_gpr_stage_restore_caller_gprs() -> string {
+    "    LDP X6, X7, [SP], #16\n    LDP X4, X5, [SP], #16\n    LDP X2, X3, [SP], #16\n    LDP X0, X1, [SP], #16\n"
+}
+
 fn emit_simple_gpr_arg_to_stage(
     arg: SIRTerm,
     table: AtomTable,
@@ -1939,7 +2001,12 @@ fn emit_simple_gpr_arg_to_stage(
         true -> tuple_elem_sret_reclaim("X16", flat_tuple_dealloc_size(arg));
         false -> ""
     };
-    concat(concat(concat(value_asm, "\n"), reclaim), "    STR X16, [SP, #-16]!\n")
+    staged: string <- concat(concat(value_asm, "\n"), reclaim);
+    guarded: string <- case is_aggregate_make(arg) of {
+        true -> concat(concat(simple_gpr_stage_save_caller_gprs(), staged), simple_gpr_stage_restore_caller_gprs());
+        false -> staged
+    };
+    concat(guarded, "    STR X16, [SP, #-16]!\n")
 }
 
 fn emit_simple_gpr_rest_to_stage(
@@ -2087,11 +2154,11 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         false -> term.value
     };
     indirect_via_x9: bool <- call@sir_call_targets_bound_callee(outer_reg, term.name);
-    indirect_arg_has_call: bool <- term_subterm_has_user_call(term.inner) or term_subterm_has_user_call(term.right_expr);
-    // An indirect callee address in X17 must survive evaluation of nested call
-    // arguments.  X17 is caller-saved, so capture it in a stack slot before
-    // argument evaluation and reload it afterward.  The offset accounts for
-    // tuple arguments that remain allocated until the call completes.
+    // An indirect callee address in X17 must survive argument evaluation.
+    // X17 is caller-saved: nested calls, silica_rt_region_alloc (heap-promoted
+    // record/tuple args), and string/list helpers all BL and clobber it.
+    // Always capture X17 before args and reload after. For a kind-5 tail BR,
+    // pop the save slot before frame release — dealloc after BR is unreachable.
     // Parallel staging heap-promotes aggregate-make args before the call, so those
     // slabs are not live across BLR/BR. Compute staging eligibility before the tail
     // decision; otherwise a kind-5 body demotes to BLR while the outer emitter still
@@ -2118,7 +2185,7 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         true -> arg_stack_bytes_before_call == 0 and arg_has_stack_aggregate == false;
         false -> false
     };
-    save_indirect_callee_around_args: bool <- indirect_via_x9 and effective_use_tail == false and indirect_arg_has_call;
+    save_indirect_callee_around_args: bool <- indirect_via_x9;
     callee_prep: string <- case indirect_via_x9 of {
         true -> case save_indirect_callee_around_args of {
             true -> concat(call@emit_indirect_callee_address_to_x17(outer_reg, term.name), "    STR X17, [SP, #-16]!\n");
@@ -2323,7 +2390,12 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         true -> concat(line_before_call_asm, "\n");
         false -> ""
     };
-    concat(fuel, concat(sret_setup, concat(callee_prep, concat(concat(concat(concat(concat(args_asm, callee_reload_after_args), before_call), call_asm), dealloc_asm_call), demoted_tail_epilogue))))
+    // Tail BR never returns, so the save-slot ADD must run before LDP/BR.
+    call_and_dealloc: string <- case effective_use_tail of {
+        true -> concat(dealloc_asm_call, call_asm);
+        false -> concat(call_asm, dealloc_asm_call)
+    };
+    concat(fuel, concat(sret_setup, concat(callee_prep, concat(concat(concat(concat(args_asm, callee_reload_after_args), before_call), call_and_dealloc), demoted_tail_epilogue))))
 }
 
 // Root function body only: SIR kind 5 tail user call with enclosing function effects for frame release + barriers.

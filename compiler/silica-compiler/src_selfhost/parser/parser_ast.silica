@@ -231,11 +231,14 @@ fn dummy_expr_node() -> { kind: int64, value: string, name: string, location: { 
     end
 }
 
+// Handle count is O(1). A `.tail` walk allocates a new 24-byte handle per step and
+// OOMs when typecheck/SIR touch every node of a List[record] module.
 fn expr_nodes_len(nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> int64 {
-    case nodes.is_nil of {
-        true -> 0;
-        false -> 1 + expr_nodes_len(nodes.tail)
-    }
+    sequence proc[mem(normal)]
+        result: int64 <- length[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)](nodes)
+    produces
+        pure result
+    end
 }
 
 fn expr_node_at_from_head(nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], idx: int64) -> { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } {
@@ -249,6 +252,7 @@ fn expr_node_at_from_head(nodes: List[{ kind: int64, value: string, name: string
 }
 
 // Nodes are prepend-built with ascending indices; index i is at list position (len - 1 - i).
+// make_expr's root is always the last index, which is the list head (no tail walk).
 fn expr_node_at(nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], idx: int64) -> { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } {
     case idx < 0 of {
         true -> dummy_expr_node();
@@ -256,7 +260,10 @@ fn expr_node_at(nodes: List[{ kind: int64, value: string, name: string, location
             n: int64 <- expr_nodes_len(nodes);
             case idx >= n of {
                 true -> dummy_expr_node();
-                false -> expr_node_at_from_head(nodes, n - 1 - idx)
+                false -> case idx + 1 == n of {
+                    true -> nodes.head;
+                    false -> expr_node_at_from_head(nodes, n - 1 - idx)
+                }
             }
         }
     }
@@ -323,23 +330,29 @@ fn expr_remap_nodes(nodes: List[{ kind: int64, value: string, name: string, loca
     }
 }
 
-// Build a binary { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } handle by merging child arenas (Wave C). Dummy children use root == -1.
+// Build a binary expr handle by merging child arenas (Wave C). Dummy children use root == -1.
+// A dummy may still carry a parent arena in `.nodes`; root < 0 means contribute nothing
+// (otherwise the call-mangler rebuild doubles the arena at every leaf).
 fn make_expr(kind_v: int64, value_v: string, name_v: string, location_v: { file: string, line: int64, column: int64, offset: int64 },
              left: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 },
              right: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 },
              pattern_bindings_v: List[{ name: string, path: string, type_str: string }, mem(normal)],
              sequence_effects_v: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } {
     sequence proc[mem(normal)]
-        left_len: int64 <- expr_nodes_len(left.nodes);
-        right_len: int64 <- expr_nodes_len(right.nodes);
-        left_idx: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)] <- expr_nodes_reverse(left.nodes);
-        right_remapped: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)] <- expr_remap_nodes(right.nodes, left_len);
+        empty_n: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)] <- empty_expr_nodes();
+        left_absent: boolean <- left.root < 0;
+        right_absent: boolean <- right.root < 0;
+        left_nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)] <- case left_absent of { true -> empty_n; false -> left.nodes };
+        right_nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)] <- case right_absent of { true -> empty_n; false -> right.nodes };
+        left_len: int64 <- case left_absent of { true -> 0; false -> expr_nodes_len(left_nodes) };
+        right_len: int64 <- case right_absent of { true -> 0; false -> expr_nodes_len(right_nodes) };
+        left_idx: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)] <- expr_nodes_reverse(left_nodes);
+        right_remapped: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)] <- expr_remap_nodes(right_nodes, left_len);
         right_idx: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)] <- expr_nodes_reverse(right_remapped);
         combined_idx: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)] <- expr_nodes_append(left_idx, right_idx);
-        left_root: int64 <- left.root;
-        right_root: int64 <- case right.root < 0 of { true -> -1; false -> right.root + left_len };
+        left_root: int64 <- case left_absent of { true -> -1; false -> left.root };
+        right_root: int64 <- case right_absent of { true -> -1; false -> right.root + left_len };
         new_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- { kind: kind_v, value: value_v, name: name_v, location: location_v, inner: left_root, right_expr: right_root, pattern_bindings: pattern_bindings_v, sequence_effects: sequence_effects_v };
-        empty_n: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)] <- empty_expr_nodes();
         with_new: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)] <- expr_nodes_append(combined_idx, prepend[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)](new_node, empty_n));
         new_root: int64 <- left_len + right_len;
         result: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- { nodes: expr_nodes_reverse(with_new), root: new_root }

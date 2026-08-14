@@ -1,0 +1,30 @@
+// A function parameter lives in a callee-saved register (here X23, the fifth GPR).
+// Later lets that need a spill pick the first X19–X28 that looks unused in the body.
+// `sir_term_references_binding` used to count only var / fn_ptr-const mentions, so
+// `f(...)` (SIR kind 4/5, callee in `.name`) did not keep `f` live. The next let then
+// stole X23 and the indirect call BLRed to that integer.
+//
+// emit_kind_compound_compare(term, dest, bound, pools, emit_child) is this shape:
+// enough earlier lets fill X24–X28, then a bool let lands on X23, and emit_child
+// jumps into garbage. Selfhost hung at "Emitting..." inside that compare.
+//
+// Want 28: add1(10+3+4+0) == 18, plus 0+1+2+3+4, plus (steal-a) == 0. A stolen
+// callee jumps to address 10 instead.
+
+fn add1(x: int64) -> int64 {
+    x + 1
+}
+
+fn apply_after_lets(a: int64, b: int64, c: int64, d: int64, f: fn(int64) -> int64) -> int64 {
+    l0: int64 <- 0;
+    l1: int64 <- 1;
+    l2: int64 <- 2;
+    l3: int64 <- 3;
+    l4: int64 <- 4;
+    steal: int64 <- a;
+    f(a + b + c + d) + l0 + l1 + l2 + l3 + l4 + (steal - a)
+}
+
+fn main() -> int64 {
+    apply_after_lets(10, 3, 4, 0, add1)
+}

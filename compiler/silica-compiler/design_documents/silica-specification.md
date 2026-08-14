@@ -11274,9 +11274,9 @@ my_project/
 
 #### 19.4.4 Compilation Order
 Modules are compiled in dependency order:
-1. Parse all module files
-2. Build dependency graph from import declarations
-3. Compile modules with no dependencies first
+1. Build the **use-tree**: lex each module file and parse only top-level declarations through the first function (spec §19.3.1). Function bodies are not parsed on this pass.
+2. Build the dependency graph from those `use` declarations
+3. Compile modules with no dependencies first (each compile does a full lex/parse of that unit)
 4. Compile dependent modules after their dependencies
 
 #### 19.4.5 Module Dependency Resolution Algorithm
@@ -11315,6 +11315,7 @@ Compilation order:
 - Modules with no dependencies are compiled first
 - Parallel compilation is possible for modules at the same level in the dependency tree
 - All modules are compiled together in a single compilation unit for cross-module optimization
+- **Phase 2 compiler (use-tree first pass):** the first process of a multi-unit batch lexes each file and parses only declarations through the first function, then Kahn-sorts. It does not parse function bodies. Each later compile process full-parses that unit. See [Phase2_TODO/use_tree_first_pass.md](./Phase2_TODO/use_tree_first_pass.md).
 
 **Parallel Compilation Strategy:**
 
@@ -11324,7 +11325,7 @@ The compiler supports parallel compilation of independent modules while maintain
 
 The compilation process consists of three sequential phases:
 
-1. **Parse Phase**: Lexical analysis and syntax parsing
+1. **Parse Phase**: Use-tree prefix (lex + declarations through the first function), then a full lex/parse per unit at compile time
 2. **Type Check Phase**: Type checking and effect checking (requires all module ASTs)
 3. **Codegen Phase**: LLVM IR generation and optimization
 

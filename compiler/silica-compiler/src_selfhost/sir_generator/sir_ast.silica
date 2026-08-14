@@ -130,16 +130,21 @@ fn make_sir_term(kind_v: int64, type_name_v: string, value_v: string, name_v: st
                  left: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 },
                  right: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     sequence proc[mem(normal)]
-        left_len: int64 <- length[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](left.nodes);
-        right_len: int64 <- length[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](right.nodes);
-        left_idx: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_nodes_reverse(left.nodes);
-        right_remapped: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_remap_nodes(right.nodes, left_len);
+        empty_n: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- empty_sir_term_nodes();
+        left_absent: boolean <- left.root < 0;
+        right_absent: boolean <- right.root < 0;
+        left_nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- case left_absent of { true -> empty_n; false -> left.nodes };
+        right_nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- case right_absent of { true -> empty_n; false -> right.nodes };
+        left_len: int64 <- case left_absent of { true -> 0; false -> length[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](left_nodes) };
+        right_len: int64 <- case right_absent of { true -> 0; false -> length[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](right_nodes) };
+        left_idx: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_nodes_reverse(left_nodes);
+        right_remapped: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_remap_nodes(right_nodes, left_len);
         right_idx: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_nodes_reverse(right_remapped);
         combined_idx: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_nodes_append(left_idx, right_idx);
-        left_root: int64 <- left.root;
-        right_root: int64 <- case right.root < 0 of { true -> -1; false -> right.root + left_len };
+        left_root: int64 <- case left_absent of { true -> -1; false -> left.root };
+        right_root: int64 <- case right_absent of { true -> -1; false -> right.root + left_len };
         new_node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- { kind: kind_v, type_name: type_name_v, value: value_v, name: name_v, inner: left_root, right_expr: right_root };
-        with_new: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_nodes_append(combined_idx, prepend[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](new_node, empty_sir_term_nodes()));
+        with_new: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)] <- sir_term_nodes_append(combined_idx, prepend[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](new_node, empty_n));
         new_root: int64 <- left_len + right_len;
         result: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- { nodes: sir_term_nodes_reverse(with_new), root: new_root }
     produces
@@ -316,23 +321,38 @@ fn cons_sir_module(mod_val: { module_name: string, used_modules: List[string, me
 }
 
 fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
-    case nodes.is_nil of {
-        true -> 0;
-        false -> 1 + sir_term_nodes_len(nodes.tail)
-    }
+    sequence proc[mem(normal)]
+        result: int64 <- length[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](nodes)
+    produces
+        pure result
+    end
 }
 
 fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
-    case idx <= 0 of {
-        true -> nodes.head;
-        false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+    case nodes.is_nil of {
+        true -> { kind: -1, type_name: "", value: "", name: "", inner: -1, right_expr: -1 };
+        false -> case idx <= 0 of {
+            true -> nodes.head;
+            false -> sir_term_node_at_from_head(nodes.tail, idx - 1)
+        }
     }
 }
 
 // Nodes are prepend-built with ascending indices; index i is at list position (len - 1 - i).
 fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
-    n: int64 <- sir_term_nodes_len(nodes);
-    sir_term_node_at_from_head(nodes, n - 1 - idx)
+    case idx < 0 of {
+        true -> { kind: -1, type_name: "", value: "", name: "", inner: -1, right_expr: -1 };
+        false -> {
+            n: int64 <- sir_term_nodes_len(nodes);
+            case idx >= n of {
+                true -> { kind: -1, type_name: "", value: "", name: "", inner: -1, right_expr: -1 };
+                false -> case idx + 1 == n of {
+                    true -> nodes.head;
+                    false -> sir_term_node_at_from_head(nodes, n - 1 - idx)
+                }
+            }
+        }
+    }
 }
 
 fn sir_term_to_text_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> string {

@@ -11,6 +11,7 @@
 
 - Spec §28.1.1–28.1.2 (dependency tracking, `.types` module cache)
 - Spec §19 (modules, `use` / `export`)
+- [Phase2_TODO/use_tree_first_pass.md](./Phase2_TODO/use_tree_first_pass.md) (first process: uses-only prefix parse)
 - Spec §3.4.2 (inline-only types; no user type aliases)
 - Seed type-checker work: surface→type_id cache and id-first equality (reduces cost of fat export type strings once loaded)
 
@@ -59,9 +60,10 @@ SIR generation still needs `U`**’s** AST through emit. The fix must not discar
 ## 3. Design overview
 
 ```text
-Parse config closure
-    → Kahn topo order (deps before dependents)   [already implemented]
+Use-tree pass (lex + parse through first `fn` only; see use_tree_first_pass.md)
+    → Kahn topo order (deps before dependents)
     → For each unit U in order:
+         Full parse of U (and missing-iface `use` targets)
          Module-check U
          Extract draft export table from U’s decls (in memory)
          Type-check U using dep ifaces (not dep ASTs)
@@ -163,6 +165,8 @@ Both `src/main.silica` and `src_selfhost/main.silica` already:
 - Compute `in_degree`  
 - Run `kahn_topological_sort`  
 - Compile units in that order
+
+The **first** process must collect those `use` edges with a **prefix parse** (lex + declarations through the first `fn`), not `parse_program` on whole files. See [use_tree_first_pass.md](./Phase2_TODO/use_tree_first_pass.md). Today’s `parse_all_files_recursive` still full-parses every unit and discards the ASTs on the 75-exit; that is the work this prefix pass replaces.
 
 **Do not replace this with a min-heap on “number of** `use`**s”.**  
 Static use-count is not a topological key. Kahn’s ready set is “remaining unmet prerequisites == 0” (queue is enough; a heap is optional and must key on remaining in-degree / readiness, not raw use count).

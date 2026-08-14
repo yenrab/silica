@@ -210,3 +210,9 @@ Tutorial for **`sequence` blocks** (`sequence` / `produces` / `pure` / monadic s
 ## [utf8_support.md](./utf8_support.md)
 
 Plan for **UTF-8 in char literals** and helpers such as `substring_until_char`: lexer/parser/SIR changes, constraints (e.g. no new Rust runtime calls), and correct handling of multi-byte characters in pure Silica.
+
+---
+
+## [Phase2_TODO/use_tree_first_pass.md](./Phase2_TODO/use_tree_first_pass.md)
+
+**Phase 2 compiler driver:** the first process of a multi-unit batch builds the **module use-tree** only — lex and parse declarations through the **first `fn`**, Kahn-sort, then exit 75. Function bodies wait for the resume-process full parse. Progress must say a use-tree is being built.
