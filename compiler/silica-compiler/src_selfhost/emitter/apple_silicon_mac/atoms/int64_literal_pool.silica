@@ -120,6 +120,38 @@ fn int64_literal_value_to_index(table: { is_empty: boolean, index_map: { root: r
     }
 }
 
+fn type_uses_int64_pool(type_name: string) -> bool {
+    case type_name of {
+        "int64" -> true;
+        "i64" -> true;
+        "uint64" -> true;
+        "u64" -> true;
+        "int32" -> true;
+        "uint32" -> true;
+        "int16" -> true;
+        "uint16" -> true;
+        "int8" -> true;
+        "uint8" -> true;
+        "char" -> true;
+        _: string -> false
+    }
+}
+
+fn add_large_imm_if_needed(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }, value: string) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+    parsed: int64 <- string_parse@string_to_int64(value);
+    case constraints@fits_mov_imm(parsed) of {
+        true -> table;
+        false -> add_literal_value(table, value)
+    }
+}
+
+fn collect_const_node(node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
+    case type_uses_int64_pool(node.type_name) of {
+        true -> add_large_imm_if_needed(table, node.value);
+        false -> table
+    }
+}
+
 fn collect_int64_literal_from_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } {
     sequence
         result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 }
@@ -128,16 +160,7 @@ fn collect_int64_literal_from_term(term: { nodes: List[{ kind: int64, type_name:
             false -> {
             node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
             case node.kind of {
-                0 -> case node.type_name == "int64" or node.type_name == "i64" or node.type_name == "uint64" or node.type_name == "u64"
-                    or node.type_name == "int32" or node.type_name == "uint32"
-                    or node.type_name == "int16" or node.type_name == "uint16"
-                    or node.type_name == "int8" or node.type_name == "uint8" of {
-                    true -> case constraints@fits_mov_imm(string_parse@string_to_int64(node.value)) of {
-                        true -> table;
-                        false -> add_literal_value(table, node.value)
-                    };
-                    false -> table
-                };
+                0 -> collect_const_node(node, table);
                 1 -> table;
                 2 -> {
                     t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_literal_from_term(sir_term_at(term, node.inner), table);
@@ -178,10 +201,7 @@ fn collect_int64_literal_from_case_branch(branch: { nodes: List[{ kind: int64, t
                 case node.kind == 8 of {
                 true -> {
                     t0: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- case node.value == "int" of {
-                        true -> case constraints@fits_mov_imm(string_parse@string_to_int64(node.name)) of {
-                            true -> table;
-                            false -> add_literal_value(table, node.name)
-                        };
+                        true -> add_large_imm_if_needed(table, node.name);
                         false -> table
                     };
                     t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)], next_index: int64 } <- collect_int64_literal_from_term(sir_term_at(branch, node.inner), t0);

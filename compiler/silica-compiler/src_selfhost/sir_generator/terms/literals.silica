@@ -128,6 +128,7 @@ fn int64_to_byte_string(n: int64) -> string {
 }
 
 // packed = Σᵢ byte_to_int64(substring(resolved, i, i+1)) × 256^i for i in 0..len
+// ASCII-only path: one byte is one character, so character substring yields a single byte.
 fn packed_bytes_acc(resolved: string, i: int64, acc: int64, mult: int64) -> int64 {
     case i >= len(resolved) of {
         true -> acc;
@@ -138,12 +139,49 @@ fn packed_bytes_acc(resolved: string, i: int64, acc: int64, mult: int64) -> int6
     }
 }
 
+// Next UTF-8 byte after prefix. Builtin starts_with is a byte memcmp; skip 0x00
+// because a NUL needle is treated as empty and would match every haystack.
+fn find_next_byte(resolved: string, prefix: string, b: int64) -> int64 {
+    case b > 255 of {
+        true -> 0;
+        false -> {
+            cand: string <- concat(prefix, int64_to_byte_string(b));
+            case starts_with(resolved, cand) of {
+                true -> b;
+                false -> find_next_byte(resolved, prefix, b + 1)
+            }
+        }
+    }
+}
+
+fn packed_bytes_via_prefix(resolved: string, i: int64, acc: int64, mult: int64, prefix: string) -> int64 {
+    n: int64 <- len(resolved);
+    case i >= n of {
+        true -> acc;
+        false -> {
+            b: int64 <- find_next_byte(resolved, prefix, 1);
+            next_prefix: string <- concat(prefix, int64_to_byte_string(b));
+            packed_bytes_via_prefix(resolved, i + 1, acc + b * mult, mult * 256, next_prefix)
+        }
+    }
+}
+
+fn pack_resolved_bytes(resolved: string) -> int64 {
+    n_bytes: int64 <- len(resolved);
+    n_chars: int64 <- length_chars(resolved);
+    case n_chars == n_bytes of {
+        true -> packed_bytes_acc(resolved, 0, 0, 1);
+        false -> packed_bytes_via_prefix(resolved, 0, 0, 1, "")
+    }
+}
+
 // Char lexeme to (len << 56) | packed. Per utf8_support.md: enables full UTF-8 code-point matching.
 fn char_lexeme_to_utf8_encoded(lexeme: string) -> int64 {
-    inner: string <- case len(lexeme) >= 3 of { true -> substring(lexeme, 1, len(lexeme) - 1); false -> "" };
+    n: int64 <- length_chars(lexeme);
+    inner: string <- case n >= 3 of { true -> substring(lexeme, 1, n - 1); false -> "" };
     resolved: string <- resolve_char_content(inner);
     char_len: int64 <- len(resolved);
-    packed: int64 <- packed_bytes_acc(resolved, 0, 0, 1);
+    packed: int64 <- pack_resolved_bytes(resolved);
     char_len * 72057594037927936 + packed
 }
 

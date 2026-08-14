@@ -17,10 +17,15 @@
 
 // Constraint helpers for AArch64 immediates (sir_emitter_pattern_spec §5)
 // Used as guards in prim emission; no prims yet, so stubs for extensibility
+// emit_wide_imm: MOVZ/MOVK only — never MOV dest, #large (assembler rejects non-logical immediates).
+
+use atom_table;
+use string_parse;
 
 export fits_imm12/1;
 export fits_imm12_signed/1;
 export fits_mov_imm/1;
+export emit_wide_imm/2;
 
 // ADD/SUB 12-bit unsigned: 0 <= k < 4096
 fn fits_imm12(k: int64) -> bool {
@@ -36,4 +41,29 @@ fn fits_imm12_signed(k: int64) -> bool {
 // Conservative: -65536 <= k <= 65535 uses MOV; larger magnitudes need literal pool.
 fn fits_mov_imm(k: int64) -> bool {
     (k >= 0 - 65536) and (k <= 65535)
+}
+
+fn u16_0(n: int64) -> int64 {
+    n % 65536
+}
+
+fn u16_1(n: int64) -> int64 {
+    (n / 65536) % 65536
+}
+
+fn u16_2(n: int64) -> int64 {
+    (n / 4294967296) % 65536
+}
+
+fn u16_3(n: int64) -> int64 {
+    n / 281474976710656
+}
+
+fn emit_wide_imm(dest: string, value: string) -> string {
+    n: int64 <- string_parse@string_to_int64(value);
+    z0: string <- concat(concat("    MOVZ ", dest), concat(", #", atom_table@int64_to_decimal_string(u16_0(n))));
+    k1: string <- concat(concat("\n    MOVK ", dest), concat(", #", concat(atom_table@int64_to_decimal_string(u16_1(n)), ", LSL #16")));
+    k2: string <- concat(concat("\n    MOVK ", dest), concat(", #", concat(atom_table@int64_to_decimal_string(u16_2(n)), ", LSL #32")));
+    k3: string <- concat(concat("\n    MOVK ", dest), concat(", #", concat(atom_table@int64_to_decimal_string(u16_3(n)), ", LSL #48")));
+    concat(concat(z0, k1), concat(k2, k3))
 }
