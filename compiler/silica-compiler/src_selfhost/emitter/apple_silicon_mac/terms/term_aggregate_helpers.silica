@@ -64,6 +64,7 @@ export flat_tuple_dealloc_size/1;
 export flat_record_dealloc_size/1;
 export aggregate_callee_return_stack_bytes/1;
 export term_is_checked_int64_prim/1;
+export list_cons_join_tail_head_op/4;
 export let_tail_aggregate_stack_bytes/1;
 
 fn tuple_flat_memref(store_base: string, offset: int64) -> string {
@@ -214,21 +215,14 @@ fn record_field_inline_pointer_value(elem: { nodes: List[{ kind: int64, type_nam
 }
 
 fn let_user_call_tuple_sret_stack_bytes(rhs: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, outer_reg: string, bound_name: string) -> int64 {
-    case (term_sir_helpers@sir_term_root_node(rhs).kind == 4 or term_sir_helpers@sir_term_root_node(rhs).kind == 5) and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(rhs).type_name) of {
-        false -> 0;
-        // Mirror use_pass_through_sret: an unbound (or tail) call inside a function that already
-        // holds an sret buffer forwards that X8 and pushes nothing, so there is nothing to pop.
-        true -> case len(var@find_sp_binding(outer_reg, "_callee_sret")) > 0 and (len(bound_name) == 0 or term_sir_helpers@sir_term_root_node(rhs).kind == 5) of {
-            true -> 0;
-            false -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(rhs).type_name)
-        }
+    // Keep in lockstep with sret_alloc_bytes == 0 in term_emit_kind_call. The callee
+    // heap-promotes; X0 holds the pointer. A let-end ADD of the old X8 slab size
+    // pops a frame that was never pushed.
+    case len(outer_reg) < 0 or len(bound_name) < 0 or rhs.root < 0 - 2 of {
+        true -> 0;
+        false -> 0
     }
 }
-
-// Caller sret slab a plain call in a case-branch tail actually pushes. This mirrors
-// sret_alloc_bytes / use_pass_through_sret in term_emit_kind_call: when the enclosing function
-// already holds an sret buffer (_callee_sret) and the call is unbound, the call forwards that X8
-// and pushes nothing. Keep the two in sync or the branch pops a slab that was never allocated.
 
 fn branch_tail_strip_lets(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     case term_sir_helpers@sir_term_root_node(t).kind == 2 of {
@@ -238,18 +232,11 @@ fn branch_tail_strip_lets(t: { nodes: List[{ kind: int64, type_name: string, val
 }
 
 fn branch_tail_user_call_sret_stack_bytes(rhs: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, outer_reg: string, bound_name: string) -> int64 {
-    // `true -> { a <- …; b <- …; f(x) }` pushes the same slab as a bare `true -> f(x)`,
-    // so walk the let spine to the tail before deciding (see read_hex_digits in the lexer).
+    // Same contract as let_user_call_tuple_sret_stack_bytes: no caller X8 slab.
     tail: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- branch_tail_strip_lets(rhs);
-    // use_pass_through_sret only holds for an unbound call. A let spine rebinds before the tail,
-    // so the call is emitted carrying that let's name and always pushes its own slab.
-    tail_is_bound: bool <- term_sir_helpers@sir_term_root_node(rhs).kind == 2 or len(bound_name) > 0;
-    case term_sir_helpers@sir_term_root_node(tail).kind == 4 and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(tail).type_name) of {
-        false -> 0;
-        true -> case len(var@find_sp_binding(outer_reg, "_callee_sret")) > 0 and tail_is_bound == false of {
-            true -> 0;
-            false -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(tail).type_name)
-        }
+    case len(outer_reg) < 0 or len(bound_name) < 0 or tail.root < 0 - 2 of {
+        true -> 0;
+        false -> 0
     }
 }
 
@@ -819,8 +806,29 @@ fn aggregate_callee_return_stack_bytes(rhs: { nodes: List[{ kind: int64, type_na
 // emit_generic_user_call_asm_inner). Zero for pass-through / non-tuple.
 
 
-// Caller sret slab for a let-bound tuple-returning user call (paired with sret_alloc_bytes in
-// emit_generic_user_call_asm_inner). Zero for pass-through / non-tuple.
+// Tail is placed in X2, then head is evaluated into X1. Head is often a BL (trim, concat,
+// user call) and clobbers caller-saved X2, so prepend sees a garbage list and faults
+// (selfhost typecheck hang on `:plain` via split_atom_parts). Save X2 across the head.
+// When the head left a tuple slab (cons_dealloc > 0), the save sits under that slab;
+// restore from [SP, #N] and free slab+save together.
+// See trials/compiler_addition/list_cons_head_call.silica.
+fn list_cons_join_tail_head_op(arg2_asm: string, arg1_asm: string, op_asm: string, cons_dealloc: int64) -> string {
+    save: string <- "    STR X2, [SP, #-16]!\n";
+    case cons_dealloc > 0 of {
+        true -> {
+            n_s: string <- atom_table@int64_to_decimal_string(cons_dealloc);
+            restore: string <- concat("    LDR X2, [SP, #", concat(n_s, "]\n"));
+            free_n: int64 <- cons_dealloc + 16;
+            free_s: string <- atom_table@int64_to_decimal_string(free_n);
+            free: string <- concat("\n    ADD SP, SP, #", concat(free_s, "\n"));
+            concat(concat(concat(concat(arg2_asm, "\n"), save), concat(arg1_asm, "\n")), concat(restore, concat(op_asm, free)))
+        };
+        false -> {
+            restore: string <- "    LDR X2, [SP], #16\n";
+            concat(concat(concat(concat(arg2_asm, "\n"), save), concat(arg1_asm, "\n")), concat(restore, op_asm))
+        }
+    }
+}
 
 fn let_tail_aggregate_stack_bytes(tail: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
     case term_sir_helpers@sir_term_root_node(tail).kind == 2 of {

@@ -40,7 +40,7 @@ the emitter's output legitimately changes; refresh them with
 | `bound_wrap` | Parallel GPR staging must heap-promote an inline `record_make` before STR slots (the `term_to_asm_debug_with_outer` shape); interleaved payload + omitted demoted-tail RET hung emit | 42 |
 | `decl_pair_escape` | `extract_function`'s `({tag,name,params,loc,body}, rest)` shape: nested `record_make` in a returned pair must be heap-promoted, and a spilled tuple element `n` must survive a later `BL` (`body_bound` is the spill reg, not X1). Selfhost emitting `MOV X0, #0` for `fn main(){42}` when decls were corrupted | 42 |
 | `make_expr_append_stage` | `append(combined, prepend(node, empty))` with 8 live params so `combined` spills: staging must accept memory_ref bindings and treat `list_cons` as a clobbering arg (else root OOB → placeholder `#0`) | 42 |
-| `find_kw_substr` | `substring(s, i, i+len(kw))` must keep `s` in X0 while evaluating the end index; only saving X1 let `len(kw)` clobber the haystack and made typecheck hang | 42 |
+| `find_kw_substr` | `substring(s, i, i+length_chars(kw))` must keep `s` in X0 while evaluating the end index; only saving X1 let `length_chars(kw)` clobber the haystack and made typecheck hang | 42 |
 | `direct_tuple_calls` | A direct `(…)` body containing calls must build on its own slab; X8 is caller-saved | 34 |
 | `fixpoint`, `fixpoint_one` | Fixed-point iteration over lists (the `propagate_until_fixed` shape) | 3, 11 |
 | `list_eq` | List equality over int64 elements | 21 |

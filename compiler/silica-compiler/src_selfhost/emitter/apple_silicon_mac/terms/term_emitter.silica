@@ -63,10 +63,9 @@ fn term_to_asm_debug_with_outer(term: { nodes: List[{ kind: int64, type_name: st
 //
 // Once the left operand settles the result, the answer IS the right operand: with left true,
 // `left and right` == right, and with left false, `left or right` == right. So the branch can skip
-// straight over the right operand and leave dest holding the left value, which needs no combining
-// instruction, no scratch register, and no spill of the left value. Skipping the operand's assembly
-// wholesale also keeps the stack balanced, because whatever that operand allocates it releases
-// inside the region being skipped.
+// straight over the right operand and leave dest holding the left value. Dest often aliases a live
+// parameter (X0); left's CSET dest would otherwise make the right operand read the bool as that
+// param. Spill the X alias before left, restore only if right runs, release on both paths.
 //
 // value carries "o<source offset>" from the SIR generator (stamp_short_circuit_id) solely to name
 // the label. Without it there is no unique label to emit, so those terms take the eager path rather
@@ -77,6 +76,22 @@ fn is_short_circuit_bool_op(term: { nodes: List[{ kind: int64, type_name: string
 
 fn short_circuit_dest_is_gpr(dest: string) -> bool {
     (substring(dest, 0, 1) == "X" or substring(dest, 0, 1) == "W") and len(dest) <= 3
+}
+
+fn short_circuit_x_dest(dest: string) -> string {
+    concat("X", substring(dest, 1, len(dest)))
+}
+
+fn short_circuit_save_dest(dest: string) -> string {
+    concat(concat("    STR ", short_circuit_x_dest(dest)), ", [SP, #-16]!\n")
+}
+
+fn short_circuit_restore_dest(dest: string) -> string {
+    concat(concat("    LDR ", short_circuit_x_dest(dest)), ", [SP]\n")
+}
+
+fn short_circuit_release_dest() -> string {
+    "    ADD SP, SP, #16\n"
 }
 
 fn short_circuit_skip_asm(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, done_l: string) -> string {
@@ -92,7 +107,7 @@ fn short_circuit_done_label(term: { nodes: List[{ kind: int64, type_name: string
 
 fn term_to_asm_opt_bound(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string {
     case is_short_circuit_bool_op(term) and short_circuit_dest_is_gpr(dest) of {
-        true -> concat(concat(concat(concat(term_to_asm_opt_bound(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), dest, pools, bound), "\n"), short_circuit_skip_asm(term, dest, short_circuit_done_label(term))), concat(term_to_asm_opt_bound(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), dest, pools, bound), "\n")), concat(short_circuit_done_label(term), ":\n"));
+        true -> concat(concat(concat(concat(concat(short_circuit_save_dest(dest), term_to_asm_opt_bound(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), dest, pools, bound)), "\n"), short_circuit_skip_asm(term, dest, short_circuit_done_label(term))), concat(concat(short_circuit_restore_dest(dest), term_to_asm_opt_bound(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), dest, pools, bound)), "\n")), concat(concat(short_circuit_done_label(term), ":\n"), short_circuit_release_dest()));
         false -> case term_sir_helpers@sir_term_root_node(term).kind - 3 == 0 of {
         true -> term_emit_kind_case@emit_case_expression(term, dest, { table: pools.table, literal_table: pools.literal_table, float64_literal_table: pools.float64_literal_table, float32_literal_table: pools.float32_literal_table, string_literal_table: pools.string_literal_table }, bound, pools, term_to_asm_opt_bound);
         false -> case term_sir_helpers@sir_term_root_node(term).kind + 1 < 2 of {

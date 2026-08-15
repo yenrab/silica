@@ -1463,7 +1463,7 @@ fn read_and_process(path: string) -> int64 {
         content: string <- read_lines(path);
         trimmed: string <- trim_leading(content);
     produces
-        pure len(trimmed)
+        pure length_chars(trimmed)
     end
 }
 ```

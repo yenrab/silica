@@ -1442,6 +1442,30 @@ fn emit_record_case_pattern_asm(branch: SIRTerm, record_type_str: string, scrut_
     emit_record_case_rem(inner, record_type_str, scrut_reg, 0, lit_reg, fail_l, outer_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table)
 }
 
+// Tail is placed in X2, then head is evaluated into X1. Head is often a BL (trim, concat,
+// user call) and clobbers caller-saved X2, so prepend sees a garbage list and faults
+// (selfhost typecheck hang on `:plain` via split_atom_parts). Save X2 across the head.
+// When the head left a tuple slab (cons_dealloc > 0), the save sits under that slab;
+// restore from [SP, #N] and free slab+save together.
+// See trials/compiler_addition/list_cons_head_call.silica.
+fn list_cons_join_tail_head_op(arg2_asm: string, arg1_asm: string, op_asm: string, cons_dealloc: int64) -> string {
+    save: string <- "    STR X2, [SP, #-16]!\n";
+    case cons_dealloc > 0 of {
+        true -> do
+            n_s: string <- atom_table@int64_to_decimal_string(cons_dealloc);
+            restore: string <- concat("    LDR X2, [SP, #", concat(n_s, "]\n"));
+            free_n: int64 <- cons_dealloc + 16;
+            free_s: string <- atom_table@int64_to_decimal_string(free_n);
+            free: string <- concat("\n    ADD SP, SP, #", concat(free_s, "\n"));
+            concat(concat(concat(concat(arg2_asm, "\n"), save), concat(arg1_asm, "\n")), concat(restore, concat(op_asm, free)))
+        end;
+        false -> do
+            restore: string <- "    LDR X2, [SP], #16\n";
+            concat(concat(concat(concat(arg2_asm, "\n"), save), concat(arg1_asm, "\n")), concat(restore, op_asm))
+        end
+    }
+}
+
 // After list_cons (prepend) RHS, tail arg was emitted to X2 and emit_list_cons restores X2 to the
 // tail list pointer across malloc. Earlier |tailvar=R bindings may be stale (e.g. R=X0 clobbered).
 fn list_cons_tail_rebind_suffix(inner: SIRTerm) -> string {
@@ -2432,10 +2456,9 @@ fn term_to_asm_debug_with_outer(term: SIRTerm, dest: string, table: AtomTable, i
 //
 // Once the left operand settles the result, the answer IS the right operand: with left true,
 // `left and right` == right, and with left false, `left or right` == right. So the branch can skip
-// straight over the right operand and leave dest holding the left value, which needs no combining
-// instruction, no scratch register, and no spill of the left value. Skipping the operand's assembly
-// wholesale also keeps the stack balanced, because whatever that operand allocates it releases
-// inside the region being skipped.
+// straight over the right operand and leave dest holding the left value. Dest often aliases a live
+// parameter (X0); left's CSET dest would otherwise make the right operand read the bool as that
+// param. Spill the X alias before left, restore only if right runs, release on both paths.
 //
 // value carries "o<source offset>" from the SIR generator (stamp_short_circuit_id) solely to name
 // the label. Without it there is no unique label to emit, so those terms take the eager path rather
@@ -2449,8 +2472,18 @@ fn short_circuit_dest_is_gpr(dest: string) -> bool {
     (p == "X" or p == "W") and len(dest) <= 3
 }
 
+// Body dest is often X0, which is also the first parameter. Left's CSET dest
+// then makes `MOV X9, X0` on the right load the bool instead of the param
+// (`fits_mov_imm` became `k >= -65536` only, so tagged chars assembled as
+// `MOV dest, #72057594037928033`). Spill the X alias; restore only if the
+// right operand runs; release on both paths so the skip stays balanced.
+fn short_circuit_x_dest(dest: string) -> string {
+    concat("X", substring(dest, 1, len(dest)))
+}
+
 fn emit_short_circuit_bool_op(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
     done_l: string <- concat(concat("L_sc_", term.value), "_done");
+    xdest: string <- short_circuit_x_dest(dest);
     left_asm: string <- term_to_asm_opt_bound(term.inner, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
     right_asm: string <- term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
     skip_op: string <- case term.name == "and" of {
@@ -2458,7 +2491,10 @@ fn emit_short_circuit_bool_op(term: SIRTerm, dest: string, table: AtomTable, int
         false -> "    CBNZ "
     };
     skip_asm: string <- concat(skip_op, concat(dest, concat(", ", concat(done_l, "\n"))));
-    concat(concat(concat(concat(left_asm, "\n"), skip_asm), concat(right_asm, "\n")), concat(done_l, ":\n"))
+    save: string <- concat(concat("    STR ", xdest), ", [SP, #-16]!\n");
+    restore: string <- concat(concat("    LDR ", xdest), ", [SP]\n");
+    release: string <- "    ADD SP, SP, #16\n";
+    concat(concat(concat(concat(concat(save, left_asm), "\n"), skip_asm), concat(concat(restore, right_asm), "\n")), concat(concat(done_l, ":\n"), release))
 }
 
 fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
@@ -3603,11 +3639,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         };
                         op_asm: string <- prims_list@emit_prim_op(term, dest);
                         cons_dealloc: int64 <- flat_tuple_dealloc_size(term.inner);
-                        cons_dealloc_asm: string <- case cons_dealloc > 0 of {
-                            true -> concat("\n    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(cons_dealloc), "\n"));
-                            false -> ""
-                        };
-                        concat(concat(concat(concat(arg2_asm, "\n"), concat(arg1_asm, "\n")), "\n"), concat(op_asm, cons_dealloc_asm))
+                        list_cons_join_tail_head_op(arg2_asm, arg1_asm, op_asm, cons_dealloc)
                     end;
                     false -> do
                         // list_length arg goes to X9 then MOV X0,X9 in prims_list (helper entry still uses X0);

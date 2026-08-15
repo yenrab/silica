@@ -107,7 +107,7 @@ These are compiler/runtime fixes or stdlib gaps that block compiling the full `s
 | ID | File | Issue | Class |
 | -- | ---- | ----- | ----- |
 | W01 | `build_output.silica` | `concat` drops second arg in inline `case` | A/B |
-| W02 | `effect_checker_core.silica`, `effect_serializer.silica` | `len("")` returns non-zero | A |
+| W02 | `effect_checker_core.silica`, `effect_serializer.silica` | `length_bytes("")` returns non-zero | A |
 | W03 | `lexer_runner.silica` | `skip_whitespace` sometimes no-ops | A |
 | W04 | `atom_rodata.silica`, `int_rodata.silica` | `.asciz` / escaped-quote bugs | B (emitter style) |
 | W05 | `type_checker_expressions_string_calls.silica` | string pattern-match issues | A/B |
@@ -212,7 +212,7 @@ Work items map to W-ids from Step 0.2. Prefer fixing and simplifying **inside `s
 
 **Actions:**
 
-1. Add error-enforcement or unit trials for `len("") == 0` and reliable `""` equality.
+1. Add error-enforcement or unit trials for `length_bytes("") == 0` and reliable `""` equality.
 2. Once green under self-host, collapse `(bool, string)` lookup pairs to single string return where safe (W08).
 
 **Exit criteria:**

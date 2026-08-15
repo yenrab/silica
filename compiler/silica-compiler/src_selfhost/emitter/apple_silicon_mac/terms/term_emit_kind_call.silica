@@ -42,6 +42,49 @@ fn join_call_final(prefix: string, args_asm: string, suffix: string) -> string {
     concat(prefix, concat(args_asm, suffix))
 }
 
+// Keep this out of emit_generic_user_call_asm_inner. A nested `case len(rest_asm)`
+// in that function was compiled so both arms were kept: dest-X0 tuple_make twice,
+// one ADD #16 (functions_addition/fn_tuple_decompose_in_decl hang).
+fn sequential_call_args_with_rest(arg1_asm: string, rest_asm: string, arg1_type_name: string, flags: { reorder: bool, rem_first: bool, add_second_first: bool, arg2_first_substring: bool, arg2_save_x0: bool }) -> string {
+    case flags.reorder of {
+        true -> {
+            save0: string <- "    STR X0, [SP, #-16]!\n";
+            bridge: string <- "    LDR X0, [SP], #16\n";
+            concat(concat(concat(concat(concat(save0, rest_asm), "\n"), bridge), arg1_asm), "\n")
+        };
+        false -> case flags.rem_first of {
+            true -> {
+                rp: string <- reg_conventions@reg_prefix_for_type(arg1_type_name);
+                arg1_gpr: string <- concat(rp, "0");
+                div_gpr: string <- concat(rp, "10");
+                mov_line: string <- concat(concat(concat(concat("    MOV ", arg1_gpr), ", "), div_gpr), "\n");
+                concat(concat(rest_asm, "\n"), mov_line)
+            };
+            false -> case flags.add_second_first of {
+                true -> concat(concat(rest_asm, "\n"), concat(arg1_asm, "\n"));
+                false -> case flags.arg2_first_substring of {
+                    true -> concat(concat(concat(concat(rest_asm, "\n"), "    STR X1, [SP, #-16]!\n"), concat(arg1_asm, "\n")), "    LDR X1, [SP], #16\n");
+                    false -> case flags.arg2_save_x0 of {
+                        true -> concat(concat(concat(concat(rest_asm, "\n"), "    STR X1, [SP, #-16]!\n"), concat(arg1_asm, "\n")), "    LDR X1, [SP], #16\n");
+                        false -> concat(concat(arg1_asm, "\n"), concat(rest_asm, "\n"))
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn sequential_call_args_asm(arg1_asm: string, rest_asm: string, arg1_type_name: string, flags: { reorder: bool, rem_first: bool, add_second_first: bool, arg2_first_substring: bool, arg2_save_x0: bool }) -> string {
+    case len(rest_asm) > 0 of {
+        true -> sequential_call_args_with_rest(arg1_asm, rest_asm, arg1_type_name, flags);
+        false -> concat(arg1_asm, "\n")
+    }
+}
+
+fn join_sequential_user_call(prefix: string, arg1_asm: string, rest_asm: string, suffix: string, arg1_type_name: string, flags: { reorder: bool, rem_first: bool, add_second_first: bool, arg2_first_substring: bool, arg2_save_x0: bool }) -> string {
+    join_call_final(prefix, sequential_call_args_asm(arg1_asm, rest_asm, arg1_type_name, flags), suffix)
+}
+
 fn emit_rest_args(rest: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, gpr_slot: int64, fp_slot: int64, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, emit_child: fn({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, string, { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string) -> string {
     case term_sir_helpers@sir_term_root_node(rest).name == "user_call_rest" of {
         true -> {
@@ -54,10 +97,7 @@ fn emit_rest_args(rest: { nodes: List[{ kind: int64, type_name: string, value: s
             reg: string <- term_user_call_abi@user_call_arg_reg_for_type(cur_ty, gpr_slot, fp_slot);
             gpr_after_cur: int64 <- term_user_call_abi@user_call_next_gpr_slot(cur_ty, gpr_slot);
             fp_after_cur: int64 <- term_user_call_abi@user_call_next_fp_slot(cur_ty, fp_slot);
-            arg_asm: string <- case bound.debug of {
-                true -> { emit_child(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner),  reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f, debug: true }) };
-                false -> emit_child(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner),  reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f, debug: false })
-            };
+            arg_asm: string <- emit_child(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner),  reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f, debug: bound.debug });
             rest_asm: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).kind < 0 of {
                 true -> "";
                 false -> emit_rest_args(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr), gpr_after_cur, fp_after_cur, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f, debug: bound.debug }, pools, emit_child)
@@ -91,10 +131,7 @@ fn emit_rest_args(rest: { nodes: List[{ kind: int64, type_name: string, value: s
             use_save_next_for_current: bool <- next_has_matching_var;
             next_reg: string <- term_user_call_abi@user_call_arg_reg_for_type(next_ty, gpr_after_cur, fp_after_cur);
             next_arg_asm: string <- case use_save_next_for_current of {
-                true -> case bound.debug of {
-                    true -> { emit_child(next_arg_node,  next_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f, debug: true }) };
-                    false -> emit_child(next_arg_node,  next_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f, debug: false })
-                };
+                true -> emit_child(next_arg_node,  next_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f, debug: bound.debug });
                 false -> ""
             };
             gpr_after_next: int64 <- term_user_call_abi@user_call_next_gpr_slot(next_ty, gpr_after_cur);
@@ -130,22 +167,14 @@ fn emit_rest_args(rest: { nodes: List[{ kind: int64, type_name: string, value: s
                 false -> bound.outer_reg
             };
             reg2: string <- term_user_call_abi@user_call_arg_reg_for_type(term_sir_helpers@sir_term_root_node(rest).type_name, gpr_slot, fp_slot);
-            case bound.debug of {
-                true -> { emit_child(rest,  reg2, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f2, debug: true }) };
-                false -> emit_child(rest,  reg2, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f2, debug: false })
-            }
+            emit_child(rest,  reg2, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f2, debug: bound.debug })
         }
     }
 }
 
 // Stage GPR call args onto the stack (X16 temp). Parallel staging is inlined at the
 fn emit_simple_gpr_stage_one(arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, emit_child: fn({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, string, { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string) -> string {
-    value_asm: string <- case bound.debug of {
-        true -> {
-            emit_child(arg,  "X16", pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true })
-        };
-        false -> emit_child(arg,  "X16", pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
-    };
+    value_asm: string <- emit_child(arg,  "X16", pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: bound.debug });
     // record_make/tuple_make SUB SP under X16. Reclaim so staging STR slots stay contiguous.
     reclaim: string <- case term_reg_spill@is_aggregate_make(arg) of {
         true -> term_aggregate_helpers@tuple_elem_sret_reclaim("X16", term_aggregate_helpers@flat_tuple_dealloc_size(arg));
@@ -207,19 +236,18 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
         and sret_n > 0
         and reg_conventions@is_aggregate_struct_or_tuple_return_type(term_sir_helpers@sir_term_root_node(term).type_name)
         and (len(bound.bound_name) == 0 or call_opts.use_tail);
-    // Tuple-returning user calls write through caller X8 (AAPCS64 indirect result). Without SUB/MOV X8
-    // the callee stores into whatever X8 held (e.g. silica_rt_wait_root_acb) — flaky SIGKILL after
-    // functions_addition/fn_three_params_tuple_return_print*. Record returns heap-promote in the
-    // callee and do not need a caller sret slab.
+    // Tuple-returning user calls heap-promote in the callee and return the pointer in X0
+    // (same route as record returns). A leftover caller X8 slab is not allocated here;
+    // let-end / branch cleanup must not pop one either (let_user_call_tuple_sret_stack_bytes,
+    // branch_tail_user_call_sret_stack_bytes). Popping 32 bytes that were never pushed
+    // hung functions_addition/fn_three_params_tuple_return_print_low_variable_count in the
+    // supervisor restart loop after it printed.
     sret_alloc_bytes: int64 <- case use_pass_through_sret or ffi_found of {
         true -> 0;
-        false -> case reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(term).type_name) of {
-            true -> sret_n;
-            false -> 0
-        }
+        false -> 0
     };
-    // Post-BLR ADD is 0: the sret slab is released at let-end via aggregate_callee_return_stack_bytes
-    // (immediate ADD here plus let-end ADD double-pops SP).
+    // Post-BLR ADD stays 0: there is no caller sret slab. Let-end must also add 0
+    // (let_user_call_tuple_sret_stack_bytes).
     sret_stack_bytes: int64 <- 0;
     sret_setup: string <- case ffi_found of {
         true -> case sret_n > 0 of {
@@ -244,10 +272,7 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
             false -> term_user_call_abi@user_call_arg_reg_for_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).type_name, gpr_after_a0, fp_after_a0)
         }
     };
-    arg1_asm: string <- case bound.debug of {
-        true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner),  arg1_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: true }) };
-        false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner),  arg1_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: false })
-    };
+    arg1_asm: string <- emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner),  arg1_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: bound.debug });
     fpool_a0: string <- var@find_sp_binding(bound.outer_reg, "_fpool");
     outer_arg2: string <- case gpr_after_a0 >= 1 and len(fpool_a0) == 0 of {
         true -> concat(bound.outer_reg, "|_fpool=X9");
@@ -256,10 +281,7 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
     rest_asm: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind >= 0 of {
         true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).name == "user_call_rest" of {
             true -> emit_rest_args(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), gpr_after_a0, fp_after_a0, bound, pools, emit_child);
-            false -> case bound.debug of {
-                true -> { emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr),  arg2_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_arg2, debug: true }) };
-                false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr),  arg2_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_arg2, debug: false })
-            }
+            false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr),  arg2_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_arg2, debug: bound.debug })
         };
         false -> ""
     };
@@ -463,35 +485,7 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
     call_suffix: string <- concat(concat(callee_reload_after_args, before_call), call_and_dealloc);
     case use_simple_gpr_parallel_stage of {
         true -> emit_parallel_call_piece(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), bound, pools, emit_child, call_prefix, call_suffix);
-        false -> join_call_final(call_prefix, case len(rest_asm) > 0 of {
-        true -> case use_two_arg_gpr_reorder of {
-            true -> {
-                save0: string <- "    STR X0, [SP, #-16]!\n";
-                bridge: string <- "    LDR X0, [SP], #16\n";
-                concat(concat(concat(concat(concat(save0, rest_asm), "\n"), bridge), arg1_asm), "\n")
-            };
-            false -> case use_two_arg_gpr_reorder_rem_first of {
-                true -> {
-                    rp: string <- reg_conventions@reg_prefix_for_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name);
-                    arg1_gpr: string <- concat(rp, "0");
-                    div_gpr: string <- concat(rp, "10");
-                    mov_line: string <- concat(concat(concat(concat("    MOV ", arg1_gpr), ", "), div_gpr), "\n");
-                    concat(concat(rest_asm, "\n"), mov_line)
-                };
-                false -> case use_two_arg_gpr_reorder_add_second_first of {
-                    true -> concat(concat(rest_asm, "\n"), concat(arg1_asm, "\n"));
-                    false -> case use_arg2_first_around_substring_arg1 of {
-                        true -> concat(concat(concat(concat(rest_asm, "\n"), "    STR X1, [SP, #-16]!\n"), concat(arg1_asm, "\n")), "    LDR X1, [SP], #16\n");
-                        false -> case use_arg2_save_around_arg1_x0 of {
-                            true -> concat(concat(concat(concat(rest_asm, "\n"), "    STR X1, [SP, #-16]!\n"), concat(arg1_asm, "\n")), "    LDR X1, [SP], #16\n");
-                            false -> concat(concat(arg1_asm, "\n"), concat(rest_asm, "\n"))
-                        }
-                    }
-                }
-            }
-        };
-        false -> concat(arg1_asm, "\n")
-        }, call_suffix)
+        false -> join_sequential_user_call(call_prefix, arg1_asm, rest_asm, call_suffix, a1ty, { reorder: use_two_arg_gpr_reorder, rem_first: use_two_arg_gpr_reorder_rem_first, add_second_first: use_two_arg_gpr_reorder_add_second_first, arg2_first_substring: use_arg2_first_around_substring_arg1, arg2_save_x0: use_arg2_save_around_arg1_x0 })
     }
 }
 

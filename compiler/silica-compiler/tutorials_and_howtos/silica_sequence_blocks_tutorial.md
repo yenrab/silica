@@ -96,7 +96,7 @@ When a sequence block uses functions that require effects, those effects **must*
 
 ```silica
 fn parse_line(content: string, start: int64) -> string {
-    case start >= len(content) of {
+    case start >= length_chars(content) of {
         true -> "";
         false -> sequence proc[DeviceIO]
             line: string <- substring_until_char(content, start, '\n');
@@ -120,7 +120,7 @@ fn read_and_process(path: string) -> int64 {
         content: string <- read_lines(path);
         trimmed: string <- trim_leading(content);
     produces
-        pure len(trimmed)
+        pure length_chars(trimmed)
     end
 }
 ```
@@ -164,7 +164,7 @@ fn get_actor_and_log() -> int64 {
         ref: actor_ref <- spawn(State {}, fn(msg: Msg, s: State) -> State { s });
         send(ref, Msg {});
     produces
-        pure len("started")
+        pure length_chars("started")
     end
 }
 
@@ -182,7 +182,7 @@ fn process() -> string {
     result: int64 <- sequence proc[DeviceIO]
         content: string <- read_lines("config.txt");
     produces
-        pure len(content)
+        pure length_chars(content)
     end;
     concat("Length: ", int_to_string(result))
 }
@@ -275,7 +275,7 @@ fn wrong_approach(path: string) -> int64 proc[DeviceIO] {
     sequence  -- ERROR: sequence uses read_lines but does not declare proc[DeviceIO]
         content: string <- read_lines(path);
     produces
-        pure len(content)
+        pure length_chars(content)
     end
 }
 ```

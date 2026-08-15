@@ -52,8 +52,8 @@ Use this in the normal-character branch (around line 166) instead of a single `a
 1. **Add `byte_to_int64(byte_str: string) -> int64`** — 256-case lookup mapping each single-byte string to 0–255. Uses `case substring(byte_str, 0, 1) of { "\x00" -> 0; "\x01" -> 1; ... "\xFF" -> 255 }`.
 
 2. **Add `char_lexeme_to_utf8_encoded(lexeme: string) -> int64`** — Produces full UTF-8 encoding for the helper:
-   - `inner = substring(lexeme, 1, len(lexeme) - 1)`
-   - `len = len(inner)` (1–4)
+   - `inner = substring(lexeme, 1, length_chars(lexeme) - 1)`
+   - `len = length_bytes(inner)` (1–4)
    - `packed = Σᵢ byte_to_int64(substring(inner, i, i+1)) × 256^i`
    - `return (len << 56) | packed`
 
