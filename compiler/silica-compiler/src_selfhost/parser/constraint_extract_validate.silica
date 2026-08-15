@@ -58,20 +58,62 @@ fn uncategorized_syntax_defect_message() -> string {
 
 
 
+// Seed dummy_expr is kind==-1 with inner/right pointing at itself. Flattened
+// handles use root<0; a stored dummy may still have root>=0. Do not follow a
+// child index that is absent or the current root (self-cycle).
+fn expr_child_is_absent(parent_root: int64, child_idx: int64) -> int64 {
+    case child_idx < 0 of {
+        true -> 1;
+        false -> case child_idx == parent_root of {
+            true -> 1;
+            false -> 0
+        }
+    }
+}
+
+// Only tag 0 (fn) has a statement body. use/export/trait/module/effect/impl
+// store dummy_expr; walking that handle can cycle in expr_node_at_from_head.
+// Int64 1/0 — bool returns from these helpers have been observed inverted and
+// re-enter dummy bodies (parse hang on `use` / `export` files).
+fn decl_skips_body_walk(tag: int64, body_root: int64) -> int64 {
+    case body_root < 0 of {
+        true -> 1;
+        false -> case tag == 0 of {
+            true -> 0;
+            false -> 1
+        }
+    }
+}
+
 fn expr_has_single_tuple_error(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> (bool, { file: string, line: int64, column: int64, offset: int64 }) {
-    case parser_ast@expr_root_node(expr).kind == 998 of {
-        true -> (true, parser_ast@expr_root_node(expr).location);
-        false -> case parser_ast@expr_root_node(expr).kind == 999 of {
+    case expr.root < 0 of {
+        true -> (false, parser_ast@zero_location());
+        false -> case parser_ast@expr_root_node(expr).kind == 998 of {
             true -> (true, parser_ast@expr_root_node(expr).location);
-            false -> case expr.root < 0 of {
-                true -> (false, parser_ast@zero_location());
-                false -> case parser_ast@expr_root_node(expr).kind == 12 of {
-                    true -> expr_has_single_tuple_error(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner));
-                    false -> {
-                        (inner_found: bool, inner_loc: { file: string, line: int64, column: int64, offset: int64 }) <- expr_has_single_tuple_error(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner));
-                        case inner_found of {
-                            true -> (true, inner_loc);
-                            false -> expr_has_single_tuple_error(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).right_expr))
+            false -> case parser_ast@expr_root_node(expr).kind == 999 of {
+                true -> (true, parser_ast@expr_root_node(expr).location);
+                false -> case parser_ast@expr_root_node(expr).kind == -1 of {
+                    true -> (false, parser_ast@zero_location());
+                    false -> case parser_ast@expr_root_node(expr).kind == 12 of {
+                        true -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).inner) == 1 of {
+                            true -> (false, parser_ast@zero_location());
+                            false -> expr_has_single_tuple_error(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner))
+                        };
+                        false -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).inner) == 1 of {
+                            true -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).right_expr) == 1 of {
+                                true -> (false, parser_ast@zero_location());
+                                false -> expr_has_single_tuple_error(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).right_expr))
+                            };
+                            false -> {
+                                (inner_found: bool, inner_loc: { file: string, line: int64, column: int64, offset: int64 }) <- expr_has_single_tuple_error(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner));
+                                case inner_found of {
+                                    true -> (true, inner_loc);
+                                    false -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).right_expr) == 1 of {
+                                        true -> (false, parser_ast@zero_location());
+                                        false -> expr_has_single_tuple_error(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).right_expr))
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -83,7 +125,10 @@ fn expr_has_single_tuple_error(expr: { nodes: List[{ kind: int64, value: string,
 
 
 fn decl_has_single_tuple_error(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) -> (bool, { file: string, line: int64, column: int64, offset: int64 }) {
-    expr_has_single_tuple_error(decl.body)
+    case decl_skips_body_walk(decl.tag, decl.body.root) == 1 of {
+        true -> (false, parser_ast@zero_location());
+        false -> expr_has_single_tuple_error(decl.body)
+    }
 }
 
 
@@ -104,17 +149,32 @@ fn decls_has_single_tuple_error(decls: List[{ tag: int64, name: string, paramete
 
 
 fn expr_has_missing_statement_terminator(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> (bool, { file: string, line: int64, column: int64, offset: int64 }) {
-    case parser_ast@expr_root_node(expr).kind == 996 of {
-        true -> (true, parser_ast@expr_root_node(expr).location);
-        false -> case expr.root < 0 of {
-            true -> (false, parser_ast@zero_location());
-            false -> case parser_ast@expr_root_node(expr).kind == 12 of {
-                true -> expr_has_missing_statement_terminator(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner));
-                false -> {
-                    (inner_found: bool, inner_loc: { file: string, line: int64, column: int64, offset: int64 }) <- expr_has_missing_statement_terminator(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner));
-                    case inner_found of {
-                        true -> (true, inner_loc);
-                        false -> expr_has_missing_statement_terminator(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).right_expr))
+    case expr.root < 0 of {
+        true -> (false, parser_ast@zero_location());
+        false -> case parser_ast@expr_root_node(expr).kind == 996 of {
+            true -> (true, parser_ast@expr_root_node(expr).location);
+            false -> case parser_ast@expr_root_node(expr).kind == -1 of {
+                true -> (false, parser_ast@zero_location());
+                false -> case parser_ast@expr_root_node(expr).kind == 12 of {
+                    true -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).inner) == 1 of {
+                        true -> (false, parser_ast@zero_location());
+                        false -> expr_has_missing_statement_terminator(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner))
+                    };
+                    false -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).inner) == 1 of {
+                        true -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).right_expr) == 1 of {
+                            true -> (false, parser_ast@zero_location());
+                            false -> expr_has_missing_statement_terminator(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).right_expr))
+                        };
+                        false -> {
+                            (inner_found: bool, inner_loc: { file: string, line: int64, column: int64, offset: int64 }) <- expr_has_missing_statement_terminator(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner));
+                            case inner_found of {
+                                true -> (true, inner_loc);
+                                false -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).right_expr) == 1 of {
+                                    true -> (false, parser_ast@zero_location());
+                                    false -> expr_has_missing_statement_terminator(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).right_expr))
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -125,17 +185,32 @@ fn expr_has_missing_statement_terminator(expr: { nodes: List[{ kind: int64, valu
 
 
 fn expr_has_uncategorized_syntax_defect(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> (bool, { file: string, line: int64, column: int64, offset: int64 }) {
-    case parser_ast@expr_root_node(expr).kind == 995 of {
-        true -> (true, parser_ast@expr_root_node(expr).location);
-        false -> case expr.root < 0 of {
-            true -> (false, parser_ast@zero_location());
-            false -> case parser_ast@expr_root_node(expr).kind == 12 of {
-                true -> expr_has_uncategorized_syntax_defect(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner));
-                false -> {
-                    (inner_found: bool, inner_loc: { file: string, line: int64, column: int64, offset: int64 }) <- expr_has_uncategorized_syntax_defect(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner));
-                    case inner_found of {
-                        true -> (true, inner_loc);
-                        false -> expr_has_uncategorized_syntax_defect(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).right_expr))
+    case expr.root < 0 of {
+        true -> (false, parser_ast@zero_location());
+        false -> case parser_ast@expr_root_node(expr).kind == 995 of {
+            true -> (true, parser_ast@expr_root_node(expr).location);
+            false -> case parser_ast@expr_root_node(expr).kind == -1 of {
+                true -> (false, parser_ast@zero_location());
+                false -> case parser_ast@expr_root_node(expr).kind == 12 of {
+                    true -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).inner) == 1 of {
+                        true -> (false, parser_ast@zero_location());
+                        false -> expr_has_uncategorized_syntax_defect(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner))
+                    };
+                    false -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).inner) == 1 of {
+                        true -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).right_expr) == 1 of {
+                            true -> (false, parser_ast@zero_location());
+                            false -> expr_has_uncategorized_syntax_defect(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).right_expr))
+                        };
+                        false -> {
+                            (inner_found: bool, inner_loc: { file: string, line: int64, column: int64, offset: int64 }) <- expr_has_uncategorized_syntax_defect(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner));
+                            case inner_found of {
+                                true -> (true, inner_loc);
+                                false -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).right_expr) == 1 of {
+                                    true -> (false, parser_ast@zero_location());
+                                    false -> expr_has_uncategorized_syntax_defect(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).right_expr))
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -146,13 +221,19 @@ fn expr_has_uncategorized_syntax_defect(expr: { nodes: List[{ kind: int64, value
 
 
 fn decl_has_missing_statement_terminator(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) -> (bool, { file: string, line: int64, column: int64, offset: int64 }) {
-    expr_has_missing_statement_terminator(decl.body)
+    case decl_skips_body_walk(decl.tag, decl.body.root) == 1 of {
+        true -> (false, parser_ast@zero_location());
+        false -> expr_has_missing_statement_terminator(decl.body)
+    }
 }
 
 
 
 fn decl_has_uncategorized_syntax_defect(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) -> (bool, { file: string, line: int64, column: int64, offset: int64 }) {
-    expr_has_uncategorized_syntax_defect(decl.body)
+    case decl_skips_body_walk(decl.tag, decl.body.root) == 1 of {
+        true -> (false, parser_ast@zero_location());
+        false -> expr_has_uncategorized_syntax_defect(decl.body)
+    }
 }
 
 
@@ -188,17 +269,32 @@ fn decls_has_uncategorized_syntax_defect(decls: List[{ tag: int64, name: string,
 
 
 fn expr_has_illegal_trailing_semicolon(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> (bool, { file: string, line: int64, column: int64, offset: int64 }) {
-    case parser_ast@expr_root_node(expr).kind == 997 of {
-        true -> (true, parser_ast@expr_root_node(expr).location);
-        false -> case expr.root < 0 of {
-            true -> (false, parser_ast@zero_location());
-            false -> case parser_ast@expr_root_node(expr).kind == 12 of {
-                true -> expr_has_illegal_trailing_semicolon(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner));
-                false -> {
-                    (inner_found: bool, inner_loc: { file: string, line: int64, column: int64, offset: int64 }) <- expr_has_illegal_trailing_semicolon(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner));
-                    case inner_found of {
-                        true -> (true, inner_loc);
-                        false -> expr_has_illegal_trailing_semicolon(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).right_expr))
+    case expr.root < 0 of {
+        true -> (false, parser_ast@zero_location());
+        false -> case parser_ast@expr_root_node(expr).kind == 997 of {
+            true -> (true, parser_ast@expr_root_node(expr).location);
+            false -> case parser_ast@expr_root_node(expr).kind == -1 of {
+                true -> (false, parser_ast@zero_location());
+                false -> case parser_ast@expr_root_node(expr).kind == 12 of {
+                    true -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).inner) == 1 of {
+                        true -> (false, parser_ast@zero_location());
+                        false -> expr_has_illegal_trailing_semicolon(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner))
+                    };
+                    false -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).inner) == 1 of {
+                        true -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).right_expr) == 1 of {
+                            true -> (false, parser_ast@zero_location());
+                            false -> expr_has_illegal_trailing_semicolon(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).right_expr))
+                        };
+                        false -> {
+                            (inner_found: bool, inner_loc: { file: string, line: int64, column: int64, offset: int64 }) <- expr_has_illegal_trailing_semicolon(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).inner));
+                            case inner_found of {
+                                true -> (true, inner_loc);
+                                false -> case expr_child_is_absent(expr.root, parser_ast@expr_root_node(expr).right_expr) == 1 of {
+                                    true -> (false, parser_ast@zero_location());
+                                    false -> expr_has_illegal_trailing_semicolon(parser_ast@expr_at(expr, parser_ast@expr_root_node(expr).right_expr))
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -209,7 +305,10 @@ fn expr_has_illegal_trailing_semicolon(expr: { nodes: List[{ kind: int64, value:
 
 
 fn decl_has_illegal_trailing_semicolon(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) -> (bool, { file: string, line: int64, column: int64, offset: int64 }) {
-    expr_has_illegal_trailing_semicolon(decl.body)
+    case decl_skips_body_walk(decl.tag, decl.body.root) == 1 of {
+        true -> (false, parser_ast@zero_location());
+        false -> expr_has_illegal_trailing_semicolon(decl.body)
+    }
 }
 
 

@@ -411,7 +411,10 @@ fn sir_is_cmp_op(op: string) -> boolean {
 fn sir_infer_call_return(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> string {
     name: string <- type_checker_expressions_helpers@expr_name(expr);
     call_base: string <- type_checker_core@user_call_base_function_name(name);
-    case call_base == "bnot" of {
+    neg_ty: string <- negate_builtins@negate_arg_type(call_base);
+    case len(neg_ty) > 0 of {
+        true -> neg_ty;
+        false -> case call_base == "bnot" of {
         true -> "uint64";
         false -> case call_base == "spawn" or call_base == "spawn_registered" of {
         true -> "actor_ref";
@@ -439,6 +442,7 @@ fn sir_infer_call_return(context: { env: List[{ name: string, type_name: string,
                     }
                 }
             }
+        }
         }
         }
     }
@@ -595,12 +599,30 @@ fn sir_is_narrow_int_type(t: string) -> bool {
     t == "int32" or t == "int16" or t == "int8" or t == "uint32" or t == "uint16" or t == "uint8"
 }
 
+fn sir_negate_type_if_call(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> string {
+    k: int64 <- type_checker_expressions_helpers@expr_kind(expr);
+    case k == 1 or k == 4 of {
+        true -> negate_builtins@negate_arg_type(type_checker_expressions_helpers@expr_name(expr));
+        false -> ""
+    }
+}
+
 fn sir_infer_binop_left_preferred(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }) -> string {
     case type_checker_expressions_helpers@expr_kind(expr) == 3 of {
         true -> {
             op: string <- type_checker_expressions_helpers@expr_value(expr);
-            lt: string <- sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
-            rt: string <- sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_right(expr));
+            left_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- type_checker_expressions_helpers@expr_child_inner(expr);
+            right_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- type_checker_expressions_helpers@expr_child_right(expr);
+            raw_lt: string <- sir_infer_expr_type(context, left_e);
+            lt: string <- case len(raw_lt) > 0 of {
+                true -> raw_lt;
+                false -> sir_negate_type_if_call(left_e)
+            };
+            raw_rt: string <- sir_infer_expr_type(context, right_e);
+            rt: string <- case len(raw_rt) > 0 of {
+                true -> raw_rt;
+                false -> sir_negate_type_if_call(right_e)
+            };
             case sir_is_arith_op(op) or sir_is_cmp_op(op) of {
                 true -> case sir_is_floatish_type(lt) of {
                     true -> lt;

@@ -848,13 +848,13 @@ fn cons_dep_edges_for_paths(dependent: string, prereq_paths: ListString, acc: Li
     }
 }
 
-fn build_dep_edges_rev(config_files: ListString, parsed: ListParsedFile, acc: ListDepEdge) -> ListDepEdge {
-    case config_files.is_nil of {
+fn build_dep_edges_rev(remaining: ListString, all_files: ListString, parsed: ListParsedFile, acc: ListDepEdge) -> ListDepEdge {
+    case remaining.is_nil of {
         true -> acc;
         false -> do
-            dep_paths: ListString <- dep_paths_for_parsed_file(config_files.head, parsed, config_files);
-            with_edges: ListDepEdge <- cons_dep_edges_for_paths(config_files.head, dep_paths, acc);
-            build_dep_edges_rev(config_files.tail, parsed, with_edges)
+            dep_paths: ListString <- dep_paths_for_parsed_file(remaining.head, parsed, all_files);
+            with_edges: ListDepEdge <- cons_dep_edges_for_paths(remaining.head, dep_paths, acc);
+            build_dep_edges_rev(remaining.tail, all_files, parsed, with_edges)
         end
     }
 }
@@ -931,6 +931,17 @@ fn take_first_zero_in_degree_impl(scan: ListCompileUnitDeps, full_graph: ListCom
     }
 }
 
+fn remaining_unit_paths_acc(graph: ListCompileUnitDeps, acc: ListString) -> ListString {
+    case graph.is_nil of {
+        true -> acc;
+        false -> remaining_unit_paths_acc(graph.tail, module_checker_core@cons_string(graph.head.path, acc))
+    }
+}
+
+fn remaining_unit_paths(graph: ListCompileUnitDeps) -> ListString {
+    reverse_list_string(remaining_unit_paths_acc(graph, module_checker_core@empty_list_string()))
+}
+
 // Kahn's algorithm: O(V+E) over config files using AST-derived deps (no per-probe disk reads).
 fn kahn_topological_sort(graph: ListCompileUnitDeps, edges: ListDepEdge, result_rev: ListString) -> (bool, ListString) {
     case graph.is_nil of {
@@ -938,7 +949,7 @@ fn kahn_topological_sort(graph: ListCompileUnitDeps, edges: ListDepEdge, result_
         false -> do
             (ready_path: string, rest_graph: ListCompileUnitDeps) <- take_first_zero_in_degree(graph);
             case len(ready_path) == 0 of {
-                true -> (false, result_rev);
+                true -> (false, remaining_unit_paths(graph));
                 false -> do
                     updated: ListCompileUnitDeps <- decrement_in_degrees_for_emit(rest_graph, edges, ready_path);
                     kahn_topological_sort(updated, edges, module_checker_core@cons_string(ready_path, result_rev))
@@ -948,12 +959,142 @@ fn kahn_topological_sort(graph: ListCompileUnitDeps, edges: ListDepEdge, result_
     }
 }
 
+fn join_paths_arrow(paths: ListString) -> string {
+    case paths.is_nil of {
+        true -> "";
+        false -> case paths.tail.is_nil of {
+            true -> paths.head;
+            false -> concat(concat(paths.head, " -> "), join_paths_arrow(paths.tail))
+        }
+    }
+}
+
+fn cycle_suffix_newest_first(path: ListString, next: string) -> ListString {
+    case path.is_nil of {
+        true -> module_checker_core@empty_list_string();
+        false -> case path.head == next of {
+            true -> module_checker_core@cons_string(path.head, module_checker_core@empty_list_string());
+            false -> module_checker_core@cons_string(path.head, cycle_suffix_newest_first(path.tail, next))
+        }
+    }
+}
+
+fn cycle_close(path: ListString, next: string) -> ListString {
+    suffix: ListString <- cycle_suffix_newest_first(path, next);
+    reverse_list_string(module_checker_core@cons_string(next, suffix))
+}
+
+fn first_prereq_in_remaining(dependent: string, edges: ListDepEdge, remaining: ListString) -> string {
+    case edges.is_nil of {
+        true -> "";
+        false -> case edges.head.dependent == dependent of {
+            true -> case edges.head.prerequisite == dependent of {
+                true -> first_prereq_in_remaining(dependent, edges.tail, remaining);
+                false -> case list_contains(remaining, edges.head.prerequisite) of {
+                    true -> edges.head.prerequisite;
+                    false -> first_prereq_in_remaining(dependent, edges.tail, remaining)
+                }
+            };
+            false -> first_prereq_in_remaining(dependent, edges.tail, remaining)
+        }
+    }
+}
+
+fn find_kahn_cycle_walk(current: string, path: ListString, edges: ListDepEdge, remaining: ListString) -> ListString {
+    next: string <- first_prereq_in_remaining(current, edges, remaining);
+    case len(next) == 0 of {
+        true -> module_checker_core@empty_list_string();
+        false -> case list_contains(path, next) of {
+            true -> cycle_close(path, next);
+            false -> find_kahn_cycle_walk(next, module_checker_core@cons_string(next, path), edges, remaining)
+        }
+    }
+}
+
+fn first_kahn_cycle(remaining: ListString, edges: ListDepEdge) -> ListString {
+    case remaining.is_nil of {
+        true -> module_checker_core@empty_list_string();
+        false -> do
+            start: string <- remaining.head;
+            walked: ListString <- find_kahn_cycle_walk(start, module_checker_core@cons_string(start, module_checker_core@empty_list_string()), edges, remaining);
+            case walked.is_nil of {
+                false -> walked;
+                true -> first_kahn_cycle(remaining.tail, edges)
+            }
+        end
+    }
+}
+
+fn direct_use_paths_for_file(path: string, parsed: ListParsedFile, all_files: ListString) -> ListString {
+    do
+        (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, path);
+        case found of {
+            true -> resolve_deps_to_paths(extract_use_modules_from_program(prog), all_files, module_checker_core@empty_list_string());
+            false -> module_checker_core@empty_list_string()
+        }
+    end
+}
+
+fn dfs_use_cycle_edges(uses: ListString, current: string, stack: ListString, parsed: ListParsedFile, all_files: ListString) -> ListString {
+    case uses.is_nil of {
+        true -> module_checker_core@empty_list_string();
+        false -> case list_contains(stack, uses.head) of {
+            true -> cycle_close(stack, uses.head);
+            false -> do
+                next_stack: ListString <- module_checker_core@cons_string(uses.head, stack);
+                deeper: ListString <- dfs_use_cycle(uses.head, next_stack, parsed, all_files);
+                case deeper.is_nil of {
+                    false -> deeper;
+                    true -> dfs_use_cycle_edges(uses.tail, current, stack, parsed, all_files)
+                }
+            end
+        }
+    }
+}
+
+fn dfs_use_cycle(current: string, stack: ListString, parsed: ListParsedFile, all_files: ListString) -> ListString {
+    uses: ListString <- direct_use_paths_for_file(current, parsed, all_files);
+    dfs_use_cycle_edges(uses, current, stack, parsed, all_files)
+}
+
+fn first_direct_use_cycle(scan: ListString, parsed: ListParsedFile, all_files: ListString) -> ListString {
+    case scan.is_nil of {
+        true -> module_checker_core@empty_list_string();
+        false -> do
+            start: string <- scan.head;
+            found: ListString <- dfs_use_cycle(start, module_checker_core@cons_string(start, module_checker_core@empty_list_string()), parsed, all_files);
+            case found.is_nil of {
+                false -> found;
+                true -> first_direct_use_cycle(scan.tail, parsed, all_files)
+            }
+        end
+    }
+}
+
+fn cycle_paths_for_error(remaining: ListString, edges: ListDepEdge, parsed: ListParsedFile, all_files: ListString) -> ListString {
+    direct: ListString <- first_direct_use_cycle(all_files, parsed, all_files);
+    case direct.is_nil of {
+        false -> direct;
+        true -> do
+            kahn_c: ListString <- first_kahn_cycle(remaining, edges);
+            case kahn_c.is_nil of {
+                false -> kahn_c;
+                true -> remaining
+            }
+        end
+    }
+}
+
 fn topological_sort_from_parsed(config_files: ListString, parsed: ListParsedFile) -> (bool, ListString) {
     do
-        edges_rev: ListDepEdge <- build_dep_edges_rev(config_files, parsed, nil_dep_edge_list());
+        edges_rev: ListDepEdge <- build_dep_edges_rev(config_files, config_files, parsed, nil_dep_edge_list());
         units_rev: ListCompileUnitDeps <- build_compile_units_rev(config_files, edges_rev, nil_compile_unit_deps_list());
         units: ListCompileUnitDeps <- reverse_compile_unit_deps_list(units_rev, nil_compile_unit_deps_list());
-        kahn_topological_sort(units, edges_rev, module_checker_core@empty_list_string())
+        (ok: bool, paths: ListString) <- kahn_topological_sort(units, edges_rev, module_checker_core@empty_list_string());
+        case ok of {
+            true -> (true, paths);
+            false -> (false, cycle_paths_for_error(paths, edges_rev, parsed, config_files))
+        }
     end
 }
 
@@ -1551,7 +1692,12 @@ fn main() -> int64 proc[DeviceIO] {
                                     (sort_ok: bool, sorted_files: ListString) <- topological_sort_from_parsed(files, parsed_all);
                                     case sort_ok of {
                                         false -> do
-                                            println("Error: cyclic module dependencies among files in silica.config");
+                                            cycle_text: string <- join_paths_arrow(sorted_files);
+                                            msg: string <- case len(cycle_text) == 0 of {
+                                                true -> "Error: cyclic module dependencies among files in silica.config";
+                                                false -> concat("Error: cyclic module dependencies among files in silica.config: ", cycle_text)
+                                            };
+                                            println(msg);
                                             1
                                         end;
                                         true -> prepare_compile_order(sorted_files, parsed_all, files)

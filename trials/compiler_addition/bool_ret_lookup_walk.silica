@@ -1,0 +1,65 @@
+// Call-site lookup: bool-returning `decl_name_matches` plus `is_effect_alias == false`
+// over a list whose head is the `__silica_tc_in_main` marker (surface "boolean").
+// Cross-module / helper bool returns that are always-true make every name match the
+// marker, so `pick` looks like type `boolean` (E2005 "is not a function").
+// Want 42: lookup must return the real `pick` surface, not "boolean" or "".
+
+fn decl_name_matches(decl_name: string, target_name: string) -> bool {
+    decl_name == target_name
+}
+
+fn empty_eff() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        r: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure r
+    end
+}
+
+fn empty_env() -> List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[int64, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        r: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[int64, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] <- empty[{ name: string, type_id: int64, surface_type: string, declared_effects: List[int64, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)]()
+    produces
+        pure r
+    end
+}
+
+fn cons_row(name: string, surface: string, alias: boolean, mod: string, tail: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[int64, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)]) -> List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[int64, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] {
+    e: List[int64, mem(normal)] <- empty_eff();
+    row: { name: string, type_id: int64, surface_type: string, declared_effects: List[int64, mem(normal)], is_effect_alias: boolean, source_module: string } <- { name: name, type_id: 1, surface_type: surface, declared_effects: e, is_effect_alias: alias, source_module: mod };
+    sequence proc[mem(normal)]
+        r: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[int64, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] <- prepend[{ name: string, type_id: int64, surface_type: string, declared_effects: List[int64, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)](row, tail)
+    produces
+        pure r
+    end
+}
+
+fn lookup(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[int64, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], fn_name: string) -> string {
+    case env.is_nil of {
+        true -> "";
+        false -> case decl_name_matches(env.head.name, fn_name) and env.head.is_effect_alias == false of {
+            true -> case env.head.source_module == "" of {
+                true -> env.head.surface_type;
+                false -> lookup(env.tail, fn_name)
+            };
+            false -> lookup(env.tail, fn_name)
+        }
+    }
+}
+
+fn main() -> int64 {
+    env0: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[int64, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] <- empty_env();
+    env1: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[int64, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] <- cons_row("pick", "int64 -> int64", false, "", env0);
+    env2: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[int64, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] <- cons_row("__silica_tc_in_main", "boolean", false, "", env1);
+    got: string <- lookup(env2, "pick");
+    case got == "int64 -> int64" of {
+        true -> 42;
+        false -> case got == "boolean" of {
+            true -> 1;
+            false -> case got == "" of {
+                true -> 2;
+                false -> 3
+            }
+        }
+    }
+}

@@ -35,6 +35,17 @@ use type_checker_supervisor;
 use diagnostics_core;
 use module_checker_ffi;
 
+// Int64 1/0 — seed-built selfhost has inverted/stuck bool from `tag == n`.
+fn int64_same(a: int64, b: int64) -> int64 {
+    case a < b of {
+        true -> 0;
+        false -> case b < a of {
+            true -> 0;
+            false -> 1
+        }
+    }
+}
+
 fn empty_list_string() -> List[string, mem(normal)] {
     sequence proc[mem(normal)]
         result: List[string, mem(normal)] <- empty[string, mem(normal)]()
@@ -139,6 +150,33 @@ fn strings_equal_ascii_ignore_case(a: string, b: string) -> bool {
     case len(a) == len(b) of {
         false -> false;
         true -> strings_equal_at_ignore_case(a, b, 0, len(a))
+    }
+}
+
+// Int64 1/0 — same-module bool returns have been observed inverted under seed-built selfhost.
+fn strings_equal_at_ignore_case_i(a: string, b: string, i: int64, n: int64) -> int64 {
+    case i >= n of {
+        true -> 1;
+        false -> {
+            ca: string <- substring(a, i, i + 1);
+            cb: string <- substring(b, i, i + 1);
+            case ascii_char_to_lower(ca) == ascii_char_to_lower(cb) of {
+                false -> 0;
+                true -> strings_equal_at_ignore_case_i(a, b, i + 1, n)
+            }
+        }
+    }
+}
+
+fn strings_equal_ascii_ignore_case_i(a: string, b: string) -> int64 {
+    la: int64 <- len(a);
+    lb: int64 <- len(b);
+    case la < lb of {
+        true -> 0;
+        false -> case lb < la of {
+            true -> 0;
+            false -> strings_equal_at_ignore_case_i(a, b, 0, la)
+        }
     }
 }
 
@@ -482,25 +520,31 @@ fn validate_use_declarations_against_config(decls: List[{ tag: int64, name: stri
     }
 }
 
-fn use_params_name_module(params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], mod_name: string) -> bool {
+fn use_params_name_module(params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], mod_name: string) -> int64 {
     case params.is_nil of {
-        true -> false;
-        false -> case params.head.name == mod_name of {
-            true -> true;
-            false -> use_params_name_module(params.tail, mod_name)
+        true -> 0;
+        false -> case strings_equal_ascii_ignore_case_i(params.head.name, mod_name) < 1 of {
+            false -> 1;
+            true -> use_params_name_module(params.tail, mod_name)
         }
     }
 }
 
-fn decls_have_use_for_module(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], mod_name: string) -> bool {
+fn decls_have_use_for_module(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], mod_name: string) -> int64 {
     case decls.is_nil of {
-        true -> false;
-        false -> case decls.head.tag == 2 of {
-            true -> case use_params_name_module(decls.head.parameters, mod_name) of {
-                true -> true;
-                false -> decls_have_use_for_module(decls.tail, mod_name)
+        true -> 0;
+        false -> case len(decls.head.name) > 0 of {
+            true -> case strings_equal_ascii_ignore_case_i(decls.head.name, mod_name) < 1 of {
+                false -> 1;
+                true -> case use_params_name_module(decls.head.parameters, mod_name) < 1 of {
+                    false -> 1;
+                    true -> decls_have_use_for_module(decls.tail, mod_name)
+                }
             };
-            false -> decls_have_use_for_module(decls.tail, mod_name)
+            false -> case use_params_name_module(decls.head.parameters, mod_name) < 1 of {
+                false -> 1;
+                true -> decls_have_use_for_module(decls.tail, mod_name)
+            }
         }
     }
 }
@@ -509,9 +553,9 @@ fn decls_have_use_for_module(decls: List[{ tag: int64, name: string, parameters:
 fn first_use_param_in_list_matching_module_ignore_case(params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], qmod: string) -> string {
     case params.is_nil of {
         true -> "";
-        false -> case strings_equal_ascii_ignore_case(params.head.name, qmod) of {
-            true -> params.head.name;
-            false -> first_use_param_in_list_matching_module_ignore_case(params.tail, qmod)
+        false -> case strings_equal_ascii_ignore_case_i(params.head.name, qmod) < 1 of {
+            false -> params.head.name;
+            true -> first_use_param_in_list_matching_module_ignore_case(params.tail, qmod)
         }
     }
 }
@@ -519,15 +563,24 @@ fn first_use_param_in_list_matching_module_ignore_case(params: List[{ name: stri
 fn first_use_param_matching_module_ignore_case(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], qmod: string) -> string {
     case decls.is_nil of {
         true -> "";
-        false -> case decls.head.tag == 2 of {
-            true -> {
-                r: string <- first_use_param_in_list_matching_module_ignore_case(decls.head.parameters, qmod);
-                case len(r) > 0 of {
-                    true -> r;
-                    false -> first_use_param_matching_module_ignore_case(decls.tail, qmod)
-                }
+        false -> {
+            from_name: string <- case len(decls.head.name) > 0 of {
+                true -> case strings_equal_ascii_ignore_case_i(decls.head.name, qmod) < 1 of {
+                    false -> decls.head.name;
+                    true -> ""
+                };
+                false -> ""
             };
-            false -> first_use_param_matching_module_ignore_case(decls.tail, qmod)
+            case len(from_name) > 0 of {
+                true -> from_name;
+                false -> {
+                    r: string <- first_use_param_in_list_matching_module_ignore_case(decls.head.parameters, qmod);
+                    case len(r) > 0 of {
+                        true -> r;
+                        false -> first_use_param_matching_module_ignore_case(decls.tail, qmod)
+                    }
+                }
+            }
         }
     }
 }
@@ -556,36 +609,17 @@ fn validate_kind4_call_module_use(expr: { nodes: List[{ kind: int64, value: stri
             (qmod: string, _: string) <- type_checker_core@split_module_qualified_call_name(node.name);
             case len(qmod) > 0 of {
                 false -> validate_expr_pair_for_qualified_uses(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), all_decls, current_path);
-                true -> case decls_have_use_for_module(all_decls, qmod) of {
-                    true -> validate_expr_pair_for_qualified_uses(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), all_decls, current_path);
-                    false -> case qualified_module_is_current_file(qmod, current_path) of {
+                true -> case decls_have_use_for_module(all_decls, qmod) < 1 of {
+                    false -> validate_expr_pair_for_qualified_uses(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), all_decls, current_path);
+                    true -> case len(first_use_param_matching_module_ignore_case(all_decls, qmod)) > 0 of {
                         true -> validate_expr_pair_for_qualified_uses(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), all_decls, current_path);
-                        false -> {
-                            matched_use: string <- first_use_param_matching_module_ignore_case(all_decls, qmod);
-                            case len(matched_use) > 0 of {
-                                true -> case matched_use == qmod of {
-                                    true -> {
-                                        p1: string <- concat("module-qualified call ", node.name);
-                                        p2: string <- concat(p1, " requires `use ");
-                                        msg: string <- concat(p2, concat(qmod, "` (spec 19.3)"));
-                                        (1, "E1010", node.location, msg, "sect19.3")
-                                    };
-                                    false -> {
-                                        m_a: string <- concat("module-qualified call ", node.name);
-                                        m_b: string <- concat(m_a, ": prefix `");
-                                        m_c: string <- concat(m_b, qmod);
-                                        m_d: string <- concat(m_c, "` does not match `use ");
-                                        m_e: string <- concat(m_d, matched_use);
-                                        msg_case: string <- concat(m_e, ";` — spell the qualified module name like the `use` import (spec 19.3)");
-                                        (1, "E1010", node.location, msg_case, "sect19.3")
-                                    }
-                                };
-                                false -> {
-                                    p1b: string <- concat("module-qualified call ", node.name);
-                                    p2b: string <- concat(p1b, " requires `use ");
-                                    msg_b: string <- concat(p2b, concat(qmod, "` (spec 19.3)"));
-                                    (1, "E1010", node.location, msg_b, "sect19.3")
-                                }
+                        false -> case qualified_module_is_current_file(qmod, current_path) of {
+                            true -> validate_expr_pair_for_qualified_uses(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), all_decls, current_path);
+                            false -> {
+                                p1b: string <- concat("module-qualified call ", node.name);
+                                p2b: string <- concat(p1b, " requires `use ");
+                                msg_b: string <- concat(p2b, concat(qmod, "` (spec 19.3)"));
+                                (1, "E1010", node.location, msg_b, "sect19.3")
                             }
                         }
                     }
@@ -844,25 +878,25 @@ fn program_fn_decl_count(decls: List[{ tag: int64, name: string, parameters: Lis
     }
 }
 
-fn program_has_function_exports(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> bool {
+fn program_has_function_exports(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> int64 {
     case decls.is_nil of {
-        true -> false;
-        false -> case decls.head.tag == 3 of {
-            true -> case decls.head.parameters.is_nil of {
+        true -> 0;
+        false -> case int64_same(decls.head.tag, 3) < 1 of {
+            false -> case decls.head.parameters.is_nil of {
                 true -> program_has_function_exports(decls.tail);
-                false -> true
+                false -> 1
             };
-            false -> program_has_function_exports(decls.tail)
+            true -> program_has_function_exports(decls.tail)
         }
     }
 }
 
-fn program_has_use_declarations(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> bool {
+fn program_has_use_declarations(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> int64 {
     case decls.is_nil of {
-        true -> false;
-        false -> case decls.head.tag == 2 of {
-            true -> true;
-            false -> program_has_use_declarations(decls.tail)
+        true -> 0;
+        false -> case int64_same(decls.head.tag, 2) < 1 of {
+            false -> 1;
+            true -> program_has_use_declarations(decls.tail)
         }
     }
 }
@@ -897,11 +931,11 @@ fn entry_shape_status(program: { declarations: List[{ tag: int64, name: string, 
         true -> 0;
         false -> case program_defines_main_zero(program.declarations) of {
             true -> 0;
-            false -> case program_has_function_exports(program.declarations) of {
-                true -> 0;
-                false -> case program_has_use_declarations(program.declarations) of {
-                    true -> 0;
-                    false -> case program_has_export_trait_declaration(program.declarations) of {
+            false -> case program_has_function_exports(program.declarations) < 1 of {
+                false -> 0;
+                true -> case program_has_use_declarations(program.declarations) < 1 of {
+                    false -> 0;
+                    true -> case program_has_export_trait_declaration(program.declarations) of {
                         true -> 0;
                         false -> 1
                     }
@@ -930,7 +964,7 @@ fn validate_kind4_call_export_surface(expr: { nodes: List[{ kind: int64, value: 
                 true -> validate_expr_pair_export_surface(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), all_decls, all_parsed);
                 false -> case len(qmod) > 0 of {
                     false -> validate_expr_pair_export_surface(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), all_decls, all_parsed);
-                    true -> case decls_have_use_for_module(all_decls, qmod) of {
+                    true -> case decls_have_use_for_module(all_decls, qmod) == 1 of {
                         false -> validate_expr_pair_export_surface(parser_ast@expr_at(expr, node.inner), parser_ast@expr_at(expr, node.right_expr), all_decls, all_parsed);
                         true -> {
                             (pf: bool, tprog: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) <- find_program_by_module_name(all_parsed, qmod);
@@ -1101,8 +1135,7 @@ fn module_checker_check_program(program: { declarations: List[{ tag: int64, name
                                 case es == 1 of {
                                     true -> {
                                         loc: { file: string, line: int64, column: int64, offset: int64 } <- first_function_declaration_location(program.declarations);
-                                        msg: string <- "module must define main/0, export at least one function, or export a trait (spec 19.1, 3.4.8)";
-                                        _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E4016", loc, msg, "sect19.1");
+                                        _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E4016", loc, "module must define main/0, export at least one function, or export a trait (spec 19.1, 3.4.8)", "sect19.1");
                                         1
                                     };
                                     false -> {

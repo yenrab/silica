@@ -32,6 +32,10 @@ the emitter's output legitimately changes; refresh them with
 | --- | --- | --- |
 | `agg_param_tailcall` | A function with an aggregate first parameter shadows it in X20, so it must save X19/X20 even when its body is a tail call | 30 |
 | `and_shortcircuit` | `and` must not evaluate its right operand when the left one is false | 2 |
+| `bool_ret_kind_eq` | A helper that returns `kind == k` / `tag == n` (and the `decl_skips_body_walk` nest) must not invert or stick; seed-built selfhost treated every decl as skippable | 61 |
+| `bool_ret_str_eq` | Same-module recursive string equality returning bool must not invert (`use lib_bracket_inst` otherwise looks missing) | 2 |
+| `bool_ret_lookup_walk` | `decl_name_matches` plus `is_effect_alias == false` over a list headed by `__silica_tc_in_main` must not match every name as type `boolean` | 42 |
+| `bool_ret_tuple` | `(bool, string)` return (the `lookup_symbol_found` shape) must keep the flag and the payload | 6 |
 | `arg_clobber`, `arg_clobber2` | Argument marshalling must not write X0–X7 before every argument has been evaluated | 3, 3 |
 | `typed_string_block` | A case arm `string { stmts; result }` must extract the brace body, not collapse to placeholder `"0"` (that made selfhost `fn_base_name_scan` ignore its argument and mangle `main` off the linker entry) | 1 |
 | `kind5_arg_clobber` | A kind-5 (whole-body tail call) wrapper must shadow later GPR params before nested argument calls clobber X1–X7 | 17 |

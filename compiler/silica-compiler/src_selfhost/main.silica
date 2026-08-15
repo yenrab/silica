@@ -725,13 +725,13 @@ fn cons_dep_edges_for_paths(dependent: string, prereq_paths: List[string, mem(no
     }
 }
 
-fn build_dep_edges_rev(config_files: List[string, mem(normal)], parsed: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], acc: List[{ dependent: string, prerequisite: string }, mem(normal)]) -> List[{ dependent: string, prerequisite: string }, mem(normal)] {
-    case config_files.is_nil of {
+fn build_dep_edges_rev(remaining: List[string, mem(normal)], all_files: List[string, mem(normal)], parsed: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], acc: List[{ dependent: string, prerequisite: string }, mem(normal)]) -> List[{ dependent: string, prerequisite: string }, mem(normal)] {
+    case remaining.is_nil of {
         true -> acc;
         false -> {
-            dep_paths: List[string, mem(normal)] <- dep_paths_for_parsed_file(config_files.head, parsed, config_files);
-            with_edges: List[{ dependent: string, prerequisite: string }, mem(normal)] <- cons_dep_edges_for_paths(config_files.head, dep_paths, acc);
-            build_dep_edges_rev(config_files.tail, parsed, with_edges)
+            dep_paths: List[string, mem(normal)] <- dep_paths_for_parsed_file(remaining.head, parsed, all_files);
+            with_edges: List[{ dependent: string, prerequisite: string }, mem(normal)] <- cons_dep_edges_for_paths(remaining.head, dep_paths, acc);
+            build_dep_edges_rev(remaining.tail, all_files, parsed, with_edges)
         }
     }
 }
@@ -808,6 +808,20 @@ fn take_first_zero_in_degree_impl(scan: List[{ path: string, in_degree: int64 },
     }
 }
 
+fn remaining_unit_paths_acc(graph: List[{ path: string, in_degree: int64 }, mem(normal)], acc: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    case graph.is_nil of {
+        true -> acc;
+        false -> {
+            next_acc: List[string, mem(normal)] <- module_checker_core@cons_string(graph.head.path, acc);
+            remaining_unit_paths_acc(graph.tail, next_acc)
+        }
+    }
+}
+
+fn remaining_unit_paths(graph: List[{ path: string, in_degree: int64 }, mem(normal)]) -> List[string, mem(normal)] {
+    reverse_list_string(remaining_unit_paths_acc(graph, module_checker_core@empty_list_string()))
+}
+
 // Kahn's algorithm: O(V+E) over config files using AST-derived deps (no per-probe disk reads).
 fn kahn_topological_sort(graph: List[{ path: string, in_degree: int64 }, mem(normal)], edges: List[{ dependent: string, prerequisite: string }, mem(normal)], result_rev: List[string, mem(normal)]) -> (bool, List[string, mem(normal)]) {
     case graph.is_nil of {
@@ -815,7 +829,7 @@ fn kahn_topological_sort(graph: List[{ path: string, in_degree: int64 }, mem(nor
         false -> {
             (ready_path: string, rest_graph: List[{ path: string, in_degree: int64 }, mem(normal)]) <- take_first_zero_in_degree(graph);
             case len(ready_path) == 0 of {
-                true -> (false, result_rev);
+                true -> (false, remaining_unit_paths(graph));
                 false -> {
                     updated: List[{ path: string, in_degree: int64 }, mem(normal)] <- decrement_in_degrees_for_emit(rest_graph, edges, ready_path);
                     kahn_topological_sort(updated, edges, module_checker_core@cons_string(ready_path, result_rev))
@@ -825,12 +839,140 @@ fn kahn_topological_sort(graph: List[{ path: string, in_degree: int64 }, mem(nor
     }
 }
 
+fn join_paths_arrow(paths: List[string, mem(normal)]) -> string {
+    case paths.is_nil of {
+        true -> "";
+        false -> case paths.tail.is_nil of {
+            true -> paths.head;
+            false -> concat(concat(paths.head, " -> "), join_paths_arrow(paths.tail))
+        }
+    }
+}
+
+fn cycle_suffix_newest_first(path: List[string, mem(normal)], next: string) -> List[string, mem(normal)] {
+    case path.is_nil of {
+        true -> module_checker_core@empty_list_string();
+        false -> case path.head == next of {
+            true -> module_checker_core@cons_string(path.head, module_checker_core@empty_list_string());
+            false -> module_checker_core@cons_string(path.head, cycle_suffix_newest_first(path.tail, next))
+        }
+    }
+}
+
+fn cycle_close(path: List[string, mem(normal)], next: string) -> List[string, mem(normal)] {
+    suffix: List[string, mem(normal)] <- cycle_suffix_newest_first(path, next);
+    reverse_list_string(module_checker_core@cons_string(next, suffix))
+}
+
+fn first_prereq_in_remaining(dependent: string, edges: List[{ dependent: string, prerequisite: string }, mem(normal)], remaining: List[string, mem(normal)]) -> string {
+    case edges.is_nil of {
+        true -> "";
+        false -> case edges.head.dependent == dependent of {
+            true -> case edges.head.prerequisite == dependent of {
+                true -> first_prereq_in_remaining(dependent, edges.tail, remaining);
+                false -> case list_contains(remaining, edges.head.prerequisite) of {
+                    true -> edges.head.prerequisite;
+                    false -> first_prereq_in_remaining(dependent, edges.tail, remaining)
+                }
+            };
+            false -> first_prereq_in_remaining(dependent, edges.tail, remaining)
+        }
+    }
+}
+
+fn find_kahn_cycle_walk(current: string, path: List[string, mem(normal)], edges: List[{ dependent: string, prerequisite: string }, mem(normal)], remaining: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    next: string <- first_prereq_in_remaining(current, edges, remaining);
+    case len(next) == 0 of {
+        true -> module_checker_core@empty_list_string();
+        false -> case list_contains(path, next) of {
+            true -> cycle_close(path, next);
+            false -> find_kahn_cycle_walk(next, module_checker_core@cons_string(next, path), edges, remaining)
+        }
+    }
+}
+
+fn first_kahn_cycle(remaining: List[string, mem(normal)], edges: List[{ dependent: string, prerequisite: string }, mem(normal)]) -> List[string, mem(normal)] {
+    case remaining.is_nil of {
+        true -> module_checker_core@empty_list_string();
+        false -> {
+            start: string <- remaining.head;
+            walked: List[string, mem(normal)] <- find_kahn_cycle_walk(start, module_checker_core@cons_string(start, module_checker_core@empty_list_string()), edges, remaining);
+            case walked.is_nil of {
+                false -> walked;
+                true -> first_kahn_cycle(remaining.tail, edges)
+            }
+        }
+    }
+}
+
+fn direct_use_paths_for_file(path: string, parsed: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], all_files: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    (found: bool, prog: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) <- module_checker_core@find_program_in_parsed(parsed, path);
+    case found of {
+        true -> resolve_deps_to_paths(extract_use_modules_from_program(prog), all_files, module_checker_core@empty_list_string());
+        false -> module_checker_core@empty_list_string()
+    }
+}
+
+fn dfs_use_cycle(current: string, stack: List[string, mem(normal)], parsed: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], all_files: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    uses: List[string, mem(normal)] <- direct_use_paths_for_file(current, parsed, all_files);
+    dfs_use_cycle_edges(uses, current, stack, parsed, all_files)
+}
+
+fn dfs_use_cycle_edges(uses: List[string, mem(normal)], current: string, stack: List[string, mem(normal)], parsed: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], all_files: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    case uses.is_nil of {
+        true -> module_checker_core@empty_list_string();
+        false -> case list_contains(stack, uses.head) of {
+            true -> cycle_close(stack, uses.head);
+            false -> {
+                next_stack: List[string, mem(normal)] <- module_checker_core@cons_string(uses.head, stack);
+                deeper: List[string, mem(normal)] <- dfs_use_cycle(uses.head, next_stack, parsed, all_files);
+                case deeper.is_nil of {
+                    false -> deeper;
+                    true -> dfs_use_cycle_edges(uses.tail, current, stack, parsed, all_files)
+                }
+            }
+        }
+    }
+}
+
+fn first_direct_use_cycle(scan: List[string, mem(normal)], parsed: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], all_files: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    case scan.is_nil of {
+        true -> module_checker_core@empty_list_string();
+        false -> {
+            start: string <- scan.head;
+            found: List[string, mem(normal)] <- dfs_use_cycle(start, module_checker_core@cons_string(start, module_checker_core@empty_list_string()), parsed, all_files);
+            case found.is_nil of {
+                false -> found;
+                true -> first_direct_use_cycle(scan.tail, parsed, all_files)
+            }
+        }
+    }
+}
+
+fn cycle_paths_for_error(remaining: List[string, mem(normal)], edges: List[{ dependent: string, prerequisite: string }, mem(normal)], parsed: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], all_files: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    direct: List[string, mem(normal)] <- first_direct_use_cycle(all_files, parsed, all_files);
+    case direct.is_nil of {
+        false -> direct;
+        true -> {
+            kahn_c: List[string, mem(normal)] <- first_kahn_cycle(remaining, edges);
+            case kahn_c.is_nil of {
+                false -> kahn_c;
+                true -> remaining
+            }
+        }
+    }
+}
+
 fn topological_sort_from_parsed(config_files: List[string, mem(normal)], parsed: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> (bool, List[string, mem(normal)]) {
     sequence
-        edges_rev: List[{ dependent: string, prerequisite: string }, mem(normal)] <- build_dep_edges_rev(config_files, parsed, nil_dep_edge_list());
+        edges_rev: List[{ dependent: string, prerequisite: string }, mem(normal)] <- build_dep_edges_rev(config_files, config_files, parsed, nil_dep_edge_list());
         units_rev: List[{ path: string, in_degree: int64 }, mem(normal)] <- build_compile_units_rev(config_files, edges_rev, nil_compile_unit_deps_list());
         units: List[{ path: string, in_degree: int64 }, mem(normal)] <- reverse_compile_unit_deps_list(units_rev, nil_compile_unit_deps_list());
-        result: (bool, List[string, mem(normal)]) <- kahn_topological_sort(units, edges_rev, module_checker_core@empty_list_string())
+        (ok: bool, paths: List[string, mem(normal)]) <- kahn_topological_sort(units, edges_rev, module_checker_core@empty_list_string());
+        result: (bool, List[string, mem(normal)]) <- case ok of {
+            true -> (true, paths);
+            false -> (false, cycle_paths_for_error(paths, edges_rev, parsed, config_files))
+        }
     produces
         pure result
     end
@@ -1420,7 +1562,12 @@ fn main() -> int64 {
                                         (sort_ok: bool, sorted_files: List[string, mem(normal)]) <- topological_sort_from_parsed(files, parsed_all);
                                         case sort_ok of {
                                             false -> {
-                                                _: int8 <- println("Error: cyclic module dependencies among files in silica.config");
+                                                cycle_text: string <- join_paths_arrow(sorted_files);
+                                                msg: string <- case len(cycle_text) == 0 of {
+                                                    true -> "Error: cyclic module dependencies among files in silica.config";
+                                                    false -> concat("Error: cyclic module dependencies among files in silica.config: ", cycle_text)
+                                                };
+                                                _: int8 <- println(msg);
                                                 1
                                             };
                                             true -> prepare_compile_order(sorted_files, parsed_all, files)

@@ -111,7 +111,9 @@ fn let_duplicates_same_case(inner: { nodes: List[{ kind: int64, type_name: strin
 }
 
 // `wrap_let_or_return` of a non-let can become `let _ = L in L` (unit name `%_`).
-// Immediate children share a kind (let/case/prim); emit only the body.
+// Skip only when the discarded RHS is the same term as the body. Matching SIR kind
+// alone is wrong: `let _ = kill_abnormal(me) in tuple_make(...)` is two different
+// prims (both kind 6) and must still emit the kill.
 fn let_unit_wrap_duplicates(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
     case term.root < 0 of {
         true -> false;
@@ -119,9 +121,12 @@ fn let_unit_wrap_duplicates(term: { nodes: List[{ kind: int64, type_name: string
             n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
             case n.name == "%_" or n.name == "_" of {
                 true -> {
-                    ik: int64 <- sir_term_root_node(sir_term_at(term, n.inner)).kind;
-                    rk: int64 <- sir_term_root_node(sir_term_at(term, n.right_expr)).kind;
-                    ik == rk and (ik == 2 or ik == 3 or ik == 6)
+                    inner_n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(sir_term_at(term, n.inner));
+                    right_n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(sir_term_at(term, n.right_expr));
+                    case n.inner == n.right_expr of {
+                        true -> true;
+                        false -> inner_n.kind == right_n.kind and inner_n.name == right_n.name and inner_n.value == right_n.value and inner_n.inner == right_n.inner and inner_n.right_expr == right_n.right_expr and (inner_n.kind == 2 or inner_n.kind == 3 or inner_n.kind == 6)
+                    }
                 };
                 false -> false
             }
