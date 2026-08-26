@@ -1,6 +1,7 @@
 ---
-
-## title: Silica
+title: Silica
+layout: default
+---
 
 ![Silica](./silica_icon_small.png)
 
@@ -141,7 +142,5 @@ The compiler, specification, tutorials, and build instructions live in the [GitH
 - [Participate]({% link participate.md %})
 - [Contributing](https://github.com/yenrab/silica/blob/main/CONTRIBUTING.md)
 - [Apache License 2.0](https://github.com/yenrab/silica/blob/main/LICENSE)
-
----
 
 *Silica: systems programming where security and clarity are part of the language—not an afterthought.*

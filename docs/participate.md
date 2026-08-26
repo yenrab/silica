@@ -1,5 +1,6 @@
 ---
 title: Participate
+layout: default
 permalink: /participate/
 ---
 
