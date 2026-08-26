@@ -430,14 +430,113 @@ fn emit_supervisor_start_trampolines_loop(module_name: string, types: List[strin
     }
 }
 
+// Spawn lowering tags SIR value "[concurrency]|e3b:<T>" and the AArch64 emitter always
+// ADRP/ADDs _silica_supervisor_start_<T>. If marker-impl collect missed the tag-6 decl,
+// still emit the trampoline from those referenced type names so the object links.
+fn e3b_type_from_sir_value(value: string) -> string {
+    case len(value) > 18 and substring(value, 13, 18) == "|e3b:" of {
+        true -> substring(value, 18, len(value));
+        false -> ""
+    }
+}
+
+fn e3b_type_list_contains(types: List[string, mem(normal)], needle: string) -> bool {
+    case types.is_nil of {
+        true -> false;
+        false -> case types.head == needle of {
+            true -> true;
+            false -> e3b_type_list_contains(types.tail, needle)
+        }
+    }
+}
+
+fn collect_e3b_types_from_nodes(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], acc: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    case nodes.is_nil of {
+        true -> acc;
+        false -> {
+            tn: string <- e3b_type_from_sir_value(nodes.head.value);
+            acc2: List[string, mem(normal)] <- case len(tn) == 0 or e3b_type_list_contains(acc, tn) of {
+                true -> acc;
+                false -> sir_ast@cons_sir_string(tn, acc)
+            };
+            collect_e3b_types_from_nodes(nodes.tail, acc2)
+        }
+    }
+}
+
+fn collect_e3b_types_from_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], acc: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    case fns.is_nil of {
+        true -> acc;
+        false -> collect_e3b_types_from_functions(fns.tail, collect_e3b_types_from_nodes(fns.head.body.nodes, acc))
+    }
+}
+
+fn child_start_name_suffix() -> string {
+    "_child_start"
+}
+
+fn add_trampoline_type_if_new(tn: string, acc: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    case len(tn) == 0 or e3b_type_list_contains(acc, tn) of {
+        true -> acc;
+        false -> sir_ast@cons_sir_string(tn, acc)
+    }
+}
+
+// Nested supervisor modules export `T_child_start` and do not call spawn_registered_supervisor.
+// Child-spec lowering in the parent ADRPs `_silica_supervisor_start_T`; define T here.
+fn type_from_child_start_name(name: string, module_name: string) -> string {
+    suf: string <- child_start_name_suffix();
+    ls: int64 <- len(name);
+    lf: int64 <- len(suf);
+    case ls > lf and substring(name, ls - lf, ls) == suf of {
+        false -> "";
+        true -> {
+            prefix: string <- substring(name, 0, ls - lf);
+            case prefix == module_name of {
+                true -> prefix;
+                false -> {
+                    sep: string <- concat(module_name, "_");
+                    sl: int64 <- len(sep);
+                    case len(prefix) > sl and substring(prefix, 0, sl) == sep of {
+                        true -> substring(prefix, sl, len(prefix));
+                        false -> prefix
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_child_start_types_from_exports(exps: List[{ fn_name: string, arity: string }, mem(normal)], module_name: string, acc: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    case exps.is_nil of {
+        true -> acc;
+        false -> collect_child_start_types_from_exports(exps.tail, module_name, add_trampoline_type_if_new(type_from_child_start_name(exps.head.fn_name, module_name), acc))
+    }
+}
+
+fn collect_child_start_types_from_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], module_name: string, acc: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    case fns.is_nil of {
+        true -> acc;
+        false -> collect_child_start_types_from_functions(fns.tail, module_name, add_trampoline_type_if_new(type_from_child_start_name(fns.head.name, module_name), acc))
+    }
+}
+
 fn emit_supervisor_start_trampolines(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> string {
     hdr: string <- "    ; supervisors Phase E (e3b): per-impl start trampolines (calls init + materialize children)\n";
     mod_name: string <- sir_module.module_name;
     case sir_module.supervisor_phase_e.is_nil of {
         false -> concat(hdr, emit_supervisor_start_trampolines_phase_e_loop(mod_name, sir_module.supervisor_phase_e, ""));
         true -> case sir_module.supervisor_impl_types.is_nil of {
-            true -> "";
-            false -> concat(hdr, emit_supervisor_start_trampolines_loop(mod_name, sir_module.supervisor_impl_types, ""))
+            false -> concat(hdr, emit_supervisor_start_trampolines_loop(mod_name, sir_module.supervisor_impl_types, ""));
+            true -> {
+                from_exps: List[string, mem(normal)] <- collect_child_start_types_from_exports(sir_module.exports, mod_name, sir_ast@nil_sir_strings());
+                from_fns: List[string, mem(normal)] <- collect_child_start_types_from_functions(sir_module.functions, mod_name, from_exps);
+                fallback_types: List[string, mem(normal)] <- collect_e3b_types_from_functions(sir_module.functions, from_fns);
+                case fallback_types.is_nil of {
+                    true -> "";
+                    false -> concat(hdr, emit_supervisor_start_trampolines_loop(mod_name, fallback_types, ""))
+                }
+            }
         }
     }
 }

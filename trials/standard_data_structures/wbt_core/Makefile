@@ -136,10 +136,13 @@ silica.config: lib-sources
 WBT_COMPILE_PER_TRIAL = \
 	MSG_PREFIX="$(MSG_PREFIX)" \
 	SILICA_COMPILER="$(SILICA_COMPILER)" \
+	SDS_STDLIB_CACHE="$(SDS_STDLIB_CACHE)" \
+	SDS_STDLIB_MODULES="$(SDS_STDLIB_MODULES)" \
 	"$(SHELL)" "$(LEAF_DIR)compile_per_trial.sh"
 
 compile-per-trial: lib-sources silica.config
 	@$(ENSURE_SILICA_COMPILER)
+	@cd "$(LEAF_DIR)" && $(INSTALL_SDS_STDLIB_OBJS)
 	@cd "$(LEAF_DIR)" && $(WBT_COMPILE_PER_TRIAL)
 
 assembly: lib-sources silica.config
@@ -149,14 +152,17 @@ assembly: lib-sources silica.config
 	fi
 	@$(ENSURE_SILICA_COMPILER)
 	@$(INTEGRATE_PRE_CLEAN)
+	@cd "$(LEAF_DIR)" && $(INSTALL_SDS_STDLIB_OBJS)
 	@echo "Compiling with silica-compiler (one trial per process)..."
 	@cd "$(LEAF_DIR)" && $(WBT_COMPILE_PER_TRIAL)
+	@cd "$(LEAF_DIR)" && $(INSTALL_SDS_STDLIB_OBJS)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
 positive-integrate: lib-sources silica.config
 	@echo "$(MSG_PREFIX)positive-integrate: starting..."
 	@cd "$(LEAF_DIR)" || exit 1; \
 	$(INTEGRATE_PRE_CLEAN); \
+	$(INSTALL_SDS_STDLIB_OBJS); \
 	ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \
 		echo "SKIP: $(MSG_PREFIX)no positive trials"; \
@@ -169,6 +175,7 @@ positive-integrate: lib-sources silica.config
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
+	$(INSTALL_SDS_STDLIB_OBJS); \
 	$(MAKE) check-wbt-alloc-rec-gate || { failed=1; printf '%d %d\n' 0 1 > .integrate_counts; exit 1; }; \
 	for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
@@ -206,6 +213,11 @@ positive-integrate: lib-sources silica.config
 	for sams in lib/*.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$$(basename "$$sams" .sams); \
+		if [ -n "$(SDS_STDLIB_CACHE)" ] && [ -f "$(SDS_STDLIB_CACHE)/lib/$$base.o" ]; then \
+			echo "Reusing $(SDS_STDLIB_CACHE)/lib/$$base.o"; \
+			cp -f "$(SDS_STDLIB_CACHE)/lib/$$base.o" "lib/$$base.o"; \
+			continue; \
+		fi; \
 		echo "Assembling $$sams..."; \
 		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "lib/$$base.o"; then \
 		echo "❌❌ $(MSG_PREFIX)lib/$$base assemble failed"; \
@@ -268,7 +280,9 @@ record-positive-golden: lib-sources silica.config
 	@echo "$(MSG_PREFIX)record-positive-golden: starting..."
 	@$(ENSURE_SILICA_COMPILER)
 	@$(INTEGRATE_PRE_CLEAN)
+	@cd "$(LEAF_DIR)" && $(INSTALL_SDS_STDLIB_OBJS)
 	@cd "$(LEAF_DIR)" && $(WBT_COMPILE_PER_TRIAL)
+	@cd "$(LEAF_DIR)" && $(INSTALL_SDS_STDLIB_OBJS)
 	@cd "$(LEAF_DIR)" && for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
@@ -288,6 +302,10 @@ record-positive-golden: lib-sources silica.config
 	@cd "$(LEAF_DIR)" && for sams in lib/*.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$$(basename "$$sams" .sams); \
+		if [ -n "$(SDS_STDLIB_CACHE)" ] && [ -f "$(SDS_STDLIB_CACHE)/lib/$$base.o" ]; then \
+			cp -f "$(SDS_STDLIB_CACHE)/lib/$$base.o" "lib/$$base.o"; \
+			continue; \
+		fi; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "lib/$$base.o"; \
 	done
 	@cd "$(LEAF_DIR)" || exit 1; \

@@ -37,6 +37,7 @@ use parser_ast;
 use sir_ast;
 use string_calls;
 use type_checker_core;
+use type_checker_expressions_actors;
 use type_checker_expressions_helpers;
 use type_checker_lists;
 use type_checker_record_types;
@@ -73,6 +74,7 @@ export sir_var/2;
 export add_bindings_to_context/2;
 export sir_context_after_sequence_body/2;
 export sir_infer_expr_type/2;
+export sir_infer_struct_literal_type/2;
 export region_call_second_arg/1;
 export call_params_tuple_for_sir/2;
 export expected_or_inferred_call_arg_type/3;
@@ -422,7 +424,9 @@ fn sir_infer_call_return(context: { env: List[{ name: string, type_name: string,
             true -> "dangerous_actor_ref";
             false -> case call_base == "spawn_registered_supervisor" of {
                 true -> "supervisor_ref";
-                false -> case call_base == "self" of {
+                false -> case call_base == "call_supervisor" of {
+                    true -> type_checker_expressions_actors@supervisor_reply_record_type();
+                    false -> case call_base == "self" of {
                     true -> "actor_ref";
                     false -> case call_base == "cast" of {
                         true -> "boolean";
@@ -440,6 +444,7 @@ fn sir_infer_call_return(context: { env: List[{ name: string, type_name: string,
                             }
                         }
                     }
+                }
                 }
             }
         }
@@ -468,20 +473,19 @@ fn sir_infer_struct_lit_chain(context: { env: List[{ name: string, type_name: st
         };
         false -> case kind == 21 of {
             true -> {
-                it: string <- sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
-                case it == "" of {
-                    true -> "";
-                    false -> {
-                        fname: string <- type_checker_expressions_helpers@expr_name(expr);
-                        chunk: string <- case need_comma of {
-                            true -> concat(concat(concat(",", fname), ":"), it);
-                            false -> concat(concat(concat("{", fname), ":"), it)
-                        };
-                        sir_infer_struct_lit_chain(context, type_checker_expressions_helpers@expr_child_right(expr), concat(acc, chunk), true)
-                    }
-                }
+                inferred: string <- sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
+                it: string <- case inferred == "" of { true -> "int64"; false -> inferred };
+                fname: string <- type_checker_expressions_helpers@expr_name(expr);
+                chunk: string <- case need_comma of {
+                    true -> concat(concat(concat(",", fname), ":"), it);
+                    false -> concat(concat(concat("{", fname), ":"), it)
+                };
+                sir_infer_struct_lit_chain(context, type_checker_expressions_helpers@expr_child_right(expr), concat(acc, chunk), true)
             };
-            false -> ""
+            false -> case acc == "" of {
+                true -> "";
+                false -> concat(acc, "}")
+            }
         }
     }
 }

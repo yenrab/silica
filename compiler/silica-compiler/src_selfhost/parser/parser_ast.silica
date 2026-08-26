@@ -28,6 +28,7 @@ export dummy_expr/0;
 export dummy_expr_node/0;
 export expr_nodes_len/1;
 export expr_node_at/2;
+export expr_node_at_known_len/3;
 export expr_root_node/1;
 export expr_at/2;
 export make_expr/8;
@@ -253,19 +254,23 @@ fn expr_node_at_from_head(nodes: List[{ kind: int64, value: string, name: string
 
 // Nodes are prepend-built with ascending indices; index i is at list position (len - 1 - i).
 // make_expr's root is always the last index, which is the list head (no tail walk).
+fn expr_node_at_known_len(nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], n: int64, idx: int64) -> { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } {
+    case idx < 0 or idx >= n of {
+        true -> dummy_expr_node();
+        false -> case nodes.is_nil of {
+            true -> dummy_expr_node();
+            false -> case idx + 1 == n of {
+                true -> nodes.head;
+                false -> expr_node_at_from_head(nodes, n - 1 - idx)
+            }
+        }
+    }
+}
+
 fn expr_node_at(nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], idx: int64) -> { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } {
     case idx < 0 of {
         true -> dummy_expr_node();
-        false -> {
-            n: int64 <- expr_nodes_len(nodes);
-            case idx >= n of {
-                true -> dummy_expr_node();
-                false -> case idx + 1 == n of {
-                    true -> nodes.head;
-                    false -> expr_node_at_from_head(nodes, n - 1 - idx)
-                }
-            }
-        }
+        false -> expr_node_at_known_len(nodes, expr_nodes_len(nodes), idx)
     }
 }
 
@@ -453,6 +458,32 @@ fn cons_named_program(name: string, prog: { declarations: List[{ tag: int64, nam
     end
 }
 
+fn strings_equal_exact_at_i(a: string, b: string, i: int64, n: int64) -> int64 {
+    case i >= n of {
+        true -> 1;
+        false -> {
+            ca: string <- substring(a, i, i + 1);
+            cb: string <- substring(b, i, i + 1);
+            case ca == cb of {
+                false -> 0;
+                true -> strings_equal_exact_at_i(a, b, i + 1, n)
+            }
+        }
+    }
+}
+
+fn strings_equal_exact_i(a: string, b: string) -> int64 {
+    la: int64 <- len(a);
+    lb: int64 <- len(b);
+    case la < lb of {
+        true -> 0;
+        false -> case lb < la of {
+            true -> 0;
+            false -> strings_equal_exact_at_i(a, b, 0, la)
+        }
+    }
+}
+
 fn find_named_program(name: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> (bool, { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) {
     case world.is_nil of {
         true -> {
@@ -463,9 +494,13 @@ fn find_named_program(name: string, world: List[{ module_name: string, program: 
                 pure result
             end
         };
-        false -> case world.head.module_name == name of {
-            true -> (true, world.head.program);
-            false -> find_named_program(name, world.tail)
+        false -> case strings_equal_exact_i(world.head.module_name, name) < 1 of {
+            true -> find_named_program(name, world.tail);
+            false -> case world.head.program.declarations.is_nil of {
+                // Empty presence stub: keep looking for a later parsed/iface entry.
+                true -> find_named_program(name, world.tail);
+                false -> (true, world.head.program)
+            }
         }
     }
 }

@@ -25,9 +25,7 @@ In Silica toolchain practice, a **compilation unit** is one **module source file
 - The compiler runs the usual pipeline on it (module check → type check → SIR → emit).
 - Success writes durable artifacts for that unit (typically `.sams`, and when enabled `.iface`) so later units and later processes can consume them without reloading the full source AST of every dependency.
 
-Related tutorials sometimes say **computation unit** for the same boundary: one module file / one compile work item. Here we use **compilation unit** because the focus is compile-time memory.
-
-A **batch** is the ordered list of compilation units the compiler will process—usually the lines of `silica.config` in the build directory. The **application root** (often `main.silica`) is still one compilation unit; it simply comes last in leaf-to-root order.
+A **batch** is the ordered list of compilation units the compiler will process—usually the lines of `silica.config` in the build directory. The **application root** (often `main.silica`) is still one compilation unit in that batch; it simply comes last in leaf-to-root order.
 
 ```text
 silica.config (batch)
@@ -109,6 +107,7 @@ A file that “almost” compiles alone and then OOMs when added to the app is a
 2. **Extract leaf modules first** — pure helpers with no recursion back into the parent. Ordinary `use` is enough.
 3. **Cap unit size by feel and by failure** — if process-per-unit still dies on one file, that compilation unit is still too large or its import surface is too fat; split again or thin the exports.
 4. **Avoid catch-all modules** — a facade may `use` many specialists, but each specialist should own a narrow export list.
+5. **If the facade is already thin but compiling it still fails** — the cost is often the `use` list (every leaf interface in one process), not the file length. Insert two or three thin dispatchers; see [thin_dispatchers_for_compile_ram.md](./thin_dispatchers_for_compile_ram.md).
 
 
 
@@ -274,6 +273,7 @@ Result: each compile process sees a **small compilation unit** and a **bounded d
 ## Related reading
 
 - [open_recursion_callbacks.md](./open_recursion_callbacks.md) — callback pattern in depth  
+- [thin_dispatchers_for_compile_ram.md](./thin_dispatchers_for_compile_ram.md) — when the facade’s `use` list is the unit that OOMs  
 - [module_interface_cache_and_bottom_up_typecheck_plan.md](../design_documents/module_interface_cache_and_bottom_up_typecheck_plan.md) — iface cache and bottom-up type-check design  
 - [ffi_wrappers_and_makefiles.md](./ffi_wrappers_and_makefiles.md) — app-shaped `silica.config` and compile/link steps  
 - Self-host `Makefile` comments on `silica.config` topology and process-per-unit (`exit 75`) under `compiler/silica-compiler/src_selfhost/`

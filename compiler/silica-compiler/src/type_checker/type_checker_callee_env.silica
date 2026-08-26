@@ -102,6 +102,68 @@ fn export_key(fn_name: string, arity_lex: string) -> string {
     concat(concat(fn_name, "/"), arity_lex)
 }
 
+// Names referenced in the current unit (qualified `mod@fn` or bare `fn`).
+// Unused import surfaces stay in the env without intern.
+struct ListRefName {
+    is_nil: bool,
+    head: string,
+    tail: ListRefName
+}
+
+fn empty_ref_names() -> ListRefName {
+    dummy: string <- "";
+    nil_r: ListRefName <- ListRefName { is_nil: true, head: dummy, tail: nil_r };
+    nil_r
+}
+
+fn cons_ref_name(s: string, rest: ListRefName) -> ListRefName {
+    ListRefName { is_nil: false, head: s, tail: rest }
+}
+
+fn ref_names_contains(refs: ListRefName, s: string) -> bool {
+    case refs.is_nil of {
+        true -> false;
+        false -> case refs.head == s of {
+            true -> true;
+            false -> ref_names_contains(refs.tail, s)
+        }
+    }
+}
+
+fn import_is_referenced(refs: ListRefName, source_mod: string, fn_name: string) -> bool {
+    case ref_names_contains(refs, fn_name) of {
+        true -> true;
+        false -> ref_names_contains(refs, concat(concat(source_mod, "@"), fn_name))
+    }
+}
+
+fn collect_expr_ref_names(e: Expr, acc: ListRefName) -> ListRefName {
+    case e.kind < 0 of {
+        true -> acc;
+        false -> do
+            acc1: ListRefName <- case len(e.name) == 0 of {
+                true -> acc;
+                false -> cons_ref_name(e.name, acc)
+            };
+            collect_expr_ref_names(e.right_expr, collect_expr_ref_names(e.inner, acc1))
+        end
+    }
+}
+
+fn collect_decl_ref_names(decls: ListDeclaration, acc: ListRefName) -> ListRefName {
+    case decls.is_nil of {
+        true -> acc;
+        false -> collect_decl_ref_names(decls.tail, collect_expr_ref_names(decls.head.body, acc))
+    }
+}
+
+fn bind_imported_export(ctx: TypeContext, name: string, ft: string, effects: ListEffectName, source_mod: string, refs: ListRefName) -> TypeContext {
+    case import_is_referenced(refs, source_mod, name) of {
+        true -> type_checker_core@add_symbol(ctx, name, ft, effects, source_mod);
+        false -> type_checker_core@add_symbol_uninterned(ctx, name, ft, effects, source_mod)
+    }
+}
+
 fn find_function_decl_by_name_arity_with_tag(decls: ListDeclaration, fn_name: string, arity: int64, want_tag: int64) -> (bool, Declaration) {
     case decls.is_nil of {
         true -> (false, parser_ast@dummy_decl());
@@ -313,7 +375,7 @@ fn local_function_shadow_scan(env: ListSymbolEntry, fn_name: string, new_fn_ty: 
     }
 }
 
-fn add_exported_symbols_from_items(items: ListParam, whole: ListDeclaration, ctx: TypeContext, source_mod: string) -> (TypeCheckResult, TypeContext) proc[DeviceIO] {
+fn add_exported_symbols_from_items(items: ListParam, whole: ListDeclaration, ctx: TypeContext, source_mod: string, refs: ListRefName) -> (TypeCheckResult, TypeContext) proc[DeviceIO] {
     case items.is_nil of {
         true -> (type_checker_core@type_check_ok(), ctx);
         false -> do
@@ -328,8 +390,8 @@ fn add_exported_symbols_from_items(items: ListParam, whole: ListDeclaration, ctx
                             ft: string <- build_function_type_for_module_export(decl);
                             (found: bool, _: string) <- lookup_symbol_found_here(ctx.env, decl.name);
                             case found of {
-                                true -> add_exported_symbols_from_items(items.tail, whole, ctx, source_mod);
-                                false -> add_exported_symbols_from_items(items.tail, whole, type_checker_core@add_symbol(ctx, decl.name, ft, decl.declared_effects, source_mod), source_mod)
+                                true -> add_exported_symbols_from_items(items.tail, whole, ctx, source_mod, refs);
+                                false -> add_exported_symbols_from_items(items.tail, whole, bind_imported_export(ctx, decl.name, ft, decl.declared_effects, source_mod, refs), source_mod, refs)
                             }
                         end
                     }
@@ -339,23 +401,23 @@ fn add_exported_symbols_from_items(items: ListParam, whole: ListDeclaration, ctx
     }
 }
 
-fn add_all_export_symbols_from_program(decls: ListDeclaration, unit_decls: ListDeclaration, ctx: TypeContext, source_mod: string) -> (TypeCheckResult, TypeContext) {
+fn add_all_export_symbols_from_program(decls: ListDeclaration, unit_decls: ListDeclaration, ctx: TypeContext, source_mod: string, refs: ListRefName) -> (TypeCheckResult, TypeContext) {
     case decls.is_nil of {
         true -> (type_checker_core@type_check_ok(), ctx);
         false -> case decls.head.tag == 3 of {
             true -> do
-                (r1: TypeCheckResult, c1: TypeContext) <- add_exported_symbols_from_items(decls.head.parameters, unit_decls, ctx, source_mod);
+                (r1: TypeCheckResult, c1: TypeContext) <- add_exported_symbols_from_items(decls.head.parameters, unit_decls, ctx, source_mod, refs);
                 case r1.is_ok of {
-                    true -> add_all_export_symbols_from_program(decls.tail, unit_decls, c1, source_mod);
+                    true -> add_all_export_symbols_from_program(decls.tail, unit_decls, c1, source_mod, refs);
                     false -> (r1, c1)
                 }
             end;
-            false -> add_all_export_symbols_from_program(decls.tail, unit_decls, ctx, source_mod)
+            false -> add_all_export_symbols_from_program(decls.tail, unit_decls, ctx, source_mod, refs)
         }
     }
 }
 
-fn apply_use_declaration_for_module(decl: Declaration, ctx: TypeContext, world: ListNamedProgram, current_module: string) -> (TypeCheckResult, TypeContext) {
+fn apply_use_declaration_for_module(decl: Declaration, ctx: TypeContext, world: ListNamedProgram, current_module: string, refs: ListRefName) -> (TypeCheckResult, TypeContext) {
     self_chk: TypeCheckResult <- validate_no_self_import(decl.parameters, current_module, decl.location);
     case self_chk.is_ok of {
         false -> (self_chk, ctx);
@@ -363,13 +425,13 @@ fn apply_use_declaration_for_module(decl: Declaration, ctx: TypeContext, world: 
             cf: TypeCheckResult <- check_use_conflicts_ordered(decl.parameters, world, empty_export_marks(), decl.location);
             case cf.is_ok of {
                 false -> (cf, ctx);
-                true -> apply_use_add_symbols_loop(decl.parameters, ctx, world, decl.location)
+                true -> apply_use_add_symbols_loop(decl.parameters, ctx, world, decl.location, refs)
             }
         end
     }
 }
 
-fn apply_use_add_symbols_loop(mod_names: ListParam, ctx: TypeContext, world: ListNamedProgram, err_loc: SourceLocation) -> (TypeCheckResult, TypeContext) {
+fn apply_use_add_symbols_loop(mod_names: ListParam, ctx: TypeContext, world: ListNamedProgram, err_loc: SourceLocation, refs: ListRefName) -> (TypeCheckResult, TypeContext) {
     case mod_names.is_nil of {
         true -> (type_checker_core@type_check_ok(), ctx);
         false -> do
@@ -378,10 +440,10 @@ fn apply_use_add_symbols_loop(mod_names: ListParam, ctx: TypeContext, world: Lis
             case found of {
                 false -> (type_checker_core@type_check_err("E4002", err_loc, concat("unknown module ", m), "sect19.3"), ctx);
                 true -> do
-                    (r1: TypeCheckResult, c1: TypeContext) <- add_all_export_symbols_from_program(prog.declarations, prog.declarations, ctx, m);
+                    (r1: TypeCheckResult, c1: TypeContext) <- add_all_export_symbols_from_program(prog.declarations, prog.declarations, ctx, m, refs);
                     case r1.is_ok of {
                         false -> (r1, ctx);
-                        true -> apply_use_add_symbols_loop(mod_names.tail, c1, world, err_loc)
+                        true -> apply_use_add_symbols_loop(mod_names.tail, c1, world, err_loc, refs)
                     }
                 end
             }
@@ -405,7 +467,7 @@ fn add_all_declarations_with_world(decls: ListDeclaration, all_decls: ListDeclar
         true -> (type_checker_core@type_check_ok(), context);
         false -> case decls.head.tag of {
             2 -> do
-                (u1: TypeCheckResult, c1: TypeContext) <- apply_use_declaration_for_module(decls.head, context, world, current_module);
+                (u1: TypeCheckResult, c1: TypeContext) <- apply_use_declaration_for_module(decls.head, context, world, current_module, collect_decl_ref_names(all_decls, empty_ref_names()));
                 case u1.is_ok of {
                     false -> (u1, c1);
                     true -> add_all_declarations_with_world(decls.tail, all_decls, c1, world, current_module)

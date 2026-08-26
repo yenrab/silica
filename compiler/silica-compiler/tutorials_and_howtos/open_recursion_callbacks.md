@@ -1,6 +1,6 @@
 # Open Recursion with Callbacks
 
-When you split a recursive algorithm across several Silica **computation units** (separate `.silica` files / modules), the natural shape is often a cycle: the dispatcher calls a specialist, and the specialist needs to call back into the dispatcher for nested work. Silica’s `use` graph is **acyclic**, so that shape cannot be expressed with mutual `use`.
+When you split a recursive algorithm across several Silica **compilation units** (separate `.silica` files / modules), the natural shape is often a cycle: the dispatcher calls a specialist, and the specialist needs to call back into the dispatcher for nested work. Silica’s `use` graph is **acyclic**, so that shape cannot be expressed with mutual `use`.
 
 **Open recursion** is the pattern that keeps the modules acyclic: the parent passes the recursive entry point in as a **function argument** (a callback). Children call the callback instead of `use`ing the parent. In Silica this means **lambda / function capture**, not OO-style recursion through `self` / `this`—see [compiling_with_less_ram.md](./compiling_with_less_ram.md) for that definition in the context of compile-time memory.
 
@@ -182,4 +182,6 @@ The callback parameter is ordinary data: a function value. Open recursion is jus
 
 ## Summary
 
-Open recursion splits recursive algorithms across computation units **without circular** `use`. The facade defines the recursive function and passes it (or a small bundle of related functions) into leaf units. Leaves call the callback for children; they never import the facade. Same idea as a switchboard: guests only press Operator; the operator already knows the whole building.
+Open recursion splits recursive algorithms across compilation units **without circular** `use`. The facade defines the recursive function and passes it (or a small bundle of related functions) into leaf units. Leaves call the callback for children; they never import the facade. Same idea as a switchboard: guests only press Operator; the operator already knows the whole building.
+
+If the facade itself is the unit that runs out of memory while compiling — because it `use`s every leaf at once — put two or three thin dispatchers under it: [thin_dispatchers_for_compile_ram.md](./thin_dispatchers_for_compile_ram.md).

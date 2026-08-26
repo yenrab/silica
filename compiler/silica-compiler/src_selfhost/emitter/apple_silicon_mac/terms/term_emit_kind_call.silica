@@ -236,18 +236,20 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
         and sret_n > 0
         and reg_conventions@is_aggregate_struct_or_tuple_return_type(term_sir_helpers@sir_term_root_node(term).type_name)
         and (len(bound.bound_name) == 0 or call_opts.use_tail);
-    // Tuple-returning user calls heap-promote in the callee and return the pointer in X0
-    // (same route as record returns). A leftover caller X8 slab is not allocated here;
-    // let-end / branch cleanup must not pop one either (let_user_call_tuple_sret_stack_bytes,
-    // branch_tail_user_call_sret_stack_bytes). Popping 32 bytes that were never pushed
-    // hung functions_addition/fn_three_params_tuple_return_print_low_variable_count in the
-    // supervisor restart loop after it printed.
+    // Tuple-returning user calls write through caller X8 (AAPCS64 indirect result). Without SUB/MOV X8
+    // the callee stores into whatever X8 held. Record returns heap-promote in the
+    // callee and do not need a caller sret slab. Let-spines that end in a tuple call still own
+    // that slab (tuple_let_calltail): skip the reserve and the epilogue ADD SP pops 16 bytes
+    // nothing pushed, then RET jumps to a garbage LR.
     sret_alloc_bytes: int64 <- case use_pass_through_sret or ffi_found of {
         true -> 0;
-        false -> 0
+        false -> case reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(term).type_name) of {
+            true -> sret_n;
+            false -> 0
+        }
     };
-    // Post-BLR ADD stays 0: there is no caller sret slab. Let-end must also add 0
-    // (let_user_call_tuple_sret_stack_bytes).
+    // Post-BLR ADD is 0: the sret slab is released at let-end via aggregate_callee_return_stack_bytes
+    // (immediate ADD here plus let-end ADD double-pops SP).
     sret_stack_bytes: int64 <- 0;
     sret_setup: string <- case ffi_found of {
         true -> case sret_n > 0 of {

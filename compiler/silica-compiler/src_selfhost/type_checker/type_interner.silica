@@ -62,6 +62,14 @@ export parse_type/2;
 export print_type/2;
 export invalid_type_id/0;
 export phase1_roundtrip_smoke/0;
+export interner_dag_names/1;
+export interner_dag_nodes/1;
+export interner_dag_name_count/1;
+export interner_dag_node_count/1;
+export interner_dag_name_at/2;
+export interner_dag_node_at/2;
+export replay_type_dag/3;
+export remap_dag_id/2;
 
 // Kind codes (phase0 §2) — exported as zero-arg helpers for trials.
 export kind_id_seq_nil/0;
@@ -277,7 +285,7 @@ fn encode_type_key(kind: int64, a: int64, b: int64, c: int64) -> string {
     concat(i64_to_dec(kind), concat(",", concat(i64_to_dec(a), concat(",", concat(i64_to_dec(b), concat(",", i64_to_dec(c)))))))
 }
 
-fn nodes_len(nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)]) -> int64 {
+fn nodes_length_bytes(nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)]) -> int64 {
     sequence proc[mem(normal)]
         n: int64 <- length[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)](nodes)
     produces
@@ -328,7 +336,7 @@ fn nodes_at(nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64,
     end
 }
 
-fn strings_len(xs: List[string, mem(normal)]) -> int64 {
+fn strings_length_bytes(xs: List[string, mem(normal)]) -> int64 {
     sequence proc[mem(normal)]
         n: int64 <- length[string, mem(normal)](xs)
     produces
@@ -802,6 +810,15 @@ fn intern_name(interner: {
     seq_nil_id: int64
 }, id: int64 } {
     sequence
+        names0: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } <- repair_string_int_map(interner.names);
         r: {
             map: {
         root: ref?(L, normal, rec),
@@ -814,7 +831,7 @@ fn intern_name(interner: {
     },
             index: int64,
             inserted: boolean
-        } <- map_insert_or_get(interner.names, lexeme, strings_len(interner.name_lexemes));
+        } <- map_insert_or_get(names0, lexeme, strings_length_bytes(interner.name_lexemes));
         out: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
@@ -883,38 +900,14 @@ fn intern_name(interner: {
                         name_lexemes: new_lex,
                         next_id: interner.next_id,
                         seq_nil_id: interner.seq_nil_id
-                    };
-                    done: { interner: {
-    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
-    by_key: {
-        root: ref?(L, normal, rec),
-        compare_key: fn(string, string) -> :less | :equal | :greater,
-        compare_value: fn(int64, int64) -> :less | :equal | :greater,
-        region: region(L, normal),
-        specialization_key: int64,
-        compare_key_ordering_bundle: int64,
-        compare_value_ordering_bundle: int64
-    },
-    names: {
-        root: ref?(L, normal, rec),
-        compare_key: fn(string, string) -> :less | :equal | :greater,
-        compare_value: fn(int64, int64) -> :less | :equal | :greater,
-        region: region(L, normal),
-        specialization_key: int64,
-        compare_key_ordering_bundle: int64,
-        compare_value_ordering_bundle: int64
-    },
-    name_lexemes: List[string, mem(normal)],
-    next_id: int64,
-    seq_nil_id: int64
-}, id: int64 } <- { interner: next_i, id: r.index }
+                    }
                 produces
-                    pure done
+                    pure { interner: next_i, id: r.index }
                 end
             }
         }
     produces
-        pure out
+        pure { interner: out.interner, id: out.id }
     end
 }
 
@@ -2034,7 +2027,7 @@ fn mk_name(interner: {
     seq_nil_id: int64
 }, id: int64 } <- intern_key(nr.interner, 4, nr.id, 0, 0, false)
     produces
-        pure out
+        pure { interner: out.interner, id: out.id }
     end
 }
 
@@ -3269,9 +3262,9 @@ fn mk_atom_lit(interner: {
 }, id: int64 } {
     sequence
         // store without leading colon in name table if present
-        bare: string <- case len(lexeme) > 0 of {
+        bare: string <- case length_bytes(lexeme) > 0 of {
             true -> case substring(lexeme, 0, 1) == ":" of {
-                true -> substring(lexeme, 1, len(lexeme));
+                true -> substring(lexeme, 1, length_bytes(lexeme));
                 false -> lexeme
             };
             false -> lexeme
@@ -4233,17 +4226,17 @@ fn parse_ok(interner: {
 }
 
 fn starts_with(s: string, prefix: string) -> boolean {
-    case len(s) < len(prefix) of {
+    case length_bytes(s) < length_bytes(prefix) of {
         true -> false;
-        false -> substring(s, 0, len(prefix)) == prefix
+        false -> substring(s, 0, length_bytes(prefix)) == prefix
     }
 }
 
 fn trim_left(s: string) -> string {
-    case len(s) == 0 of {
+    case length_bytes(s) == 0 of {
         true -> s;
         false -> case substring(s, 0, 1) == " " of {
-            true -> trim_left(substring(s, 1, len(s)));
+            true -> trim_left(substring(s, 1, length_bytes(s)));
             false -> s
         }
     }
@@ -4261,13 +4254,23 @@ fn trim_right_type_text(s: string, end_i: int64) -> string {
 
 fn trim_type(s: string) -> string {
     t: string <- trim_left(s);
-    trim_right_type_text(t, len(t))
+    trim_right_type_text(t, length_bytes(t))
 }
 
 // Parser type surfaces insert spaces between tokens (`region ( L , normal )`).
 // Interning prefixes require compact forms (`region(L,normal)`); strip spaces once up front.
+fn type_surface_has_space(s: string, i: int64) -> int64 {
+    case i >= length_bytes(s) of {
+        true -> 0;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> 1;
+            false -> type_surface_has_space(s, i + 1)
+        }
+    }
+}
+
 fn strip_type_spaces_from(s: string, i: int64, acc: string) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
         false -> {
             sequence
@@ -4292,11 +4295,15 @@ fn strip_type_spaces_from(s: string, i: int64, acc: string) -> string {
 }
 
 fn strip_type_spaces(s: string) -> string {
-    strip_type_spaces_from(s, 0, "")
+    // Hot path: annotations are usually already compact — avoid O(n) rebuild.
+    case type_surface_has_space(s, 0) of {
+        0 -> s;
+        _: int64 -> strip_type_spaces_from(s, 0, "")
+    }
 }
 
 fn find_matching(s: string, i: int64, open_ch: string, close_ch: string, depth: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0 - 1;
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -4315,7 +4322,7 @@ fn find_matching(s: string, i: int64, open_ch: string, close_ch: string, depth: 
 }
 
 fn find_matching_brackets(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0 - 1;
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -4334,7 +4341,7 @@ fn find_matching_brackets(s: string, i: int64, depth: int64) -> int64 {
 }
 
 fn find_matching_braces(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0 - 1;
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -4353,7 +4360,7 @@ fn find_matching_braces(s: string, i: int64, depth: int64) -> int64 {
 }
 
 fn find_matching_parens(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0 - 1;
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -4373,7 +4380,7 @@ fn find_matching_parens(s: string, i: int64, depth: int64) -> int64 {
 
 
 fn find_top_arrow(s: string, i: int64, depth_paren: int64, depth_brack: int64, depth_brace: int64) -> int64 {
-    case i >= len(s) - 1 of {
+    case i >= length_bytes(s) - 1 of {
         true -> 0 - 1;
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -4404,7 +4411,7 @@ fn find_top_arrow(s: string, i: int64, depth_paren: int64, depth_brack: int64, d
 }
 
 fn find_top_comma(s: string, i: int64, depth_paren: int64, depth_brack: int64, depth_brace: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0 - 1;
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -4420,8 +4427,17 @@ fn find_top_comma(s: string, i: int64, depth_paren: int64, depth_brack: int64, d
                                 true -> find_top_comma(s, i + 1, depth_paren, depth_brack, depth_brace + 1);
                                 false -> case ch == ch_rbrace() of {
                                     true -> find_top_comma(s, i + 1, depth_paren, depth_brack, depth_brace - 1);
-                                    false -> case depth_paren == 0 and depth_brack == 0 and depth_brace == 0 and ch == "," of {
-                                        true -> i;
+                                    false -> case ch == "," of {
+                                        true -> case depth_paren == 0 of {
+                                            true -> case depth_brack == 0 of {
+                                                true -> case depth_brace == 0 of {
+                                                    true -> i;
+                                                    false -> find_top_comma(s, i + 1, depth_paren, depth_brack, depth_brace)
+                                                };
+                                                false -> find_top_comma(s, i + 1, depth_paren, depth_brack, depth_brace)
+                                            };
+                                            false -> find_top_comma(s, i + 1, depth_paren, depth_brack, depth_brace)
+                                        };
                                         false -> find_top_comma(s, i + 1, depth_paren, depth_brack, depth_brace)
                                     }
                                 }
@@ -4435,7 +4451,7 @@ fn find_top_comma(s: string, i: int64, depth_paren: int64, depth_brack: int64, d
 }
 
 fn find_top_type_sum_bar(s: string, i: int64, depth_paren: int64, depth_brack: int64, depth_brace: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0 - 1;
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -4451,8 +4467,17 @@ fn find_top_type_sum_bar(s: string, i: int64, depth_paren: int64, depth_brack: i
                                 true -> find_top_type_sum_bar(s, i + 1, depth_paren, depth_brack, depth_brace + 1);
                                 false -> case ch == ch_rbrace() of {
                                     true -> find_top_type_sum_bar(s, i + 1, depth_paren, depth_brack, depth_brace - 1);
-                                    false -> case depth_paren == 0 and depth_brack == 0 and depth_brace == 0 and ch == "|" of {
-                                        true -> i;
+                                    false -> case ch == "|" of {
+                                        true -> case depth_paren == 0 of {
+                                            true -> case depth_brack == 0 of {
+                                                true -> case depth_brace == 0 of {
+                                                    true -> i;
+                                                    false -> find_top_type_sum_bar(s, i + 1, depth_paren, depth_brack, depth_brace)
+                                                };
+                                                false -> find_top_type_sum_bar(s, i + 1, depth_paren, depth_brack, depth_brace)
+                                            };
+                                            false -> find_top_type_sum_bar(s, i + 1, depth_paren, depth_brack, depth_brace)
+                                        };
                                         false -> find_top_type_sum_bar(s, i + 1, depth_paren, depth_brack, depth_brace)
                                     }
                                 }
@@ -4563,11 +4588,34 @@ fn parse_type_inner(interner: {
     seq_nil_id: int64
 }, id: int64, ok: boolean } {
     t: string <- strip_type_spaces(trim_type(s));
-    case len(t) == 0 of {
+    case length_bytes(t) == 0 of {
         true -> parse_fail(interner);
         false -> {
             bar: int64 <- find_top_type_sum_bar(t, 0, 0, 0, 0);
-            case bar >= 0 of {
+            got: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case bar >= 0 of {
                 true -> parse_type_sum(interner, t);
                 false -> case starts_with(t, ":") of {
                     true -> parse_atom_union_or_lit(interner, t);
@@ -4575,15 +4623,20 @@ fn parse_type_inner(interner: {
                         true -> parse_record_type(interner, t);
                         false -> case starts_with(t, "List") of {
                             true -> parse_list_type(interner, t);
-                            false -> case starts_with(t, "mem(") of {
-                                true -> parse_mem_type(interner, t);
-                                false -> case starts_with(t, "ref") or starts_with(t, "region(") or starts_with(t, "buf(") or starts_with(t, "atomic_ref(") of {
-                                    true -> parse_ref_family(interner, t);
-                                    false -> case starts_with(t, "OrderedMap") or starts_with(t, "OrderedSet") or starts_with(t, "Heap") or starts_with(t, "Tree") or starts_with(t, "SearchTree") or starts_with(t, "DirectedGraph") or starts_with(t, "UndirectedGraph") or starts_with(t, "WeightedGraph") or starts_with(t, "PriorityQueue") of {
-                                        true -> parse_collection(interner, t);
-                                        false -> case starts_with(t, "fn") or starts_with(t, "(") of {
-                                            true -> parse_fn_or_tuple(interner, t);
-                                            false -> parse_base_name(interner, t)
+                            false -> case starts_with(t, "OrderedMap") of {
+                                true -> parse_ordered_map(interner, t);
+                                false -> case starts_with(t, "OrderedSet") of {
+                                    true -> parse_ordered_set(interner, t);
+                                    false -> case starts_with(t, "mem(") of {
+                                    true -> parse_mem_type(interner, t);
+                                    false -> case starts_with(t, "ref") or starts_with(t, "region(") or starts_with(t, "buf(") or starts_with(t, "atomic_ref(") of {
+                                        true -> parse_ref_family(interner, t);
+                                        false -> case starts_with(t, "Heap") or starts_with(t, "Tree") or starts_with(t, "SearchTree") or starts_with(t, "DirectedGraph") or starts_with(t, "UndirectedGraph") or starts_with(t, "WeightedGraph") or starts_with(t, "PriorityQueue") of {
+                                            true -> parse_collection(interner, t);
+                                            false -> case starts_with(t, "fn") or starts_with(t, "(") of {
+                                                true -> parse_fn_or_tuple(interner, t);
+                                                false -> parse_base_name(interner, t)
+                                            }
                                         }
                                     }
                                 }
@@ -4591,7 +4644,9 @@ fn parse_type_inner(interner: {
                         }
                     }
                 }
-            }
+                }
+            };
+            { interner: got.interner, id: got.id, ok: got.ok }
         }
     }
 }
@@ -4747,7 +4802,7 @@ fn parse_base_name(interner: {
     next_id: int64,
     seq_nil_id: int64
 }, id: int64 } <- mk_name(interner, name);
-            parse_ok(r.interner, r.id)
+            { interner: r.interner, id: r.id, ok: true }
         };
         false -> {
             r: { interner: {
@@ -4880,32 +4935,19 @@ fn parse_space_slot(interner: {
     next_id: int64,
     seq_nil_id: int64
 }, id: int64, ok: boolean } {
-    sequence
-        t: string <- trim_type(s);
-        out: { interner: {
-    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
-    by_key: {
-        root: ref?(L, normal, rec),
-        compare_key: fn(string, string) -> :less | :equal | :greater,
-        compare_value: fn(int64, int64) -> :less | :equal | :greater,
-        region: region(L, normal),
-        specialization_key: int64,
-        compare_key_ordering_bundle: int64,
-        compare_value_ordering_bundle: int64
-    },
-    names: {
-        root: ref?(L, normal, rec),
-        compare_key: fn(string, string) -> :less | :equal | :greater,
-        compare_value: fn(int64, int64) -> :less | :equal | :greater,
-        region: region(L, normal),
-        specialization_key: int64,
-        compare_key_ordering_bundle: int64,
-        compare_value_ordering_bundle: int64
-    },
-    name_lexemes: List[string, mem(normal)],
-    next_id: int64,
-    seq_nil_id: int64
-}, id: int64, ok: boolean } <- case starts_with(t, "mem(") of {
+    t0: string <- trim_type(s);
+    after_mem: string <- case starts_with(t0, "mem") of {
+        true -> trim_type(substring(t0, 3, length_bytes(t0)));
+        false -> t0
+    };
+    t: string <- case starts_with(t0, "mem") of {
+        true -> case starts_with(after_mem, "(") of {
+            true -> concat("mem", after_mem);
+            false -> t0
+        };
+        false -> t0
+    };
+    case starts_with(t, "mem(") of {
             true -> {
                 close: int64 <- find_matching_parens(t, 3, 0);
                 case close < 0 of {
@@ -4940,33 +4982,9 @@ fn parse_space_slot(interner: {
     name_lexemes: List[string, mem(normal)],
     next_id: int64,
     seq_nil_id: int64
-}, id: int64 } <- mk_prim(interner, sk);
-                                    okv: { interner: {
-    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
-    by_key: {
-        root: ref?(L, normal, rec),
-        compare_key: fn(string, string) -> :less | :equal | :greater,
-        compare_value: fn(int64, int64) -> :less | :equal | :greater,
-        region: region(L, normal),
-        specialization_key: int64,
-        compare_key_ordering_bundle: int64,
-        compare_value_ordering_bundle: int64
-    },
-    names: {
-        root: ref?(L, normal, rec),
-        compare_key: fn(string, string) -> :less | :equal | :greater,
-        compare_value: fn(int64, int64) -> :less | :equal | :greater,
-        region: region(L, normal),
-        specialization_key: int64,
-        compare_key_ordering_bundle: int64,
-        compare_value_ordering_bundle: int64
-    },
-    name_lexemes: List[string, mem(normal)],
-    next_id: int64,
-    seq_nil_id: int64
-}, id: int64, ok: boolean } <- parse_ok(r.interner, r.id)
+}, id: int64 } <- mk_prim(interner, sk)
                                 produces
-                                    pure okv
+                                    pure { interner: r.interner, id: r.id, ok: true }
                                 end
                             }
                         }
@@ -5002,41 +5020,14 @@ fn parse_space_slot(interner: {
     name_lexemes: List[string, mem(normal)],
     next_id: int64,
     seq_nil_id: int64
-}, id: int64 } <- mk_prim(interner, sk);
-                            okv: { interner: {
-    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
-    by_key: {
-        root: ref?(L, normal, rec),
-        compare_key: fn(string, string) -> :less | :equal | :greater,
-        compare_value: fn(int64, int64) -> :less | :equal | :greater,
-        region: region(L, normal),
-        specialization_key: int64,
-        compare_key_ordering_bundle: int64,
-        compare_value_ordering_bundle: int64
-    },
-    names: {
-        root: ref?(L, normal, rec),
-        compare_key: fn(string, string) -> :less | :equal | :greater,
-        compare_value: fn(int64, int64) -> :less | :equal | :greater,
-        region: region(L, normal),
-        specialization_key: int64,
-        compare_key_ordering_bundle: int64,
-        compare_value_ordering_bundle: int64
-    },
-    name_lexemes: List[string, mem(normal)],
-    next_id: int64,
-    seq_nil_id: int64
-}, id: int64, ok: boolean } <- parse_ok(r.interner, r.id)
+}, id: int64 } <- mk_prim(interner, sk)
                         produces
-                            pure okv
+                            pure { interner: r.interner, id: r.id, ok: true }
                         end
                     }
                 }
             }
         }
-    produces
-        pure out
-    end
 }
 
 fn reverse_ids(xs: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
@@ -5100,7 +5091,7 @@ fn parse_comma_list_acc(
     seq_nil_id: int64
 }, ids: List[int64, mem(normal)], ok: boolean } {
     t: string <- trim_type(s);
-    case len(t) == 0 of {
+    case length_bytes(t) == 0 of {
         true -> { interner: interner, ids: acc, ok: true };
         false -> {
             cpos: int64 <- find_top_comma(t, 0, 0, 0, 0);
@@ -5131,11 +5122,15 @@ fn parse_comma_list_acc(
     seq_nil_id: int64
 }, id: int64, ok: boolean } <- parse_type_inner(interner, t);
                     case one.ok of {
-                        false -> { interner: one.interner, ids: acc, ok: false };
                         true -> {
                             sequence proc[mem(normal)]
-                                next: List[int64, mem(normal)] <- prepend[int64, mem(normal)](one.id, acc);
-                                result: { interner: {
+                                next: List[int64, mem(normal)] <- prepend[int64, mem(normal)](one.id, acc)
+                            produces
+                                pure { interner: one.interner, ids: next, ok: true }
+                            end
+                        };
+                        false -> {
+                            sr: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
         root: ref?(L, normal, rec),
@@ -5158,20 +5153,23 @@ fn parse_comma_list_acc(
     name_lexemes: List[string, mem(normal)],
     next_id: int64,
     seq_nil_id: int64
-}, ids: List[int64, mem(normal)], ok: boolean } <- {
-                                    interner: one.interner,
-                                    ids: next,
-                                    ok: true
+}, id: int64, ok: boolean } <- parse_space_slot(interner, t);
+                            case sr.ok of {
+                                false -> { interner: sr.interner, ids: acc, ok: false };
+                                true -> {
+                                    sequence proc[mem(normal)]
+                                        next: List[int64, mem(normal)] <- prepend[int64, mem(normal)](sr.id, acc)
+                                    produces
+                                        pure { interner: sr.interner, ids: next, ok: true }
+                                    end
                                 }
-                            produces
-                                pure result
-                            end
+                            }
                         }
                     }
                 };
                 false -> {
                     left: string <- trim_type(substring(t, 0, cpos));
-                    right: string <- trim_type(substring(t, cpos + 1, len(t)));
+                    right: string <- trim_type(substring(t, cpos + 1, length_bytes(t)));
                     lr: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
@@ -5226,7 +5224,7 @@ fn parse_comma_list_acc(
     seq_nil_id: int64
 }, ids: List[int64, mem(normal)], ok: boolean } <- parse_comma_list_acc(lr.interner, right, next)
                             produces
-                                pure result
+                                pure { interner: result.interner, ids: result.ids, ok: result.ok }
                             end
                         }
                     }
@@ -5286,7 +5284,7 @@ fn parse_list_type(interner: {
     sequence
         t0: string <- trim_type(s);
         rest0: string <- case starts_with(t0, "List") of {
-            true -> trim_type(substring(t0, 4, len(t0)));
+            true -> trim_type(substring(t0, 4, length_bytes(t0)));
             false -> ""
         };
         t: string <- case starts_with(t0, "List") and starts_with(rest0, ch_lbracket()) of {
@@ -5488,7 +5486,7 @@ fn parse_list_type(interner: {
                                     false -> {
                                         sequence
                                             elem_s: string <- trim_type(substring(inner, 0, cpos));
-                                            space_s: string <- substring(inner, cpos + 1, len(inner));
+                                            space_s: string <- substring(inner, cpos + 1, length_bytes(inner));
                                             er: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
@@ -5536,9 +5534,9 @@ fn parse_list_type(interner: {
     name_lexemes: List[string, mem(normal)],
     next_id: int64,
     seq_nil_id: int64
-}, id: int64, ok: boolean } <- case er.ok of {
-                                                false -> er;
-                                                true -> {
+}, id: int64, ok: boolean } <- case er.id == invalid_type_id() of {
+                                                true -> er;
+                                                false -> {
                                                     sequence
                                                         sr: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
@@ -5587,9 +5585,9 @@ fn parse_list_type(interner: {
     name_lexemes: List[string, mem(normal)],
     next_id: int64,
     seq_nil_id: int64
-}, id: int64, ok: boolean } <- case sr.ok of {
-                                                            false -> sr;
-                                                            true -> {
+}, id: int64, ok: boolean } <- case sr.id == invalid_type_id() of {
+                                                            true -> sr;
+                                                            false -> {
                                                                 sequence
                                                                     r: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
@@ -5641,6 +5639,700 @@ fn parse_list_type(interner: {
 }, id: int64, ok: boolean } <- parse_ok(r.interner, r.id)
                                                                 produces
                                                                     pure okv
+                                                                end
+                                                            }
+                                                        }
+                                                    produces
+                                                        pure step4
+                                                    end
+                                                }
+                                            }
+                                        produces
+                                            pure step3
+                                        end
+                                    }
+                                }
+                            produces
+                                pure step2
+                            end
+                        }
+                    }
+                produces
+                    pure step
+                end
+            }
+        }
+    produces
+        pure out
+    end
+}
+
+fn parse_ordered_map(interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, s: string) -> { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } {
+    sequence
+        t0: string <- trim_type(s);
+        rest0: string <- case starts_with(t0, "OrderedMap") of {
+            true -> trim_type(substring(t0, 10, length_bytes(t0)));
+            false -> ""
+        };
+        t: string <- case starts_with(t0, "OrderedMap") and starts_with(rest0, ch_lbracket()) of {
+            true -> concat("OrderedMap", rest0);
+            false -> t0
+        };
+        map_pref: string <- concat("OrderedMap", ch_lbracket());
+        out: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case starts_with(t, map_pref) of {
+            false -> parse_fail(interner);
+            true -> {
+                sequence
+                    close: int64 <- find_matching_brackets(t, 10, 0);
+                    step: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case close < 0 of {
+                        true -> parse_fail(interner);
+                        false -> {
+                            sequence
+                                inner: string <- substring(t, 11, close);
+                                c1: int64 <- find_top_comma(inner, 0, 0, 0, 0);
+                                step2: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case c1 < 0 of {
+                                    true -> parse_fail(interner);
+                                    false -> {
+                                        sequence
+                                            key_s: string <- trim_type(substring(inner, 0, c1));
+                                            after_key: string <- trim_type(substring(inner, c1 + 1, length_bytes(inner)));
+                                            c2: int64 <- find_top_comma(after_key, 0, 0, 0, 0);
+                                            step3: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case c2 < 0 of {
+                                                true -> parse_fail(interner);
+                                                false -> {
+                                                    sequence
+                                                        val_s: string <- trim_type(substring(after_key, 0, c2));
+                                                        space_s: string <- substring(after_key, c2 + 1, length_bytes(after_key));
+                                                        kr: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- parse_type_inner(interner, key_s);
+                                                        step4: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case kr.id == invalid_type_id() of {
+                                                            true -> kr;
+                                                            false -> {
+                                                                sequence
+                                                                    vr: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- parse_type_inner(kr.interner, val_s);
+                                                                    step5: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case vr.id == invalid_type_id() of {
+                                                                        true -> vr;
+                                                                        false -> {
+                                                                            sequence
+                                                                                sr: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- parse_space_slot(vr.interner, space_s);
+                                                                                step6: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case sr.id == invalid_type_id() of {
+                                                                                    true -> sr;
+                                                                                    false -> {
+                                                                                        sequence
+                                                                                            r: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64 } <- mk_ordered_map(sr.interner, kr.id, vr.id, sr.id)
+                                                                                        produces
+                                                                                            pure { interner: r.interner, id: r.id, ok: true }
+                                                                                        end
+                                                                                    }
+                                                                                }
+                                                                            produces
+                                                                                pure step6
+                                                                            end
+                                                                        }
+                                                                    }
+                                                                produces
+                                                                    pure step5
+                                                                end
+                                                            }
+                                                        }
+                                                    produces
+                                                        pure step4
+                                                    end
+                                                }
+                                            }
+                                        produces
+                                            pure step3
+                                        end
+                                    }
+                                }
+                            produces
+                                pure step2
+                            end
+                        }
+                    }
+                produces
+                    pure step
+                end
+            }
+        }
+    produces
+        pure out
+    end
+}
+
+fn parse_ordered_set(interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, s: string) -> { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } {
+    sequence
+        t0: string <- trim_type(s);
+        rest0: string <- case starts_with(t0, "OrderedSet") of {
+            true -> trim_type(substring(t0, 10, length_bytes(t0)));
+            false -> ""
+        };
+        t: string <- case starts_with(t0, "OrderedSet") of {
+            true -> case starts_with(rest0, ch_lbracket()) of {
+                true -> concat("OrderedSet", rest0);
+                false -> t0
+            };
+            false -> t0
+        };
+        set_pref: string <- concat("OrderedSet", ch_lbracket());
+        out: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case starts_with(t, set_pref) of {
+            false -> parse_fail(interner);
+            true -> {
+                sequence
+                    close: int64 <- find_matching_brackets(t, 10, 0);
+                    step: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case close < 0 of {
+                        true -> parse_fail(interner);
+                        false -> {
+                            sequence
+                                inner: string <- substring(t, 11, close);
+                                cpos: int64 <- find_top_comma(inner, 0, 0, 0, 0);
+                                step2: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case cpos < 0 of {
+                                    true -> parse_fail(interner);
+                                    false -> {
+                                        sequence
+                                            elem_s: string <- trim_type(substring(inner, 0, cpos));
+                                            space_s: string <- substring(inner, cpos + 1, length_bytes(inner));
+                                            er: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- parse_type_inner(interner, elem_s);
+                                            step3: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case er.id == invalid_type_id() of {
+                                                true -> er;
+                                                false -> {
+                                                    sequence
+                                                        sr: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- parse_space_slot(er.interner, space_s);
+                                                        step4: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case sr.id == invalid_type_id() of {
+                                                            true -> sr;
+                                                            false -> {
+                                                                sequence
+                                                                    r: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64 } <- mk_ordered_set(sr.interner, er.id, sr.id)
+                                                                produces
+                                                                    pure { interner: r.interner, id: r.id, ok: true }
                                                                 end
                                                             }
                                                         }
@@ -5777,33 +6469,9 @@ fn parse_mem_type(interner: {
     name_lexemes: List[string, mem(normal)],
     next_id: int64,
     seq_nil_id: int64
-}, id: int64 } <- mk_mem(sp.interner, sp.id);
-                                result: { interner: {
-    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
-    by_key: {
-        root: ref?(L, normal, rec),
-        compare_key: fn(string, string) -> :less | :equal | :greater,
-        compare_value: fn(int64, int64) -> :less | :equal | :greater,
-        region: region(L, normal),
-        specialization_key: int64,
-        compare_key_ordering_bundle: int64,
-        compare_value_ordering_bundle: int64
-    },
-    names: {
-        root: ref?(L, normal, rec),
-        compare_key: fn(string, string) -> :less | :equal | :greater,
-        compare_value: fn(int64, int64) -> :less | :equal | :greater,
-        region: region(L, normal),
-        specialization_key: int64,
-        compare_key_ordering_bundle: int64,
-        compare_value_ordering_bundle: int64
-    },
-    name_lexemes: List[string, mem(normal)],
-    next_id: int64,
-    seq_nil_id: int64
-}, id: int64, ok: boolean } <- parse_ok(r.interner, r.id)
+}, id: int64 } <- mk_mem(sp.interner, sp.id)
                             produces
-                                pure result
+                                pure { interner: r.interner, id: r.id, ok: true }
                             end
                         }
                     }
@@ -5816,13 +6484,13 @@ fn parse_mem_type(interner: {
 fn strip_fn_prefix(s: string) -> string {
     t: string <- trim_type(s);
     case starts_with(t, "fn") of {
-        true -> trim_type(substring(t, 2, len(t)));
+        true -> trim_type(substring(t, 2, length_bytes(t)));
         false -> t
     }
 }
 
 fn find_colon_top(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0 - 1;
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -5842,18 +6510,18 @@ fn find_colon_top(s: string, i: int64, depth: int64) -> int64 {
 
 fn strip_named_params_work(s: string, acc: string) -> string {
     t: string <- trim_type(s);
-    case len(t) == 0 of {
+    case length_bytes(t) == 0 of {
         true -> acc;
         false -> {
             cpos: int64 <- find_top_comma(t, 0, 0, 0, 0);
             piece: string <- case cpos < 0 of { true -> t; false -> substring(t, 0, cpos) };
-            rest: string <- case cpos < 0 of { true -> ""; false -> substring(t, cpos + 1, len(t)) };
+            rest: string <- case cpos < 0 of { true -> ""; false -> substring(t, cpos + 1, length_bytes(t)) };
             colon: int64 <- find_colon_top(piece, 0, 0);
             ty: string <- case colon < 0 of {
                 true -> trim_type(piece);
-                false -> trim_type(substring(piece, colon + 1, len(piece)))
+                false -> trim_type(substring(piece, colon + 1, length_bytes(piece)))
             };
-            next_acc: string <- case len(acc) == 0 of { true -> ty; false -> concat(acc, concat(", ", ty)) };
+            next_acc: string <- case length_bytes(acc) == 0 of { true -> ty; false -> concat(acc, concat(", ", ty)) };
             case cpos < 0 of {
                 true -> next_acc;
                 false -> strip_named_params_work(rest, next_acc)
@@ -5915,12 +6583,12 @@ fn parse_fn_or_tuple(interner: {
     case arrow >= 0 of {
         true -> {
             left: string <- trim_type(substring(t, 0, arrow));
-            right: string <- trim_type(substring(t, arrow + 2, len(t)));
+            right: string <- trim_type(substring(t, arrow + 2, length_bytes(t)));
             case starts_with(left, "(") of {
                 false -> parse_fail(interner);
                 true -> {
                     close: int64 <- find_matching_parens(left, 0, 0);
-                    case close != len(left) - 1 of {
+                    case close != length_bytes(left) - 1 of {
                         true -> parse_fail(interner);
                         false -> {
                             raw_inner: string <- substring(left, 1, close);
@@ -5950,7 +6618,7 @@ fn parse_fn_or_tuple(interner: {
     name_lexemes: List[string, mem(normal)],
     next_id: int64,
     seq_nil_id: int64
-}, ids: List[int64, mem(normal)], ok: boolean } <- case len(trim_type(inner)) == 0 of {
+}, ids: List[int64, mem(normal)], ok: boolean } <- case length_bytes(trim_type(inner)) == 0 of {
                                     true -> { interner: interner, ids: empty_acc, ok: true };
                                     false -> parse_comma_list_acc(interner, inner, empty_acc)
                                 };
@@ -6075,7 +6743,7 @@ fn parse_fn_or_tuple(interner: {
         false -> case starts_with(t, "(") of {
             true -> {
                 close: int64 <- find_matching_parens(t, 0, 0);
-                case close != len(t) - 1 of {
+                case close != length_bytes(t) - 1 of {
                     true -> parse_fail(interner);
                     false -> {
                         inner: string <- substring(t, 1, close);
@@ -6110,7 +6778,7 @@ fn parse_fn_or_tuple(interner: {
     name_lexemes: List[string, mem(normal)],
     next_id: int64,
     seq_nil_id: int64
-}, ids: List[int64, mem(normal)], ok: boolean } <- case len(tin) == 0 of {
+}, ids: List[int64, mem(normal)], ok: boolean } <- case length_bytes(tin) == 0 of {
                                         true -> { interner: interner, ids: empty_acc, ok: false };
                                         false -> parse_comma_list_acc(interner, inner, empty_acc)
                                     };
@@ -6227,7 +6895,7 @@ fn reverse_strings(xs: List[string, mem(normal)], acc: List[string, mem(normal)]
 }
 
 fn find_top_bar(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0 - 1;
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -6258,7 +6926,7 @@ fn split_atom_parts(s: string, acc: List[string, mem(normal)]) -> List[string, m
         };
         false -> {
             left: string <- trim_type(substring(s, 0, pos));
-            right: string <- substring(s, pos + 1, len(s));
+            right: string <- substring(s, pos + 1, length_bytes(s));
             sequence proc[mem(normal)]
                 next: List[string, mem(normal)] <- prepend[string, mem(normal)](left, acc);
                 result: List[string, mem(normal)] <- split_atom_parts(right, next)
@@ -6269,8 +6937,8 @@ fn split_atom_parts(s: string, acc: List[string, mem(normal)]) -> List[string, m
     }
 }
 
-fn list_string_len(xs: List[string, mem(normal)]) -> int64 {
-    case xs.is_nil of { true -> 0; false -> 1 + list_string_len(xs.tail) }
+fn list_string_length_bytes(xs: List[string, mem(normal)]) -> int64 {
+    case xs.is_nil of { true -> 0; false -> 1 + list_string_length_bytes(xs.tail) }
 }
 
 fn parse_atom_union_or_lit(interner: {
@@ -6324,7 +6992,7 @@ fn parse_atom_union_or_lit(interner: {
     case starts_with(t, "(") of {
         true -> {
             close: int64 <- find_matching_parens(t, 0, 0);
-            case close == len(t) - 1 of {
+            case close == length_bytes(t) - 1 of {
                 true -> {
                     inner: string <- substring(t, 1, close);
                     case starts_with(trim_type(inner), ":") of {
@@ -6338,7 +7006,7 @@ fn parse_atom_union_or_lit(interner: {
         false -> case starts_with(t, ":") of {
             true -> {
                 parts: List[string, mem(normal)] <- split_atom_parts(t, empty_string_list());
-                case list_string_len(parts) == 1 of {
+                case list_string_length_bytes(parts) == 1 of {
                     true -> {
                         r: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
@@ -6442,7 +7110,7 @@ fn split_type_sum_parts(s: string, acc: List[string, mem(normal)]) -> List[strin
         };
         false -> {
             left: string <- trim_type(substring(s, 0, bar));
-            right: string <- substring(s, bar + 1, len(s));
+            right: string <- substring(s, bar + 1, length_bytes(s));
             sequence proc[mem(normal)]
                 next: List[string, mem(normal)] <- prepend[string, mem(normal)](left, acc);
                 result: List[string, mem(normal)] <- split_type_sum_parts(right, next)
@@ -6781,7 +7449,7 @@ fn parse_record_fields(
     seq_nil_id: int64
 }, id: int64, ok: boolean } {
     t: string <- trim_type(s);
-    case len(t) == 0 of {
+    case length_bytes(t) == 0 of {
         true -> {
             sequence
                 empty_acc: List[{ name: string, ty: int64 }, mem(normal)] <- empty_field_list();
@@ -6841,13 +7509,13 @@ fn parse_record_fields(
         false -> {
             cpos: int64 <- find_top_comma(t, 0, 0, 0, 0);
             piece: string <- case cpos < 0 of { true -> t; false -> substring(t, 0, cpos) };
-            rest: string <- case cpos < 0 of { true -> ""; false -> substring(t, cpos + 1, len(t)) };
+            rest: string <- case cpos < 0 of { true -> ""; false -> substring(t, cpos + 1, length_bytes(t)) };
             colon: int64 <- find_colon_top(piece, 0, 0);
             case colon < 0 of {
                 true -> parse_fail(interner);
                 false -> {
                     fname: string <- trim_type(substring(piece, 0, colon));
-                    fty_s: string <- trim_type(substring(piece, colon + 1, len(piece)));
+                    fty_s: string <- trim_type(substring(piece, colon + 1, length_bytes(piece)));
                     tr: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
@@ -7037,7 +7705,7 @@ fn parse_bracket_args(interner: {
     case starts_with(t, prefix) of {
         false -> { interner: interner, args: empty_int_list(), ok: false };
         true -> {
-            rest0: string <- trim_type(substring(t, len(prefix), len(t)));
+            rest0: string <- trim_type(substring(t, length_bytes(prefix), length_bytes(t)));
             case starts_with(rest0, ch_lbracket()) of {
                 false -> { interner: interner, args: empty_int_list(), ok: false };
                 true -> {
@@ -7072,40 +7740,9 @@ fn parse_bracket_args(interner: {
     next_id: int64,
     seq_nil_id: int64
 }, ids: List[int64, mem(normal)], ok: boolean } <- parse_comma_list_acc(interner, inner, empty_acc);
-                                fwd: List[int64, mem(normal)] <- case parsed.ok of {
-                                    true -> reverse_ids(parsed.ids);
-                                    false -> empty_int_list()
-                                };
-                                result: { interner: {
-    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
-    by_key: {
-        root: ref?(L, normal, rec),
-        compare_key: fn(string, string) -> :less | :equal | :greater,
-        compare_value: fn(int64, int64) -> :less | :equal | :greater,
-        region: region(L, normal),
-        specialization_key: int64,
-        compare_key_ordering_bundle: int64,
-        compare_value_ordering_bundle: int64
-    },
-    names: {
-        root: ref?(L, normal, rec),
-        compare_key: fn(string, string) -> :less | :equal | :greater,
-        compare_value: fn(int64, int64) -> :less | :equal | :greater,
-        region: region(L, normal),
-        specialization_key: int64,
-        compare_key_ordering_bundle: int64,
-        compare_value_ordering_bundle: int64
-    },
-    name_lexemes: List[string, mem(normal)],
-    next_id: int64,
-    seq_nil_id: int64
-}, args: List[int64, mem(normal)], ok: boolean } <- {
-                                    interner: parsed.interner,
-                                    args: fwd,
-                                    ok: parsed.ok
-                                }
+                                fwd: List[int64, mem(normal)] <- reverse_ids(parsed.ids)
                             produces
-                                pure result
+                                pure { interner: parsed.interner, args: fwd, ok: true }
                             end
                         }
                     }
@@ -7186,10 +7823,11 @@ fn parse_coll2(interner: {
     next_id: int64,
     seq_nil_id: int64
 }, args: List[int64, mem(normal)], ok: boolean } <- parse_bracket_args(interner, t, name);
-    case ba.ok and list_len_int(ba.args) == 2 of {
+    case list_len_int(ba.args) == 2 of {
         false -> parse_fail(ba.interner);
         true -> {
-            r: { interner: {
+            sequence
+                r: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
         root: ref?(L, normal, rec),
@@ -7217,8 +7855,10 @@ fn parse_coll2(interner: {
                 1 -> mk_search_tree(ba.interner, nth_int(ba.args, 0), nth_int(ba.args, 1));
                 2 -> mk_heap(ba.interner, nth_int(ba.args, 0), nth_int(ba.args, 1));
                 _: int64 -> mk_tree(ba.interner, nth_int(ba.args, 0), nth_int(ba.args, 1))
-            };
-            parse_ok(r.interner, r.id)
+            }
+            produces
+                pure { interner: r.interner, id: r.id, ok: true }
+            end
         }
     }
 }
@@ -7294,10 +7934,11 @@ fn parse_coll3(interner: {
     next_id: int64,
     seq_nil_id: int64
 }, args: List[int64, mem(normal)], ok: boolean } <- parse_bracket_args(interner, t, name);
-    case ba.ok and list_len_int(ba.args) == 3 of {
+    case list_len_int(ba.args) == 3 of {
         false -> parse_fail(ba.interner);
         true -> {
-            r: { interner: {
+            sequence
+                r: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
         root: ref?(L, normal, rec),
@@ -7323,8 +7964,10 @@ fn parse_coll3(interner: {
 }, id: int64 } <- case which of {
                 0 -> mk_directed_graph(ba.interner, nth_int(ba.args, 0), nth_int(ba.args, 1), nth_int(ba.args, 2));
                 _: int64 -> mk_undirected_graph(ba.interner, nth_int(ba.args, 0), nth_int(ba.args, 1), nth_int(ba.args, 2))
-            };
-            parse_ok(r.interner, r.id)
+            }
+            produces
+                pure { interner: r.interner, id: r.id, ok: true }
+            end
         }
     }
 }
@@ -7403,10 +8046,11 @@ fn parse_collection(interner: {
     next_id: int64,
     seq_nil_id: int64
 }, args: List[int64, mem(normal)], ok: boolean } <- parse_bracket_args(interner, t, "OrderedMap");
-            case ba.ok and list_len_int(ba.args) == 3 of {
+            case list_len_int(ba.args) == 3 of {
                 false -> parse_fail(ba.interner);
                 true -> {
-                    r: { interner: {
+                    sequence
+                        r: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
         root: ref?(L, normal, rec),
@@ -7429,8 +8073,10 @@ fn parse_collection(interner: {
     name_lexemes: List[string, mem(normal)],
     next_id: int64,
     seq_nil_id: int64
-}, id: int64 } <- mk_ordered_map(ba.interner, nth_int(ba.args, 0), nth_int(ba.args, 1), nth_int(ba.args, 2));
-                    parse_ok(r.interner, r.id)
+}, id: int64 } <- mk_ordered_map(ba.interner, nth_int(ba.args, 0), nth_int(ba.args, 1), nth_int(ba.args, 2))
+                    produces
+                        pure { interner: r.interner, id: r.id, ok: true }
+                    end
                 }
             }
         };
@@ -7464,9 +8110,10 @@ fn parse_collection(interner: {
     next_id: int64,
     seq_nil_id: int64
 }, args: List[int64, mem(normal)], ok: boolean } <- parse_bracket_args(interner, t, "PriorityQueue");
-                        case ba.ok and list_len_int(ba.args) == 3 of {
+                        case list_len_int(ba.args) == 3 of {
                             false -> parse_fail(ba.interner);
                             true -> {
+                                sequence
                                 r: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
@@ -7490,8 +8137,10 @@ fn parse_collection(interner: {
     name_lexemes: List[string, mem(normal)],
     next_id: int64,
     seq_nil_id: int64
-}, id: int64 } <- mk_priority_queue(ba.interner, nth_int(ba.args, 0), nth_int(ba.args, 1), nth_int(ba.args, 2));
-                                parse_ok(r.interner, r.id)
+}, id: int64 } <- mk_priority_queue(ba.interner, nth_int(ba.args, 0), nth_int(ba.args, 1), nth_int(ba.args, 2))
+                            produces
+                                pure { interner: r.interner, id: r.id, ok: true }
+                            end
                             }
                         }
                     };
@@ -7525,9 +8174,10 @@ fn parse_collection(interner: {
     next_id: int64,
     seq_nil_id: int64
 }, args: List[int64, mem(normal)], ok: boolean } <- parse_bracket_args(interner, t, "WeightedGraph");
-                                    case ba.ok and list_len_int(ba.args) == 4 of {
+                                    case list_len_int(ba.args) == 4 of {
                                         false -> parse_fail(ba.interner);
                                         true -> {
+                                            sequence
                                             r: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
@@ -7551,8 +8201,10 @@ fn parse_collection(interner: {
     name_lexemes: List[string, mem(normal)],
     next_id: int64,
     seq_nil_id: int64
-}, id: int64 } <- mk_weighted_graph(ba.interner, nth_int(ba.args, 0), nth_int(ba.args, 1), nth_int(ba.args, 2), nth_int(ba.args, 3));
-                                            parse_ok(r.interner, r.id)
+}, id: int64 } <- mk_weighted_graph(ba.interner, nth_int(ba.args, 0), nth_int(ba.args, 1), nth_int(ba.args, 2), nth_int(ba.args, 3))
+                                        produces
+                                            pure { interner: r.interner, id: r.id, ok: true }
+                                        end
                                         }
                                     }
                                 };
@@ -7685,7 +8337,7 @@ fn parse_ref_like(interner: {
     next_id: int64,
     seq_nil_id: int64
 }, id: int64, ok: boolean } {
-    open_at: int64 <- len(prefix) - 1;
+    open_at: int64 <- length_bytes(prefix) - 1;
     close: int64 <- find_matching_parens(t, open_at, 0);
     case close < 0 of {
         true -> parse_fail(interner);
@@ -7701,7 +8353,7 @@ fn parse_ref_like(interner: {
                         false -> {
                             rgn_s: string <- trim_type(substring(inner, 0, c1));
                             sp_s: string <- trim_type(substring(inner, c1 + 1, c2));
-                            pl_s: string <- trim_type(substring(inner, c2 + 1, len(inner)));
+                            pl_s: string <- trim_type(substring(inner, c2 + 1, length_bytes(inner)));
                             nr: { interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
@@ -7924,7 +8576,7 @@ fn parse_region_like(interner: {
     name_lexemes: List[string, mem(normal)],
     next_id: int64,
     seq_nil_id: int64
-}, id: int64, ok: boolean } <- parse_space_slot(nr.interner, substring(inner, c1 + 1, len(inner)));
+}, id: int64, ok: boolean } <- parse_space_slot(nr.interner, substring(inner, c1 + 1, length_bytes(inner)));
                     case spr.ok of {
                         false -> spr;
                         true -> {
@@ -7963,7 +8615,7 @@ fn parse_region_like(interner: {
 
 fn parse_decimal(s: string) -> { ok: boolean, value: int64 } {
     t: string <- trim_type(s);
-    case len(t) == 0 of {
+    case length_bytes(t) == 0 of {
         true -> { ok: false, value: 0 };
         false -> parse_decimal_from(t, 0, 0)
     }
@@ -7978,7 +8630,7 @@ fn digit_val(ch: string) -> int64 {
 }
 
 fn parse_decimal_from(s: string, i: int64, acc: int64) -> { ok: boolean, value: int64 } {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> { ok: true, value: acc };
         false -> {
             d: int64 <- digit_val(substring(s, i, i + 1));
@@ -8132,7 +8784,7 @@ fn parse_buf_like(interner: {
                                             case plr.ok of {
                                                 false -> plr;
                                                 true -> {
-                                                    size_s: string <- trim_type(substring(inner, c3 + 1, len(inner)));
+                                                    size_s: string <- trim_type(substring(inner, c3 + 1, length_bytes(inner)));
                                                     dec: { ok: boolean, value: int64 } <- parse_decimal(size_s);
                                                     case dec.ok of {
                                                         true -> {
@@ -8360,7 +9012,7 @@ fn print_seq(interner: {
             true -> {
                 head_s: string <- print_type_node(interner, node_a(interner, seq_id));
                 tail_s: string <- print_seq(interner, node_b(interner, seq_id), sep);
-                case len(tail_s) == 0 of {
+                case length_bytes(tail_s) == 0 of {
                     true -> head_s;
                     false -> concat(head_s, concat(sep, tail_s))
                 }
@@ -8471,7 +9123,7 @@ fn print_record_fields(interner: {
                 fty: string <- print_type_node(interner, node_b(interner, pair));
                 head: string <- concat(fname, concat(": ", fty));
                 tail: string <- print_record_fields(interner, node_b(interner, seq_id));
-                case len(tail) == 0 of { true -> head; false -> concat(head, concat(", ", tail)) }
+                case length_bytes(tail) == 0 of { true -> head; false -> concat(head, concat(", ", tail)) }
             };
             false -> "?"
         }
@@ -8508,7 +9160,7 @@ fn print_atom_union(interner: {
             true -> {
                 head: string <- print_type_node(interner, node_a(interner, seq_id));
                 tail: string <- print_atom_union(interner, node_b(interner, seq_id));
-                case len(tail) == 0 of { true -> head; false -> concat(head, concat("|", tail)) }
+                case length_bytes(tail) == 0 of { true -> head; false -> concat(head, concat("|", tail)) }
             };
             false -> "?"
         }
@@ -8710,4 +9362,515 @@ fn print_type_node(interner: {
         4 -> name_lexeme(interner, node_a(interner, id));
         _: int64 -> concat("<kind:", concat(i64_to_dec(k), ">"))
     }
+}
+
+// --- Phase 4 iface type-DAG persist / rematerialize ---
+
+fn interner_dag_names(interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}) -> List[string, mem(normal)] {
+    interner.name_lexemes
+}
+
+fn interner_dag_nodes(interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}) -> List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)] {
+    interner.nodes
+}
+
+fn interner_dag_name_count(interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}) -> int64 {
+    strings_length_bytes(interner.name_lexemes)
+}
+
+fn interner_dag_node_count(interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}) -> int64 {
+    nodes_length_bytes(interner.nodes)
+}
+
+fn interner_dag_name_at(interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, idx: int64) -> string {
+    strings_at(interner.name_lexemes, idx)
+}
+
+fn interner_dag_node_at(interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, idx: int64) -> { kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean } {
+    nodes_at(interner.nodes, idx)
+}
+
+fn list_int_at_dag(xs: List[int64, mem(normal)], i: int64) -> int64 {
+    case xs.is_nil of {
+        true -> 0 - 1;
+        false -> case i <= 0 of {
+            true -> xs.head;
+            false -> list_int_at_dag(xs.tail, i - 1)
+        }
+    }
+}
+
+fn list_int_append_dag(xs: List[int64, mem(normal)], v: int64) -> List[int64, mem(normal)] {
+    case xs.is_nil of {
+        true -> {
+            sequence proc[mem(normal)]
+                result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](v, empty_int_list())
+            produces
+                pure result
+            end
+        };
+        false -> {
+            sequence proc[mem(normal)]
+                rest: List[int64, mem(normal)] <- list_int_append_dag(xs.tail, v);
+                result: List[int64, mem(normal)] <- prepend[int64, mem(normal)](xs.head, rest)
+            produces
+                pure result
+            end
+        }
+    }
+}
+
+fn remap_dag_id(remap: List[int64, mem(normal)], old_id: int64) -> int64 {
+    case old_id < 0 of {
+        true -> old_id;
+        false -> list_int_at_dag(remap, old_id)
+    }
+}
+
+// 0=literal, 1=type id, 2=name id. `which` is 0=a, 1=b, 2=c.
+fn dag_arg_role(kind: int64, which: int64, buf_size_is_name: boolean) -> int64 {
+    case kind of {
+        1 -> 0;
+        2 -> case which of { 2 -> 0; _: int64 -> 1 };
+        3 -> case which of { 0 -> 2; 1 -> 1; _: int64 -> 0 };
+        4 -> case which of { 0 -> 2; _: int64 -> 0 };
+        100 -> case which of { 2 -> 0; _: int64 -> 1 };
+        101 -> case which of { 0 -> 1; _: int64 -> 0 };
+        102 -> case which of { 0 -> 1; _: int64 -> 0 };
+        103 -> case which of { 2 -> 0; _: int64 -> 1 };
+        104 -> case which of { 0 -> 1; _: int64 -> 0 };
+        105 -> case which of { 0 -> 1; _: int64 -> 0 };
+        106 -> 1;
+        107 -> 1;
+        108 -> case which of { 2 -> 0; _: int64 -> 1 };
+        109 -> case which of {
+            0 -> 1;
+            1 -> case buf_size_is_name of { true -> 2; false -> 0 };
+            _: int64 -> 0
+        };
+        110 -> 1;
+        111 -> case which of { 0 -> 1; _: int64 -> 0 };
+        112 -> case which of { 0 -> 2; _: int64 -> 0 };
+        113 -> case which of { 0 -> 1; _: int64 -> 0 };
+        120 -> case which of { 2 -> 0; _: int64 -> 1 };
+        121 -> 1;
+        122 -> case which of { 2 -> 0; _: int64 -> 1 };
+        123 -> case which of { 2 -> 0; _: int64 -> 1 };
+        124 -> case which of { 2 -> 0; _: int64 -> 1 };
+        125 -> 1;
+        126 -> 1;
+        127 -> case which of { 2 -> 0; _: int64 -> 1 };
+        128 -> 1;
+        _: int64 -> case kind >= 10 and kind <= 85 of {
+            true -> 0;
+            false -> case which of { 2 -> 0; _: int64 -> 1 }
+        }
+    }
+}
+
+fn remap_dag_arg(role: int64, value: int64, type_remap: List[int64, mem(normal)], name_remap: List[int64, mem(normal)]) -> int64 {
+    case role of {
+        1 -> remap_dag_id(type_remap, value);
+        2 -> remap_dag_id(name_remap, value);
+        _: int64 -> value
+    }
+}
+
+fn intern_dag_names_loop(
+    interner: {
+        nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+        by_key: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(string, string) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        },
+        names: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(string, string) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        },
+        name_lexemes: List[string, mem(normal)],
+        next_id: int64,
+        seq_nil_id: int64
+    },
+    names: List[string, mem(normal)],
+    remap: List[int64, mem(normal)]
+) -> {
+    interner: {
+        nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+        by_key: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(string, string) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        },
+        names: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(string, string) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        },
+        name_lexemes: List[string, mem(normal)],
+        next_id: int64,
+        seq_nil_id: int64
+    },
+    remap: List[int64, mem(normal)]
+} {
+    case names.is_nil of {
+        true -> { interner: interner, remap: remap };
+        false -> {
+            nr: { interner: {
+                nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+                by_key: {
+                    root: ref?(L, normal, rec),
+                    compare_key: fn(string, string) -> :less | :equal | :greater,
+                    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                    region: region(L, normal),
+                    specialization_key: int64,
+                    compare_key_ordering_bundle: int64,
+                    compare_value_ordering_bundle: int64
+                },
+                names: {
+                    root: ref?(L, normal, rec),
+                    compare_key: fn(string, string) -> :less | :equal | :greater,
+                    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                    region: region(L, normal),
+                    specialization_key: int64,
+                    compare_key_ordering_bundle: int64,
+                    compare_value_ordering_bundle: int64
+                },
+                name_lexemes: List[string, mem(normal)],
+                next_id: int64,
+                seq_nil_id: int64
+            }, id: int64 } <- intern_name(interner, names.head);
+            intern_dag_names_loop(nr.interner, names.tail, list_int_append_dag(remap, nr.id))
+        }
+    }
+}
+
+fn intern_dag_nodes_loop(
+    interner: {
+        nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+        by_key: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(string, string) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        },
+        names: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(string, string) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        },
+        name_lexemes: List[string, mem(normal)],
+        next_id: int64,
+        seq_nil_id: int64
+    },
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    type_remap: List[int64, mem(normal)],
+    name_remap: List[int64, mem(normal)]
+) -> {
+    interner: {
+        nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+        by_key: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(string, string) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        },
+        names: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(string, string) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        },
+        name_lexemes: List[string, mem(normal)],
+        next_id: int64,
+        seq_nil_id: int64
+    },
+    remap: List[int64, mem(normal)]
+} {
+    case nodes.is_nil of {
+        true -> { interner: interner, remap: type_remap };
+        false -> {
+            n: { kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean } <- nodes.head;
+            a2: int64 <- remap_dag_arg(dag_arg_role(n.kind, 0, n.buf_size_is_name), n.arg_a, type_remap, name_remap);
+            b2: int64 <- remap_dag_arg(dag_arg_role(n.kind, 1, n.buf_size_is_name), n.arg_b, type_remap, name_remap);
+            c2: int64 <- remap_dag_arg(dag_arg_role(n.kind, 2, n.buf_size_is_name), n.arg_c, type_remap, name_remap);
+            kr: { interner: {
+                nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+                by_key: {
+                    root: ref?(L, normal, rec),
+                    compare_key: fn(string, string) -> :less | :equal | :greater,
+                    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                    region: region(L, normal),
+                    specialization_key: int64,
+                    compare_key_ordering_bundle: int64,
+                    compare_value_ordering_bundle: int64
+                },
+                names: {
+                    root: ref?(L, normal, rec),
+                    compare_key: fn(string, string) -> :less | :equal | :greater,
+                    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                    region: region(L, normal),
+                    specialization_key: int64,
+                    compare_key_ordering_bundle: int64,
+                    compare_value_ordering_bundle: int64
+                },
+                name_lexemes: List[string, mem(normal)],
+                next_id: int64,
+                seq_nil_id: int64
+            }, id: int64 } <- intern_key(interner, n.kind, a2, b2, c2, n.buf_size_is_name);
+            intern_dag_nodes_loop(kr.interner, nodes.tail, list_int_append_dag(type_remap, kr.id), name_remap)
+        }
+    }
+}
+
+fn replay_type_dag(
+    interner: {
+        nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+        by_key: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(string, string) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        },
+        names: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(string, string) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        },
+        name_lexemes: List[string, mem(normal)],
+        next_id: int64,
+        seq_nil_id: int64
+    },
+    names: List[string, mem(normal)],
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)]
+) -> {
+    interner: {
+        nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+        by_key: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(string, string) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        },
+        names: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(string, string) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        },
+        name_lexemes: List[string, mem(normal)],
+        next_id: int64,
+        seq_nil_id: int64
+    },
+    remap: List[int64, mem(normal)]
+} {
+    nr: {
+        interner: {
+            nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+            by_key: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(string, string) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            names: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(string, string) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            name_lexemes: List[string, mem(normal)],
+            next_id: int64,
+            seq_nil_id: int64
+        },
+        remap: List[int64, mem(normal)]
+    } <- intern_dag_names_loop(interner, names, empty_int_list());
+    intern_dag_nodes_loop(nr.interner, nodes, empty_int_list(), nr.remap)
 }

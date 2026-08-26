@@ -3,8 +3,14 @@
 
 .global main_print
 .global diagnostics_core_print
+.global main_compile_pipeline_print
+.global main_parse_print
+.global main_unit_print
 main_print:
 diagnostics_core_print:
+main_compile_pipeline_print:
+main_parse_print:
+main_unit_print:
     STP X29, X30, [SP, #-16]!
     BL _silica_print_string
     MOV X0, #0
@@ -15,10 +21,16 @@ diagnostics_core_print:
 .global module_iface_file_exists
 .global ffi_link_manifest_file_exists
 .global ffi_sidecar_loader_file_exists
+.global main_driver_file_exists
+.global main_hygiene_file_exists
+.global main_lists_file_exists
 main_file_exists:
 module_iface_file_exists:
 ffi_link_manifest_file_exists:
 ffi_sidecar_loader_file_exists:
+main_driver_file_exists:
+main_hygiene_file_exists:
+main_lists_file_exists:
     STP X29, X30, [SP, #-16]!
     BL _silica_read_file_path
     AND X0, X0, #1
@@ -29,10 +41,12 @@ ffi_sidecar_loader_file_exists:
 .global module_iface_read_lines
 .global ffi_sidecar_loader_read_lines
 .global lexer_runner_read_lines
+.global main_driver_read_lines
 main_read_lines:
 module_iface_read_lines:
 ffi_sidecar_loader_read_lines:
 lexer_runner_read_lines:
+main_driver_read_lines:
     STP X29, X30, [SP, #-64]!
     STP X19, X20, [SP, #16]
     STP X21, X22, [SP, #32]
@@ -82,9 +96,13 @@ rl_ret:
 .global main_delete_file
 .global module_iface_delete_file
 .global build_output_delete_file
+.global main_hygiene_delete_file
+.global main_lists_delete_file
 main_delete_file:
 module_iface_delete_file:
 build_output_delete_file:
+main_hygiene_delete_file:
+main_lists_delete_file:
     STP X29, X30, [SP, #-16]!
     BL _silica_delete_file_path
     AND X0, X0, #1
@@ -94,9 +112,13 @@ build_output_delete_file:
 .global main_append_file
 .global module_iface_append_file
 .global build_output_append_file
+.global main_hygiene_append_file
+.global main_lists_append_file
 main_append_file:
 module_iface_append_file:
 build_output_append_file:
+main_hygiene_append_file:
+main_lists_append_file:
     STP X29, X30, [SP, #-16]!
     BL _silica_append_file_path
     AND X0, X0, #1

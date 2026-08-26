@@ -19,13 +19,28 @@
 // Per silica-specification §21.3: "If MTE is not available... runtime falls back to software-based
 // bounds checking... Memory safety is maintained through compiler-generated bounds checks."
 //
-// L_concat_helper: X0 = ptr1, X1 = ptr2 (null-terminated UTF-8). Returns X0 = ptr to newly
-// allocated concatenated string. Uses mmap syscall (no libc). No MTE instructions.
+// L_concat_helper: X0 = ptr1, X1 = ptr2 (null-terminated UTF-8). Returns X0 = ptr to concatenated
+// string. Empty operands return the other pointer (no allocation). Length of the most recent
+// result is cached so growing concat(acc, ch) in strip_spaces is O(1) strlen. Longer results
+// bump-allocate from 4MB mmap chunks. mmap-per-call used to SIGKILL type checking of
+// wbt_map.silica (75GB physical footprint from char-by-char strip_spaces).
 //
 // Isolated module for vigorous testing. Targets: Apple Silicon, macOS ARM64.
 
 export emit_string_concat_helper/0;
 
+fn sc_helper_lens() -> string {
+    "L_concat_helper:\n    STP X19, X20, [SP, #-64]!\n    STP X21, X22, [SP, #16]\n    STP X23, X30, [SP, #32]\n    MOV X19, X0\n    MOV X20, X1\n    ADRP X1, L_sc_len_key@PAGE\n    ADD X1, X1, L_sc_len_key@PAGEOFF\n    LDR X2, [X1]\n    CMP X2, X19\n    B.NE L_sc_strlen1\n    ADRP X1, L_sc_len_val@PAGE\n    ADD X1, X1, L_sc_len_val@PAGEOFF\n    LDR X21, [X1]\n    B L_sc_have_len1\nL_sc_strlen1:\n    MOV X0, X19\n    MOV X21, #0\nL_sc_len1:\n    LDRB W9, [X0]\n    CBZ W9, L_sc_have_len1\n    ADD X21, X21, #1\n    ADD X0, X0, #1\n    B L_sc_len1\nL_sc_have_len1:\n    ADRP X1, L_sc_len_key@PAGE\n    ADD X1, X1, L_sc_len_key@PAGEOFF\n    LDR X2, [X1]\n    CMP X2, X20\n    B.NE L_sc_strlen2\n    ADRP X1, L_sc_len_val@PAGE\n    ADD X1, X1, L_sc_len_val@PAGEOFF\n    LDR X22, [X1]\n    B L_sc_have_len2\nL_sc_strlen2:\n    MOV X0, X20\n    MOV X22, #0\nL_sc_len2:\n    LDRB W9, [X0]\n    CBZ W9, L_sc_have_len2\n    ADD X22, X22, #1\n    ADD X0, X0, #1\n    B L_sc_len2\nL_sc_have_len2:\n    CBZ X21, L_sc_ret2\n    CBZ X22, L_sc_ret1\n    ADD X0, X21, X22\n    ADD X0, X0, #1\n    BL L_sc_bump_alloc\n    CBZ X0, L_sc_ret\n    MOV X23, X0\n    MOV X9, X23\n    MOV X10, X19\n    MOV X11, X21\n"
+}
+
+fn sc_helper_copy() -> string {
+    "L_sc_cp1:\n    CBZ X11, L_sc_cp1_done\n    LDRB W12, [X10]\n    STRB W12, [X9]\n    ADD X9, X9, #1\n    ADD X10, X10, #1\n    SUB X11, X11, #1\n    B L_sc_cp1\nL_sc_cp1_done:\n    MOV X10, X20\n    MOV X11, X22\nL_sc_cp2:\n    CBZ X11, L_sc_cp2_done\n    LDRB W12, [X10]\n    STRB W12, [X9]\n    ADD X9, X9, #1\n    ADD X10, X10, #1\n    SUB X11, X11, #1\n    B L_sc_cp2\nL_sc_cp2_done:\n    STRB WZR, [X9]\n    MOV X0, X23\n    ADD X2, X21, X22\n    ADRP X1, L_sc_len_key@PAGE\n    ADD X1, X1, L_sc_len_key@PAGEOFF\n    STR X23, [X1]\n    ADRP X1, L_sc_len_val@PAGE\n    ADD X1, X1, L_sc_len_val@PAGEOFF\n    STR X2, [X1]\n    B L_sc_ret\nL_sc_ret2:\n    MOV X0, X20\n    ADRP X1, L_sc_len_key@PAGE\n    ADD X1, X1, L_sc_len_key@PAGEOFF\n    STR X20, [X1]\n    ADRP X1, L_sc_len_val@PAGE\n    ADD X1, X1, L_sc_len_val@PAGEOFF\n    STR X22, [X1]\n    B L_sc_ret\nL_sc_ret1:\n    MOV X0, X19\n    ADRP X1, L_sc_len_key@PAGE\n    ADD X1, X1, L_sc_len_key@PAGEOFF\n    STR X19, [X1]\n    ADRP X1, L_sc_len_val@PAGE\n    ADD X1, X1, L_sc_len_val@PAGEOFF\n    STR X21, [X1]\nL_sc_ret:\n    LDP X23, X30, [SP, #32]\n    LDP X21, X22, [SP, #16]\n    LDP X19, X20, [SP], #64\n    RET\n"
+}
+
+fn sc_helper_bump() -> string {
+    "L_sc_bump_alloc:\n    STP X19, X30, [SP, #-32]!\n    STP X20, X21, [SP, #16]\n    ADD X0, X0, #7\n    LSR X0, X0, #3\n    LSL X19, X0, #3\n    ADRP X20, L_sc_arena_ptr@PAGE\n    ADD X20, X20, L_sc_arena_ptr@PAGEOFF\n    LDR X21, [X20]\n    CBZ X21, L_sc_bump_new\n    ADRP X1, L_sc_arena_end@PAGE\n    ADD X1, X1, L_sc_arena_end@PAGEOFF\n    LDR X2, [X1]\n    ADD X3, X21, X19\n    CMP X3, X2\n    B.HI L_sc_bump_new\n    STR X3, [X20]\n    MOV X0, X21\n    LDP X20, X21, [SP, #16]\n    LDP X19, X30, [SP], #32\n    RET\nL_sc_bump_new:\n    MOVZ X1, #0x40, LSL #16\n    CMP X19, X1\n    CSEL X1, X19, X1, HI\n    MOV X21, X1\n    MOV X0, #0\n    MOV X2, #3\n    MOV X3, #0x1002\n    MOV X4, #-1\n    MOV X5, #0\n    MOVZ X16, #0xC5\n    MOVK X16, #0x200, LSL #16\n    SVC #0x80\n    CMN X0, #1\n    B.EQ L_sc_bump_fail\n    ADD X1, X0, X19\n    STR X1, [X20]\n    ADRP X2, L_sc_arena_end@PAGE\n    ADD X2, X2, L_sc_arena_end@PAGEOFF\n    ADD X3, X0, X21\n    STR X3, [X2]\n    LDP X20, X21, [SP, #16]\n    LDP X19, X30, [SP], #32\n    RET\nL_sc_bump_fail:\n    MOV X0, #0\n    LDP X20, X21, [SP, #16]\n    LDP X19, X30, [SP], #32\n    RET\n    .section __DATA,__bss\n    .p2align 3\nL_sc_len_key:\n    .space 8\nL_sc_len_val:\n    .space 8\nL_sc_arena_ptr:\n    .space 8\nL_sc_arena_end:\n    .space 8\n    .section __TEXT,__text,regular,pure_instructions\n    .p2align 2\n"
+}
+
 fn emit_string_concat_helper() -> string {
-    "L_concat_helper:\n    STP X19, X20, [SP, #-48]!\n    STP X21, X22, [SP, #16]\n    STR X23, [SP, #32]\n    MOV X19, X0\n    MOV X20, X1\n    MOV X21, #0\nL_sc_len1:\n    LDRB W9, [X0]\n    CBZ W9, L_sc_len1_done\n    ADD X21, X21, #1\n    ADD X0, X0, #1\n    B L_sc_len1\nL_sc_len1_done:\n    MOV X0, X20\n    MOV X22, #0\nL_sc_len2:\n    LDRB W9, [X0]\n    CBZ W9, L_sc_len2_done\n    ADD X22, X22, #1\n    ADD X0, X0, #1\n    B L_sc_len2\nL_sc_len2_done:\n    ADD X0, X21, X22\n    ADD X0, X0, #1\n    MOV X1, X0\n    MOV X0, #0\n    MOV X2, #3\n    MOV X3, #0x1002\n    MOV X4, #-1\n    MOV X5, #0\n    MOVZ X16, #0xC5\n    MOVK X16, #0x200, LSL #16\n    SVC #0x80\n    MOV X23, X0\n    MOV X9, X23\n    MOV X10, X19\n    MOV X11, X21\nL_sc_cp1:\n    CBZ X11, L_sc_cp1_done\n    LDRB W12, [X10]\n    STRB W12, [X9]\n    ADD X9, X9, #1\n    ADD X10, X10, #1\n    SUB X11, X11, #1\n    B L_sc_cp1\nL_sc_cp1_done:\n    MOV X10, X20\n    MOV X11, X22\nL_sc_cp2:\n    CBZ X11, L_sc_cp2_done\n    LDRB W12, [X10]\n    STRB W12, [X9]\n    ADD X9, X9, #1\n    ADD X10, X10, #1\n    SUB X11, X11, #1\n    B L_sc_cp2\nL_sc_cp2_done:\n    STRB WZR, [X9]\n    MOV X0, X23\n    LDR X23, [SP, #32]\n    LDP X21, X22, [SP, #16]\n    LDP X19, X20, [SP], #48\n    RET"
+    concat(concat(sc_helper_lens(), sc_helper_copy()), sc_helper_bump())
 }

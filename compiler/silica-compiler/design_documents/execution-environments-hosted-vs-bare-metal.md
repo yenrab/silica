@@ -8,6 +8,8 @@ Silica is a **systems language**: it is designed to expose strong, explicit cont
 
 3. **Without a general-purpose OS** (bare metal, firmware, or other environments where Silica’s runtime effectively **owns** the platform contract), limits come from **hardware**, the **runtime and libraries you ship**, and **only the third-party code you choose to trust**—not from a kernel’s process-wide memory and scheduling policies.
 
+What must be added to *implement* an OS-free board (MMIO map/load/store, boot, pools, ELF/firmware) is listed in [porting_for_os_free_targets.md](porting_for_os_free_targets.md).
+
 ---
 
 This note is a **non-normative** summary and navigation aid; the [language specification](silica-specification.md) remains authoritative where definitions differ.

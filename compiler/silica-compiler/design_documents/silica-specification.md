@@ -10,6 +10,9 @@
 | [macos_crash_handling_for_silica.md](macos_crash_handling_for_silica.md) | macOS-specific crash/fault handling notes for guarded FFI, signal/Mach exception boundaries, and actor-supervisor recovery caveats |
 | [ffi_wrapper_implementation_plan.md](ffi_wrapper_implementation_plan.md) | Compiler implementation phases for [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) |
 | [memory-effects-aarch64-implementation-plan.md](memory-effects-aarch64-implementation-plan.md) | Memory `Space` model for OS-free AArch64 and embedded targets (implementation plan) |
+| [porting_for_os_free_targets.md](porting_for_os_free_targets.md) | OS-free / raw-metal port inventory: boot, `Space` pools, MMIO prims, board packs |
+| [silica_device_actor_specification.md](silica_device_actor_specification.md) | Device-worker actors: `register_rwr` only in `spawn_device` behaviors, `device_actor_ref`, disjoint from Fifi |
+| [tls_quantum_safe_future.md](tls_quantum_safe_future.md) | **Future development:** first-class quantum-safe TLS (TLS 1.3 + hybrid ML-KEM), supervised session actors, Fifi taint |
 
 Platform-specific runtime notes are added as Silica grows to support each target. The macOS crash-handling document is therefore not a portable guarantee for Linux, Windows, bare-metal targets, or future hosted runtimes; those platforms require their own fault-delivery, signal/exception, and process-isolation notes.
 
@@ -214,12 +217,12 @@ The following identifiers are reserved keywords:
 
 ```
 actor      actor_ref  atom      atomic    boolean      buf       case
-call_supervisor cast   char      concurrency core_id    core_set dangerous_actor_ref device_io effect
+call_supervisor cast   char      concurrency core_id    core_set dangerous_actor_ref device_actor_ref device_io effect
 efficiency_cores else end        enum      export    false     float16   float32
 float64    fn         for        from      hot_swap   if        impl      import    int8
 int16      int32      int64      lifetime  mailbox  mem       module    network_io normal    not
 of         performance_cores proc      produces  provided pub       pure      recv      ref       region    register_rwr required return
-sequence   spawn     spawn_dangerous spawn_registered spawn_registered_supervisor string    struct    supervisor_ref trait     true      type
+sequence   spawn     spawn_dangerous spawn_device spawn_device_registered spawn_registered spawn_registered_supervisor string    struct    supervisor_ref trait     true      type
 uint8      uint16     uint32     uint64    underscore unit       use        where
 ```
 
@@ -2057,6 +2060,8 @@ Note: Modules are typically inferred from filenames, but explicit module declara
 
 Modules that declare or use outbound foreign (FFI) wrapper bindings must follow the `dangerous_*` naming and dependency rules in [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §3.
 
+Modules that declare or use device-register (MMIO) poke APIs or device-worker behaviors must follow the `device_*` naming and dependency rules in [silica_device_actor_specification.md](silica_device_actor_specification.md) §3. A module must not depend on both a `device_*` module and a `dangerous_*` module.
+
 ### 3.5 Patterns
 ```
 pattern ::= literal_pattern
@@ -3290,12 +3295,15 @@ Actor references are a primitive type (like `int` or `boolean`):
 ```
 actor_ref                            // actor reference (primitive type)
 dangerous_actor_ref                  // FFI worker actor reference (primitive type)
+device_actor_ref                     // device-worker actor reference (primitive type)
 supervisor_ref                       // supervisor reference (primitive type)
 ```
 
 The `actor_ref` type is not parameterized by message type. It is a primitive type that represents a reference to an ordinary actor, created by the `spawn()` function.
 
 The `dangerous_actor_ref` type is distinct from `actor_ref`. It represents a reference to an FFI worker actor that executes outbound foreign calls inside `external_danger` sequences in its behavior. It is created only by `spawn_dangerous(...)`. There is no subtyping or coercion between `actor_ref` and `dangerous_actor_ref`.
+
+The `device_actor_ref` type is distinct from `actor_ref` and from `dangerous_actor_ref`. It represents a reference to a device worker actor that executes MMIO poke inside `register_rwr` sequences in its behavior. It is created only by `spawn_device(...)` or `spawn_device_registered(...)`. There is no subtyping or coercion among the three reference types. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md).
 
 The `supervisor_ref` type is distinct from `actor_ref`. It represents a runtime-managed supervisor created by `spawn_registered_supervisor(...)`. It is not accepted by ordinary `call()` or `cast()`; supervisor maintenance uses `call_supervisor(...)`.
 
@@ -4632,7 +4640,7 @@ Silica defines several built-in effects that track different kinds of side effec
 - `device_io` - Limited to: print (stdout), read from file, write to file, read from console
 - `network_io` - Network communications of all kinds (sockets, HTTP, etc.)
 - `hot_swap` - Code loading (dynamic loading, JIT, self-modifying code). On AArch64, requires `ISB` barrier to ensure instruction fetch sees code writes.
-- `register_rwr` - Direct device register access via mmap (read and write). On AArch64, requires `DSB SY` before and `ISB` after for device ordering.
+- `register_rwr` - Direct device register (MMIO) access. On AArch64, requires `DSB SY` before and `ISB` after for device ordering. This effect authorizes **execution** of poke inside a **device worker** behavior installed by `spawn_device` / `spawn_device_registered`; it does **not** authorize `main`, ordinary `spawn` behaviors, or the spawn install site. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md). Named exceptions (reset, early panic, IRQ enqueue) are listed in that document §7.
 - `external_danger` - Outbound calls to `dangerous_*` FFI wrapper modules inside an FFI worker actor's `external_danger` sequence. This effect authorizes **execution** of foreign calls inside the worker behavior installed by `spawn_dangerous`; it does **not** authorize callers at the `spawn_dangerous` install site. Full rules: [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4. On macOS, same-process guarded-FFI crash handling is best-effort and platform-specific; see [macos_crash_handling_for_silica.md](macos_crash_handling_for_silica.md). Other platform-specific crash-handling notes will be added as Silica expands to support those targets.
 
 **Memory effect guarantees (hosting; normative at this time):** The **distinct hardware behaviors** associated with each `mem(Space)` and region `Space` (write-back, write-through, non-cacheable normal, device, and atomic backing rules in **§12.1.1** and following) are **fully supported and guaranteed only on OS-free executions**—for example bare-metal **boards**, firmware, or any environment where the **Silica runtime and linker script control** how memory regions are mapped and which **cacheability / ordering attributes** apply. On **OS-hosted** programs—**macOS**, **Linux**, **Windows**, **Solaris**, and comparable multiprogramming systems—application memory is exposed through the **traditional flat virtual address model** historically rooted in Unix and the **PDP-11** view of a process: ordinary allocations receive **uniform, OS-chosen** attributes, not a portable, per-allocation choice of Silica memory spaces. Because the **operating system controls and shares physical RAM** among processes, that model **cannot be sidestepped** by a portable application runtime to obtain, for all Silica regions, the same per-space **page-table / MAIR-class** distinctions the language describes. On OS-hosted targets, `mem(Space)` and `region(R, Space)` remain in the **type and effect system** for static discipline, documentation, and integration with **non-portable** or **driver-mediated** buffers where available, but **this specification does not guarantee**, at this time, that each memory space maps to **different hardware attributes** on those OSes. See **§12.1.1.0**.
@@ -7345,7 +7353,7 @@ alloc_ref(r, 42)    // Runtime error: capability violation
 
 ## 15. Actor Model Semantics
 
-**Intrinsic Functions**: Actors, supervisors, and their related functions defined in this specification (`spawn()`, `spawn_dangerous()`, `spawn_registered()`, `spawn_registered_supervisor()`, `call()`, `call_supervisor()`, `cast()`, `self()`, `recv()`, etc.) are intrinsic to the Silica compiler. They are implemented directly in the compiler and runtime, similar to how basic arithmetic operators (`+`, `-`, `*`, `/`) are implemented. These functions are not defined in user code or standard libraries but are built-in language primitives.
+**Intrinsic Functions**: Actors, supervisors, and their related functions defined in this specification (`spawn()`, `spawn_dangerous()`, `spawn_device()`, `spawn_device_registered()`, `spawn_registered()`, `spawn_registered_supervisor()`, `call()`, `call_supervisor()`, `cast()`, `cast_device()`, `cast_device_registered()`, `self()`, `recv()`, etc.) are intrinsic to the Silica compiler. They are implemented directly in the compiler and runtime, similar to how basic arithmetic operators (`+`, `-`, `*`, `/`) are implemented. These functions are not defined in user code or standard libraries but are built-in language primitives.
 
 ### 15.1 Actor Lifecycle
 
@@ -7355,6 +7363,8 @@ Actors are created with initial state and behavior function:
 ```
 spawn(initial_state, behavior_fn [, core_id]) -> actor_ref
 spawn_dangerous(initial_state, behavior_fn [, core_id]) -> dangerous_actor_ref proc[concurrency]
+spawn_device(initial_state, behavior_fn [, core_id]) -> device_actor_ref proc[concurrency]
+spawn_device_registered(initial_state, behavior_fn, name: atom [, core_id]) -> device_actor_ref proc[concurrency]
 spawn_registered(initial_state, behavior_fn, name: atom [, core_id]) -> actor_ref proc[concurrency]
 spawn_registered_supervisor(supervisor_impl_type, initial_state, name: atom [, core_id]) -> supervisor_ref proc[concurrency]
 link(target: actor_ref) -> :ok  proc[concurrency]
@@ -7362,9 +7372,11 @@ monitor(target: actor_ref) -> monitor_ref  proc[concurrency]
 demonitor(ref: monitor_ref) -> :ok  proc[concurrency]
 ```
 
-`spawn` creates an ordinary anonymous actor. Its behavior function must not contain `external_danger` sequences or call `dangerous_*` module functions; use `spawn_dangerous` for FFI worker actors (see [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4).
+`spawn` creates an ordinary anonymous actor. Its behavior function must not contain `external_danger` sequences or call `dangerous_*` module functions; use `spawn_dangerous` for FFI worker actors (see [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4). It must not contain `register_rwr` sequences or poke prims; use `spawn_device` for device worker actors (see [silica_device_actor_specification.md](silica_device_actor_specification.md)).
 
-`spawn_dangerous` creates an FFI worker actor whose behavior executes outbound foreign calls inside `sequence proc[external_danger] ... produces pure ... end`. It returns `dangerous_actor_ref`, requires `concurrency` at the call site, and must **not** be used from a sequence block that declares `external_danger`. Installing a worker with `spawn_dangerous` does not execute foreign calls; the worker executes them when it receives casts.
+`spawn_dangerous` creates an FFI worker actor whose behavior executes outbound foreign calls inside `sequence proc[external_danger] ... produces pure ... end`. It returns `dangerous_actor_ref`, requires `concurrency` at the call site, and must **not** be used from a sequence block that declares `external_danger`. Installing a worker with `spawn_dangerous` does not execute foreign calls; the worker executes them when it receives casts. Its behavior must not contain `register_rwr` or poke prims.
+
+`spawn_device` creates a device worker actor whose behavior executes MMIO poke inside `sequence proc[register_rwr] ... produces pure ... end`. It returns `device_actor_ref`, requires `concurrency` at the call site, and must **not** be used from a sequence block that declares `register_rwr`. Installing a worker with `spawn_device` does not execute MMIO; the worker executes poke when it receives casts. Its behavior must not contain `external_danger` or call `dangerous_*` functions. `spawn_device_registered` is the same install, registered under an atom in the **device** registry; clients look it up with `cast_device_registered`, not `cast_registered`. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md).
 
 `spawn_registered` creates an ordinary actor and registers it under an atom name; it does not create a supervisor and does not imply a supervision link. `spawn_registered_supervisor` creates a runtime-managed supervisor, registers it under an atom name, calls the required `Supervisor.init/1` implementation for the named supervisor implementation type, and returns a `supervisor_ref`; see **§15.4.8** and **§15.4.13**. `link`, `monitor`, and `demonitor` operate on already-running ordinary actors; see **§15.4.8.5–§15.4.8.7**.
 
@@ -11314,7 +11326,7 @@ Compilation order:
 - The algorithm uses depth-first search (DFS) with cycle detection
 - Modules with no dependencies are compiled first
 - Parallel compilation is possible for modules at the same level in the dependency tree
-- All modules are compiled together in a single compilation unit for cross-module optimization
+- A **batch** (`silica.config`) is the ordered list of **compilation units**; each compilation unit is one `.silica` file. Units in a batch are compiled separately and linked together for cross-module checking.
 - **Phase 2 compiler (use-tree first pass):** the first process of a multi-unit batch lexes each file and parses only declarations through the first function, then Kahn-sorts. It does not parse function bodies. Each later compile process full-parses that unit. See [Phase2_TODO/use_tree_first_pass.md](./Phase2_TODO/use_tree_first_pass.md).
 
 **Parallel Compilation Strategy:**

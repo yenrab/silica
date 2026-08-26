@@ -28,7 +28,20 @@ export record_field_segment_name_sub/1;
 export expand_named_topology_type/1;
 
 fn strip_spaces_rt(s: string) -> string {
-    strip_spaces_rt_from(s, 0, "")
+    case string_has_space_rt(s, 0) of {
+        true -> strip_spaces_rt_from(s, 0, "");
+        false -> s
+    }
+}
+
+fn string_has_space_rt(s: string, i: int64) -> bool {
+    case i >= len(s) of {
+        true -> false;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> true;
+            false -> string_has_space_rt(s, i + 1)
+        }
+    }
 }
 
 fn strip_spaces_rt_from(s: string, i: int64, acc: string) -> string {
@@ -41,9 +54,19 @@ fn strip_spaces_rt_from(s: string, i: int64, acc: string) -> string {
     }
 }
 
+fn first_non_space_index_rt(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> i;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> first_non_space_index_rt(s, i + 1);
+            false -> i
+        }
+    }
+}
+
 fn record_type_starts(s: string) -> bool {
-    t: string <- strip_spaces_rt(s);
-    len(t) > 0 and substring(t, 0, 1) == "{"
+    i: int64 <- first_non_space_index_rt(s, 0);
+    i < len(s) and substring(s, i, i + 1) == "{"
 }
 
 // Content inside outer `{` ... `}` for a record type string (balanced braces).
@@ -284,6 +307,15 @@ fn record_field_segment_name_sub(seg: string) -> (string, string) {
 // Phase A / cpu_topology_implementation_plan: canonical appendix layout as inline `{ ... }` for field access
 // and struct literals when the surface type is the named `cpu_topology` (fully expanded) / `core_info` / nested records.
 fn expand_named_topology_type(type_name: string) -> string {
+    // Longest named topology is `cpu_topology` (12). wbt_map record types are
+    // thousands of characters; stripping them here was the type-check hot path.
+    case len(type_name) > 32 of {
+        true -> "";
+        false -> expand_named_topology_type_short(type_name)
+    }
+}
+
+fn expand_named_topology_type_short(type_name: string) -> string {
     t: string <- strip_spaces_rt(type_name);
     case t of {
         "cpu_topology" -> "{ cores: List[{ id: int64, core_type: atom, capabilities: List[string,normal], frequency_mhz: int64 },normal], numa_nodes: List[{ id: int64, cores: List[int64,normal], memory_ranges: List[{ start_address: int64, size: int64, latency: int64 },normal] },normal], cache_hierarchy: { levels: List[{ level: int64, size_kb: int64, line_size: int64, associativity: int64, shared_cores: List[int64,normal] },normal] } }";

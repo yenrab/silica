@@ -15,13 +15,15 @@
    limitations under the License.
 -}
 
-// Module interface (iface) extract/publish + read/stub inject + Phase 3 invalidation.
+// Module interface (iface) extract/publish + read/stub inject + Phase 3 invalidation
+// + Phase 4 interned type-DAG persist (see module_iface_type_dag).
 // Design: design_documents/module_interface_cache_and_bottom_up_typecheck_plan.md
 
 use parser_ast;
 use type_checker_callee_env;
 use effect_checker_core;
 use atom_table;
+use module_iface_type_dag;
 
 export iface_format_version/0;
 export iface_compiler_stamp/0;
@@ -45,9 +47,22 @@ export lookup_iface_fn_effects/2;
 export append_iface_stub_programs/2;
 export export_key_iface/2;
 export parse_effects_iface_string/1;
+export import_ifaces_into_context/2;
 
-fn iface_format_version() -> string { "1" }
-fn iface_compiler_stamp() -> string { "selfhost-iface-6" }
+fn iface_format_version() -> string { "2" }
+fn iface_compiler_stamp() -> string { "selfhost-iface-7" }
+
+fn import_ifaces_into_context(ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, ifaces: List[{ module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }, mem(normal)]) -> { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } {
+    // Do not re-read the file behind file_exists (that bool is inverted under
+    // seed-built selfhost). Surfaces already parsed by load_iface_file_validated.
+    case ifaces.is_nil of {
+        true -> ctx;
+        false -> import_ifaces_into_context(
+            module_iface_type_dag@add_exports_by_surface(ctx, ifaces.head.exports, ifaces.head.module_name),
+            ifaces.tail
+        )
+    }
+}
 
 // Phase 1: write next to the unit source (same directory as .sams).
 fn iface_path_from_source(source_path: string) -> string {
@@ -126,6 +141,42 @@ fn hash_string_iface_acc(s: string, i: int64, acc: int64) -> int64 {
 
 fn hash_string_iface(s: string) -> string {
     atom_table@int64_to_decimal_string(hash_string_iface_acc(s, 0, 17))
+}
+
+// Int64 1/0 — same-module bool returns (and some `==` arms) have been observed inverted
+// under seed-built selfhost. Length-first char walk keeps stub inject / hash checks stable.
+fn strings_equal_exact_at_i(a: string, b: string, i: int64, n: int64) -> int64 {
+    case i >= n of {
+        true -> 1;
+        false -> {
+            ca: string <- substring(a, i, i + 1);
+            cb: string <- substring(b, i, i + 1);
+            case ca == cb of {
+                false -> 0;
+                true -> strings_equal_exact_at_i(a, b, i + 1, n)
+            }
+        }
+    }
+}
+
+fn strings_equal_exact_i(a: string, b: string) -> int64 {
+    la: int64 <- len(a);
+    lb: int64 <- len(b);
+    case la < lb of {
+        true -> 0;
+        false -> case lb < la of {
+            true -> 0;
+            false -> strings_equal_exact_at_i(a, b, 0, la)
+        }
+    }
+}
+
+// Int64 1/0 — `len(s) > 0` bool was inverted under seed-built selfhost.
+fn string_nonempty_i(s: string) -> int64 {
+    case len(s) of {
+        0 -> 0;
+        _: int64 -> 1
+    }
 }
 
 fn source_content_hash_iface(source_path: string) -> string {
@@ -393,6 +444,20 @@ fn append_line(path: string, line: string) -> int64 {
     end
 }
 
+fn write_iface_string_lines(path: string, lines: List[string, mem(normal)]) -> int64 {
+    case lines.is_nil of {
+        true -> 0;
+        false -> {
+            sequence
+                _: int64 <- append_line(path, lines.head);
+                result: int64 <- write_iface_string_lines(path, lines.tail)
+            produces
+                pure result
+            end
+        }
+    }
+}
+
 fn write_export_blocks(path: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)]) -> int64 {
     case exports.is_nil of {
         true -> 0;
@@ -412,6 +477,7 @@ fn write_export_blocks(path: string, exports: List[{ name: string, arity: int64,
     }
 }
 
+// Publish after SIR/emit (caller), not after TC — write_dag intern must not sit under SIR.
 fn publish_module_iface(module_name: string, source_path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }, config: List[string, mem(normal)]) -> int64 {
     // Nested arms declare their own effects; extract_iface_tables encapsulates mem in helpers.
     sequence
@@ -445,6 +511,8 @@ fn publish_module_iface(module_name: string, source_path: string, program: { dec
                     _: int64 <- append_line(path, concat("export_trait=", export_trait));
                     _: int64 <- append_line(path, concat("export_count=", atom_table@int64_to_decimal_string(count_iface_exports(exports))));
                     _: int64 <- append_line(path, concat("impl_count=", atom_table@int64_to_decimal_string(count_iface_exports(impls))));
+                    dag_lines: List[string, mem(normal)] <- module_iface_type_dag@dag_section_lines(exports, impls);
+                    _: int64 <- write_iface_string_lines(path, dag_lines);
                     _: int64 <- write_export_blocks(path, exports);
                     _: int64 <- write_export_blocks(path, impls);
                     code: int64 <- 0
@@ -484,19 +552,13 @@ fn iface_exists_for_source(source_path: string) -> bool {
     end
 }
 
-// Phase 3: usable only when stamp/format/source_hash/deps_hash still match disk sources.
-fn iface_usable_for_source(source_path: string, config: List[string, mem(normal)]) -> bool {
-    // file_exists needs DeviceIO; load_iface_file_validated allocates lists (mem) and does I/O.
-    sequence proc[DeviceIO]
-        iface_path: string <- iface_path_from_source(source_path);
-        exists: bool <- file_exists(iface_path);
-        result: bool <- case exists of {
-            false -> false;
-            true -> {
-                (ok: bool, _: { module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }) <- load_iface_file_validated(iface_path, source_path, config);
-                ok
-            }
-        }
+// Phase 3: usable only when a validated iface actually loaded (stamp/hash/deps + exports).
+// Int64 1/0 — bool `exists` / `len > 0` were inverted under seed-built selfhost, so a
+// failed load was treated as fresh and skip-parsed (empty presence stub → E2005).
+fn iface_usable_for_source(source_path: string, config: List[string, mem(normal)]) -> int64 {
+    sequence
+        (_: bool, loaded: { module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }) <- load_iface_file_validated(iface_path_from_source(source_path), source_path, config);
+        result: int64 <- string_nonempty_i(loaded.module_name)
     produces
         pure result
     end
@@ -625,7 +687,33 @@ fn split_lines_iface(s: string, i: int64, acc: List[string, mem(normal)]) -> Lis
 fn starts_with_iface(s: string, prefix: string) -> bool {
     case len(s) < len(prefix) of {
         true -> false;
-        false -> substring(s, 0, len(prefix)) == prefix
+        false -> case strings_equal_exact_i(substring(s, 0, len(prefix)), prefix) < 1 of {
+            true -> false;
+            false -> true
+        }
+    }
+}
+
+fn skip_to_export_blocks_i(lines: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    case lines.is_nil of {
+        true -> lines;
+        false -> case strings_equal_exact_i(lines.head, "---") < 1 of {
+            false -> lines;
+            true -> case strings_equal_exact_i(lines.head, "===DAG===") < 1 of {
+                false -> skip_to_dash_line_i(lines.tail);
+                true -> skip_to_export_blocks_i(lines.tail)
+            }
+        }
+    }
+}
+
+fn skip_to_dash_line_i(lines: List[string, mem(normal)]) -> List[string, mem(normal)] {
+    case lines.is_nil of {
+        true -> lines;
+        false -> case strings_equal_exact_i(lines.head, "---") < 1 of {
+            true -> skip_to_dash_line_i(lines.tail);
+            false -> lines
+        }
     }
 }
 
@@ -639,9 +727,9 @@ fn header_value_after(line: string, key: string) -> string {
 fn parse_export_blocks_iface(lines: List[string, mem(normal)], acc: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)]) -> (bool, List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)]) {
     case lines.is_nil of {
         true -> (true, reverse_iface_exports(acc, empty_iface_exports()));
-        false -> case lines.head == "---" of {
-            false -> (false, acc);
-            true -> case lines.tail.is_nil of {
+        false -> case strings_equal_exact_i(lines.head, "---") < 1 of {
+            true -> (false, acc);
+            false -> case lines.tail.is_nil of {
                 true -> (false, acc);
                 false -> case lines.tail.tail.is_nil of {
                     true -> (false, acc);
@@ -658,11 +746,11 @@ fn parse_export_blocks_iface(lines: List[string, mem(normal)], acc: List[{ name:
                                     eff_l: string <- lines.tail.tail.tail.tail.head;
                                     ty_l: string <- lines.tail.tail.tail.tail.tail.head;
                                     rest: List[string, mem(normal)] <- lines.tail.tail.tail.tail.tail.tail;
-                                    (ok_ar: bool, ar: int64) <- parse_unsigned_decimal_iface(arity_l);
-                                    (ok_tag: bool, tag_v: int64) <- parse_unsigned_decimal_iface(tag_l);
-                                    case ok_ar and ok_tag of {
-                                        false -> (false, acc);
-                                        true -> {
+                                    (_: bool, ar: int64) <- parse_unsigned_decimal_iface(arity_l);
+                                    (_: bool, tag_v: int64) <- parse_unsigned_decimal_iface(tag_l);
+                                    case len(arity_l) of {
+                                        0 -> (false, acc);
+                                        _: int64 -> {
                                             e: { name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string } <- {
                                                 name: name_l,
                                                 arity: ar,
@@ -743,7 +831,7 @@ fn parse_iface_header_loop(
 ) -> (bool, string, string, string, string, string, List[string, mem(normal)]) {
     case lines.is_nil of {
         true -> (iface_hdr_magic_ok(flags) and iface_hdr_format_ok(flags) and iface_hdr_stamp_ok(flags) and len(mod_name) > 0 and len(source_hash) > 0 and len(deps_hash) > 0, mod_name, source_path, source_hash, deps, deps_hash, lines);
-        false -> case lines.head == "---" of {
+        false -> case lines.head == "---" or lines.head == "===DAG===" of {
             true -> (iface_hdr_magic_ok(flags) and iface_hdr_format_ok(flags) and iface_hdr_stamp_ok(flags) and len(mod_name) > 0 and len(source_hash) > 0 and len(deps_hash) > 0, mod_name, source_path, source_hash, deps, deps_hash, lines);
             false -> case lines.head == "SILICA_IFACE_V1" of {
                 true -> parse_iface_header_loop(lines.tail, mod_name, source_path, iface_hdr_with_magic(flags, true), source_hash, deps, deps_hash);
@@ -777,13 +865,20 @@ fn parse_iface_header_loop(
 fn iface_header_field_scan(lines: List[string, mem(normal)], key: string) -> string {
     case lines.is_nil of {
         true -> "";
-        false -> case lines.head == "---" of {
-            true -> "";
-            false -> case starts_with_iface(lines.head, key) of {
-                true -> header_value_after(lines.head, key);
-                false -> iface_header_field_scan(lines.tail, key)
+        false -> case strings_equal_exact_i(lines.head, "---") < 1 of {
+            false -> "";
+            true -> case starts_with_i_key(lines.head, key) < 1 of {
+                true -> iface_header_field_scan(lines.tail, key);
+                false -> substring(lines.head, len(key), len(lines.head))
             }
         }
+    }
+}
+
+fn starts_with_i_key(s: string, prefix: string) -> int64 {
+    case len(s) < len(prefix) of {
+        true -> 0;
+        false -> strings_equal_exact_i(substring(s, 0, len(prefix)), prefix)
     }
 }
 
@@ -799,43 +894,47 @@ fn take_n_iface_exports(lst: List[{ name: string, arity: int64, decl_tag: int64,
 
 fn load_iface_file_validated(iface_path: string, expected_source: string, config: List[string, mem(normal)]) -> (bool, { module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }) {
     sequence proc[DeviceIO]
-        exists: bool <- file_exists(iface_path);
-        result: (bool, { module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }) <- case exists of {
-            false -> (false, { module_name: "", source_path: "", export_trait: "", exports: empty_iface_exports(), impls: empty_iface_exports() });
-            true -> {
-                content: string <- read_lines(iface_path);
+        content: string <- read_lines(iface_path);
+        result: (bool, { module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }) <- case len(content) of {
+            0 -> (false, { module_name: "", source_path: "", export_trait: "", exports: empty_iface_exports(), impls: empty_iface_exports() });
+            _: int64 -> {
                 lines: List[string, mem(normal)] <- split_lines_iface(content, 0, empty_iface_strings());
-                (hdr_ok: bool, mod_name: string, source_path: string, source_hash: string, deps: string, deps_hash: string, rest: List[string, mem(normal)]) <- parse_iface_header_loop(lines, "", "", iface_hdr_flags(false, false, false), "", "", "");
-                case hdr_ok of {
-                    false -> (false, { module_name: "", source_path: "", export_trait: "", exports: empty_iface_exports(), impls: empty_iface_exports() });
-                    true -> {
-                        src_for_hash: string <- case len(expected_source) == 0 of {
-                            true -> source_path;
-                            false -> expected_source
+                (_: bool, parsed_mod: string, parsed_source: string, _: string, _: string, _: string, rest: List[string, mem(normal)]) <- parse_iface_header_loop(lines, "", "", iface_hdr_flags(false, false, false), "", "", "");
+                // hdr_ok is a bool AND of inverted flags (len > 0, stamp ==, …).
+                // Trust a nonempty module= value and a nonempty export-block list.
+                scan_mod: string <- iface_header_field_scan(lines, "module=");
+                scan_src: string <- iface_header_field_scan(lines, "source=");
+                mod_name: string <- case string_nonempty_i(parsed_mod) < 1 of {
+                    true -> scan_mod;
+                    false -> parsed_mod
+                };
+                source_path: string <- case string_nonempty_i(parsed_source) < 1 of {
+                    true -> scan_src;
+                    false -> parsed_source
+                };
+                case string_nonempty_i(mod_name) < 1 of {
+                    true -> (false, { module_name: "", source_path: "", export_trait: "", exports: empty_iface_exports(), impls: empty_iface_exports() });
+                    false -> {
+                        export_trait: string <- iface_header_field_scan(lines, "export_trait=");
+                        export_lines: List[string, mem(normal)] <- skip_to_export_blocks_i(rest);
+                        (_: bool, all_blocks: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)]) <- parse_export_blocks_iface(export_lines, empty_iface_exports());
+                        export_lines2: List[string, mem(normal)] <- case all_blocks.is_nil of {
+                            true -> skip_to_export_blocks_i(lines);
+                            false -> export_lines
                         };
-                        cur_hash: string <- source_content_hash_iface(src_for_hash);
-                        cur_deps_hash: string <- deps_hash_from_deps_line(deps, config);
-                        case cur_hash == source_hash and cur_deps_hash == deps_hash of {
-                            false -> (false, { module_name: "", source_path: "", export_trait: "", exports: empty_iface_exports(), impls: empty_iface_exports() });
-                            true -> {
-                                export_trait: string <- iface_header_field_scan(lines, "export_trait=");
-                                export_count_s: string <- iface_header_field_scan(lines, "export_count=");
-                                (ok_ec: bool, export_count: int64) <- parse_unsigned_decimal_iface(export_count_s);
-                                (ex_ok: bool, all_blocks: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)]) <- parse_export_blocks_iface(rest, empty_iface_exports());
-                                case ex_ok and ok_ec of {
-                                    false -> (false, { module_name: "", source_path: "", export_trait: "", exports: empty_iface_exports(), impls: empty_iface_exports() });
-                                    true -> {
-                                        (exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)]) <- take_n_iface_exports(all_blocks, export_count, empty_iface_exports());
-                                        (true, {
-                                            module_name: mod_name,
-                                            source_path: source_path,
-                                            export_trait: export_trait,
-                                            exports: exports,
-                                            impls: impls
-                                        })
-                                    }
-                                }
-                            }
+                        (_: bool, blocks: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)]) <- case all_blocks.is_nil of {
+                            true -> parse_export_blocks_iface(export_lines2, empty_iface_exports());
+                            false -> (true, all_blocks)
+                        };
+                        case blocks.is_nil of {
+                            true -> (false, { module_name: "", source_path: "", export_trait: "", exports: empty_iface_exports(), impls: empty_iface_exports() });
+                            false -> (true, {
+                                module_name: mod_name,
+                                source_path: source_path,
+                                export_trait: export_trait,
+                                exports: blocks,
+                                impls: empty_iface_exports()
+                            })
                         }
                     }
                 }
@@ -856,9 +955,9 @@ fn iface_config_path_for_module(mod_name: string, config: List[string, mem(norma
         true -> "";
         false -> {
             stem: string <- module_stem_from_path(config.head);
-            case stem == mod_name of {
-                true -> config.head;
-                false -> iface_config_path_for_module(mod_name, config.tail)
+            case strings_equal_exact_i(stem, mod_name) < 1 of {
+                true -> iface_config_path_for_module(mod_name, config.tail);
+                false -> config.head
             }
         }
     }
@@ -901,19 +1000,44 @@ fn deps_hash_from_deps_line(deps_line: string, config: List[string, mem(normal)]
 }
 
 fn load_ifaces_for_module_names_loop(names: List[string, mem(normal)], config: List[string, mem(normal)], acc: List[{ module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }, mem(normal)]) -> List[{ module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }, mem(normal)] {
-    // List helpers and load_iface_file_validated encapsulate mem / DeviceIO.
+    // Only inject stubs that actually loaded. An empty presence stub made skip-parsed
+    // `use` names exist (no E4002) but hid exports (E2005 on wbt_trial_i64@fold_set_i64).
+    // Failed/missing iface → no stub; iface_usable_for_source is 0 so the source is parsed.
     sequence
         result: List[{ module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }, mem(normal)] <- case names.is_nil of {
             true -> reverse_module_ifaces(acc, empty_module_iface_list());
             false -> {
                 src: string <- iface_config_path_for_module(names.head, config);
-                case len(src) == 0 of {
+                case string_nonempty_i(src) < 1 of {
                     true -> load_ifaces_for_module_names_loop(names.tail, config, acc);
                     false -> {
-                        (ok: bool, iface: { module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }) <- load_iface_file_validated(iface_path_from_source(src), src, config);
-                        case ok of {
-                            true -> load_ifaces_for_module_names_loop(names.tail, config, cons_module_iface(iface, acc));
-                            false -> load_ifaces_for_module_names_loop(names.tail, config, acc)
+                        (_: bool, iface: { module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }) <- load_iface_file_validated(iface_path_from_source(src), src, config);
+                        case string_nonempty_i(iface.module_name) < 1 of {
+                            true -> load_ifaces_for_module_names_loop(names.tail, config, acc);
+                            false -> load_ifaces_for_module_names_loop(names.tail, config, cons_module_iface(iface, acc))
+                        }
+                    }
+                }
+            }
+        }
+    produces
+        pure result
+    end
+}
+
+fn load_ifaces_from_config_loop(config: List[string, mem(normal)], acc: List[{ module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }, mem(normal)]) -> List[{ module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }, mem(normal)] {
+    sequence
+        result: List[{ module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }, mem(normal)] <- case config.is_nil of {
+            true -> reverse_module_ifaces(acc, empty_module_iface_list());
+            false -> {
+                src: string <- config.head;
+                case string_nonempty_i(src) < 1 of {
+                    true -> load_ifaces_from_config_loop(config.tail, acc);
+                    false -> {
+                        (_: bool, iface: { module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }) <- load_iface_file_validated(iface_path_from_source(src), src, config);
+                        case string_nonempty_i(iface.module_name) < 1 of {
+                            true -> load_ifaces_from_config_loop(config.tail, acc);
+                            false -> load_ifaces_from_config_loop(config.tail, cons_module_iface(iface, acc))
                         }
                     }
                 }
@@ -925,7 +1049,10 @@ fn load_ifaces_for_module_names_loop(names: List[string, mem(normal)], config: L
 }
 
 fn load_ifaces_for_module_names(names: List[string, mem(normal)], config: List[string, mem(normal)]) -> List[{ module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }, mem(normal)] {
-    load_ifaces_for_module_names_loop(names, config, empty_module_iface_list())
+    // Walk every config source path. The `use` name list plus
+    // iface_config_path_for_module missed wbt_trial_i64 (E2005) even when
+    // lib/wbt_trial_i64.iface was on disk with fold_set_i64.
+    load_ifaces_from_config_loop(config, empty_module_iface_list())
 }
 
 fn cons_iface_string_public(s: string, rest: List[string, mem(normal)]) -> List[string, mem(normal)] {
@@ -1256,12 +1383,17 @@ fn program_stub_from_iface(iface: { module_name: string, source_path: string, ex
     { declarations: decls, location: parser_ast@zero_location() }
 }
 
-fn world_has_module(world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], name: string) -> bool {
+// Int64 1/0 — same-module bool returns have been observed inverted under seed-built selfhost.
+// Inverted `true` here skipped iface stubs, so skip-parsed `use` deps (e.g. wbt_trial_i64) became E4002.
+fn world_has_module(world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], name: string) -> int64 {
     case world.is_nil of {
-        true -> false;
-        false -> case world.head.module_name == name of {
-            true -> true;
-            false -> world_has_module(world.tail, name)
+        true -> 0;
+        false -> case strings_equal_exact_i(world.head.module_name, name) < 1 of {
+            true -> world_has_module(world.tail, name);
+            false -> case world.head.program.declarations.is_nil of {
+                true -> world_has_module(world.tail, name);
+                false -> 1
+            }
         }
     }
 }
@@ -1269,13 +1401,16 @@ fn world_has_module(world: List[{ module_name: string, program: { declarations: 
 fn append_iface_stub_programs(world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], ifaces: List[{ module_name: string, source_path: string, export_trait: string, exports: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)], impls: List[{ name: string, arity: int64, decl_tag: int64, effects: string, type_surface: string }, mem(normal)] }, mem(normal)]) -> List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)] {
     case ifaces.is_nil of {
         true -> world;
-        false -> case world_has_module(world, ifaces.head.module_name) of {
-            true -> append_iface_stub_programs(world, ifaces.tail);
-            false -> parser_ast@cons_named_program(
-                ifaces.head.module_name,
-                program_stub_from_iface(ifaces.head),
-                append_iface_stub_programs(world, ifaces.tail)
-            )
+        false -> case world_has_module(world, ifaces.head.module_name) < 1 of {
+            false -> append_iface_stub_programs(world, ifaces.tail);
+            true -> case string_nonempty_i(ifaces.head.source_path) < 1 of {
+                true -> append_iface_stub_programs(world, ifaces.tail);
+                false -> parser_ast@cons_named_program(
+                    ifaces.head.module_name,
+                    program_stub_from_iface(ifaces.head),
+                    append_iface_stub_programs(world, ifaces.tail)
+                )
+            }
         }
     }
 }

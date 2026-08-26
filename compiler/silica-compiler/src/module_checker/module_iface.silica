@@ -23,6 +23,7 @@ use parser_ast;
 use type_checker_callee_env;
 use effect_checker_core;
 use atom_table;
+use type_interner;
 
 export iface_format_version/0;
 export iface_compiler_stamp/0;
@@ -53,7 +54,7 @@ export parse_effects_iface_string/1;
 
 
 fn iface_format_version() -> string { "1" }
-fn iface_compiler_stamp() -> string { "seed-iface-6" }
+fn iface_compiler_stamp() -> string { "seed-iface-7" }
 
 fn iface_cache_dir() -> string { ".cache/ifaces" }
 
@@ -454,6 +455,129 @@ fn append_line(path: string, line: string) -> int64 proc[DeviceIO] {
     end
 }
 
+struct ListIfaceInt {
+    is_nil: bool,
+    head: int64,
+    tail: ListIfaceInt
+}
+
+fn empty_iface_ints() -> ListIfaceInt {
+    dummy: int64 <- 0;
+    nil_i: ListIfaceInt <- ListIfaceInt { is_nil: true, head: dummy, tail: nil_i };
+    nil_i
+}
+
+fn cons_iface_int(v: int64, rest: ListIfaceInt) -> ListIfaceInt {
+    ListIfaceInt { is_nil: false, head: v, tail: rest }
+}
+
+fn reverse_iface_ints(lst: ListIfaceInt, acc: ListIfaceInt) -> ListIfaceInt {
+    case lst.is_nil of {
+        true -> acc;
+        false -> reverse_iface_ints(lst.tail, cons_iface_int(lst.head, acc))
+    }
+}
+
+fn join_iface_root_ids(ids: ListIfaceInt) -> string {
+    case ids.is_nil of {
+        true -> "";
+        false -> case ids.tail.is_nil of {
+            true -> atom_table@int64_to_decimal_string(ids.head);
+            false -> concat(concat(atom_table@int64_to_decimal_string(ids.head), ","), join_iface_root_ids(ids.tail))
+        }
+    }
+}
+
+struct IfaceInternOut {
+    interner: TypeInterner,
+    roots: ListIfaceInt,
+    ok: int64
+}
+
+fn intern_iface_export_surfaces(exports: ListIfaceExport, interner: TypeInterner, acc: ListIfaceInt, all_ok: int64) -> IfaceInternOut {
+    case exports.is_nil of {
+        true -> IfaceInternOut { interner: interner, roots: reverse_iface_ints(acc, empty_iface_ints()), ok: all_ok };
+        false -> do
+            pr: TypeInternParseResult <- type_interner@parse_type(interner, exports.head.type_surface);
+            tid: int64 <- case type_interner@parse_result_ok(pr) of {
+                true -> type_interner@parse_result_id(pr);
+                false -> type_interner@invalid_type_id()
+            };
+            next_ok: int64 <- case all_ok of {
+                0 -> 0;
+                _: int64 -> case type_interner@parse_result_ok(pr) of {
+                    true -> 1;
+                    false -> 0
+                }
+            };
+            intern_iface_export_surfaces(exports.tail, type_interner@parse_result_interner(pr), cons_iface_int(tid, acc), next_ok)
+        end
+    }
+}
+
+fn flag_digit_iface(b: boolean) -> string {
+    case b of {
+        true -> "1";
+        false -> "0"
+    }
+}
+
+fn encode_dag_node_line(n: TypeNode) -> string {
+    concat(
+        concat(atom_table@int64_to_decimal_string(n.kind), ","),
+        concat(
+            concat(atom_table@int64_to_decimal_string(n.a), ","),
+            concat(
+                concat(atom_table@int64_to_decimal_string(n.b), ","),
+                concat(concat(atom_table@int64_to_decimal_string(n.c), ","), flag_digit_iface(n.buf_size_is_name))
+            )
+        )
+    )
+}
+
+fn write_dag_name_lines(path: string, interner: TypeInterner, i: int64, n: int64) -> int64 proc[DeviceIO] {
+    case i >= n of {
+        true -> 0;
+        false -> do
+            _: int64 <- append_line(path, type_interner@interner_dag_name_at(interner, i));
+            write_dag_name_lines(path, interner, i + 1, n)
+        end
+    }
+}
+
+fn write_dag_node_lines(path: string, interner: TypeInterner, i: int64, n: int64) -> int64 proc[DeviceIO] {
+    case i >= n of {
+        true -> 0;
+        false -> do
+            _: int64 <- append_line(path, encode_dag_node_line(type_interner@interner_dag_node_at(interner, i)));
+            write_dag_node_lines(path, interner, i + 1, n)
+        end
+    }
+}
+
+fn write_dag_section(path: string, exports: ListIfaceExport, impls: ListIfaceExport) -> int64 proc[DeviceIO] {
+    do
+        i0: TypeInterner <- type_interner@create_type_interner();
+        ex: IfaceInternOut <- intern_iface_export_surfaces(exports, i0, empty_iface_ints(), 1);
+        im: IfaceInternOut <- intern_iface_export_surfaces(impls, ex.interner, empty_iface_ints(), ex.ok);
+        case im.ok of {
+            0 -> 0;
+            _: int64 -> do
+                nc: int64 <- type_interner@interner_dag_name_count(im.interner);
+                kc: int64 <- type_interner@interner_dag_node_count(im.interner);
+                _: int64 <- append_line(path, "===DAG===");
+                _: int64 <- append_line(path, concat("names=", atom_table@int64_to_decimal_string(nc)));
+                _: int64 <- write_dag_name_lines(path, im.interner, 0, nc);
+                _: int64 <- append_line(path, concat("nodes=", atom_table@int64_to_decimal_string(kc)));
+                _: int64 <- write_dag_node_lines(path, im.interner, 0, kc);
+                _: int64 <- append_line(path, concat("export_roots=", join_iface_root_ids(ex.roots)));
+                _: int64 <- append_line(path, concat("impl_roots=", join_iface_root_ids(im.roots)));
+                0
+            end
+        }
+    end
+}
+
 fn write_export_blocks(path: string, exports: ListIfaceExport) -> int64 proc[DeviceIO] {
     case exports.is_nil of {
         true -> 0;
@@ -492,14 +616,16 @@ fn write_iface_header_and_exports(
         _: int64 <- append_line(path, concat("export_trait=", export_trait));
         _: int64 <- append_line(path, concat("export_count=", atom_table@int64_to_decimal_string(count_iface_exports(exports))));
         _: int64 <- append_line(path, concat("impl_count=", atom_table@int64_to_decimal_string(count_iface_exports(impls))));
+        _: int64 <- write_dag_section(path, exports, impls);
         _: int64 <- write_export_blocks(path, exports);
         _: int64 <- write_export_blocks(path, impls);
         0
     end
 }
 
-// Publish draft export table after successful type check. Returns 0 always (I/O best-effort;
-// extraction failure leaves no iface / deletes stale).
+// Publish draft export table after SIR/emit (not after TC). write_dag intern
+// must not stay live under SIR. Returns 0 always (I/O best-effort; extraction
+// failure leaves no iface / deletes stale).
 fn publish_module_iface(module_name: string, source_path: string, program: Program, config: ListIfaceString) -> int64 proc[DeviceIO] {
     do
         (ok: bool, exports: ListIfaceExport, impls: ListIfaceExport, export_trait: string) <- extract_iface_tables(program);
@@ -775,6 +901,16 @@ fn iface_hdr_with_stamp(flags: int64, stamp_ok: bool) -> int64 {
     end
 }
 
+fn skip_to_dash_iface(lines: ListIfaceString) -> ListIfaceString {
+    case lines.is_nil of {
+        true -> lines;
+        false -> case lines.head == "---" of {
+            true -> lines;
+            false -> skip_to_dash_iface(lines.tail)
+        }
+    }
+}
+
 // Returns (ok, mod, source, source_hash, deps, deps_hash, rest_lines)
 fn parse_iface_header_loop(
     lines: ListIfaceString,
@@ -787,8 +923,8 @@ fn parse_iface_header_loop(
 ) -> (bool, string, string, string, string, string, ListIfaceString) {
     case lines.is_nil of {
         true -> (iface_hdr_magic_ok(flags) and iface_hdr_format_ok(flags) and iface_hdr_stamp_ok(flags) and len(mod_name) > 0 and len(source_hash) > 0, mod_name, source_path, source_hash, deps, deps_hash, lines);
-        false -> case lines.head == "---" of {
-            true -> (iface_hdr_magic_ok(flags) and iface_hdr_format_ok(flags) and iface_hdr_stamp_ok(flags) and len(mod_name) > 0 and len(source_hash) > 0, mod_name, source_path, source_hash, deps, deps_hash, lines);
+        false -> case lines.head == "---" or lines.head == "===DAG===" of {
+            true -> (iface_hdr_magic_ok(flags) and iface_hdr_format_ok(flags) and iface_hdr_stamp_ok(flags) and len(mod_name) > 0 and len(source_hash) > 0, mod_name, source_path, source_hash, deps, deps_hash, skip_to_dash_iface(lines));
             false -> case lines.head == "SILICA_IFACE_V1" of {
                 true -> parse_iface_header_loop(lines.tail, mod_name, source_path, iface_hdr_with_magic(flags, true), source_hash, deps, deps_hash);
                 false -> case starts_with_iface(lines.head, "module=") of {
@@ -822,7 +958,7 @@ fn parse_iface_header_loop(
 fn iface_header_field_scan(lines: ListIfaceString, key: string) -> string {
     case lines.is_nil of {
         true -> "";
-        false -> case lines.head == "---" of {
+        false -> case lines.head == "---" or lines.head == "===DAG===" of {
             true -> "";
             false -> case starts_with_iface(lines.head, key) of {
                 true -> header_value_after(lines.head, key);

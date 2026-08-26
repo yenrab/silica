@@ -15,15 +15,9 @@ main:     STP X29, X30, [SP, #-16]!
     BL _silica_dangerous_pid_registry_init
     ADRP X0, L_str_0@PAGE
     ADD X0, X0, L_str_0@PAGEOFF
-    MOVZ X1, #0
-    MOVK X1, #0, LSL #16
-    MOVK X1, #0, LSL #32
-    MOVK X1, #0, LSL #48
+    MOV X1, #0
     STP X0, X1, [SP, #-16]!
-    MOVZ X2, #0
-    MOVK X2, #0, LSL #16
-    MOVK X2, #0, LSL #32
-    MOVK X2, #0, LSL #48
+    MOV X2, #0
     LDP X0, X1, [SP], #16
     BL L_substring_helper
     MOV X19, X0
@@ -105,10 +99,10 @@ L_ps_do_write:
     LDP X19, X20, [SP], #16
     RET
 L_substring_helper:
-    STP X19, X20, [SP, #-64]!
+    STP X19, X20, [SP, #-80]!
     STP X21, X22, [SP, #16]
     STP X23, X14, [SP, #32]
-    STR X15, [SP, #48]
+    STP X15, X30, [SP, #48]
     MOV X19, X0
     MOV X20, X1
     MOV X21, X2
@@ -121,20 +115,109 @@ L_substring_helper:
     B.NE L_ss_lit_base
     LDR X8, [X19, #8]
     LDR X22, [X19, #16]
-    B L_ss_len_done
+    B L_ss_have_base
 L_ss_lit_base:
     MOV X8, X19
+    ADRP X1, L_ss_ascii_key@PAGE
+    ADD X1, X1, L_ss_ascii_key@PAGEOFF
+    LDR X2, [X1]
+    CMP X2, X19
+    B.NE L_ss_strlen
+    ADRP X1, L_ss_cached_len@PAGE
+    ADD X1, X1, L_ss_cached_len@PAGEOFF
+    LDR X22, [X1]
+    B L_ss_have_base
+L_ss_strlen:
     MOV X9, X19
     MOV X22, #0
 L_ss_len:
     LDRB W10, [X9]
-    CBZ W10, L_ss_len_done
+    CBZ W10, L_ss_have_base
     ADD X22, X22, #1
     ADD X9, X9, #1
     B L_ss_len
-L_ss_len_done:
+L_ss_have_base:
+    CMP X20, X21
+    B.GE L_ss_empty
+    ADRP X1, L_ss_ascii_key@PAGE
+    ADD X1, X1, L_ss_ascii_key@PAGEOFF
+    LDR X2, [X1]
+    CMP X2, X19
+    B.NE L_ss_ascii_classify
+    ADRP X1, L_ss_ascii_flag@PAGE
+    ADD X1, X1, L_ss_ascii_flag@PAGEOFF
+    LDR X2, [X1]
+    CBNZ X2, L_ss_ascii_fast
+    B L_ss_utf8_slow
+L_ss_ascii_classify:
+    MOV X9, #0
+    MOV X14, #1
+L_ss_cls:
+    CMP X9, X22
+    B.GE L_ss_cls_done
+    LDRB W10, [X8, X9]
+    CMP W10, #0x80
+    CSEL X14, XZR, X14, HS
+    ADD X9, X9, #1
+    B L_ss_cls
+L_ss_cls_done:
+    ADRP X1, L_ss_ascii_key@PAGE
+    ADD X1, X1, L_ss_ascii_key@PAGEOFF
+    STR X19, [X1]
+    ADRP X1, L_ss_ascii_flag@PAGE
+    ADD X1, X1, L_ss_ascii_flag@PAGEOFF
+    STR X14, [X1]
+    ADRP X1, L_ss_cached_len@PAGE
+    ADD X1, X1, L_ss_cached_len@PAGEOFF
+    STR X22, [X1]
+    CBNZ X14, L_ss_ascii_fast
+    B L_ss_utf8_slow
+L_ss_ascii_fast:
+    CMP X20, X22
+    CSEL X23, X22, X20, HI
+    CMP X21, X22
+    CSEL X9, X22, X21, HI
+    CMP X23, X9
+    CSEL X23, X9, X23, HI
+    SUB X11, X9, X23
+    B L_ss_materialize
+L_ss_utf8_slow:
+    ADRP X1, L_ss_cur_key@PAGE
+    ADD X1, X1, L_ss_cur_key@PAGEOFF
+    LDR X2, [X1]
+    CMP X2, X19
+    B.NE L_ss_from_zero
+    ADRP X1, L_ss_cur_char@PAGE
+    ADD X1, X1, L_ss_cur_char@PAGEOFF
+    LDR X14, [X1]
+    ADRP X1, L_ss_cur_byte@PAGE
+    ADD X1, X1, L_ss_cur_byte@PAGEOFF
+    LDR X9, [X1]
+    CMP X9, X22
+    CSEL X9, X22, X9, HI
+    CMP X20, X14
+    B.LO L_ss_bwd
+    B L_ss_find_start
+L_ss_from_zero:
     MOV X9, #0
     MOV X14, #0
+    B L_ss_find_start
+L_ss_bwd:
+    CMP X14, X20
+    B.LE L_ss_start_found
+    CBZ X9, L_ss_start_found
+    SUB X9, X9, #1
+L_ss_bwd_cont:
+    LDRB W10, [X8, X9]
+    LSR W11, W10, #6
+    CMP W11, #2
+    B.NE L_ss_bwd_lead
+    CBZ X9, L_ss_bwd_lead
+    SUB X9, X9, #1
+    B L_ss_bwd_cont
+L_ss_bwd_lead:
+    SUB X14, X14, #1
+    B L_ss_bwd
 L_ss_find_start:
     CMP X14, X20
     B.GE L_ss_start_found
@@ -233,17 +316,50 @@ L_ss_end_found:
     CMP X9, X22
     CSEL X9, X22, X9, GT
     SUB X11, X9, X23
+    ADRP X1, L_ss_cur_key@PAGE
+    ADD X1, X1, L_ss_cur_key@PAGEOFF
+    STR X19, [X1]
+    ADRP X1, L_ss_cur_char@PAGE
+    ADD X1, X1, L_ss_cur_char@PAGEOFF
+    STR X14, [X1]
+    ADRP X1, L_ss_cur_byte@PAGE
+    ADD X1, X1, L_ss_cur_byte@PAGEOFF
+    STR X9, [X1]
+    B L_ss_materialize
+L_ss_materialize:
     CBZ X11, L_ss_empty
+    CMP X11, #1
+    B.NE L_ss_heap
+    LDRB W13, [X8, X23]
+    ADRP X0, L_ss_1char_ready@PAGE
+    ADD X0, X0, L_ss_1char_ready@PAGEOFF
+    LDR X1, [X0]
+    CBNZ X1, L_ss_1char_ok
+    ADRP X2, L_ss_1char_table@PAGE
+    ADD X2, X2, L_ss_1char_table@PAGEOFF
+    MOV X3, #0
+L_ss_1char_init:
+    STRB W3, [X2]
+    STRB WZR, [X2, #1]
+    ADD X2, X2, #2
+    ADD X3, X3, #1
+    CMP X3, #256
+    B.LO L_ss_1char_init
+    MOV X1, #1
+    STR X1, [X0]
+L_ss_1char_ok:
+    ADRP X0, L_ss_1char_table@PAGE
+    ADD X0, X0, L_ss_1char_table@PAGEOFF
+    ADD X0, X0, X13, LSL #1
+    B L_ss_ret
+L_ss_empty:
+    ADRP X0, L_ss_empty_str@PAGE
+    ADD X0, X0, L_ss_empty_str@PAGEOFF
+    B L_ss_ret
+L_ss_heap:
     ADD X0, X11, #1
-    MOV X1, X0
-    MOV X0, #0
-    MOV X2, #3
-    MOV X3, #0x1002
-    MOV X4, #-1
-    MOV X5, #0
-    MOVZ X16, #0xC5
-    MOVK X16, #0x200, LSL #16
-    SVC #0x80
+    BL L_ss_bump_alloc
+    CBZ X0, L_ss_ret
     MOV X15, X0
     MOV X9, X15
     ADD X10, X8, X23
@@ -259,10 +375,38 @@ L_ss_cp:
 L_ss_cp_done:
     STRB WZR, [X9]
     MOV X0, X15
-    B L_ss_ret
-L_ss_empty:
-    MOV X0, #1
-    MOV X1, X0
+L_ss_ret:
+    LDP X15, X30, [SP, #48]
+    LDP X23, X14, [SP, #32]
+    LDP X21, X22, [SP, #16]
+    LDP X19, X20, [SP], #80
+    RET
+L_ss_bump_alloc:
+    STP X19, X30, [SP, #-32]!
+    STP X20, X21, [SP, #16]
+    ADD X0, X0, #7
+    LSR X0, X0, #3
+    LSL X19, X0, #3
+    ADRP X20, L_ss_arena_ptr@PAGE
+    ADD X20, X20, L_ss_arena_ptr@PAGEOFF
+    LDR X21, [X20]
+    CBZ X21, L_ss_bump_new
+    ADRP X1, L_ss_arena_end@PAGE
+    ADD X1, X1, L_ss_arena_end@PAGEOFF
+    LDR X2, [X1]
+    ADD X3, X21, X19
+    CMP X3, X2
+    B.HI L_ss_bump_new
+    STR X3, [X20]
+    MOV X0, X21
+    LDP X20, X21, [SP, #16]
+    LDP X19, X30, [SP], #32
+    RET
+L_ss_bump_new:
+    MOVZ X1, #0x40, LSL #16
+    CMP X19, X1
+    CSEL X1, X19, X1, HI
+    MOV X21, X1
     MOV X0, #0
     MOV X2, #3
     MOV X3, #0x1002
@@ -271,13 +415,50 @@ L_ss_empty:
     MOVZ X16, #0xC5
     MOVK X16, #0x200, LSL #16
     SVC #0x80
-    STRB WZR, [X0]
-L_ss_ret:
-    LDR X15, [SP, #48]
-    LDP X23, X14, [SP, #32]
-    LDP X21, X22, [SP, #16]
-    LDP X19, X20, [SP], #64
+    CMN X0, #1
+    B.EQ L_ss_bump_fail
+    ADD X1, X0, X19
+    STR X1, [X20]
+    ADRP X2, L_ss_arena_end@PAGE
+    ADD X2, X2, L_ss_arena_end@PAGEOFF
+    ADD X3, X0, X21
+    STR X3, [X2]
+    LDP X20, X21, [SP, #16]
+    LDP X19, X30, [SP], #32
     RET
+L_ss_bump_fail:
+    MOV X0, #0
+    LDP X20, X21, [SP, #16]
+    LDP X19, X30, [SP], #32
+    RET
+    .section __DATA,__bss
+    .p2align 3
+L_ss_ascii_key:
+    .space 8
+L_ss_ascii_flag:
+    .space 8
+L_ss_cached_len:
+    .space 8
+L_ss_cur_key:
+    .space 8
+L_ss_cur_char:
+    .space 8
+L_ss_cur_byte:
+    .space 8
+L_ss_arena_ptr:
+    .space 8
+L_ss_arena_end:
+    .space 8
+L_ss_1char_ready:
+    .space 8
+L_ss_1char_table:
+    .space 512
+    .section __TEXT,__cstring,cstring_literals
+L_ss_empty_str:
+    .byte 0
+    .section __TEXT,__text,regular,pure_instructions
+    .p2align 2
+
 .section __TEXT,__rodata
 .align	8
 atom_0:

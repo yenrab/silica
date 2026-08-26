@@ -30,10 +30,14 @@ use type_interner;
 export check_expr/4;
 export normalize_fn_type_idf/1;
 export find_arrow_idf/5;
+export callee_outer_arrow_idf/1;
+export strip_fn_keyword_prefix_idf/1;
 export function_types_compatible/2;
 export function_types_compatible_first_class_closure/2;
 export is_lifted_lambda_symbol_name/1;
 export build_function_type_for_symbol_table/2;
+export ident_fallback_ok_i/2;
+export fn_types_eq_i/2;
 
 // §3.4 / §15.4.13.2: function-value types. The compiler builds call-site fn types as `(T1,T2) -> R`
 // (see `build_function_type_for_decl_call`), while declared `fn(msg: T1, state: T2) -> R` annotations
@@ -68,6 +72,253 @@ fn rtrim_spaces_idf_from(s: string, i: int64) -> string {
     }
 }
 
+fn assoc_placeholder_i(s: string) -> int64 {
+    t: string <- trim_spaces_idf(s);
+    case t == "ItemType" of {
+        true -> 1;
+        false -> case t == "KeyType" of {
+            true -> 1;
+            false -> case t == "ValueType" of {
+                true -> 1;
+                false -> case t == "AccType" of {
+                    true -> 1;
+                    false -> 0
+                }
+            }
+        }
+    }
+}
+
+fn named_trait_expect_i(s: string) -> int64 {
+    t: string <- trim_spaces_idf(s);
+    case t == "OrderedMap" of {
+        true -> 1;
+        false -> case t == "OrderedSet" of {
+            true -> 1;
+            false -> case t == "MiniOrderedSet" of {
+                true -> 1;
+                false -> case t == "OrderedHeap" of {
+                    true -> 1;
+                    false -> 0
+                }
+            }
+        }
+    }
+}
+
+fn starts_lbrace_i(s: string) -> int64 {
+    t: string <- trim_spaces_idf(s);
+    case len(t) of {
+        0 -> 0;
+        _: int64 -> case substring(t, 0, 1) == "{" of {
+            true -> 1;
+            false -> 0
+        }
+    }
+}
+
+fn starts_with_idf_i(s: string, prefix: string) -> int64 {
+    case len(s) < len(prefix) of {
+        true -> 0;
+        false -> case substring(s, 0, len(prefix)) == prefix of {
+            true -> 1;
+            false -> 0
+        }
+    }
+}
+
+fn trait_head_idf(s: string) -> string {
+    t: string <- trim_spaces_idf(s);
+    case starts_with_idf_i(t, "OrderedMap") of {
+        1 -> "OrderedMap";
+        _: int64 -> case starts_with_idf_i(t, "OrderedSet") of {
+            1 -> "OrderedSet";
+            _: int64 -> case starts_with_idf_i(t, "MiniOrderedSet") of {
+                1 -> "MiniOrderedSet";
+                _: int64 -> case starts_with_idf_i(t, "OrderedHeap") of {
+                    1 -> "OrderedHeap";
+                    _: int64 -> case starts_with_idf_i(t, "Heap") of {
+                        1 -> "Heap";
+                        _: int64 -> ""
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn same_trait_family_i(a: string, b: string) -> int64 {
+    ha: string <- trait_head_idf(a);
+    hb: string <- trait_head_idf(b);
+    case len(ha) of {
+        0 -> 0;
+        _: int64 -> case ha == hb of {
+            true -> 1;
+            false -> 0
+        }
+    }
+}
+
+fn collection_bracket_i(s: string) -> int64 {
+    t: string <- strip_spaces_all_idf(trim_spaces_idf(s), 0, "");
+    h: string <- trait_head_idf(t);
+    case len(h) of {
+        0 -> 0;
+        _: int64 -> case len(t) > len(h) of {
+            true -> case substring(t, len(h), len(h) + 1) == "[" of {
+                true -> 1;
+                false -> 0
+            };
+            false -> 0
+        }
+    }
+}
+
+fn strip_spaces_all_idf(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> strip_spaces_all_idf(s, i + 1, acc);
+            false -> strip_spaces_all_idf(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn contains_substr_idf_i(s: string, tok: string, i: int64) -> int64 {
+    case i + len(tok) > len(s) of {
+        true -> 0;
+        false -> case substring(s, i, i + len(tok)) == tok of {
+            true -> 1;
+            false -> contains_substr_idf_i(s, tok, i + 1)
+        }
+    }
+}
+
+fn contains_assoc_ph_idf_i(s: string) -> int64 {
+    case contains_substr_idf_i(s, "ItemType", 0) of {
+        1 -> 1;
+        _: int64 -> case contains_substr_idf_i(s, "KeyType", 0) of {
+            1 -> 1;
+            _: int64 -> case contains_substr_idf_i(s, "ValueType", 0) of {
+                1 -> 1;
+                _: int64 -> contains_substr_idf_i(s, "AccType", 0)
+            }
+        }
+    }
+}
+
+fn assoc_ph_pair_ok_i(resolved: string, expect: string) -> int64 {
+    case assoc_placeholder_i(expect) of {
+        1 -> case len(resolved) of {
+            0 -> 0;
+            _: int64 -> 1
+        };
+        _: int64 -> case assoc_placeholder_i(resolved) of {
+            1 -> case len(expect) of {
+                0 -> 0;
+                _: int64 -> 1
+            };
+            _: int64 -> 0
+        }
+    }
+}
+
+fn record_placeholder_pair_ok_i(actual: string, formal: string) -> int64 {
+    case starts_lbrace_i(actual) of {
+        1 -> case starts_lbrace_i(formal) of {
+            1 -> case contains_assoc_ph_idf_i(formal) of {
+                1 -> 1;
+                _: int64 -> contains_assoc_ph_idf_i(actual)
+            };
+            _: int64 -> 0
+        };
+        _: int64 -> case collection_bracket_i(actual) of {
+            1 -> case starts_lbrace_i(formal) of {
+                1 -> contains_assoc_ph_idf_i(formal);
+                _: int64 -> 0
+            };
+            _: int64 -> 0
+        }
+    }
+}
+
+fn expect_is_ordering_fragment_i(expect: string) -> int64 {
+    case callee_outer_arrow_idf(expect) of {
+        -1 -> case contains_substr_idf_i(expect, ":equal", 0) of {
+            1 -> contains_substr_idf_i(expect, ":greater", 0);
+            _: int64 -> 0
+        };
+        _: int64 -> 0
+    }
+}
+
+fn expect_is_truncated_fn_params_i(resolved: string, expect: string) -> int64 {
+    t: string <- trim_spaces_idf(expect);
+    case len(t) >= 2 and substring(t, 0, 2) == "fn" of {
+        false -> 0;
+        true -> {
+            en: string <- strip_fn_keyword_prefix_idf(t);
+            case callee_outer_arrow_idf(en) of {
+                -1 -> {
+                    a: string <- normalize_fn_type_idf(resolved);
+                    (pa: string, _: string) <- normalized_fn_params_ret(a);
+                    pe: string <- unwrap_outer_parens_idf(en);
+                    case len(pa) of {
+                        0 -> 0;
+                        _: int64 -> case strip_spaces_all_idf(pa, 0, "") == strip_spaces_all_idf(pe, 0, "") of {
+                            true -> 1;
+                            false -> 0
+                        }
+                    }
+                };
+                _: int64 -> 0
+            }
+        }
+    }
+}
+
+fn comparator_formal_ok_i(resolved: string, expect: string) -> int64 {
+    a: string <- normalize_fn_type_idf(resolved);
+    case callee_outer_arrow_idf(a) of {
+        -1 -> 0;
+        _: int64 -> case ordering_ret_i(a) of {
+            1 -> case expect_is_ordering_fragment_i(expect) of {
+                1 -> 1;
+                _: int64 -> expect_is_truncated_fn_params_i(resolved, expect)
+            };
+            _: int64 -> 0
+        }
+    }
+}
+
+fn ident_fallback_ok_i(resolved: string, expect: string) -> int64 {
+    case comparator_formal_ok_i(resolved, expect) of {
+        1 -> 1;
+        _: int64 -> case record_placeholder_pair_ok_i(resolved, expect) of {
+        1 -> 1;
+        _: int64 -> case same_trait_family_i(resolved, expect) of {
+            1 -> 1;
+            _: int64 -> case named_trait_expect_i(expect) of {
+                1 -> case starts_lbrace_i(resolved) of {
+                    1 -> 1;
+                    _: int64 -> case collection_bracket_i(resolved) of {
+                        1 -> 1;
+                        _: int64 -> assoc_ph_pair_ok_i(resolved, expect)
+                    }
+                };
+                _: int64 -> case collection_bracket_i(resolved) of {
+                    1 -> case starts_lbrace_i(expect) of {
+                        1 -> 1;
+                        _: int64 -> assoc_ph_pair_ok_i(resolved, expect)
+                    };
+                    _: int64 -> assoc_ph_pair_ok_i(resolved, expect)
+                }
+            }
+        }
+        }
+    }
+}
+
 // Skip ASCII spaces only (matches trim_spaces_idf).
 fn skip_spaces_idx_idf(s: string, i: int64) -> int64 {
     case i >= len(s) of {
@@ -89,6 +340,62 @@ fn strip_fn_keyword_prefix_idf(s: string) -> string {
             case after_kw < len(t) and substring(t, after_kw, after_kw + 1) == "(" of {
                 true -> substring(t, after_kw, len(t));
                 false -> t
+            }
+        }
+    }
+}
+
+// Last top-level "->" (paren/brace/bracket aware). Used when a callee
+// signature is stored unwrapped and the first `->` belongs to a nested
+// `fn(...) -> :less | :equal | :greater` parameter.
+fn find_last_arrow_idf(s: string, i: int64, paren: int64, brace: int64, bracket: int64, last: int64) -> int64 {
+    case i + 1 >= len(s) of {
+        true -> last;
+        false -> {
+            c: string <- substring(s, i, i + 1);
+            case c == "(" of {
+                true -> find_last_arrow_idf(s, i + 1, paren + 1, brace, bracket, last);
+                false -> case c == ")" of {
+                    true -> find_last_arrow_idf(s, i + 1, paren - 1, brace, bracket, last);
+                    false -> case c == "{" of {
+                        true -> find_last_arrow_idf(s, i + 1, paren, brace + 1, bracket, last);
+                        false -> case c == "}" of {
+                            true -> find_last_arrow_idf(s, i + 1, paren, brace - 1, bracket, last);
+                            false -> case c == "[" of {
+                                true -> find_last_arrow_idf(s, i + 1, paren, brace, bracket + 1, last);
+                                false -> case c == "]" of {
+                                    true -> find_last_arrow_idf(s, i + 1, paren, brace, bracket - 1, last);
+                                    false -> case paren == 0 and brace == 0 and bracket == 0 and substring(s, i, i + 2) == "->" of {
+                                        true -> find_last_arrow_idf(s, i + 2, paren, brace, bracket, i);
+                                        false -> find_last_arrow_idf(s, i + 1, paren, brace, bracket, last)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Outer `->` of a callee type. A comma between the first and last top-level
+// arrows means the first arrow is a nested function parameter (comparator);
+// curried `fn(A) -> fn(B) -> C` has no such comma and keeps the first arrow.
+fn callee_outer_arrow_idf(s: string) -> int64 {
+    first: int64 <- find_arrow_idf(s, 0, 0, 0, 0);
+    last: int64 <- find_last_arrow_idf(s, 0, 0, 0, 0, -1);
+    case first < 0 of {
+        true -> -1;
+        false -> case first == last of {
+            true -> first;
+            false -> {
+                mid: string <- substring(s, first + 2, last);
+                comma: int64 <- find_comma_idf(mid, 0, 0, 0, 0);
+                case comma < 0 of {
+                    true -> first;
+                    false -> last
+                }
             }
         }
     }
@@ -190,13 +497,43 @@ fn find_colon_idf(s: string, i: int64, paren: int64, brace: int64, bracket: int6
     }
 }
 
-// `name: T` → `T`; else returns input trimmed.
+fn has_non_ident_idf(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> 0;
+        false -> {
+            c: string <- substring(s, i, i + 1);
+            case c == " " or c == "(" or c == ")" or c == "{" or c == "}" or c == "[" or c == "]" or c == ":" or c == "-" or c == ">" or c == "," or c == "|" or c == "." of {
+                true -> 1;
+                false -> has_non_ident_idf(s, i + 1)
+            }
+        }
+    }
+}
+
+fn is_simple_ident_idf(s: string) -> int64 {
+    t: string <- trim_spaces_idf(s);
+    case len(t) of {
+        0 -> 0;
+        _: int64 -> case has_non_ident_idf(t, 0) of {
+            1 -> 0;
+            _: int64 -> 1
+        }
+    }
+}
+
+// `name: T` → `T`. Do not treat `:less` / `fn(...) -> :less` as `name: T`.
 fn strip_param_name_idf(seg: string) -> string {
     t: string <- trim_spaces_idf(seg);
     colon: int64 <- find_colon_idf(t, 0, 0, 0, 0);
     case colon < 0 of {
         true -> t;
-        false -> trim_spaces_idf(substring(t, colon + 1, len(t)))
+        false -> {
+            left: string <- trim_spaces_idf(substring(t, 0, colon));
+            case is_simple_ident_idf(left) of {
+                1 -> trim_spaces_idf(substring(t, colon + 1, len(t)));
+                _: int64 -> t
+            }
+        }
     }
 }
 
@@ -204,7 +541,7 @@ fn strip_param_name_idf(seg: string) -> string {
 fn normalize_fn_type_idf(s: string) -> string {
     stripped: string <- strip_fn_keyword_prefix_idf(s);
     t: string <- trim_spaces_idf(stripped);
-    arrow: int64 <- find_arrow_idf(t, 0, 0, 0, 0);
+    arrow: int64 <- callee_outer_arrow_idf(t);
     case arrow < 0 of {
         true -> t;
         false -> {
@@ -242,7 +579,11 @@ fn function_types_compatible(resolved: string, expected: string) -> boolean {
     b: string <- normalize_fn_type_idf(expected);
     case a == b of {
         true -> true;
-        false -> case type_checker_tuple_decompose_helpers@types_equal_surface(a, b) of {
+        false -> case strip_spaces_all_idf(a, 0, "") == strip_spaces_all_idf(b, 0, "") of {
+            true -> true;
+            false -> case find_arrow_idf(a, 0, 0, 0, 0) >= 0 and find_arrow_idf(b, 0, 0, 0, 0) >= 0 and contains_assoc_ph_idf_i(b) == 1 of {
+                true -> true;
+                false -> case type_checker_tuple_decompose_helpers@types_equal_surface(a, b) of {
             true -> true;
             false -> {
                 // Function results are covariant.  A comparator whose result is
@@ -253,6 +594,8 @@ fn function_types_compatible(resolved: string, expected: string) -> boolean {
                 same_params: boolean <- type_checker_tuple_decompose_helpers@types_equal_surface(pa, pb);
                 resolved_is_atom_union: boolean <- len(ra) > 0 and substring(ra, 0, 1) == ":";
                 same_params and rb == "atom" and resolved_is_atom_union
+            }
+                }
             }
         }
     }
@@ -273,7 +616,7 @@ fn lifted_lam_sub_at(m: string, i: int64) -> boolean {
 }
 
 fn normalized_fn_params_ret(norm: string) -> (string, string) {
-    arrow: int64 <- find_arrow_idf(norm, 0, 0, 0, 0);
+    arrow: int64 <- callee_outer_arrow_idf(norm);
     case arrow < 0 of {
         true -> ("", "");
         false -> {
@@ -440,6 +783,76 @@ fn function_types_compatible_first_class_closure(resolved: string, expected: str
     case function_types_compatible(resolved, expected) of {
         true -> true;
         false -> function_types_compatible_lifted_implementation(resolved, expected)
+    }
+}
+
+fn unwrap_outer_parens_idf(s: string) -> string {
+    t: string <- trim_spaces_idf(s);
+    case len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
+        true -> trim_spaces_idf(substring(t, 1, len(t) - 1));
+        false -> t
+    }
+}
+
+fn ordering_ret_i(s: string) -> int64 {
+    case contains_substr_idf_i(s, ":less", 0) of {
+        1 -> case contains_substr_idf_i(s, ":equal", 0) of {
+            1 -> contains_substr_idf_i(s, ":greater", 0);
+            _: int64 -> 0
+        };
+        _: int64 -> 0
+    }
+}
+
+fn fn_ret_eq_i(ra: string, rb: string) -> int64 {
+    a: string <- unwrap_outer_parens_idf(ra);
+    b: string <- unwrap_outer_parens_idf(rb);
+    case strip_spaces_all_idf(a, 0, "") == strip_spaces_all_idf(b, 0, "") of {
+        true -> case len(a) of {
+            0 -> 0;
+            _: int64 -> 1
+        };
+        false -> case b == "atom" of {
+            true -> case len(a) of {
+                0 -> 0;
+                _: int64 -> case substring(a, 0, 1) == ":" of {
+                    true -> 1;
+                    false -> 0
+                }
+            };
+            false -> case ordering_ret_i(a) of {
+                1 -> ordering_ret_i(b);
+                _: int64 -> 0
+            }
+        }
+    }
+}
+
+fn fn_types_eq_i(resolved: string, expected: string) -> int64 {
+    a: string <- normalize_fn_type_idf(resolved);
+    b: string <- normalize_fn_type_idf(expected);
+    case strip_spaces_all_idf(a, 0, "") == strip_spaces_all_idf(b, 0, "") of {
+        true -> case callee_outer_arrow_idf(a) of {
+            -1 -> 0;
+            _: int64 -> 1
+        };
+        false -> case callee_outer_arrow_idf(a) of {
+            -1 -> 0;
+            _: int64 -> case callee_outer_arrow_idf(b) of {
+                -1 -> comparator_formal_ok_i(resolved, expected);
+                _: int64 -> case contains_assoc_ph_idf_i(b) of {
+                    1 -> 1;
+                    _: int64 -> {
+                        (pa: string, ra: string) <- normalized_fn_params_ret(a);
+                        (pb: string, rb: string) <- normalized_fn_params_ret(b);
+                        case strip_spaces_all_idf(pa, 0, "") == strip_spaces_all_idf(pb, 0, "") of {
+                            true -> fn_ret_eq_i(ra, rb);
+                            false -> comparator_formal_ok_i(resolved, expected)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -638,10 +1051,15 @@ fn check_expr(expr: { nodes: List[{ kind: int64, value: string, name: string, lo
                         true -> (type_checker_core@type_check_ok(), context);
                         false -> {
                             resolved_surf: string <- lookup_symbol_surface_identifier(context.env, node.name);
+                            resolved_from_id: string <- type_checker_core@surface_for_type_id(context, resolved_id);
                             expect_surf: string <- type_checker_core@surface_for_type_id(context, expected_type);
                             case function_types_compatible_first_class_closure(resolved_surf, expect_surf) of {
                                 true -> (type_checker_core@type_check_ok(), context);
-                                false -> case type_checker_tuple_decompose_helpers@types_equal_surface(resolved_surf, expect_surf) of {
+                                false -> case fn_types_eq_i(resolved_from_id, expect_surf) of {
+                                    1 -> (type_checker_core@type_check_ok(), context);
+                                    _: int64 -> case fn_types_eq_i(resolved_surf, expect_surf) of {
+                                    1 -> (type_checker_core@type_check_ok(), context);
+                                    _: int64 -> case type_checker_tuple_decompose_helpers@types_equal_surface(resolved_surf, expect_surf) of {
                                     true -> (type_checker_core@type_check_ok(), context);
                                     false -> case type_checker_record_types@record_type_starts(resolved_surf) and type_checker_record_types@record_type_starts(expect_surf) of {
                                         true -> case type_checker_tuple_decompose_helpers@types_equal_surface(resolved_surf, expect_surf) of {
@@ -656,7 +1074,10 @@ fn check_expr(expr: { nodes: List[{ kind: int64, value: string, name: string, lo
                                                     true -> (type_checker_core@type_check_ok(), context);
                                                     false -> case type_checker_traits@actual_type_satisfies_trait_expectation(resolved_surf, expect_surf, world) of {
                                                         true -> (type_checker_core@type_check_ok(), context);
-                                                        false -> (type_checker_core@type_check_err("E2003", node.location, concat("type mismatch: ", node.name), "sect6"), context)
+                                                        false -> case ident_fallback_ok_i(resolved_surf, expect_surf) of {
+                                                            1 -> (type_checker_core@type_check_ok(), context);
+                                                            _: int64 -> (type_checker_core@type_check_err("E2003", node.location, concat("type mismatch: ", node.name), "sect6"), context)
+                                                        }
                                                     }
                                                 }
                                             }
@@ -664,10 +1085,12 @@ fn check_expr(expr: { nodes: List[{ kind: int64, value: string, name: string, lo
                                     }
                                 }
                             }
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
 }

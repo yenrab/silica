@@ -24,6 +24,8 @@ use type_checker_record_types;
 use type_checker_tuple_decompose_helpers;
 
 export record_type_for_struct_literal/3;
+export record_type_for_lowering/3;
+export field_type_for_lowering/2;
 export is_last_struct_literal_node/1;
 export build_record_make_layer/4;
 export build_record_proj_prim/3;
@@ -33,6 +35,41 @@ fn record_type_for_struct_literal(context: TypeContext, expr: Expr, expected_typ
     case type_checker_record_types@record_type_starts(expected_type) of {
         true -> expected_type;
         false -> type_checker_tuple_decompose_helpers@infer_struct_literal_type(expr, context)
+    }
+}
+
+// SIR lowering: unknown field initializers become int64 so a kind-21 literal still
+// becomes record_make (actor `call`/`cast`/`send` pass expected "discard").
+fn field_type_for_lowering(context: TypeContext, field_expr: Expr) -> string {
+    it: string <- type_checker_tuple_decompose_helpers@infer_expr_type(field_expr, context);
+    case len(it) == 0 of {
+        true -> "int64";
+        false -> it
+    }
+}
+
+fn infer_struct_type_lenient_chain(expr: Expr, context: TypeContext, acc: string, need_comma: bool) -> string {
+    case expr.kind == -1 or expr.kind == 999 of {
+        true -> case len(acc) > 0 of { true -> concat(acc, "}"); false -> "" };
+        false -> case expr.kind == 21 of {
+            true -> do
+                it: string <- field_type_for_lowering(context, expr.inner);
+                chunk: string <- case need_comma of {
+                    true -> concat(concat(concat(",", expr.name), ":"), it);
+                    false -> concat(concat(concat("{", expr.name), ":"), it)
+                };
+                infer_struct_type_lenient_chain(expr.right_expr, context, concat(acc, chunk), true)
+            end;
+            false -> case len(acc) > 0 of { true -> concat(acc, "}"); false -> "" }
+        }
+    }
+}
+
+fn record_type_for_lowering(context: TypeContext, expr: Expr, expected_type: string) -> string {
+    preferred: string <- record_type_for_struct_literal(context, expr, expected_type);
+    case type_checker_record_types@record_type_starts(preferred) of {
+        true -> preferred;
+        false -> infer_struct_type_lenient_chain(expr, context, "", false)
     }
 }
 

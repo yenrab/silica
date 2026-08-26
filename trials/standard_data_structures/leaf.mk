@@ -38,6 +38,44 @@ INTEGRATE_PRE_CLEAN = cd "$(THIS_DIR)" && \
 		rm -f "$${s%.sams}"; \
 	done
 
+# Root `make integrate` compiles these once into SDS_STDLIB_CACHE and passes both vars.
+# Standalone leaf integrate leaves SDS_STDLIB_CACHE empty and compiles lib/ as before.
+SDS_STDLIB_MODULES ?= wbt_set wbt_map OrderedMap OrderedSet
+
+# Copy prebuilt stdlib .o/.sams/.iface into this leaf's lib/ (same relative source= paths).
+define INSTALL_SDS_STDLIB_OBJS
+if [ -n "$(SDS_STDLIB_CACHE)" ] && [ -d "$(SDS_STDLIB_CACHE)/lib" ]; then \
+	mkdir -p lib; \
+	for m in $(SDS_STDLIB_MODULES); do \
+		if [ -e "lib/$$m.silica" ] || [ -L "lib/$$m.silica" ]; then \
+			for ext in o sams iface; do \
+				src="$(SDS_STDLIB_CACHE)/lib/$$m.$$ext"; \
+				if [ -f "$$src" ]; then cp -f "$$src" "lib/$$m.$$ext"; fi; \
+			done; \
+		fi; \
+	done; \
+fi
+endef
+
+# Keep already-compiled units in silica.config for `use` / iface lookup, but
+# resume-compile only units that do not yet have a sibling .iface. Lib units
+# are listed first so local helpers compile before the trials that use them.
+define SEED_SDS_COMPILE_ORDER
+if [ -f silica.config ]; then \
+	: > silica.compile.order; \
+	while IFS= read -r f || [ -n "$$f" ]; do \
+		[ -n "$$f" ] || continue; \
+		case "$$f" in lib/*) ;; *) continue ;; esac; \
+		[ -f "$${f%.silica}.iface" ] || printf '%s\n' "$$f" >> silica.compile.order; \
+	done < silica.config; \
+	while IFS= read -r f || [ -n "$$f" ]; do \
+		[ -n "$$f" ] || continue; \
+		case "$$f" in lib/*) continue ;; esac; \
+		[ -f "$${f%.silica}.iface" ] || printf '%s\n' "$$f" >> silica.compile.order; \
+	done < silica.config; \
+fi
+endef
+
 .PHONY: all clean assembly objects executables integrate positive-integrate record-positive-golden record-golden help silica.config
 
 .DEFAULT_GOAL := all
@@ -58,8 +96,10 @@ assembly: silica.config
 	fi
 	@$(ENSURE_SILICA_COMPILER)
 	@$(INTEGRATE_PRE_CLEAN)
+	@cd "$(THIS_DIR)" && $(INSTALL_SDS_STDLIB_OBJS) && $(SEED_SDS_COMPILE_ORDER)
 	@echo "Compiling with silica-compiler..."
 	@cd "$(THIS_DIR)" && $(RUN_SILICA_COMPILER)
+	@cd "$(THIS_DIR)" && $(INSTALL_SDS_STDLIB_OBJS)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
 objects: assembly
@@ -77,6 +117,11 @@ objects: assembly
 	@cd "$(THIS_DIR)" && for sams in lib/*.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$$(basename "$$sams" .sams); \
+		if [ -n "$(SDS_STDLIB_CACHE)" ] && [ -f "$(SDS_STDLIB_CACHE)/lib/$$base.o" ]; then \
+			echo "Reusing $(SDS_STDLIB_CACHE)/lib/$$base.o"; \
+			cp -f "$(SDS_STDLIB_CACHE)/lib/$$base.o" "lib/$$base.o"; \
+			continue; \
+		fi; \
 		echo "Assembling: $$sams -> lib/$$base.o"; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "lib/$$base.o"; \
 	done
@@ -107,6 +152,8 @@ positive-integrate: silica.config
 	@echo "$(MSG_PREFIX)positive-integrate: starting..."
 	@cd "$(THIS_DIR)" || exit 1; \
 	$(INTEGRATE_PRE_CLEAN); \
+	$(INSTALL_SDS_STDLIB_OBJS); \
+	$(SEED_SDS_COMPILE_ORDER); \
 	ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \
 		echo "SKIP: $(MSG_PREFIX)no positive trials"; \
@@ -117,6 +164,7 @@ positive-integrate: silica.config
 	echo "Compiling with silica-compiler..."; \
 	ec=0; \
 	{ $(RUN_SILICA_COMPILER); } || ec=$$?; \
+	$(INSTALL_SDS_STDLIB_OBJS); \
 	if [ "$$ec" -ne 0 ]; then \
 		if [ "$$ec" -eq 137 ] || [ "$$ec" -eq 9 ]; then \
 			echo "❌❌ $(MSG_PREFIX)compilation killed (exit $$ec; likely OOM while compiling large silica.config)"; \
@@ -162,6 +210,11 @@ positive-integrate: silica.config
 	for sams in lib/*.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$$(basename "$$sams" .sams); \
+		if [ -n "$(SDS_STDLIB_CACHE)" ] && [ -f "$(SDS_STDLIB_CACHE)/lib/$$base.o" ]; then \
+			echo "Reusing $(SDS_STDLIB_CACHE)/lib/$$base.o"; \
+			cp -f "$(SDS_STDLIB_CACHE)/lib/$$base.o" "lib/$$base.o"; \
+			continue; \
+		fi; \
 		echo "Assembling $$sams..."; \
 		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "lib/$$base.o"; then \
 			echo "❌❌ $(MSG_PREFIX)lib/$$base assemble failed"; \
@@ -227,7 +280,9 @@ record-positive-golden: silica.config
 	@echo "$(MSG_PREFIX)record-positive-golden: starting..."
 	@$(ENSURE_SILICA_COMPILER)
 	@$(INTEGRATE_PRE_CLEAN)
+	@cd "$(THIS_DIR)" && $(INSTALL_SDS_STDLIB_OBJS) && $(SEED_SDS_COMPILE_ORDER)
 	@cd "$(THIS_DIR)" && $(RUN_SILICA_COMPILER)
+	@cd "$(THIS_DIR)" && $(INSTALL_SDS_STDLIB_OBJS)
 	@cd "$(THIS_DIR)" && for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
@@ -247,6 +302,10 @@ record-positive-golden: silica.config
 	@cd "$(THIS_DIR)" && for sams in lib/*.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$$(basename "$$sams" .sams); \
+		if [ -n "$(SDS_STDLIB_CACHE)" ] && [ -f "$(SDS_STDLIB_CACHE)/lib/$$base.o" ]; then \
+			cp -f "$(SDS_STDLIB_CACHE)/lib/$$base.o" "lib/$$base.o"; \
+			continue; \
+		fi; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "lib/$$base.o"; \
 	done
 	@cd "$(THIS_DIR)" || exit 1; \

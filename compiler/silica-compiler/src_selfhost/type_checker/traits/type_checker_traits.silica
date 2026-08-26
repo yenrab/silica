@@ -97,12 +97,25 @@ fn normalize_type_text_for_impl_match(s: string) -> string {
     erase_fn_keywords_from(strip_type_spaces(trim_type_text(s)), 0, "")
 }
 
+// Integer literals infer as int64; an impl may take int32/int16/int8 (or the unsigned
+// counterparts). Without this, Shape@double_area(5) is checked as a literal against
+// expected Shape and E2001s even though impl fn area(side: int32) covers it.
+fn int64_literal_fits_impl_int(a: string, b: string) -> bool {
+    case a == "int64" of {
+        true -> b == "int8" or b == "int16" or b == "int32" or b == "uint8" or b == "uint16" or b == "uint32";
+        false -> b == "int64" and (a == "int8" or a == "int16" or a == "int32" or a == "uint8" or a == "uint16" or a == "uint32")
+    }
+}
+
 fn type_text_matches_impl(a: string, b: string) -> bool {
     ta: string <- trim_type_text(a);
     tb: string <- trim_type_text(b);
     case ta == tb of {
         true -> true;
-        false -> normalize_type_text_for_impl_match(ta) == normalize_type_text_for_impl_match(tb)
+        false -> case normalize_type_text_for_impl_match(ta) == normalize_type_text_for_impl_match(tb) of {
+            true -> true;
+            false -> int64_literal_fits_impl_int(ta, tb)
+        }
     }
 }
 

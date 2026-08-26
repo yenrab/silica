@@ -28,10 +28,41 @@ use type_checker_expressions_helpers;
 use types;
 use user_calls;
 use terms_helpers;
+use type_checker_record_types;
 
 export lower_actor_builtin_expr/8;
 export lower_call_supervisor_expr/7;
 export lower_spawn_registered_supervisor_expr/7;
+
+fn actor_message_literal(msg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } {
+    case type_checker_expressions_helpers@expr_kind(msg) == 21 of {
+        true -> msg;
+        false -> case type_checker_expressions_helpers@expr_kind(msg) == 4 of {
+            true -> {
+                inner: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- type_checker_expressions_helpers@expr_child_inner(msg);
+                case type_checker_expressions_helpers@expr_kind(inner) == 21 of {
+                    true -> inner;
+                    false -> msg
+                }
+            };
+            false -> msg
+        }
+    }
+}
+
+fn actor_message_expected_type(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, msg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> string {
+    lit: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_message_literal(msg);
+    case type_checker_expressions_helpers@expr_kind(lit) == 21 of {
+        true -> {
+            rt: string <- terms_helpers@sir_infer_struct_literal_type(context, lit);
+            case type_checker_record_types@record_type_starts(rt) of {
+                true -> rt;
+                false -> "discard"
+            }
+        };
+        false -> "discard"
+    }
+}
 
 fn supervisor_child_info_type_name() -> string {
     "{ id: atom, agent_type: atom, child: actor_ref, restart: :permanent | :temporary | :transient }"
@@ -482,43 +513,43 @@ fn lower_actor_builtin_expr(context: { env: List[{ name: string, type_name: stri
             false -> case ab == "send" of {
             true -> {
                 a0: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, type_checker_expressions_helpers@expr_child_inner(expr), "actor_ref", in_body, bound_name, bound_type, lower_expected, lower_in_body);
-                msg_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_calls@actor_call_second_arg(expr);
-                a1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, msg_e, "discard", in_body, bound_name, bound_type, lower_expected, lower_in_body);
+                msg_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_message_literal(actor_calls@actor_call_second_arg(expr));
+                a1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, msg_e, actor_message_expected_type(context, msg_e), in_body, bound_name, bound_type, lower_expected, lower_in_body);
                 actor_calls@build_send_prim(a0, a1)
             };
             false -> case ab == "cast" of {
                 true -> {
                     c0: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, type_checker_expressions_helpers@expr_child_inner(expr), "actor_ref", in_body, bound_name, bound_type, lower_expected, lower_in_body);
-                    cmsg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_calls@actor_call_second_arg(expr);
-                    c1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, cmsg, "discard", in_body, bound_name, bound_type, lower_expected, lower_in_body);
+                    cmsg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_message_literal(actor_calls@actor_call_second_arg(expr));
+                    c1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, cmsg, actor_message_expected_type(context, cmsg), in_body, bound_name, bound_type, lower_expected, lower_in_body);
                     actor_calls@build_actor_cast_prim(c0, c1)
                 };
                 false -> case ab == "cast_registered" of {
                     true -> {
                         cr0: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, type_checker_expressions_helpers@expr_child_inner(expr), "atom", in_body, bound_name, bound_type, lower_expected, lower_in_body);
-                        crmsg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_calls@actor_call_second_arg(expr);
-                        cr1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, crmsg, "discard", in_body, bound_name, bound_type, lower_expected, lower_in_body);
+                        crmsg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_message_literal(actor_calls@actor_call_second_arg(expr));
+                        cr1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, crmsg, actor_message_expected_type(context, crmsg), in_body, bound_name, bound_type, lower_expected, lower_in_body);
                         actor_calls@build_actor_cast_registered_prim(cr0, cr1)
                     };
                 false -> case ab == "cast_dangerous_registered" of {
                     true -> {
                         cdr0: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, type_checker_expressions_helpers@expr_child_inner(expr), "atom", in_body, bound_name, bound_type, lower_expected, lower_in_body);
-                        cdrmsg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_calls@actor_call_second_arg(expr);
-                        cdr1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, cdrmsg, "discard", in_body, bound_name, bound_type, lower_expected, lower_in_body);
+                        cdrmsg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_message_literal(actor_calls@actor_call_second_arg(expr));
+                        cdr1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, cdrmsg, actor_message_expected_type(context, cdrmsg), in_body, bound_name, bound_type, lower_expected, lower_in_body);
                         actor_calls@build_actor_cast_dangerous_registered_prim(cdr0, cdr1)
                     };
                 false -> case ab == "call" of {
                     true -> {
                         k0: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, type_checker_expressions_helpers@expr_child_inner(expr), "actor_ref", in_body, bound_name, bound_type, lower_expected, lower_in_body);
-                        kmsg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_calls@actor_call_second_arg(expr);
-                        k1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, kmsg, "discard", in_body, bound_name, bound_type, lower_expected, lower_in_body);
+                        kmsg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_message_literal(actor_calls@actor_call_second_arg(expr));
+                        k1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, kmsg, actor_message_expected_type(context, kmsg), in_body, bound_name, bound_type, lower_expected, lower_in_body);
                         actor_calls@build_actor_call_prim(k0, k1, expected_type)
                     };
                     false -> case ab == "call_registered" of {
                         true -> {
                             kr0: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, type_checker_expressions_helpers@expr_child_inner(expr), "atom", in_body, bound_name, bound_type, lower_expected, lower_in_body);
-                            krmsg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_calls@actor_call_second_arg(expr);
-                            kr1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, krmsg, "discard", in_body, bound_name, bound_type, lower_expected, lower_in_body);
+                            krmsg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- actor_message_literal(actor_calls@actor_call_second_arg(expr));
+                            kr1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_subexpr_for_actor(context, krmsg, actor_message_expected_type(context, krmsg), in_body, bound_name, bound_type, lower_expected, lower_in_body);
                             actor_calls@build_actor_call_registered_prim(kr0, kr1, expected_type)
                         };
                     false -> case ab == "self" of {

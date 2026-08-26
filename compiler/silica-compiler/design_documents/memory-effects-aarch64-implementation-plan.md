@@ -153,3 +153,5 @@ This section is the **Phase 0 deliverable**: what must be tracked in IR, what ha
 - §12.1.1.1 AArch64 MAIR (AArch64 ports)
 - §12.1.1.2 Runtime guarantees per space
 - §22 Atomic refs (when implemented)
+
+Board bring-up, MMIO map/load/store, and what else is still missing for a raw-metal image: [porting_for_os_free_targets.md](porting_for_os_free_targets.md).

@@ -29,6 +29,9 @@ export add_params_concrete_loop1/1;
 export create_type_context/0;
 export add_symbol/6;
 export context_add_symbol_surface/5;
+export context_add_symbol_uninterned/5;
+export context_add_symbol_id/6;
+export surfaces_equal_ids/3;
 export env_add_symbol_surface/6;
 export add_effect_alias_symbol/3;
 export lookup_symbol/2;
@@ -43,6 +46,7 @@ export split_module_qualified_call_name/1;
 export user_call_base_function_name/1;
 export type_check_ok/0;
 export type_check_err/4;
+export reject_bool_type_surface/2;
 export empty_symbol_table/0;
 export type_context_with_env/2;
 export type_context_with_supervisor_types/2;
@@ -54,6 +58,7 @@ export context_with_interner/2;
 export parse_type_into_context/2;
 export mk_prim_into_context/2;
 export types_equal_ids/2;
+export surface_matches_type_id/3;
 export discard_type_id/1;
 export surface_for_type_id/2;
 
@@ -82,10 +87,20 @@ fn context_with_interner(ctx: { env: List[{ name: string, type_id: int64, surfac
 
 fn parse_type_into_context(ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, surface: string) -> { context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, id: int64, ok: boolean } {
     pr: { interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 }, id: int64, ok: boolean } <- type_interner@parse_type(ctx.interner, surface);
-    {
-        context: { env: ctx.env, interner: pr.interner },
-        id: pr.id,
-        ok: pr.ok
+    case pr.ok of {
+        true -> {
+            context: { env: ctx.env, interner: pr.interner },
+            id: pr.id,
+            ok: true
+        };
+        false -> {
+            nr: { interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 }, id: int64 } <- type_interner@mk_name(pr.interner, surface);
+            {
+                context: { env: ctx.env, interner: nr.interner },
+                id: nr.id,
+                ok: true
+            }
+        }
     }
 }
 
@@ -96,6 +111,33 @@ fn mk_prim_into_context(ctx: { env: List[{ name: string, type_id: int64, surface
 
 fn types_equal_ids(a: int64, b: int64) -> bool {
     type_interner@types_equal(a, b)
+}
+
+fn surfaces_equal_ids(ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, a: string, b: string) -> bool {
+    case a == b of {
+        true -> true;
+        false -> {
+            pa: { context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, id: int64, ok: boolean } <- parse_type_into_context(ctx, a);
+            case pa.ok of {
+                false -> false;
+                true -> {
+                    pb: { context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, id: int64, ok: boolean } <- parse_type_into_context(pa.context, b);
+                    case pb.ok of {
+                        false -> false;
+                        true -> types_equal_ids(pa.id, pb.id)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn surface_matches_type_id(ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, surface: string, expected_id: int64) -> boolean {
+    p: { context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, id: int64, ok: boolean } <- parse_type_into_context(ctx, surface);
+    case p.ok of {
+        false -> false;
+        true -> types_equal_ids(expected_id, p.id)
+    }
 }
 
 fn discard_type_id(ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> { context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, id: int64 } {
@@ -201,6 +243,18 @@ fn context_add_symbol_surface(ctx: { env: List[{ name: string, type_id: int64, s
     type_context_with_env(parsed.context, new_env)
 }
 
+// Import of an unused export: keep the name visible, do not parse/intern the surface.
+fn context_add_symbol_uninterned(ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, name: string, surface: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], source_module: string) -> { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } {
+    new_env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] <- add_symbol(ctx.env, name, type_interner@invalid_type_id(), surface, declared_effects, source_module);
+    type_context_with_env(ctx, new_env)
+}
+
+// Bind a pre-interned type_id (iface DAG rematerialize). Does not parse `surface`.
+fn context_add_symbol_id(ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, name: string, type_id: int64, surface: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], source_module: string) -> { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } {
+    new_env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] <- add_symbol(ctx.env, name, type_id, surface, declared_effects, source_module);
+    type_context_with_env(ctx, new_env)
+}
+
 // Like context_add_symbol_surface but for bare env+interner pairs (export merge paths).
 fn env_add_symbol_surface(interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 }, env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], name: string, surface: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], source_module: string) -> { interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 }, env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] } {
     ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- { env: env, interner: interner };
@@ -291,6 +345,32 @@ fn user_call_base_function_name(composite: string) -> string {
     }
 }
 
+fn strings_equal_exact_at_i(a: string, b: string, i: int64, n: int64) -> int64 {
+    case i >= n of {
+        true -> 1;
+        false -> {
+            ca: string <- substring(a, i, i + 1);
+            cb: string <- substring(b, i, i + 1);
+            case ca == cb of {
+                false -> 0;
+                true -> strings_equal_exact_at_i(a, b, i + 1, n)
+            }
+        }
+    }
+}
+
+fn strings_equal_exact_i(a: string, b: string) -> int64 {
+    la: int64 <- len(a);
+    lb: int64 <- len(b);
+    case la < lb of {
+        true -> 0;
+        false -> case lb < la of {
+            true -> 0;
+            false -> strings_equal_exact_at_i(a, b, 0, la)
+        }
+    }
+}
+
 // Call-site name match: use inline `==` (same as identifier lookup / infer helpers).
 // Do not call instantiated_fn_name@decl_name_matches here — cross-module bool returns have been
 // observed always-true under seed-built selfhost, so `__silica_tc_in_main` (surface "boolean")
@@ -309,9 +389,9 @@ fn lookup_fn_type_by_name_and_module(env: List[{ name: string, type_id: int64, s
                         true -> env.head.type_id;
                         false -> lookup_fn_type_by_name_and_module(env.tail, fn_name, required_module)
                     };
-                    false -> case env.head.source_module == required_module of {
-                        true -> env.head.type_id;
-                        false -> lookup_fn_type_by_name_and_module(env.tail, fn_name, required_module)
+                    false -> case strings_equal_exact_i(env.head.source_module, required_module) of {
+                        0 -> lookup_fn_type_by_name_and_module(env.tail, fn_name, required_module);
+                        _: int64 -> env.head.type_id
                     }
                 }
             };
@@ -331,9 +411,9 @@ fn lookup_fn_surface_by_name_and_module(env: List[{ name: string, type_id: int64
                         true -> env.head.surface_type;
                         false -> lookup_fn_surface_by_name_and_module(env.tail, fn_name, required_module)
                     };
-                    false -> case env.head.source_module == required_module of {
-                        true -> env.head.surface_type;
-                        false -> lookup_fn_surface_by_name_and_module(env.tail, fn_name, required_module)
+                    false -> case strings_equal_exact_i(env.head.source_module, required_module) of {
+                        0 -> lookup_fn_surface_by_name_and_module(env.tail, fn_name, required_module);
+                        _: int64 -> env.head.surface_type
                     }
                 }
             };
@@ -358,11 +438,32 @@ fn lookup_function_type_for_call(env: List[{ name: string, type_id: int64, surfa
     }
 }
 
+fn lookup_fn_surface_by_name_any(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], fn_name: string) -> string {
+    case env.is_nil of {
+        true -> "";
+        false -> case env.head.name == fn_name of {
+            true -> case len(env.head.surface_type) of {
+                0 -> lookup_fn_surface_by_name_any(env.tail, fn_name);
+                _: int64 -> env.head.surface_type
+            };
+            false -> lookup_fn_surface_by_name_any(env.tail, fn_name)
+        }
+    }
+}
+
 fn lookup_function_surface_for_call(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], composite_name: string) -> string {
     at: int64 <- first_at_in_call_name(composite_name, 0);
     case at < 0 of {
         true -> lookup_fn_surface_by_name_and_module(env, composite_name, "");
-        false -> lookup_fn_surface_by_name_and_module(env, substring(composite_name, at + 1, len(composite_name)), substring(composite_name, 0, at))
+        false -> {
+            fn_id: string <- substring(composite_name, at + 1, len(composite_name));
+            mod_id: string <- substring(composite_name, 0, at);
+            hit: string <- lookup_fn_surface_by_name_and_module(env, fn_id, mod_id);
+            case len(hit) of {
+                0 -> lookup_fn_surface_by_name_any(env, fn_id);
+                _: int64 -> hit
+            }
+        }
     }
 }
 
@@ -372,4 +473,62 @@ fn type_check_ok() -> { is_ok: bool, error_code: string, error_location: { file:
 
 fn type_check_err(error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     { is_ok: false, error_code: error_code, error_location: error_location, error_message: error_message, spec_section: spec_section }
+}
+
+// Type-surface token break: `bool` as a whole atom, not the prefix of `boolean`.
+fn type_atom_break_i(c: string) -> int64 {
+    case c of {
+        " " -> 1;
+        "\t" -> 1;
+        "\n" -> 1;
+        "\r" -> 1;
+        "," -> 1;
+        "[" -> 1;
+        "]" -> 1;
+        "(" -> 1;
+        ")" -> 1;
+        "{" -> 1;
+        "}" -> 1;
+        ":" -> 1;
+        "|" -> 1;
+        "-" -> 1;
+        ">" -> 1;
+        _: string -> 0
+    }
+}
+
+fn surface_has_bool_atom(s: string, i: int64) -> int64 {
+    case i + 4 > len(s) of {
+        true -> 0;
+        false -> case substring(s, i, i + 4) == "bool" of {
+            true -> {
+                prev_ok: int64 <- case i of {
+                    0 -> 1;
+                    _: int64 -> case type_atom_break_i(substring(s, i - 1, i)) of {
+                        0 -> 0;
+                        _: int64 -> 1
+                    }
+                };
+                next_ok: int64 <- case i + 4 >= len(s) of {
+                    true -> 1;
+                    false -> case type_atom_break_i(substring(s, i + 4, i + 5)) of {
+                        0 -> 0;
+                        _: int64 -> 1
+                    }
+                };
+                case prev_ok + next_ok of {
+                    2 -> 1;
+                    _: int64 -> surface_has_bool_atom(s, i + 1)
+                }
+            };
+            false -> surface_has_bool_atom(s, i + 1)
+        }
+    }
+}
+
+fn reject_bool_type_surface(surface: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    case surface_has_bool_atom(surface, 0) of {
+        1 -> type_check_err("E2002", location, "bool is unknown was boolean desired?", "sect6");
+        _: int64 -> type_check_ok()
+    }
 }

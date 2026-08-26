@@ -59,13 +59,19 @@ App-design tutorial for engineers new to Silica who must use **foreign functions
 
 ## [open_recursion_callbacks.md](./open_recursion_callbacks.md)
 
-How to split a **recursive** algorithm across computation units without circular `use`: the facade passes recursive entry points as **callbacks** (`eval_child` / `check_typed` / `emit_child`). Covers when the pattern is needed, a switchboard analogy, a small standalone example, and a do/don’t checklist.
+How to split a **recursive** algorithm across compilation units without circular `use`: the facade passes recursive entry points as **callbacks** (`eval_child` / `check_typed` / `emit_child`). Covers when the pattern is needed, a switchboard analogy, a small standalone example, and a do/don’t checklist.
 
 ---
 
 ## [compiling_with_less_ram.md](./compiling_with_less_ram.md)
 
 Practical guide to **lowering host RAM** when compiling a general app with `silica-compiler`: what a **compilation unit** is, **leaf-to-root** batch order, **smaller units** and splitting large files, following the compiler’s **process-per-unit reclaim** pattern (`silica.config`, exit `75`), and **open recursion** in the Silica sense (recursion via a **captured function argument**, not OO `self`).
+
+---
+
+## [thin_dispatchers_for_compile_ram.md](./thin_dispatchers_for_compile_ram.md)
+
+When a **short facade** still exhausts RAM while compiling because it `use`s every specialist at once: insert **two or three thin dispatchers** so each compilation loads one leaf group, keep recursive callbacks as **local** function values, and split a dispatcher again if *it* is the unit that fails.
 
 ---
 

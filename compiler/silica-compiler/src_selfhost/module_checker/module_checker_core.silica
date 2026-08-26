@@ -530,21 +530,17 @@ fn use_params_name_module(params: List[{ name: string, type_name: string, locati
     }
 }
 
+// Tag 2 only (`use M`). `export trait ValueTrait` is tag 5 named ValueTrait — not a use.
+// Treating it as a use made E1011 reject Trait@required in the trait's own provided body (spec 3.4.10).
 fn decls_have_use_for_module(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], mod_name: string) -> int64 {
     case decls.is_nil of {
         true -> 0;
-        false -> case len(decls.head.name) > 0 of {
-            true -> case strings_equal_ascii_ignore_case_i(decls.head.name, mod_name) < 1 of {
-                false -> 1;
-                true -> case use_params_name_module(decls.head.parameters, mod_name) < 1 of {
-                    false -> 1;
-                    true -> decls_have_use_for_module(decls.tail, mod_name)
-                }
-            };
-            false -> case use_params_name_module(decls.head.parameters, mod_name) < 1 of {
+        false -> case decls.head.tag == 2 of {
+            true -> case use_params_name_module(decls.head.parameters, mod_name) < 1 of {
                 false -> 1;
                 true -> decls_have_use_for_module(decls.tail, mod_name)
-            }
+            };
+            false -> decls_have_use_for_module(decls.tail, mod_name)
         }
     }
 }
@@ -563,24 +559,15 @@ fn first_use_param_in_list_matching_module_ignore_case(params: List[{ name: stri
 fn first_use_param_matching_module_ignore_case(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], qmod: string) -> string {
     case decls.is_nil of {
         true -> "";
-        false -> {
-            from_name: string <- case len(decls.head.name) > 0 of {
-                true -> case strings_equal_ascii_ignore_case_i(decls.head.name, qmod) < 1 of {
-                    false -> decls.head.name;
-                    true -> ""
-                };
-                false -> ""
-            };
-            case len(from_name) > 0 of {
-                true -> from_name;
-                false -> {
-                    r: string <- first_use_param_in_list_matching_module_ignore_case(decls.head.parameters, qmod);
-                    case len(r) > 0 of {
-                        true -> r;
-                        false -> first_use_param_matching_module_ignore_case(decls.tail, qmod)
-                    }
+        false -> case decls.head.tag == 2 of {
+            true -> {
+                r: string <- first_use_param_in_list_matching_module_ignore_case(decls.head.parameters, qmod);
+                case len(r) > 0 of {
+                    true -> r;
+                    false -> first_use_param_matching_module_ignore_case(decls.tail, qmod)
                 }
-            }
+            };
+            false -> first_use_param_matching_module_ignore_case(decls.tail, qmod)
         }
     }
 }

@@ -27,6 +27,12 @@ Use the entries below for **quick navigation**. Each item links to a file in thi
 
 ---
 
+## [porting_for_os_free_targets.md](./porting_for_os_free_targets.md)
+
+**Porting plan** for **OS-free / raw-metal** boards: what “complete” means, present vs missing (including MMIO map and volatile load/store), device registers vs CPU GPRs vs system registers, board-pack contract, and phased bring-up.
+
+---
+
 ## [actor_growable_stack_design.md](./actor_growable_stack_design.md)
 
 Actor memory architecture: **growable per-actor stacks**, lazy page migration, isolation vs. the older per-actor heap sketch, NUMA-oriented behavior, and cleanup on actor termination.
@@ -90,6 +96,18 @@ Structured **analysis of the Rust bootstrap compiler** (`silica-bootstrap-compil
 ## [crypto-proposal-introduction.md](./crypto-proposal-introduction.md)
 
 High-level introduction to **language-level cryptographic guardrails**: secret vs. public labels, constant-time comparisons, control-flow and indexing rules, protected buffers, and `proc[secret]`-style constraints.
+
+---
+
+## [tls_quantum_safe_future.md](./tls_quantum_safe_future.md)
+
+**Future development** (not implemented): first-class **TLS 1.3** with a **hybrid ML-KEM** default, one supervised `spawn_dangerous` actor per connection, Fifi taint/`external_danger` rules, and no application-visible engine types.
+
+---
+
+## [direct_machine_object_emitter_future.md](./direct_machine_object_emitter_future.md)
+
+**Future compiler development** (not implemented): replacing assembly-text steps with Silica-owned **chip instruction encoders** and **object writers** for AArch64, x86-64, ESP32-S3 / Xtensa, and later documented targets, while keeping hardware behavior explicit in compiler data.
 
 ---
 

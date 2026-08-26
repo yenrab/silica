@@ -60,7 +60,7 @@ all: compile
 		echo "Assembling $$sams..."; \
 		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o"; then \
 		echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; \
-		ko=$$((ko + 1)); failed=1; break; \
+		ko=$$((ko + 1)); failed=1; \
 	fi; \
 	done; \
 	for sams in traits/*.sams; do \
@@ -70,7 +70,7 @@ all: compile
 		echo "Assembling $$sams..."; \
 		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj"; then \
 		echo "❌❌ $(MSG_PREFIX)$$obj assemble failed"; \
-		ko=$$((ko + 1)); failed=1; break; \
+		ko=$$((ko + 1)); failed=1; \
 	fi; \
 	done; \
 	if [ -f "__silica_runtime.sams" ]; then \
@@ -132,7 +132,7 @@ integrate:
 		echo "Assembling $$sams..."; \
 		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o"; then \
 		echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; \
-		ko=$$((ko + 1)); failed=1; break; \
+		ko=$$((ko + 1)); failed=1; \
 	fi; \
 	done; \
 	for sams in traits/*.sams; do \
@@ -142,7 +142,7 @@ integrate:
 		echo "Assembling $$sams..."; \
 		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj"; then \
 		echo "❌❌ $(MSG_PREFIX)$$obj assemble failed"; \
-		ko=$$((ko + 1)); failed=1; break; \
+		ko=$$((ko + 1)); failed=1; \
 	fi; \
 	done; \
 	if [ -f "__silica_runtime.sams" ]; then \

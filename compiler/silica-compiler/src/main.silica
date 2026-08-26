@@ -1227,6 +1227,8 @@ fn debug_walk_decls(decls: ListDeclaration) -> int64 proc[DeviceIO] {
 // specialized_all: trait-specialized programs for this unit and its `use` closure (lazy process cache).
 fn compile_to_sir_module(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile, specialized_all: ListNamedProgram) -> (int64, SIRModule) proc[DeviceIO] {
     _: int64 <- announce_compiling_file(filename);
+    // Drop a leftover iface from a prior TC-ok / SIR-OOM so dependents do not see a half-built unit.
+    _: int64 <- module_iface@unpublish_module_iface_at_path(filename);
     println("  Module checking...");
     mc: int64 <- module_checker_core@module_checker_check_program(program, config_files, all_parsed, filename);
     case mc == 0 of {
@@ -1259,8 +1261,6 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
                             case tc_out.is_ok of {
                                 true -> do
                                     _: int64 <- log_tc_world_p0(filename, program, module_world, "ok");
-                                    // Phase 1: publish module iface after successful type check (write-only).
-                                    _: int64 <- module_iface@publish_module_iface(mod_name, filename, program, config_iface);
                                     println("  FFI ABI...");
                                     abi_st: int64 <- ffi_abi_checker@validate_program_ffi_abi(program);
                                     case abi_st == 0 of {
@@ -1351,6 +1351,13 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
     }
 }
 
+// Publish after SIR/emit so write_dag intern is not live under those phases (no GC).
+fn publish_unit_iface(filename: string, program: Program, config_files: ListString) -> int64 proc[DeviceIO] {
+    mod_name: string <- module_checker_core@module_from_path(filename);
+    config_iface: ListIfaceString <- list_string_to_iface_strings(config_files, module_iface@empty_iface_string_list());
+    module_iface@publish_module_iface(mod_name, filename, program, config_iface)
+}
+
 // Module-check, type-check, trait-check, effect-check, SIR, emit for one unit; module_world is other parsed units (spec §19).
 fn compile_parsed_unit(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile, specialized_all: ListNamedProgram) -> (int64, bool) proc[DeviceIO] {
     do
@@ -1364,6 +1371,7 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
                     false -> emitter_core@emit_module(sir_module)
                 };
                 build_output@write_assembly(filename, asm);
+                _: int64 <- publish_unit_iface(filename, program, config_files);
                 _: int64 <- announce_compiled_file(filename);
                 (0, emitter_core@module_needs_actor_runtime(sir_module))
             end
@@ -1396,7 +1404,11 @@ fn gather_sirs_rev(sorted_rem: ListString, parsed: ListParsedFile, config_files:
                     (sir_c: int64, sir_val: SIRModule) <- compile_to_sir_module(sorted_rem.head, prog, world, config_files, parsed, specialized_all);
                     case sir_c != 0 of {
                         true -> (sir_c, sir_ast@nil_sir_modules());
-                        false -> gather_sirs_rev(sorted_rem.tail, parsed, config_files, specialized_all, sir_ast@cons_sir_module(sir_val, acc_rev))
+                        false -> do
+                            // Same-process batch: next unit's TC needs this iface before emit_batch runs.
+                            _: int64 <- publish_unit_iface(sorted_rem.head, prog, config_files);
+                            gather_sirs_rev(sorted_rem.tail, parsed, config_files, specialized_all, sir_ast@cons_sir_module(sir_val, acc_rev))
+                        end
                     }
                 end
             }
