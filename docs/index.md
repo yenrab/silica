@@ -3,7 +3,7 @@ title: Silica
 layout: default
 ---
 
-<div class="masthead"><img src="./silica_icon_small.png" alt="Silica" width="160" height="160"><span class="masthead-tagline">Memory-safe, functional systems language — secure by default at compile time</span></div>
+<div class="masthead"><img src="./silica_icon_small.png" alt="Silica" width="256" height="256"><span class="masthead-tagline">Memory-safe, functional systems language — secure by default at compile time</span></div>
 
 [View the project on GitHub](https://github.com/yenrab/silica) · [Build the compiler](https://github.com/yenrab/silica#building-the-compiler) · [Learn to program]({{ '/learn-programming/' | relative_url }}) · [Silica for programmers]({{ '/learn-silica/' | relative_url }}) · [Silica's Design Principles]({{ '/design-principles/' | relative_url }}) · [Language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) · [Participate]({{ '/participate/' | relative_url }})
 
