@@ -5,10 +5,12 @@ layout: default
 
 ![Silica](./silica_icon_small.png)
 
-[View the project on GitHub](https://github.com/yenrab/silica) · [Build the compiler](https://github.com/yenrab/silica#building-the-compiler) · [Language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) · [Participate]({% link participate.md %})
+[View the project on GitHub](https://github.com/yenrab/silica) · [Build the compiler](https://github.com/yenrab/silica#building-the-compiler) · [Learn to program]({% link learn-programming.md %}) · [Silica for programmers]({% link learn-silica.md %}) · [Silica's Design Principles]({% link design-principles.md %}) · [Language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) · [Participate]({% link participate.md %})
 
 On this page
 
+- [Learn](#learn)
+- [Silica's Design Principles]({% link design-principles.md %})
 - [Why Silica is worth your attention](#why-silica-is-worth-your-attention)
 - [Why participate](#why-participate-in-silicas-development)
 - [Get the source](#get-the-source)
@@ -17,7 +19,7 @@ Silica's target is to be the world’s most intellectually honest, secure langua
 
 With Silica, security is not a bolt-on checklist; it is woven through the language model, the compiler, and the runtime so that ordinary code reads clearly and dangerous patterns fail during compile-time, with explanations you can act on.
 
-Silica is a highly concurrent, functional, systems language. This means you get explicit effects, actor-based message passing, and region-based memory with no garbage collection.
+Silica is a highly concurrent, functional, systems language. This means you get explicit effects, actor-based message passing, and region-based memory with no garbage collection. Those choices are spelled out as [Silica's Design Principles]({% link design-principles.md %}).
 
 Many other development stacks treat memory, concurrency, and observable behavior as separate concerns—each papered over with conventions, code reviews, and runtime luck.
 
@@ -48,6 +50,15 @@ See the [FFI wrapper specification](https://github.com/yenrab/silica/blob/main/c
 ![](./silica_icon_emoji.png)
 
 Motto: Secure by default at compile time — fail soft, never fail silent
+
+## Learn
+
+Two books on this site:
+
+- [Learn to Program]({% link learn-programming.md %}) — an introduction to programming for readers who have never written a program. Uses Silica as the teaching language.
+- [Silica for Programmers]({% link learn-silica.md %}) — a short introduction to Silica if you already write software.
+
+[Silica's Design Principles]({% link design-principles.md %}) states the eight choices the language is built around. The [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) and [tutorials](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/tutorials_and_howtos) are the next step after either book.
 
 ## Why Silica is worth your attention
 
@@ -111,7 +122,7 @@ Explicit types and syntax reduce ambiguity for humans and for tools—including 
 
 The language is intentionally readable and LLM-friendly without sacrificing rigor: clear bindings, pattern matching, and module boundaries.
 
-See §1.3 of the [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md).
+See [Silica's Design Principles]({% link design-principles.md %}) (principle 8) and §1.3 of the [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md).
 
 #### No generics maze
 
@@ -136,7 +147,10 @@ If you care about secure-by-construction systems, native performance, and clarit
 The compiler, specification, tutorials, and build instructions live in the [GitHub repository](https://github.com/yenrab/silica).
 
 - [Build the compiler](https://github.com/yenrab/silica#building-the-compiler)
+- [Silica's Design Principles]({% link design-principles.md %})
 - [Language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md)
+- [Learn to Program]({% link learn-programming.md %})
+- [Silica for Programmers]({% link learn-silica.md %})
 - [Tutorials](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/tutorials_and_howtos)
 - [Roadmap](https://github.com/yenrab/silica/blob/main/ROADMAP.md)
 - [Participate]({% link participate.md %})
