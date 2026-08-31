@@ -1,8 +1,8 @@
 ---
-
-## title: Learn to Program
+title: Learn to Program
 layout: default
 permalink: /learn-programming/
+---
 
 # Learn to Program
 
@@ -12,9 +12,9 @@ Copyright © 2026 Lee Scott Barney
 
 Use this book together with a large language model (an LLM — a chat program that can read these pages and answer questions) and the [Silica language documentation](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md). Point the LLM at both. Ask it to walk through examples, check your attempts, and explain a line you do not yet understand. Tell it what computer you are using. It will fill in the practical steps this book leaves out: how to compile a program, how to run it, and how to see the result on your machine. The book and the language documentation are the source of the rules; the LLM is there to help you learn to write programs and to understand how programming works.
 
-This book is for people who have never written a computer program. You do not need to know what a compiler is, what a type is, or how a chip works. We start from one idea: a program is a set of instructions a machine can follow exactly. We write those instructions in [Silica]({% link index.md %}).
+This book is for people who have never written a computer program. You do not need to know what a compiler is, what a type is, or how a chip works. We start from one idea: a program is a set of instructions a machine can follow exactly. We write those instructions in [Silica]({{ '/' | relative_url }}).
 
-If you already write software, this is the wrong book. Use [Silica for Programmers]({% link learn-silica.md %}) instead.
+If you already write software, this is the wrong book. Use [Silica for Programmers]({{ '/learn-silica/' | relative_url }}) instead.
 
 On this page
 
@@ -789,7 +789,7 @@ fn main() -> int64 {
 
 You do not need to master actors on the first reading. The idea to keep is: **isolation first.** Separate workers, private memory, notes instead of shared drawers. That is how Silica keeps concurrent programs understandable.
 
-The longer story — supervisors, failure, pinning work to a core — is in [Silica for Programmers]({% link learn-silica.md %}) and in the [actor spawning tutorial](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/actor_spawning_tutorial.md).
+The longer story — supervisors, failure, pinning work to a core — is in [Silica for Programmers]({{ '/learn-silica/' | relative_url }}) and in the [actor spawning tutorial](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/actor_spawning_tutorial.md).
 
 ### Try this
 
@@ -838,7 +838,7 @@ You now have the core of programming:
 
 That is enough to read small Silica programs and to write your own.
 
-When you want the same language, explained for people who already program, read [Silica for Programmers]({% link learn-silica.md %}).
+When you want the same language, explained for people who already program, read [Silica for Programmers]({{ '/learn-silica/' | relative_url }}).
 
 When you want the rules in full, read the [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md).
 

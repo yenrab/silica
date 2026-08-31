@@ -1,8 +1,8 @@
 ---
-
-## title: Silica for Programmers
+title: Silica for Programmers
 layout: default
 permalink: /learn-silica/
+---
 
 # Silica for Programmers
 
@@ -12,7 +12,7 @@ Copyright © 2026 Lee Scott Barney
 
 Silica is a functional systems language. Effects are explicit. Actors stay isolated and talk by message. Memory is regional, stacked per actor, and not garbage-collected. There are no user-level loops. This book assumes you already write software in C, Rust, Erlang or Elixir, Haskell, Go, Python, or something in that neighborhood. It maps Silica onto ideas you already have, then spends a little time on why the mapping is not one-to-one.
 
-If you have never programmed, use [Learn to Program]({% link learn-programming.md %}) first. That book is slower on purpose.
+If you have never programmed, use [Learn to Program]({{ '/learn-programming/' | relative_url }}) first. That book is slower on purpose.
 
 The [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) wins if this book and the compiler disagree. The hosted target today is macOS on Apple silicon.
 
@@ -464,8 +464,8 @@ Read the trials when you want a small program in hand. Read the specification wh
 - [Language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md)
 - [Tutorials](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/tutorials_and_howtos)
 - [Build the compiler](https://github.com/yenrab/silica#building-the-compiler)
-- [Participate]({% link participate.md %})
-- [Learn to Program]({% link learn-programming.md %}) — same language, slower on-ramp
+- [Participate]({{ '/participate/' | relative_url }})
+- [Learn to Program]({{ '/learn-programming/' | relative_url }}) — same language, slower on-ramp
 
 *End of Silica for Programmers.*
 
