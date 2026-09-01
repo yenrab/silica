@@ -1,0 +1,79 @@
+// Trial 10: Comprehensive inline struct example
+//
+// Demonstrates:
+// - Order-style processing with every record shape written inline (no type aliases)
+// - Lists of inline structs, helpers, and case patterns
+
+fn sum_items(items: List[{ product_id: int64, name: string, price: int64 },mem(normal)]) -> int64 {
+    case items of {
+        []: List[{ product_id: int64, name: string, price: int64 },mem(normal)] -> 0;
+        [item: { product_id: int64, name: string, price: int64 }, rest: List[{ product_id: int64, name: string, price: int64 },mem(normal)]] -> item.price + sum_items(rest);
+        _: List[{ product_id: int64, name: string, price: int64 },mem(normal)] -> 0
+    }
+}
+
+fn calculate_order_total(order: { order_id: int64, items: List[{ product_id: int64, name: string, price: int64 },mem(normal)], total_price: int64 }) -> int64 {
+    sum_items(order.items)
+}
+
+fn create_item(id: int64, name: string, price: int64) -> { product_id: int64, name: string, price: int64 } {
+    item: { product_id: int64, name: string, price: int64 } <- {
+        product_id: id,
+        name: name,
+        price: price
+    };
+    item
+}
+
+fn create_order(id: int64) -> { order_id: int64, items: List[{ product_id: int64, name: string, price: int64 },mem(normal)], total_price: int64 } {
+    item1: { product_id: int64, name: string, price: int64 } <- create_item(1, "Widget", 100);
+    item2: { product_id: int64, name: string, price: int64 } <- create_item(2, "Gadget", 150);
+    sequence proc[mem(normal)]
+        items: List[{ product_id: int64, name: string, price: int64 },mem(normal)] <- prepend[{ product_id: int64, name: string, price: int64 }, mem(normal)](item1, prepend[{ product_id: int64, name: string, price: int64 }, mem(normal)](item2, empty[{ product_id: int64, name: string, price: int64 }, mem(normal)]()));
+        total: int64 <- sum_items(items)
+    produces
+        pure { order_id: id, items: items, total_price: total }
+    end
+}
+
+fn process_order(order: { order_id: int64, items: List[{ product_id: int64, name: string, price: int64 },mem(normal)], total_price: int64 }) -> { order_id: int64, status: string, amount: int64 } {
+    case order.total_price > 200 of {
+        true -> {
+            result: { order_id: int64, status: string, amount: int64 } <- {
+                order_id: order.order_id,
+                status: "approved",
+                amount: order.total_price
+            };
+            result
+        }
+        false -> {
+            result: { order_id: int64, status: string, amount: int64 } <- {
+                order_id: order.order_id,
+                status: "pending",
+                amount: order.total_price
+            };
+            result
+        }
+    }
+}
+
+fn count_items(items: List[{ product_id: int64, name: string, price: int64 }, mem(normal)]) -> int64 {
+    case items of {
+        []: List[{ product_id: int64, name: string, price: int64 }, mem(normal)] -> 0
+        [ _:{ product_id: int64, name: string, price: int64 }, rest: List[{ product_id: int64, name: string, price: int64 }, mem(normal)]] -> 1 + count_items(rest)
+        _: List[{ product_id: int64, name: string, price: int64 }, mem(normal)] -> 0
+    }
+}
+
+fn main() -> int64 {
+    order: { order_id: int64, items: List[{ product_id: int64, name: string, price: int64 },mem(normal)], total_price: int64 } <- create_order(1001);
+
+    case order of {
+        { order_id: oid, items: items, total_price: tp } -> {
+            count: int64 <- count_items(items);
+            _: int64 <- calculate_order_total(order);
+            result: { order_id: int64, status: string, amount: int64 } <- process_order(order);
+            result.amount
+        }
+    }
+}
