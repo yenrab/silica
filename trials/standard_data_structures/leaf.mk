@@ -13,6 +13,8 @@ TRIAL_DIR       := $(notdir $(patsubst %/,%,$(THIS_DIR)))
 MSG_PREFIX      := standard_data_structures_phase1/$(TRIAL_DIR)/
 
 ASSEMBLER       := clang
+# Per-trial run cap. A non-terminating trial must not stall the whole suite.
+TRIAL_TIMEOUT_SECS ?= 60
 MACOS_MIN_VERSION ?= 26.0
 ASFLAGS_macos   := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LDFLAGS_clang   := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
@@ -75,6 +77,15 @@ if [ -f silica.config ]; then \
 	done < silica.config; \
 fi
 endef
+# Content-addressed compile cache (trial_cache.sh). Restore runs after the stdlib
+# objects are installed and BEFORE SEED_SDS_COMPILE_ORDER: a restored unit gets a
+# sibling .iface, so the seed step leaves it out of silica.compile.order and the
+# compiler never re-derives it. Store runs after a successful compile.
+# Set TRIAL_CACHE=0 to force a full recompile.
+TRIAL_CACHE_SH := $(LEAF_DIR)../trial_cache.sh
+TRIAL_CACHE_ENV = MSG_PREFIX="$(MSG_PREFIX)" SILICA_COMPILER="$(SILICA_COMPILER)"
+TRIAL_CACHE_RESTORE = $(TRIAL_CACHE_ENV) "$(SHELL)" "$(TRIAL_CACHE_SH)" restore
+TRIAL_CACHE_STORE   = $(TRIAL_CACHE_ENV) "$(SHELL)" "$(TRIAL_CACHE_SH)" store
 
 .PHONY: all clean assembly objects executables integrate positive-integrate record-positive-golden record-golden help silica.config
 
@@ -96,9 +107,10 @@ assembly: silica.config
 	fi
 	@$(ENSURE_SILICA_COMPILER)
 	@$(INTEGRATE_PRE_CLEAN)
-	@cd "$(THIS_DIR)" && $(INSTALL_SDS_STDLIB_OBJS) && $(SEED_SDS_COMPILE_ORDER)
+	@cd "$(THIS_DIR)" && $(INSTALL_SDS_STDLIB_OBJS) && $(TRIAL_CACHE_RESTORE) && $(SEED_SDS_COMPILE_ORDER)
 	@echo "Compiling with silica-compiler..."
 	@cd "$(THIS_DIR)" && $(RUN_SILICA_COMPILER)
+	@cd "$(THIS_DIR)" && $(TRIAL_CACHE_STORE)
 	@cd "$(THIS_DIR)" && $(INSTALL_SDS_STDLIB_OBJS)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
@@ -153,8 +165,9 @@ positive-integrate: silica.config
 	@cd "$(THIS_DIR)" || exit 1; \
 	$(INTEGRATE_PRE_CLEAN); \
 	$(INSTALL_SDS_STDLIB_OBJS); \
+	$(TRIAL_CACHE_RESTORE); \
 	$(SEED_SDS_COMPILE_ORDER); \
-	ok=0; ko=0; failed=0; \
+	ok=0; ko=0; failed=0; asc_ok=0; asc_warn=0; \
 	if [ ! -s silica.config ]; then \
 		echo "SKIP: $(MSG_PREFIX)no positive trials"; \
 		printf '%d %d\n' 0 0 > .integrate_counts; \
@@ -164,6 +177,7 @@ positive-integrate: silica.config
 	echo "Compiling with silica-compiler..."; \
 	ec=0; \
 	{ $(RUN_SILICA_COMPILER); } || ec=$$?; \
+	if [ "$$ec" -eq 0 ]; then $(TRIAL_CACHE_STORE); fi; \
 	$(INSTALL_SDS_STDLIB_OBJS); \
 	if [ "$$ec" -ne 0 ]; then \
 		if [ "$$ec" -eq 137 ] || [ "$$ec" -eq 9 ]; then \
@@ -180,14 +194,26 @@ positive-integrate: silica.config
 		[ "$$base" = "__silica_runtime" ] && continue; \
 		if [ ! -f "$$base.ascomp" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file (run make record-golden from trial root)"; \
+			asc_warn=$$((asc_warn + 1)); \
 			ko=$$((ko + 1)); failed=1; \
 		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
-			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
-			diff -Bw "$$sams" "$$base.ascomp" || true; \
+			raw=$$(diff -Bw "$$sams" "$$base.ascomp" | grep -c '^[<>]'); \
+			sed -E 's/o[0-9]+/oN/g' "$$sams" > "$$sams.norm"; \
+			sed -E 's/o[0-9]+/oN/g' "$$base.ascomp" > "$$sams.gnorm"; \
+			norm=$$(diff -Bw "$$sams.norm" "$$sams.gnorm" | grep -c '^[<>]'); \
+			subst=$$(diff -Bw "$$sams.norm" "$$sams.gnorm" | grep '^[<>]' | grep -vc '^[<>][[:space:]]*;'); \
+			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp -- $$raw diff lines; $$norm after normalising o<N> counters; $$subst of those are code, not comments"; \
+			if [ "$$norm" -eq 0 ]; then \
+				echo "        (drift is ENTIRELY SIR/label counter numbering -- generated code is identical)"; \
+			else \
+				echo "        first real differences (counters normalised):"; \
+				diff -Bw "$$sams.norm" "$$sams.gnorm" | head -30 | sed 's/^/        /' || true; \
+			fi; \
+			rm -f "$$sams.norm" "$$sams.gnorm"; \
+			asc_warn=$$((asc_warn + 1)); \
 			ko=$$((ko + 1)); failed=1; \
 		else \
-			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
-			ok=$$((ok + 1)); \
+			asc_ok=$$((asc_ok + 1)); \
 		fi; \
 	done; \
 	for sams in *.sams; do \
@@ -255,8 +281,12 @@ positive-integrate: silica.config
 			continue; \
 		fi; \
 		echo "Running $$base..."; \
-		{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
-		if [ -f "$$base.scout" ]; then \
+		{ perl -e 'alarm shift @ARGV; exec @ARGV or exit 127' $(TRIAL_TIMEOUT_SECS) ./$$base 2>&1; rc=$$?; \
+		  if [ $$rc -eq 142 ]; then echo "TIMEOUT"; else echo $$rc; fi; } > "$$base.sout"; \
+		if [ "$$(tail -1 "$$base.sout")" = "TIMEOUT" ]; then \
+			echo "❌❌ $(MSG_PREFIX)$$base TIMED OUT after $(TRIAL_TIMEOUT_SECS)s (killed; counted as a failure)"; \
+			ko=$$((ko + 1)); failed=1; \
+		elif [ -f "$$base.scout" ]; then \
 			if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
 				echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
 				diff -Bw "$$base.sout" "$$base.scout" || true; \
@@ -271,6 +301,7 @@ positive-integrate: silica.config
 		fi; \
 	done; \
 	[ "$$failed" -ne 0 ] && [ "$$ko" -eq 0 ] && ko=$$((ko + 1)); \
+	echo "$(MSG_PREFIX)assembly: $$asc_ok matched .ascomp, $$asc_warn differed or missing"; \
 	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
 	exit $$failed
 

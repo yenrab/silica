@@ -29,12 +29,26 @@ use type_interner;
 
 export check_expr/4;
 
+fn strip_spaces_from_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case substring(s, j, j + 1) == " " of {
+            true -> j;
+            false -> strip_spaces_from_run_end(s, j + 1, n)
+        }
+    }
+}
+
 fn strip_spaces_from(s: string, i: int64, acc: string) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
         false -> case substring(s, i, i + 1) == " " of {
             true -> strip_spaces_from(s, i + 1, acc);
-            false -> strip_spaces_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+            false -> {
+                n: int64 <- length_bytes(s);
+                e: int64 <- strip_spaces_from_run_end(s, i, n);
+                strip_spaces_from(s, e, concat(acc, substring(s, i, e)))
+            }
         }
     }
 }
@@ -47,7 +61,7 @@ fn strip_spaces_atom(s: string) -> string {
 fn atom_union_contains_from(union_text: string, needle: string, start: int64) -> bool {
     bar: int64 <- find_pipe_from(union_text, start);
     case bar < 0 of {
-        true -> substring(union_text, start, len(union_text)) == needle;
+        true -> substring(union_text, start, length_bytes(union_text)) == needle;
         false -> case substring(union_text, start, bar) == needle of {
             true -> true;
             false -> atom_union_contains_from(union_text, needle, bar + 1)
@@ -56,7 +70,7 @@ fn atom_union_contains_from(union_text: string, needle: string, start: int64) ->
 }
 
 fn find_pipe_from(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "|" of {
             true -> i;
@@ -67,11 +81,11 @@ fn find_pipe_from(s: string, i: int64) -> int64 {
 
 fn normalize_atom_expected_type(context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, expected_type: int64) -> string {
     exp_ns: string <- strip_spaces_atom(type_checker_core@surface_for_type_id(context, expected_type));
-    case len(exp_ns) >= 2 and substring(exp_ns, 0, 1) == "(" and substring(exp_ns, len(exp_ns) - 1, len(exp_ns)) == ")" of {
+    case length_bytes(exp_ns) >= 2 and substring(exp_ns, 0, 1) == "(" and substring(exp_ns, length_bytes(exp_ns) - 1, length_bytes(exp_ns)) == ")" of {
         false -> exp_ns;
         true -> {
-            inner: string <- substring(exp_ns, 1, len(exp_ns) - 1);
-            case len(inner) > 0 and substring(inner, 0, 1) == ":" of {
+            inner: string <- substring(exp_ns, 1, length_bytes(exp_ns) - 1);
+            case length_bytes(inner) > 0 and substring(inner, 0, 1) == ":" of {
                 true -> inner;
                 false -> exp_ns
             }
@@ -82,7 +96,7 @@ fn normalize_atom_expected_type(context: { env: List[{ name: string, type_id: in
 // atom-literal-typed or atom-union-typed check (returns bool).
 fn atom_literal_matches_type(expr_value: string, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, expected_type: int64) -> bool {
     exp_ns: string <- normalize_atom_expected_type(context, expected_type);
-    case len(exp_ns) == 0 of {
+    case length_bytes(exp_ns) == 0 of {
         true -> false;
         false -> case substring(exp_ns, 0, 1) == ":" of {
             false -> false;
@@ -106,7 +120,7 @@ fn check_expr(expr: { nodes: List[{ kind: int64, value: string, name: string, lo
                 expect_surf: string <- type_checker_core@surface_for_type_id(context, expected_type);
                 case type_checker_recursive_tuples@atom_fits_ref_optional_slot(node.value, expect_surf) of {
                     true -> (type_checker_core@type_check_ok(), context);
-                    false -> (type_checker_core@type_check_err("E2001", node.location, concat("atom literal requires atom return type, got ", case len(expect_surf) == 0 of { true -> "[EMPTY]"; false -> expect_surf }), "sect6"), context)
+                    false -> (type_checker_core@type_check_err("E2001", node.location, concat("atom literal requires atom return type, got ", case length_bytes(expect_surf) == 0 of { true -> "[EMPTY]"; false -> expect_surf }), "sect6"), context)
                 }
             }
         }

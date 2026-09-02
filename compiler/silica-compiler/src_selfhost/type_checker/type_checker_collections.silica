@@ -3,6 +3,7 @@
 
 use parser_ast;
 use type_checker_core;
+use type_interner;
 use type_checker_lists;
 use type_checker_record_types;
 use type_checker_memory_regions;
@@ -81,7 +82,7 @@ fn strip_all_spaces_col(s: string) -> string {
 }
 
 fn string_has_space_col(s: string, i: int64) -> bool {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> false;
         false -> case substring(s, i, i + 1) == " " of {
             true -> true;
@@ -90,18 +91,32 @@ fn string_has_space_col(s: string, i: int64) -> bool {
     }
 }
 
+fn strip_all_spaces_col_from_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case substring(s, j, j + 1) == " " of {
+            true -> j;
+            false -> strip_all_spaces_col_from_run_end(s, j + 1, n)
+        }
+    }
+}
+
 fn strip_all_spaces_col_from(s: string, i: int64, acc: string) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
         false -> case substring(s, i, i + 1) == " " of {
             true -> strip_all_spaces_col_from(s, i + 1, acc);
-            false -> strip_all_spaces_col_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+            false -> {
+                n: int64 <- length_bytes(s);
+                e: int64 <- strip_all_spaces_col_from_run_end(s, i, n);
+                strip_all_spaces_col_from(s, e, concat(acc, substring(s, i, e)))
+            }
         }
     }
 }
 
 fn strip_spaces_col(s: string) -> string {
-    strip_spaces_col_from(s, 0, len(s) - 1)
+    strip_spaces_col_from(s, 0, length_bytes(s) - 1)
 }
 
 fn strip_spaces_col_from(s: string, start: int64, end_inclusive: int64) -> string {
@@ -118,14 +133,14 @@ fn strip_spaces_col_from(s: string, start: int64, end_inclusive: int64) -> strin
 }
 
 fn starts_with_col(s: string, prefix: string) -> bool {
-    case len(s) < len(prefix) of {
+    case length_bytes(s) < length_bytes(prefix) of {
         true -> false;
-        false -> substring(s, 0, len(prefix)) == prefix
+        false -> substring(s, 0, length_bytes(prefix)) == prefix
     }
 }
 
 fn skip_spaces_index_col(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> i;
         false -> case substring(s, i, i + 1) == " " of {
             true -> skip_spaces_index_col(s, i + 1);
@@ -135,8 +150,8 @@ fn skip_spaces_index_col(s: string, i: int64) -> int64 {
 }
 
 fn find_first_comma_depth0_col(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
-        true -> len(s);
+    case i >= length_bytes(s) of {
+        true -> length_bytes(s);
         false -> {
             c: string <- substring(s, i, i + 1);
             case c == "(" or c == "[" or c == "{" of {
@@ -157,17 +172,17 @@ fn find_first_comma_depth0_col(s: string, i: int64, depth: int64) -> int64 {
 }
 
 fn normalize_collection_bracket(prefix: string, s: string) -> string {
-    plen: int64 <- len(prefix);
-    case len(s) < plen of {
+    plen: int64 <- length_bytes(prefix);
+    case length_bytes(s) < plen of {
         true -> s;
         false -> case substring(s, 0, plen) == prefix of {
             false -> s;
             true -> {
                 j: int64 <- skip_spaces_index_col(s, plen);
-                case j >= len(s) of {
+                case j >= length_bytes(s) of {
                     true -> s;
                     false -> case substring(s, j, j + 1) == "[" of {
-                        true -> concat(prefix, concat("[", substring(s, j + 1, len(s))));
+                        true -> concat(prefix, concat("[", substring(s, j + 1, length_bytes(s))));
                         false -> s
                     }
                 }
@@ -178,27 +193,27 @@ fn normalize_collection_bracket(prefix: string, s: string) -> string {
 
 fn collection_space_has_mem_form(space: string) -> bool {
     t: string <- strip_all_spaces_col(space);
-    len(t) >= 6 and substring(t, 0, 4) == "mem(" and substring(t, len(t) - 1, len(t)) == ")"
+    length_bytes(t) >= 6 and substring(t, 0, 4) == "mem(" and substring(t, length_bytes(t) - 1, length_bytes(t)) == ")"
 }
 
 fn parse_bracketed_collection_two(full: string, prefix: string) -> (bool, string, string, string, string) {
     t: string <- normalize_collection_bracket(prefix, strip_all_spaces_col(full));
-    plen: int64 <- len(prefix);
-    case len(t) < plen + 2 of {
+    plen: int64 <- length_bytes(prefix);
+    case length_bytes(t) < plen + 2 of {
         true -> (false, "", "", "", "");
         false -> case starts_with_col(t, concat(prefix, "[")) of {
             false -> (false, "", "", "", "");
-            true -> case substring(t, len(t) - 1, len(t)) == "]" of {
+            true -> case substring(t, length_bytes(t) - 1, length_bytes(t)) == "]" of {
                 false -> (false, "", "", "", "");
                 true -> {
-                    inner: string <- substring(t, plen + 1, len(t) - 1);
+                    inner: string <- substring(t, plen + 1, length_bytes(t) - 1);
                     inner_trim: string <- strip_spaces_col(inner);
                     comma_pos: int64 <- find_first_comma_depth0_col(inner_trim, 0, 0);
-                    case comma_pos >= len(inner_trim) of {
+                    case comma_pos >= length_bytes(inner_trim) of {
                         true -> (false, "", "", "", "");
                         false -> {
                             p1: string <- strip_spaces_col(substring(inner_trim, 0, comma_pos));
-                            p2: string <- strip_spaces_col(substring(inner_trim, comma_pos + 1, len(inner_trim)));
+                            p2: string <- strip_spaces_col(substring(inner_trim, comma_pos + 1, length_bytes(inner_trim)));
                             (true, p1, p2, "", "")
                         }
                     }
@@ -210,28 +225,28 @@ fn parse_bracketed_collection_two(full: string, prefix: string) -> (bool, string
 
 fn parse_bracketed_collection_three(full: string, prefix: string) -> (bool, string, string, string, string) {
     t: string <- normalize_collection_bracket(prefix, strip_all_spaces_col(full));
-    plen: int64 <- len(prefix);
-    case len(t) < plen + 2 of {
+    plen: int64 <- length_bytes(prefix);
+    case length_bytes(t) < plen + 2 of {
         true -> (false, "", "", "", "");
         false -> case starts_with_col(t, concat(prefix, "[")) of {
             false -> (false, "", "", "", "");
-            true -> case substring(t, len(t) - 1, len(t)) == "]" of {
+            true -> case substring(t, length_bytes(t) - 1, length_bytes(t)) == "]" of {
                 false -> (false, "", "", "", "");
                 true -> {
-                    inner: string <- substring(t, plen + 1, len(t) - 1);
+                    inner: string <- substring(t, plen + 1, length_bytes(t) - 1);
                     inner_trim: string <- strip_spaces_col(inner);
                     c1: int64 <- find_first_comma_depth0_col(inner_trim, 0, 0);
-                    case c1 >= len(inner_trim) of {
+                    case c1 >= length_bytes(inner_trim) of {
                         true -> (false, "", "", "", "");
                         false -> {
-                            rest1: string <- substring(inner_trim, c1 + 1, len(inner_trim));
+                            rest1: string <- substring(inner_trim, c1 + 1, length_bytes(inner_trim));
                             c2: int64 <- find_first_comma_depth0_col(rest1, 0, 0);
-                            case c2 >= len(rest1) of {
+                            case c2 >= length_bytes(rest1) of {
                                 true -> (false, "", "", "", "");
                                 false -> {
                                     p1: string <- strip_spaces_col(substring(inner_trim, 0, c1));
                                     p2: string <- strip_spaces_col(substring(rest1, 0, c2));
-                                    p3: string <- strip_spaces_col(substring(rest1, c2 + 1, len(rest1)));
+                                    p3: string <- strip_spaces_col(substring(rest1, c2 + 1, length_bytes(rest1)));
                                     (true, p1, p2, p3, "")
                                 }
                             }
@@ -245,34 +260,34 @@ fn parse_bracketed_collection_three(full: string, prefix: string) -> (bool, stri
 
 fn parse_bracketed_collection_four(full: string, prefix: string) -> (bool, string, string, string, string) {
     t: string <- normalize_collection_bracket(prefix, strip_all_spaces_col(full));
-    plen: int64 <- len(prefix);
-    case len(t) < plen + 2 of {
+    plen: int64 <- length_bytes(prefix);
+    case length_bytes(t) < plen + 2 of {
         true -> (false, "", "", "", "");
         false -> case starts_with_col(t, concat(prefix, "[")) of {
             false -> (false, "", "", "", "");
-            true -> case substring(t, len(t) - 1, len(t)) == "]" of {
+            true -> case substring(t, length_bytes(t) - 1, length_bytes(t)) == "]" of {
                 false -> (false, "", "", "", "");
                 true -> {
-                    inner: string <- substring(t, plen + 1, len(t) - 1);
+                    inner: string <- substring(t, plen + 1, length_bytes(t) - 1);
                     inner_trim: string <- strip_spaces_col(inner);
                     c1: int64 <- find_first_comma_depth0_col(inner_trim, 0, 0);
-                    case c1 >= len(inner_trim) of {
+                    case c1 >= length_bytes(inner_trim) of {
                         true -> (false, "", "", "", "");
                         false -> {
-                            rest1: string <- substring(inner_trim, c1 + 1, len(inner_trim));
+                            rest1: string <- substring(inner_trim, c1 + 1, length_bytes(inner_trim));
                             c2: int64 <- find_first_comma_depth0_col(rest1, 0, 0);
-                            case c2 >= len(rest1) of {
+                            case c2 >= length_bytes(rest1) of {
                                 true -> (false, "", "", "", "");
                                 false -> {
-                                    rest2: string <- substring(rest1, c2 + 1, len(rest1));
+                                    rest2: string <- substring(rest1, c2 + 1, length_bytes(rest1));
                                     c3: int64 <- find_first_comma_depth0_col(rest2, 0, 0);
-                                    case c3 >= len(rest2) of {
+                                    case c3 >= length_bytes(rest2) of {
                                         true -> (false, "", "", "", "");
                                         false -> {
                                             p1: string <- strip_spaces_col(substring(inner_trim, 0, c1));
                                             p2: string <- strip_spaces_col(substring(rest1, 0, c2));
                                             p3: string <- strip_spaces_col(substring(rest2, 0, c3));
-                                            p4: string <- strip_spaces_col(substring(rest2, c3 + 1, len(rest2)));
+                                            p4: string <- strip_spaces_col(substring(rest2, c3 + 1, length_bytes(rest2)));
                                             (true, p1, p2, p3, p4)
                                         }
                                     }
@@ -400,16 +415,22 @@ fn comparator_return_type_ok(ret: string) -> bool {
     contains_less_equal_greater(r)
 }
 
-fn contains_atom_token(s: string, token: string) -> bool {
-    case len(token) == 0 of {
-        true -> true;
-        false -> case len(s) < len(token) of {
-            true -> false;
-            false -> case substring(s, 0, len(token)) == token of {
-                true -> true;
-                false -> contains_atom_token(substring(s, 1, len(s)), token)
-            }
+fn contains_atom_token_at(s: string, token: string, i: int64, n: int64, m: int64) -> bool {
+    case i + m > n of {
+        true -> false;
+        false -> case substring(s, i, i + m) == token of {
+            true -> true;
+            false -> contains_atom_token_at(s, token, i + 1, n, m)
         }
+    }
+}
+
+fn contains_atom_token(s: string, token: string) -> bool {
+    m: int64 <- length_bytes(token);
+    n: int64 <- length_bytes(s);
+    case m == 0 of {
+        true -> true;
+        false -> contains_atom_token_at(s, token, 0, n, m)
     }
 }
 
@@ -441,7 +462,7 @@ fn expected_edge_target_fn_type(edge_type: string, node_type: string) -> string 
 }
 
 fn find_arrow_col_depth(s: string, i: int64, depth: int64) -> int64 {
-    case i + 2 > len(s) of {
+    case i + 2 > length_bytes(s) of {
         true -> -1;
         false -> {
             c: string <- substring(s, i, i + 1);
@@ -461,10 +482,10 @@ fn find_arrow_col_depth(s: string, i: int64, depth: int64) -> int64 {
 
 fn params_inner_before_arrow_col(t: string, arrow: int64) -> string {
     prefix: string <- substring(t, 0, arrow);
-    case len(prefix) < 5 of {
+    case length_bytes(prefix) < 5 of {
         true -> "";
-        false -> case substring(prefix, 0, 3) == "fn(" and substring(prefix, len(prefix) - 1, len(prefix)) == ")" of {
-            true -> substring(prefix, 3, len(prefix) - 1);
+        false -> case substring(prefix, 0, 3) == "fn(" and substring(prefix, length_bytes(prefix) - 1, length_bytes(prefix)) == ")" of {
+            true -> substring(prefix, 3, length_bytes(prefix) - 1);
             false -> ""
         }
     }
@@ -475,16 +496,16 @@ fn fn_return_after_arrow_col(fn_type: string) -> string {
     arrow: int64 <- find_arrow_col_depth(t, 0, 0);
     case arrow < 0 of {
         true -> "";
-        false -> strip_spaces_col(substring(t, arrow + 2, len(t)))
+        false -> strip_spaces_col(substring(t, arrow + 2, length_bytes(t)))
     }
 }
 
 fn params_inner_paren_before_arrow(t: string, arrow: int64) -> string {
     prefix: string <- substring(t, 0, arrow);
-    case len(prefix) < 2 of {
+    case length_bytes(prefix) < 2 of {
         true -> "";
-        false -> case substring(prefix, 0, 1) == "(" and substring(prefix, len(prefix) - 1, len(prefix)) == ")" of {
-            true -> substring(prefix, 1, len(prefix) - 1);
+        false -> case substring(prefix, 0, 1) == "(" and substring(prefix, length_bytes(prefix) - 1, length_bytes(prefix)) == ")" of {
+            true -> substring(prefix, 1, length_bytes(prefix) - 1);
             false -> ""
         }
     }
@@ -492,11 +513,11 @@ fn params_inner_paren_before_arrow(t: string, arrow: int64) -> string {
 
 fn binary_params_from_inner(inner: string) -> (bool, string, string) {
     comma: int64 <- find_first_comma_depth0_col(inner, 0, 0);
-    case comma >= len(inner) of {
+    case comma >= length_bytes(inner) of {
         true -> (false, "", "");
         false -> {
             left: string <- strip_spaces_col(substring(inner, 0, comma));
-            right: string <- strip_spaces_col(substring(inner, comma + 1, len(inner)));
+            right: string <- strip_spaces_col(substring(inner, comma + 1, length_bytes(inner)));
             (true, left, right)
         }
     }
@@ -504,7 +525,7 @@ fn binary_params_from_inner(inner: string) -> (bool, string, string) {
 
 fn parse_fn_binary_param_types(fn_type: string) -> (bool, string, string) {
     t: string <- strip_all_spaces_col(fn_type);
-    case len(t) < 5 of {
+    case length_bytes(t) < 5 of {
         true -> (false, "", "");
         false -> {
             arrow: int64 <- find_arrow_col_depth(t, 0, 0);
@@ -515,7 +536,7 @@ fn parse_fn_binary_param_types(fn_type: string) -> (bool, string, string) {
                         true -> params_inner_before_arrow_col(t, arrow);
                         false -> params_inner_paren_before_arrow(t, arrow)
                     };
-                    case len(inner) == 0 of {
+                    case length_bytes(inner) == 0 of {
                         true -> (false, "", "");
                         false -> binary_params_from_inner(inner)
                     }
@@ -527,7 +548,7 @@ fn parse_fn_binary_param_types(fn_type: string) -> (bool, string, string) {
 
 fn parse_fn_unary_param_type(fn_type: string) -> (bool, string) {
     t: string <- strip_all_spaces_col(fn_type);
-    case len(t) < 5 of {
+    case length_bytes(t) < 5 of {
         true -> (false, "");
         false -> {
             arrow: int64 <- find_arrow_col_depth(t, 0, 0);
@@ -538,11 +559,11 @@ fn parse_fn_unary_param_type(fn_type: string) -> (bool, string) {
                         true -> params_inner_before_arrow_col(t, arrow);
                         false -> params_inner_paren_before_arrow(t, arrow)
                     };
-                    case len(inner) == 0 of {
+                    case length_bytes(inner) == 0 of {
                         true -> (false, "");
                         false -> {
                             comma: int64 <- find_first_comma_depth0_col(inner, 0, 0);
-                            case comma >= len(inner) of {
+                            case comma >= length_bytes(inner) of {
                                 true -> (true, strip_spaces_col(inner));
                                 false -> (false, "")
                             }
@@ -554,18 +575,32 @@ fn parse_fn_unary_param_type(fn_type: string) -> (bool, string) {
     }
 }
 
+// A collection module spells its comparator with the module's own type placeholder
+// (compare_item: fn(ItemType, ItemType) -> ...), so demanding the parameter equal the
+// concrete item type rejects every legitimate constructor with E2003. A placeholder is
+// an unbound universally-quantified parameter: it witnesses any item type.
+fn param_witnesses_item_col(param: string, item: string) -> bool {
+    case type_interner@is_placeholder_surface(param) of {
+        true -> true;
+        false -> type_checker_lists@types_equal_strip(param, item)
+    }
+}
+
 fn fn_type_witnesses_item_with_world(fn_type: string, item_type: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
     (ok: bool, left: string, right: string) <- parse_fn_binary_param_types(fn_type);
     case ok of {
         false -> false;
         true -> {
             item: string <- strip_spaces_col(item_type);
-            params_ok: bool <- type_checker_lists@types_equal_strip(left, item) and type_checker_lists@types_equal_strip(right, item);
+            params_ok: bool <- param_witnesses_item_col(left, item) and param_witnesses_item_col(right, item);
             case params_ok of {
                 false -> false;
-                true -> {
-                    expected: string <- expected_compare_item_fn_type(item);
-                    type_checker_lists@formal_type_accepts_actual(expected, fn_type, world) or type_checker_lists@formal_type_accepts_actual(fn_type, expected, world)
+                true -> case type_interner@is_placeholder_surface(left) or type_interner@is_placeholder_surface(right) of {
+                    true -> comparator_return_type_ok(fn_return_after_arrow_col(fn_type));
+                    false -> {
+                        expected: string <- expected_compare_item_fn_type(item);
+                        type_checker_lists@formal_type_accepts_actual(expected, fn_type, world) or type_checker_lists@formal_type_accepts_actual(fn_type, expected, world)
+                    }
                 }
             }
         }
@@ -574,7 +609,7 @@ fn fn_type_witnesses_item_with_world(fn_type: string, item_type: string, world: 
 
 fn record_field_fn_witnesses_item_with_world(record_type: string, field: string, item_type: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
     ft: string <- type_checker_record_types@find_field_type_in_record(record_type, field);
-    case len(ft) == 0 of {
+    case length_bytes(ft) == 0 of {
         true -> false;
         false -> fn_type_witnesses_item_with_world(ft, item_type, world)
     }
@@ -586,7 +621,7 @@ fn fn_type_witnesses_item(fn_type: string, item_type: string) -> bool {
         false -> false;
         true -> {
             item: string <- strip_spaces_col(item_type);
-            params_ok: bool <- type_checker_lists@types_equal_strip(left, item) and type_checker_lists@types_equal_strip(right, item);
+            params_ok: bool <- param_witnesses_item_col(left, item) and param_witnesses_item_col(right, item);
             case params_ok of {
                 false -> false;
                 true -> {
@@ -600,7 +635,7 @@ fn fn_type_witnesses_item(fn_type: string, item_type: string) -> bool {
 
 fn record_field_fn_witnesses_item(record_type: string, field: string, item_type: string) -> bool {
     ft: string <- type_checker_record_types@find_field_type_in_record(record_type, field);
-    case len(ft) == 0 of {
+    case length_bytes(ft) == 0 of {
         true -> false;
         false -> fn_type_witnesses_item(ft, item_type)
     }
@@ -863,7 +898,7 @@ fn collection_return_accepts_directed_graph(decl_type: string, return_type: stri
 
 fn record_field_fn_witnesses_edge_target_with_world(record_type: string, field: string, edge_type: string, node_type: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
     ft: string <- type_checker_record_types@find_field_type_in_record(record_type, field);
-    case len(ft) == 0 of {
+    case length_bytes(ft) == 0 of {
         true -> false;
         false -> {
             expected: string <- expected_edge_target_fn_type(edge_type, node_type);
@@ -1014,8 +1049,8 @@ fn collection_param_type_for_trait_arg(collection_type: string, arg_index: int64
 }
 
 fn is_assoc_type_placeholder(t: string) -> bool {
-    u: string <- strip_spaces_col(t);
-    u == "ItemType" or u == "KeyType" or u == "ValueType" or u == "SpaceType" or u == "SetType" or u == "MapType" or u == "HeapType" or u == "GraphType" or u == "QueueType" or u == "TreeType" or u == "NodeIdType" or u == "EdgePayloadType" or u == "EdgeDataType" or u == "PriorityType" or u == "WeightType" or u == "AccType"
+    // parse_type's name->kind table is the single authority; see type_interner.
+    type_interner@is_placeholder_surface(strip_spaces_col(t))
 }
 
 fn collection_space_from_type(collection_type: string) -> string {
@@ -1078,15 +1113,16 @@ fn collection_space_from_type(collection_type: string) -> string {
 
 fn resolve_assoc_type_placeholder(placeholder: string, collection_type: string, param_index: int64) -> string {
     p: string <- strip_spaces_col(placeholder);
+    pk: int64 <- type_interner@placeholder_kind_of_surface(p);
     case is_assoc_type_placeholder(p) of {
         false -> p;
-        true -> case p == "ItemType" or p == "PriorityType" of {
+        true -> case pk == type_interner@kind_ph_item_type() or pk == type_interner@kind_ph_priority_type() of {
             true -> collection_param_type_for_trait_arg(collection_type, 1);
-            false -> case p == "KeyType" or p == "NodeIdType" of {
+            false -> case pk == type_interner@kind_ph_key_type() or pk == type_interner@kind_ph_node_id_type() of {
                 true -> collection_param_type_for_trait_arg(collection_type, 1);
-                false -> case p == "ValueType" or p == "EdgePayloadType" of {
+                false -> case pk == type_interner@kind_ph_value_type() or pk == type_interner@kind_ph_edge_payload_type() of {
                     true -> collection_param_type_for_trait_arg(collection_type, 2);
-                    false -> case p == "SpaceType" of {
+                    false -> case pk == type_interner@kind_ph_space_type() of {
                         true -> collection_space_from_type(collection_type);
                         false -> case p == "SetType" of {
                             true -> case is_ordered_set_type(collection_type) of { true -> collection_type; false -> "" };
@@ -1113,7 +1149,7 @@ fn resolve_assoc_type_placeholder(placeholder: string, collection_type: string, 
 
 fn resolve_trait_formal_type(formal: string, collection_type: string, param_index: int64) -> string {
     f: string <- strip_spaces_col(formal);
-    case len(collection_type) == 0 of {
+    case length_bytes(collection_type) == 0 of {
         true -> f;
         false -> case is_assoc_type_placeholder(f) of {
             true -> resolve_assoc_type_placeholder(f, collection_type, param_index);
@@ -1124,7 +1160,7 @@ fn resolve_trait_formal_type(formal: string, collection_type: string, param_inde
 
 fn witness_type_from_record_field(record_type: string, field: string) -> string {
     ft: string <- type_checker_record_types@find_field_type_in_record(record_type, field);
-    case len(ft) == 0 of {
+    case length_bytes(ft) == 0 of {
         true -> "";
         false -> {
             (ok: bool, left: string, _: string) <- parse_fn_binary_param_types(ft);
@@ -1135,20 +1171,21 @@ fn witness_type_from_record_field(record_type: string, field: string) -> string 
 
 fn assoc_type_from_record_witness(placeholder: string, record_type: string) -> string {
     p: string <- strip_spaces_col(placeholder);
-    case len(record_type) == 0 of {
+    pk: int64 <- type_interner@placeholder_kind_of_surface(p);
+    case length_bytes(record_type) == 0 of {
         true -> "";
-        false -> case p == "ItemType" or p == "PriorityType" of {
-            true -> case len(witness_type_from_record_field(record_type, "compare_priority")) > 0 of {
+        false -> case pk == type_interner@kind_ph_item_type() or pk == type_interner@kind_ph_priority_type() of {
+            true -> case length_bytes(witness_type_from_record_field(record_type, "compare_priority")) > 0 of {
                 true -> witness_type_from_record_field(record_type, "compare_priority");
                 false -> witness_type_from_record_field(record_type, "compare_item")
             };
-            false -> case p == "KeyType" or p == "NodeIdType" of {
-                true -> case len(witness_type_from_record_field(record_type, "compare_node")) > 0 of {
+            false -> case pk == type_interner@kind_ph_key_type() or pk == type_interner@kind_ph_node_id_type() of {
+                true -> case length_bytes(witness_type_from_record_field(record_type, "compare_node")) > 0 of {
                     true -> witness_type_from_record_field(record_type, "compare_node");
                     false -> witness_type_from_record_field(record_type, "compare_key")
                 };
-                false -> case p == "ValueType" or p == "EdgePayloadType" of {
-                    true -> case len(witness_type_from_record_field(record_type, "compare_edge")) > 0 of {
+                false -> case pk == type_interner@kind_ph_value_type() or pk == type_interner@kind_ph_edge_payload_type() of {
+                    true -> case length_bytes(witness_type_from_record_field(record_type, "compare_edge")) > 0 of {
                         true -> witness_type_from_record_field(record_type, "compare_edge");
                         false -> witness_type_from_record_field(record_type, "compare_value")
                     };
@@ -1163,15 +1200,15 @@ fn resolve_trait_formal_with_contexts(formal: string, collection_type: string, r
     f: string <- strip_spaces_col(formal);
     case is_assoc_type_placeholder(f) of {
         true -> {
-            from_col: string <- case len(collection_type) > 0 of {
+            from_col: string <- case length_bytes(collection_type) > 0 of {
                 true -> resolve_assoc_type_placeholder(f, collection_type, param_index);
                 false -> ""
             };
-            case len(from_col) > 0 of {
+            case length_bytes(from_col) > 0 of {
                 true -> from_col;
                 false -> {
                     from_rec: string <- assoc_type_from_record_witness(f, record_type);
-                    case len(from_rec) > 0 of {
+                    case length_bytes(from_rec) > 0 of {
                         true -> from_rec;
                         // AccType is witnessed by the call's accumulator/result, not by a
                         // collection receiver.  Leave the placeholder so AccType~AccType
@@ -1185,9 +1222,9 @@ fn resolve_trait_formal_with_contexts(formal: string, collection_type: string, r
             }
         };
         // Composite formals (constructor records, fn types) may embed ItemType/KeyType/ValueType.
-        false -> case len(collection_type) > 0 of {
+        false -> case length_bytes(collection_type) > 0 of {
             true -> resolve_constructor_call_formal(collection_type, formal);
-            false -> case len(record_type) > 0 of {
+            false -> case length_bytes(record_type) > 0 of {
                 true -> resolve_constructor_call_formal(record_type, formal);
                 false -> f
             }
@@ -1196,18 +1233,33 @@ fn resolve_trait_formal_with_contexts(formal: string, collection_type: string, r
 }
 
 fn replace_assoc_token_in_type(s: string, token: string, replacement: string) -> string {
-    case len(replacement) == 0 or len(token) == 0 of {
+    case length_bytes(replacement) == 0 or length_bytes(token) == 0 of {
         true -> s;
         false -> replace_assoc_token_scan(s, token, replacement, 0, "")
     }
 }
 
+fn replace_assoc_run_end(s: string, token: string, tlen: int64, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case j + tlen <= n and substring(s, j, j + tlen) == token of {
+            true -> j;
+            false -> replace_assoc_run_end(s, token, tlen, j + 1, n)
+        }
+    }
+}
+
 fn replace_assoc_token_scan(s: string, token: string, replacement: string, i: int64, acc: string) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
-        false -> case i + len(token) <= len(s) and substring(s, i, i + len(token)) == token of {
-            true -> replace_assoc_token_scan(s, token, replacement, i + len(token), concat(acc, replacement));
-            false -> replace_assoc_token_scan(s, token, replacement, i + 1, concat(acc, substring(s, i, i + 1)))
+        false -> case i + length_bytes(token) <= length_bytes(s) and substring(s, i, i + length_bytes(token)) == token of {
+            true -> replace_assoc_token_scan(s, token, replacement, i + length_bytes(token), concat(acc, replacement));
+            false -> {
+                n: int64 <- length_bytes(s);
+                tlen: int64 <- length_bytes(token);
+                e: int64 <- replace_assoc_run_end(s, token, tlen, i, n);
+                replace_assoc_token_scan(s, token, replacement, e, concat(acc, substring(s, i, e)))
+            }
         }
     }
 }
@@ -1220,7 +1272,7 @@ fn constructor_witness_type_for_placeholder(bind_type: string, placeholder: stri
             // constructor records ({compare_key, compare_value}) both witness
             // ItemType/KeyType/ValueType via their comparator fields.
             from_rec: string <- assoc_type_from_record_witness(placeholder, bind_type);
-            case len(from_rec) > 0 of {
+            case length_bytes(from_rec) > 0 of {
                 true -> from_rec;
                 false -> ""
             }
@@ -1229,7 +1281,7 @@ fn constructor_witness_type_for_placeholder(bind_type: string, placeholder: stri
 }
 
 fn resolve_constructor_call_formal(bind_type: string, formal: string) -> string {
-    case len(formal) == 0 of {
+    case length_bytes(formal) == 0 of {
         true -> formal;
         false -> {
             item_t: string <- constructor_witness_type_for_placeholder(bind_type, "ItemType");
@@ -1248,7 +1300,7 @@ fn resolve_constructor_call_formal(bind_type: string, formal: string) -> string 
 // as its bind_type for unrelated reasons).
 fn resolve_accumulator_call_formal(expected_type: string, formal: string) -> string {
     e: string <- strip_spaces_col(expected_type);
-    case len(e) == 0 or e == "discard" or e == "AccType" of {
+    case length_bytes(e) == 0 or e == "discard" or e == "AccType" of {
         true -> formal;
         false -> replace_assoc_token_in_type(formal, "AccType", expected_type)
     }
@@ -1267,7 +1319,7 @@ fn infer_collection_decl_from_receiver(inferred: string, arg_expr: { nodes: List
                     case inner_node.kind == 1 of {
                         true -> {
                             bound: string <- type_checker_core@lookup_symbol_surface(context_env, inner_node.name);
-                            case len(bound) == 0 of {
+                            case length_bytes(bound) == 0 of {
                                 true -> "";
                                 false -> case is_collection_trait_type(bound) of { true -> bound; false -> "" }
                             }
@@ -1282,9 +1334,9 @@ fn infer_collection_decl_from_receiver(inferred: string, arg_expr: { nodes: List
 }
 
 fn find_collection_keyword_index(s: string, i: int64, kw: string) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
-        false -> case len(s) - i >= len(kw) and substring(s, i, i + len(kw)) == kw of {
+        false -> case length_bytes(s) - i >= length_bytes(kw) and substring(s, i, i + length_bytes(kw)) == kw of {
             true -> i;
             false -> find_collection_keyword_index(s, i + 1, kw)
         }
@@ -1292,8 +1344,8 @@ fn find_collection_keyword_index(s: string, i: int64, kw: string) -> int64 {
 }
 
 fn find_matching_closing_bracket_col(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
-        true -> len(s);
+    case i >= length_bytes(s) of {
+        true -> length_bytes(s);
         false -> {
             c: string <- substring(s, i, i + 1);
             case c == "[" or c == "(" or c == "{" of {
@@ -1434,23 +1486,23 @@ fn min_pos4(a: int64, b: int64, c: int64, d: int64) -> int64 {
 }
 
 fn collection_keyword_len_at(s: string, pos: int64) -> int64 {
-    case pos >= 0 and len(s) - pos >= 15 and substring(s, pos, pos + 15) == "UndirectedGraph" of {
+    case pos >= 0 and length_bytes(s) - pos >= 15 and substring(s, pos, pos + 15) == "UndirectedGraph" of {
         true -> 15;
-        false -> case pos >= 0 and len(s) - pos >= 13 and substring(s, pos, pos + 13) == "DirectedGraph" of {
+        false -> case pos >= 0 and length_bytes(s) - pos >= 13 and substring(s, pos, pos + 13) == "DirectedGraph" of {
             true -> 13;
-            false -> case pos >= 0 and len(s) - pos >= 13 and substring(s, pos, pos + 13) == "WeightedGraph" of {
+            false -> case pos >= 0 and length_bytes(s) - pos >= 13 and substring(s, pos, pos + 13) == "WeightedGraph" of {
                 true -> 13;
-                false -> case pos >= 0 and len(s) - pos >= 13 and substring(s, pos, pos + 13) == "PriorityQueue" of {
+                false -> case pos >= 0 and length_bytes(s) - pos >= 13 and substring(s, pos, pos + 13) == "PriorityQueue" of {
                     true -> 13;
-                    false -> case pos >= 0 and len(s) - pos >= 10 and substring(s, pos, pos + 10) == "OrderedSet" of {
+                    false -> case pos >= 0 and length_bytes(s) - pos >= 10 and substring(s, pos, pos + 10) == "OrderedSet" of {
                         true -> 10;
-                        false -> case pos >= 0 and len(s) - pos >= 10 and substring(s, pos, pos + 10) == "OrderedMap" of {
+                        false -> case pos >= 0 and length_bytes(s) - pos >= 10 and substring(s, pos, pos + 10) == "OrderedMap" of {
                             true -> 10;
-                            false -> case pos >= 0 and len(s) - pos >= 10 and substring(s, pos, pos + 10) == "SearchTree" of {
+                            false -> case pos >= 0 and length_bytes(s) - pos >= 10 and substring(s, pos, pos + 10) == "SearchTree" of {
                                 true -> 10;
-                                false -> case pos >= 0 and len(s) - pos >= 4 and substring(s, pos, pos + 4) == "Heap" of {
+                                false -> case pos >= 0 and length_bytes(s) - pos >= 4 and substring(s, pos, pos + 4) == "Heap" of {
                                     true -> 4;
-                                    false -> case pos >= 0 and len(s) - pos >= 4 and substring(s, pos, pos + 4) == "Tree" of {
+                                    false -> case pos >= 0 and length_bytes(s) - pos >= 4 and substring(s, pos, pos + 4) == "Tree" of {
                                         true -> 4;
                                         false -> 0
                                     }
@@ -1465,9 +1517,9 @@ fn collection_keyword_len_at(s: string, pos: int64) -> int64 {
 }
 
 fn collection_keyword_valid_at(s: string, pos: int64, kw: string) -> bool {
-    case pos < 0 or len(s) - pos < len(kw) of {
+    case pos < 0 or length_bytes(s) - pos < length_bytes(kw) of {
         true -> false;
-        false -> case substring(s, pos, pos + len(kw)) == kw of {
+        false -> case substring(s, pos, pos + length_bytes(kw)) == kw of {
             false -> false;
             true -> case pos > 0 of {
                 true -> {
@@ -1517,7 +1569,7 @@ fn find_earliest_collection_keyword(s: string, i: int64) -> (int64, int64) {
 }
 
 fn validate_collection_in_type_string(s: string, location: { file: string, line: int64, column: int64, offset: int64 }, i: int64) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> type_checker_core@type_check_ok();
         false -> {
             (pos: int64, kw_len: int64) <- find_earliest_collection_keyword(s, i);
@@ -1525,13 +1577,13 @@ fn validate_collection_in_type_string(s: string, location: { file: string, line:
                 true -> type_checker_core@type_check_ok();
                 false -> {
                     j: int64 <- skip_spaces_index_col(s, pos + kw_len);
-                    case j >= len(s) of {
+                    case j >= length_bytes(s) of {
                         true -> validate_collection_in_type_string(s, location, pos + kw_len);
                         false -> case substring(s, j, j + 1) == "[" of {
                             false -> validate_collection_in_type_string(s, location, pos + kw_len);
                             true -> {
                                 end_j: int64 <- find_matching_closing_bracket_col(s, j, 0);
-                                case end_j >= len(s) of {
+                                case end_j >= length_bytes(s) of {
                                     true -> validate_collection_in_type_string(s, location, pos + kw_len);
                                     false -> {
                                         col_ty: string <- substring(s, pos, end_j + 1);
@@ -1581,7 +1633,7 @@ fn is_lookup_status_union_type(type_str: string) -> bool {
 
 fn record_type_has_field(type_str: string, field: string) -> bool {
     ft: string <- type_checker_record_types@find_field_type_in_record(type_str, field);
-    len(ft) > 0
+    length_bytes(ft) > 0
 }
 
 // Collection lookup/update results use { status: :not_found | :found, payload } per common_contract §6.
@@ -1650,6 +1702,42 @@ fn constructor_field_list_contains(lst: List[string, mem(normal)], name: string)
     }
 }
 
+// An expanded structural record carries its construction shape in its own field names,
+// so the surface parsers (OrderedSet[...], OrderedMap[...]) are not the only source of
+// truth. Without this, a record written out in full parses as none of the named
+// collection surfaces and falls through to the module-name table, which picks whichever
+// collection module happens to be in scope. That stored wbt_map's compare_key /
+// compare_value into a wbt_set record: every unmatched name resolves to the same
+// not-found offset, all four collided on one slot, compare_item was never written, and
+// the stale word was called as the comparator (SIGFPE, then a _sigtramp loop).
+// Checked most-specific first: weighted graphs also carry compare_edge_data/compare_node.
+fn record_has_ordering_field(bind_type: string, field: string) -> bool {
+    length_bytes(type_checker_record_types@find_field_type_in_record(bind_type, field)) > 0
+}
+
+fn required_constructor_fields_from_record(bind_type: string) -> List[string, mem(normal)] {
+    case record_has_ordering_field(bind_type, "edge_target") of {
+        true -> cons_constructor_field("edge_target", cons_constructor_field("compare_edge", cons_constructor_field("compare_node", empty_constructor_field_list())));
+        false -> case record_has_ordering_field(bind_type, "compare_weight") of {
+            true -> cons_constructor_field("compare_weight", cons_constructor_field("edge_weight", cons_constructor_field("compare_edge_data", cons_constructor_field("compare_node", empty_constructor_field_list()))));
+            false -> case record_has_ordering_field(bind_type, "compare_edge_data") of {
+                true -> cons_constructor_field("compare_edge_data", cons_constructor_field("compare_node", empty_constructor_field_list()));
+                false -> case record_has_ordering_field(bind_type, "compare_key") of {
+                    true -> cons_constructor_field("compare_value", cons_constructor_field("compare_key", empty_constructor_field_list()));
+                    false -> case record_has_ordering_field(bind_type, "compare_priority") of {
+                        true -> cons_constructor_field("compare_item", cons_constructor_field("compare_priority", empty_constructor_field_list()));
+                        false -> case record_has_ordering_field(bind_type, "compare_item") of {
+                            true -> cons_constructor_field("compare_item", empty_constructor_field_list());
+                            false -> empty_constructor_field_list()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 fn required_constructor_fields(bind_type: string) -> List[string, mem(normal)] {
     case is_ordered_set_type(bind_type) of {
         true -> cons_constructor_field("compare_item", empty_constructor_field_list());
@@ -1669,7 +1757,7 @@ fn required_constructor_fields(bind_type: string) -> List[string, mem(normal)] {
                                     true -> cons_constructor_field("compare_edge_data", cons_constructor_field("compare_node", empty_constructor_field_list()));
                                     false -> case is_weighted_graph_type(bind_type) of {
                                         true -> cons_constructor_field("compare_weight", cons_constructor_field("edge_weight", cons_constructor_field("compare_edge_data", cons_constructor_field("compare_node", empty_constructor_field_list()))));
-                                        false -> empty_constructor_field_list()
+                                        false -> required_constructor_fields_from_record(bind_type)
                                     }
                                 }
                             }
@@ -1827,13 +1915,13 @@ fn constructor_ordering_field_at_for_module(module_name: string, idx: int64) -> 
 fn bind_type_has_collection_runtime_fields(bind_type: string) -> bool {
     key_ty: string <- type_checker_record_types@find_field_type_in_record(bind_type, "specialization_key");
     region_ty: string <- type_checker_record_types@find_field_type_in_record(bind_type, "region");
-    len(key_ty) > 0 and len(region_ty) > 0
+    length_bytes(key_ty) > 0 and length_bytes(region_ty) > 0
 }
 
 fn record_runtime_space_from_region_field(bind_type: string) -> string {
     region_ty: string <- type_checker_record_types@find_field_type_in_record(bind_type, "region");
     space: string <- type_checker_memory_regions@get_space_from_region_type(region_ty);
-    case len(space) == 0 of {
+    case length_bytes(space) == 0 of {
         true -> "";
         false -> concat(concat("mem(", space), ")")
     }
@@ -1906,9 +1994,9 @@ fn space_tag_from_mem_space(space: string) -> int64 {
 fn record_constructor_field_compatible(expected_type: string, return_type: string, field_name: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
     expected_field: string <- type_checker_record_types@find_field_type_in_record(expected_type, field_name);
     actual_field: string <- type_checker_record_types@find_field_type_in_record(return_type, field_name);
-    case len(expected_field) == 0 of {
+    case length_bytes(expected_field) == 0 of {
         true -> true;
-        false -> case len(actual_field) == 0 of {
+        false -> case length_bytes(actual_field) == 0 of {
             true -> false;
             false -> type_checker_lists@types_equal_strip(expected_field, actual_field)
                 or type_checker_lists@formal_type_accepts_actual(expected_field, actual_field, world)
@@ -2091,7 +2179,7 @@ fn collection_specialization_key(bind_type: string, module_name: string) -> int6
             family: int64 <- public_trait_family_tag(bind_type);
             family_use: int64 <- case family == 0 of { true -> 1; false -> family };
             space: string <- collection_space_from_type(bind_type);
-            st: int64 <- case len(space) == 0 of {
+            st: int64 <- case length_bytes(space) == 0 of {
                 true -> 1;
                 false -> space_tag_from_mem_space(space)
             };

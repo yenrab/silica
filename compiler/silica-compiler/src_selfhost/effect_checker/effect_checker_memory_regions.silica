@@ -37,7 +37,7 @@ fn is_valid_memory_space(space: string) -> boolean {
 
 // Trim leading/trailing whitespace
 fn trim_space(s: string) -> string {
-    trim_space_from(s, 0, len(s) - 1)
+    trim_space_from(s, 0, length_bytes(s) - 1)
 }
 
 fn trim_space_from(s: string, start: int64, last_idx: int64) -> string {
@@ -70,10 +70,26 @@ fn cons_string(s: string, rest: List[string, mem(normal)]) -> List[string, mem(n
     end
 }
 
+fn split_params_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case substring(s, j, j + 1) == "(" of {
+            true -> j;
+            false -> case substring(s, j, j + 1) == ")" of {
+                true -> j;
+                false -> case substring(s, j, j + 1) == "," of {
+                    true -> j;
+                    false -> split_params_run_end(s, j + 1, n)
+                }
+            }
+        }
+    }
+}
+
 fn split_params_loop(s: string, i: int64, depth: int64, acc: string, result: List[string, mem(normal)]) -> List[string, mem(normal)] {
     sequence
-        out: List[string, mem(normal)] <- case i >= len(s) of {
-            true -> case len(acc) > 0 of {
+        out: List[string, mem(normal)] <- case i >= length_bytes(s) of {
+            true -> case length_bytes(acc) > 0 of {
                 true -> cons_string(trim_space(acc), result);
                 false -> result
             };
@@ -90,7 +106,11 @@ fn split_params_loop(s: string, i: int64, depth: int64, acc: string, result: Lis
                             };
                             false -> split_params_loop(s, i + 1, depth, concat(acc, ","), result)
                         };
-                        false -> split_params_loop(s, i + 1, depth, concat(acc, substring(s, i, i + 1)), result)
+                        false -> {
+                            n: int64 <- length_bytes(s);
+                            e: int64 <- split_params_run_end(s, i, n);
+                            split_params_loop(s, e, depth, concat(acc, substring(s, i, e)), result)
+                        }
                     }
                 }
             }
@@ -164,24 +184,24 @@ fn extract_space_from_region_type(type_str: string) -> (boolean, string) {
 
 // Extract inner content of region type: "region(R, normal)" -> "R, normal"
 fn extract_region_type_inner(type_str: string) -> (boolean, string) {
-    case len(type_str) >= 10 and substring(type_str, 0, 10) == "atomic_ref" of {
-        true -> case len(type_str) >= 11 and substring(type_str, 10, 11) == "(" of {
-            true -> (true, substring(type_str, 11, len(type_str) - 1));
+    case length_bytes(type_str) >= 10 and substring(type_str, 0, 10) == "atomic_ref" of {
+        true -> case length_bytes(type_str) >= 11 and substring(type_str, 10, 11) == "(" of {
+            true -> (true, substring(type_str, 11, length_bytes(type_str) - 1));
             false -> (false, "")
         };
-        false -> case len(type_str) >= 6 and substring(type_str, 0, 6) == "region" of {
-            true -> case len(type_str) >= 7 and substring(type_str, 6, 7) == "(" of {
-                true -> (true, substring(type_str, 7, len(type_str) - 1));
+        false -> case length_bytes(type_str) >= 6 and substring(type_str, 0, 6) == "region" of {
+            true -> case length_bytes(type_str) >= 7 and substring(type_str, 6, 7) == "(" of {
+                true -> (true, substring(type_str, 7, length_bytes(type_str) - 1));
                 false -> (false, "")
             };
-            false -> case len(type_str) >= 3 and substring(type_str, 0, 3) == "buf" of {
-                true -> case len(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
-                    true -> (true, substring(type_str, 4, len(type_str) - 1));
+            false -> case length_bytes(type_str) >= 3 and substring(type_str, 0, 3) == "buf" of {
+                true -> case length_bytes(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
+                    true -> (true, substring(type_str, 4, length_bytes(type_str) - 1));
                     false -> (false, "")
                 };
-                false -> case len(type_str) >= 3 and substring(type_str, 0, 3) == "ref" of {
-                    true -> case len(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
-                        true -> (true, substring(type_str, 4, len(type_str) - 1));
+                false -> case length_bytes(type_str) >= 3 and substring(type_str, 0, 3) == "ref" of {
+                    true -> case length_bytes(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
+                        true -> (true, substring(type_str, 4, length_bytes(type_str) - 1));
                         false -> (false, "")
                     };
                     false -> (false, "")
@@ -216,7 +236,7 @@ fn space_from_alloc_region_arg(first_arg: { nodes: List[{ kind: int64, value: st
 fn get_region_call_effects(fn_name: string, first_arg: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, first_arg_type: string, binding_type: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> (boolean, List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) {
     sequence
         zero: { file: string, line: int64, column: int64, offset: int64 } <- parser_ast@zero_location();
-        loc: { file: string, line: int64, column: int64, offset: int64 } <- case len(location.file) > 0 of { true -> location; false -> zero };
+        loc: { file: string, line: int64, column: int64, offset: int64 } <- case length_bytes(location.file) > 0 of { true -> location; false -> zero };
         result: (boolean, List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) <- case fn_name == "alloc_region" of {
             true -> {
                 (ok: boolean, space: string) <- space_from_alloc_region_arg(first_arg);

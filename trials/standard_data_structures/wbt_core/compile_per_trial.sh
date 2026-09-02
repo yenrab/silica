@@ -2,10 +2,16 @@
 # Compile shared lib/*.silica once, then each trial as its own silica-compiler
 # application (one process per remaining unit so RSS resets).
 #
-# silica.config still lists lib/*.silica + the trial so `use` resolves. Units
-# that already have a sibling .iface (stdlib cache or a lib compiled earlier
-# in this integrate) are left out of silica.compile.order and are not re-emitted;
-# the prebuilt .o is linked later.
+# silica.config keeps every unit so `use` resolves. Units that already have a
+# sibling .iface (stdlib cache or a lib compiled earlier in this integrate) are
+# left out of silica.compile.order and are not re-emitted; the prebuilt .o is
+# linked later.
+#
+# The driver only honors a caller-written silica.compile.order when silica.config
+# holds more than 32 units; at or below that it deletes the order and compiles
+# every listed unit. Trimming silica.config to {libs, one trial} therefore costs
+# a full rebuild of the libs on every trial, so the full list stays in place
+# whenever it clears the threshold.
 #
 # Usage (from wbt_core/): SILICA_COMPILER=... ./compile_per_trial.sh
 set -eu
@@ -28,10 +34,40 @@ trap cleanup EXIT INT TERM
 grep -v '^lib/' silica.config.full | grep -v '^$' > .compile_trials.list || true
 grep '^lib/' silica.config.full > .compile_libs.list || true
 
+# Content-addressed compile cache: restore .sams/.iface for units whose source and
+# compiler are unchanged. A restored .iface makes pending_units() skip that lib and
+# the phase-2 loop skip that trial, so the compiler is never launched for it.
+TRIAL_CACHE_SH=${TRIAL_CACHE_SH:-../trial_cache.sh}
+if [ -f "$TRIAL_CACHE_SH" ]; then
+	MSG_PREFIX="$MSG_PREFIX" SILICA_COMPILER="$SILICA_COMPILER" \
+		sh "$TRIAL_CACHE_SH" restore || true
+fi
+
 total_trials=0
 if [ -s .compile_trials.list ]; then
 	total_trials=$(grep -c '.' .compile_trials.list)
 fi
+
+full_units=$(grep -c '.' silica.config.full || true)
+keep_full_config=0
+if [ "$full_units" -gt 32 ]; then
+	keep_full_config=1
+fi
+
+# Narrows silica.config only when the full list would fall under the threshold
+# that makes the driver ignore silica.compile.order.
+write_config() {
+	if [ "$keep_full_config" -eq 1 ]; then
+		cp silica.config.full silica.config
+	else
+		{
+			cat .compile_libs.list
+			if [ $# -gt 0 ]; then
+				printf '%s\n' "$1"
+			fi
+		} > silica.config
+	fi
+}
 
 # Units that still need a compile this integrate (no sibling .iface yet).
 pending_units() {
@@ -86,7 +122,7 @@ run_compiler() {
 if [ ! -s .compile_libs.list ]; then
 	echo "${MSG_PREFIX}no lib units"
 else
-cat .compile_libs.list > silica.config
+write_config
 pending_units < .compile_libs.list
 lib_pending=0
 if [ -s .compile_pending.list ]; then
@@ -117,6 +153,7 @@ fi
 # --- Phase 2: each trial only (libs stay in silica.config for `use` / iface lookup) ---
 echo "${MSG_PREFIX}per-trial compile: ${total_trials} trial(s); each trial reuses lib .o files"
 
+cached_count=0
 done_count=0
 fail_ec=0
 trial_index=0
@@ -125,7 +162,13 @@ trial=""
 while IFS= read -r trial || [ -n "$trial" ]; do
 	[ -n "$trial" ] || continue
 	trial_index=$((trial_index + 1))
-	{ cat .compile_libs.list; echo "$trial"; } > silica.config
+	if [ -f "${trial%.silica}.iface" ]; then
+		echo "${MSG_PREFIX}trial ${trial_index}/${total_trials}: ${trial} (cached)"
+		done_count=$((done_count + 1))
+		cached_count=$((cached_count + 1))
+		continue
+	fi
+	write_config "$trial"
 	echo "${MSG_PREFIX}trial ${trial_index}/${total_trials}: ${trial} (trial unit only)..."
 	rm -f silica.needs_runtime
 	printf '%s\n' "$trial" > silica.compile.order
@@ -149,4 +192,10 @@ if [ "$fail_ec" -ne 0 ]; then
 	exit 1
 fi
 
-echo "${MSG_PREFIX}Compiled ${done_count}/${total_trials} trial(s) as separate applications"
+if [ -f "$TRIAL_CACHE_SH" ]; then
+	cp silica.config.full silica.config
+	MSG_PREFIX="$MSG_PREFIX" SILICA_COMPILER="$SILICA_COMPILER" \
+		sh "$TRIAL_CACHE_SH" store || true
+fi
+
+echo "${MSG_PREFIX}Compiled ${done_count}/${total_trials} trial(s) as separate applications (${cached_count} from cache)"

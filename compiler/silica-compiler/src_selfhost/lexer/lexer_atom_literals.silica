@@ -39,7 +39,7 @@ export read_colon_or_atom_literal/1;
 - Example: is_atom_delimiter("a") and is_atom_delimiter("é") return false; letters (including Unicode) are valid in atoms.
 - Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single case match; no recursion or allocation.
 - Last-date-modified: 2025-02-19
-- Last-modified-by: Silica { source: string, position: int64, line: int64, column: int64, file: string } Code Generator
+- Last-modified-by: Silica { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } Code Generator
 -}
 fn is_atom_delimiter(c: string) -> bool {
     case c of {
@@ -88,7 +88,7 @@ fn is_atom_delimiter(c: string) -> bool {
 - Example: is_atom_start_char(" ") and is_atom_start_char(":") return false; delimiters cannot start atom names.
 - Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single case match; no recursion or allocation.
 - Last-date-modified: 2025-02-19
-- Last-modified-by: Silica { source: string, position: int64, line: int64, column: int64, file: string } Code Generator
+- Last-modified-by: Silica { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } Code Generator
 -}
 fn is_atom_start_char(c: string) -> bool {
     case is_atom_delimiter(c) of {
@@ -106,7 +106,7 @@ fn is_atom_start_char(c: string) -> bool {
 - Example: is_atom_char(":") and is_atom_char(" ") return false; colon and spaces end the atom.
 - Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single case match; no recursion or allocation.
 - Last-date-modified: 2025-02-19
-- Last-modified-by: Silica { source: string, position: int64, line: int64, column: int64, file: string } Code Generator
+- Last-modified-by: Silica { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } Code Generator
 -}
 fn is_atom_char(c: string) -> bool {
     case is_atom_delimiter(c) of {
@@ -115,27 +115,27 @@ fn is_atom_char(c: string) -> bool {
     }
 }
 
-fn char_at_offset(lexer: { source: string, position: int64, line: int64, column: int64, file: string }, offset: int64) -> string {
+fn char_at_offset(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }, offset: int64) -> string {
     pos: int64 <- lexer.position + offset;
-    case pos >= len(lexer.source) of {
+    case pos >= length_bytes(lexer.source) of {
         true -> "";
         false -> substring(lexer.source, pos, pos + 1)
     }
 }
 
-fn colon_followed_by_word(lexer: { source: string, position: int64, line: int64, column: int64, file: string }, word: string) -> bool {
+fn colon_followed_by_word(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }, word: string) -> bool {
     start: int64 <- lexer.position + 1;
-    end_pos: int64 <- start + len(word);
-    case end_pos > len(lexer.source) of {
+    end_pos: int64 <- start + length_bytes(word);
+    case end_pos > length_bytes(lexer.source) of {
         true -> false;
         false -> case substring(lexer.source, start, end_pos) == word of {
             false -> false;
-            true -> is_atom_delimiter(char_at_offset(lexer, 1 + len(word)))
+            true -> is_atom_delimiter(char_at_offset(lexer, 1 + length_bytes(word)))
         }
     }
 }
 
-fn colon_followed_by_bitwise_keyword(lexer: { source: string, position: int64, line: int64, column: int64, file: string }) -> bool {
+fn colon_followed_by_bitwise_keyword(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) -> bool {
     colon_followed_by_word(lexer, "bor")
         or colon_followed_by_word(lexer, "band")
         or colon_followed_by_word(lexer, "bnot")
@@ -151,15 +151,15 @@ fn colon_followed_by_bitwise_keyword(lexer: { source: string, position: int64, l
 - Example: lexer at "r" of ":error" with lexeme ":" — consumes "e","r","r","o","r", returns ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } atom_literal ":error", lexer past "r").
 - Time: O(k), Ω(1), Θ(k) where k is the number of atom characters. Space: O(k), Ω(1), Θ(k) for recursion and lexeme.
 - Last-date-modified: 2025-02-19
-- Last-modified-by: Silica { source: string, position: int64, line: int64, column: int64, file: string } Code Generator
+- Last-modified-by: Silica { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } Code Generator
 -}
-fn read_atom_chars(lexer: { source: string, position: int64, line: int64, column: int64, file: string }, start_location: { file: string, line: int64, column: int64, offset: int64 }, lexeme: string) -> ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, { source: string, position: int64, line: int64, column: int64, file: string }) {
+fn read_atom_chars(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }, start_location: { file: string, line: int64, column: int64, offset: int64 }, lexeme: string) -> ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) {
         next: string <- lexer_core@peek_char(lexer);
     case next of {
         "" -> (lexer_core@make_token(lexer_token_kind@token_kind_atom_literal(), lexeme, start_location), lexer);
         _: string -> case is_atom_char(next) of {
             true -> {
-                updated_lexer: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(lexer);
+                updated_lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- lexer_core@advance(lexer);
                 updated_lexeme: string <- concat(lexeme, next);
                 read_atom_chars(updated_lexer, start_location, updated_lexeme)
             };
@@ -176,10 +176,10 @@ fn read_atom_chars(lexer: { source: string, position: int64, line: int64, column
 - Example: lexer at ":" of ":_private" — advances past ":", first char "_" is atom start, read_atom_chars consumes "_","p","r","i","v","a","t","e"; result is ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } atom_literal ":_private", lexer past "e").
 - Time: O(k), Ω(1), Θ(k) where k is the length of the atom. Space: O(k), Ω(1), Θ(k).
 - Last-date-modified: 2025-02-19
-- Last-modified-by: Silica { source: string, position: int64, line: int64, column: int64, file: string } Code Generator
+- Last-modified-by: Silica { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } Code Generator
 -}
-fn read_atom_literal(lexer: { source: string, position: int64, line: int64, column: int64, file: string }, start_location: { file: string, line: int64, column: int64, offset: int64 }) -> ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, { source: string, position: int64, line: int64, column: int64, file: string }) {
-    after_colon: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(lexer);
+fn read_atom_literal(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }, start_location: { file: string, line: int64, column: int64, offset: int64 }) -> ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) {
+    after_colon: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- lexer_core@advance(lexer);
     first_char: string <- lexer_core@peek_char(after_colon);
     case first_char of {
         "" -> {
@@ -187,7 +187,7 @@ fn read_atom_literal(lexer: { source: string, position: int64, line: int64, colu
         };
         _: string -> case is_atom_start_char(first_char) of {
             true -> {
-                after_first: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(after_colon);
+                after_first: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- lexer_core@advance(after_colon);
                 lexeme_so_far: string <- concat(":", first_char);
                 read_atom_chars(after_first, start_location, lexeme_so_far)
             };
@@ -206,9 +206,9 @@ fn read_atom_literal(lexer: { source: string, position: int64, line: int64, colu
 - Example: lexer at ":" of "x: int64" — next is " " (not atom start), read_atom_literal emits colon and advances; result is ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } colon ":", lexer past ":").
 - Time: O(1) for colon, O(k) for atom. Space: O(1) for colon, O(k) for atom.
 - Last-date-modified: 2025-02-19
-- Last-modified-by: Silica { source: string, position: int64, line: int64, column: int64, file: string } Code Generator
+- Last-modified-by: Silica { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } Code Generator
 -}
-fn read_colon_or_atom_literal(lexer: { source: string, position: int64, line: int64, column: int64, file: string }) -> ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, { source: string, position: int64, line: int64, column: int64, file: string }) {
+fn read_colon_or_atom_literal(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) -> ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) {
     start_location: { file: string, line: int64, column: int64, offset: int64 } <- lexer_core@current_location(lexer);
     first: string <- lexer_core@peek_char(lexer);
     case first of {
@@ -216,22 +216,22 @@ fn read_colon_or_atom_literal(lexer: { source: string, position: int64, line: in
             second: string <- lexer_core@peek_next_char(lexer);
             case second of {
                 ":" -> {
-                                        after_double: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(lexer_core@advance(lexer));
+                                        after_double: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- lexer_core@advance(lexer_core@advance(lexer));
                     (lexer_core@make_token(lexer_token_kind@token_kind_double_colon(), "::", start_location), after_double)
                 };
                 "" -> {
-                                        updated_lexer: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(lexer);
+                                        updated_lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- lexer_core@advance(lexer);
                     (lexer_core@make_token(lexer_token_kind@token_kind_colon(), ":", start_location), updated_lexer)
                 };
                 _: string -> case colon_followed_by_bitwise_keyword(lexer) of {
                     true -> {
-                                                updated_lexer: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(lexer);
+                                                updated_lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- lexer_core@advance(lexer);
                         (lexer_core@make_token(lexer_token_kind@token_kind_colon(), ":", start_location), updated_lexer)
                     };
                     false -> case is_atom_start_char(second) of {
                         true -> read_atom_literal(lexer, start_location);
                         false -> {
-                                                        updated_lexer: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(lexer);
+                                                        updated_lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- lexer_core@advance(lexer);
                             (lexer_core@make_token(lexer_token_kind@token_kind_colon(), ":", start_location), updated_lexer)
                         }
                     }

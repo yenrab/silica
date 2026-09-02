@@ -36,16 +36,16 @@ export cons_token/2;
 export tokenize/2;
 export empty_token_list/0;
 
-fn skip_whitespace_and_line_comments(lexer: { source: string, position: int64, line: int64, column: int64, file: string }) -> { source: string, position: int64, line: int64, column: int64, file: string } {
-    skipped: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@skip_whitespace(lexer);
+fn skip_whitespace_and_line_comments(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) -> { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } {
+    skipped: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- lexer_core@skip_whitespace(lexer);
     case lexer_comments@is_line_comment_start(skipped) of {
         true -> {
-            after_comment: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_comments@skip_line_comment(lexer_core@advance(lexer_core@advance(skipped)));
+            after_comment: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- lexer_comments@skip_line_comment(lexer_core@advance(lexer_core@advance(skipped)));
             skip_whitespace_and_line_comments(after_comment)
         };
         false -> case lexer_comments@is_block_comment_start(skipped) of {
             true -> {
-                after_block: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_comments@skip_block_comment(lexer_core@advance(lexer_core@advance(skipped)));
+                after_block: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- lexer_comments@skip_block_comment(lexer_core@advance(lexer_core@advance(skipped)));
                 skip_whitespace_and_line_comments(after_block)
             };
             false -> skipped
@@ -75,8 +75,8 @@ fn cons_token(head: { kind: int64, lexeme: string, location: { file: string, lin
 - Last-date-modified: 2025-02-10
 - Last-modified-by: Lee S. Barney
 -}
-fn tokenize(lexer: { source: string, position: int64, line: int64, column: int64, file: string }, tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
-    after_comments: { source: string, position: int64, line: int64, column: int64, file: string } <- skip_whitespace_and_line_comments(lexer);
+fn tokenize(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }, tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] {
+    after_comments: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- skip_whitespace_and_line_comments(lexer);
 
     current: string <- lexer_core@peek_char(after_comments);
 
@@ -88,9 +88,9 @@ fn tokenize(lexer: { source: string, position: int64, line: int64, column: int64
     //         println("]");
     //
 
-    // Check for EOF: use len() to avoid reliance on string equality for "" (robust against
+    // Check for EOF: use length_bytes() to avoid reliance on string equality for "" (robust against
     // empty-string representation differences between substring result and literal "")
-    is_empty: bool <- len(current) == 0;
+    is_empty: bool <- length_bytes(current) == 0;
     case is_empty of {
         true -> {
                             eof_location: { file: string, line: int64, column: int64, offset: int64 } <- lexer_core@current_location(after_comments);
@@ -101,12 +101,12 @@ fn tokenize(lexer: { source: string, position: int64, line: int64, column: int64
             true -> {
                 // skip_whitespace can miss a leftover space/tab/newline/CR
                 // (bootstrap). Blank lines are just more of these characters.
-                advanced: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@advance(after_comments);
+                advanced: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- lexer_core@advance(after_comments);
                 tokenize(advanced, tokens)
             };
             false -> {
                 // Determine token type and read it
-                token_and_lexer: ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, { source: string, position: int64, line: int64, column: int64, file: string }) <- case lexer_keywords@is_identifier_start(current) of {
+                token_and_lexer: ({ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) <- case lexer_keywords@is_identifier_start(current) of {
                     true -> lexer_keywords@read_identifier(after_comments);
                     false -> case lexer_integer_literals@is_decimal_digit_char(current) of {
                         true -> lexer_float_literals@read_numeric_literal(after_comments);
@@ -141,7 +141,7 @@ fn tokenize(lexer: { source: string, position: int64, line: int64, column: int64
                         }
                     }
                 };
-                (token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, next_lexer: { source: string, position: int64, line: int64, column: int64, file: string }) <- token_and_lexer;
+                (token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, next_lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) <- token_and_lexer;
                 new_tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- cons_token(token, tokens );
                 tokenize(next_lexer, new_tokens)
             }
@@ -183,7 +183,7 @@ fn lexer_runner(filename: string) -> List[{ kind: int64, lexeme: string, locatio
     // DeviceIO for read_lines; mem is encapsulated in empty_token_list / cons_token.
     sequence proc[DeviceIO]
         source: string <- read_lines(filename);
-        lexer: { source: string, position: int64, line: int64, column: int64, file: string } <- lexer_core@new_lexer(source, filename);
+        lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- lexer_core@new_lexer(source, filename);
         initial_tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- empty_token_list();
         result_tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- tokenize(lexer, initial_tokens)
     produces

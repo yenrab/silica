@@ -3204,12 +3204,26 @@ fn call_site_record_fields_match_loop(rem: string, actual: string, world: ListNa
 }
 
 // Widen/narrow: integer literal infers as int64; impl may take int32 etc.
+fn replace_int64_with_int32_in_type_text_loop_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case j + 5 <= n and substring(s, j, j + 5) == "int64" of {
+            true -> j;
+            false -> replace_int64_with_int32_in_type_text_loop_run_end(s, j + 1, n)
+        }
+    }
+}
+
 fn replace_int64_with_int32_in_type_text_loop(s: string, i: int64, out: string) -> string {
     case i >= len(s) of {
         true -> out;
         false -> case i + 5 <= len(s) and substring(s, i, i + 5) == "int64" of {
             true -> replace_int64_with_int32_in_type_text_loop(s, i + 5, concat(out, "int32"));
-            false -> replace_int64_with_int32_in_type_text_loop(s, i + 1, concat(out, substring(s, i, i + 1)))
+            false -> {
+                n: int64 <- len(s);
+                e: int64 <- replace_int64_with_int32_in_type_text_loop_run_end(s, i, n);
+                replace_int64_with_int32_in_type_text_loop(s, e, concat(out, substring(s, i, e)))
+            }
         }
     }
 }
@@ -3603,16 +3617,22 @@ fn check_user_call_result_user_call(expr: Expr, expected_type: int64, return_typ
     }
 }
 
-fn return_type_text_contains(s: string, needle: string) -> bool {
-    case len(needle) == 0 of {
-        true -> true;
-        false -> case len(s) < len(needle) of {
-            true -> false;
-            false -> case substring(s, 0, len(needle)) == needle of {
-                true -> true;
-                false -> return_type_text_contains(substring(s, 1, len(s)), needle)
-            }
+fn return_type_text_contains_at(s: string, needle: string, i: int64, n: int64, m: int64) -> bool {
+    case i + m > n of {
+        true -> false;
+        false -> case substring(s, i, i + m) == needle of {
+            true -> true;
+            false -> return_type_text_contains_at(s, needle, i + 1, n, m)
         }
+    }
+}
+
+fn return_type_text_contains(s: string, needle: string) -> bool {
+    m: int64 <- len(needle);
+    n: int64 <- len(s);
+    case m == 0 of {
+        true -> true;
+        false -> return_type_text_contains_at(s, needle, 0, n, m)
     }
 }
 

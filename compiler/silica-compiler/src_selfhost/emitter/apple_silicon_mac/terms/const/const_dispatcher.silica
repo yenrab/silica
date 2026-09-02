@@ -73,7 +73,7 @@ fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: stri
 }
 
 fn first_at_in_const_label(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "@" of {
             true -> i;
@@ -86,16 +86,16 @@ fn fn_ptr_link_label(label: string) -> string {
     at: int64 <- first_at_in_const_label(label, 0);
     case at < 0 of {
         true -> label;
-        false -> substring(label, at + 1, len(label))
+        false -> substring(label, at + 1, length_bytes(label))
     }
 }
 
 fn emit_const(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, outer_reg: string) -> string {
     case sir_term_root_node(term).type_name of {
         "char" -> const_int64@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
-        "int64" -> case len(dest) > 0 and substring(dest, 0, 1) == "S" of {
+        "int64" -> case length_bytes(dest) > 0 and substring(dest, 0, 1) == "S" of {
             true -> const_float32@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
-            false -> case len(dest) > 0 and substring(dest, 0, 1) == "D" of {
+            false -> case length_bytes(dest) > 0 and substring(dest, 0, 1) == "D" of {
                 true -> const_float64@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
                 false -> const_int64@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg)
             }
@@ -110,12 +110,12 @@ fn emit_const(term: { nodes: List[{ kind: int64, type_name: string, value: strin
         "unit" -> const_unit@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
         "fn_ptr" -> {
             param_reg: string <- var@find_sp_binding_bare_or_percent_param(outer_reg, sir_term_root_node(term).value);
-            case len(param_reg) > 0 and var@binding_is_physical_int_reg(param_reg) of {
+            case length_bytes(param_reg) > 0 and var@binding_is_physical_int_reg(param_reg) of {
                 true -> var@emit_var_reg(term, dest, param_reg);
                 false -> {
                     label: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, sir_term_root_node(term).value);
                     // ADRP/ADD only accept X/W general-purpose regs, never D/S — load address in X8 then copy to dest.
-                    addr_reg: string <- case len(dest) > 0 and substring(dest, 0, 1) == "X" of {
+                    addr_reg: string <- case length_bytes(dest) > 0 and substring(dest, 0, 1) == "X" of {
                         true -> dest;
                         false -> "X8"
                     };
@@ -135,7 +135,7 @@ fn emit_const(term: { nodes: List[{ kind: int64, type_name: string, value: strin
                 }
             }
         };
-        _: string -> case len(dest) > 0 of {
+        _: string -> case length_bytes(dest) > 0 of {
             true -> case substring(dest, 0, 1) == "S" of {
                 true -> const_float32@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
                 false -> case substring(dest, 0, 1) == "D" of {

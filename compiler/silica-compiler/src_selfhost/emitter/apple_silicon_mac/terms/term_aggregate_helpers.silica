@@ -67,8 +67,18 @@ export term_is_checked_int64_prim/1;
 export list_cons_join_tail_head_op/4;
 export let_tail_aggregate_stack_bytes/1;
 
+// An offset of -1 means a record field name was not found in the record type. Emitting a
+// memref for it would silently place the value at a wrong (or colliding) slot, so emit an
+// assembler directive that fails the build at this exact line instead.
 fn tuple_flat_memref(store_base: string, offset: int64) -> string {
-    case len(store_base) > 0 of {
+    case offset < 0 of {
+        true -> "[SP, #0]\n    ; silica internal error: unresolved record field offset (field not in record type)\n    .err";
+        false -> tuple_flat_memref_at(store_base, offset)
+    }
+}
+
+fn tuple_flat_memref_at(store_base: string, offset: int64) -> string {
+    case length_bytes(store_base) > 0 of {
         true -> {
             p: string <- concat("[", store_base);
             q: string <- concat(p, ", #");
@@ -85,7 +95,7 @@ fn emit_flat_float32_boxed_pair(store_base: string, byte_cursor: int64, float_re
     val_off: int64 <- byte_cursor + 8;
     ptr_mr: string <- tuple_flat_memref(store_base, byte_cursor);
     val_mr: string <- tuple_flat_memref(store_base, val_off);
-    add_ptr: string <- case len(store_base) > 0 of {
+    add_ptr: string <- case length_bytes(store_base) > 0 of {
         true -> concat(concat(concat(concat(concat(concat("    ADD X10, ", store_base), ", #"), atom_table@int64_to_decimal_string(val_off)), "\n    STR X10, "), ptr_mr), "\n");
         false -> concat(concat(concat(concat("    ADD X10, SP, #", atom_table@int64_to_decimal_string(val_off)), "\n    STR X10, "), ptr_mr), "\n")
     };
@@ -218,7 +228,7 @@ fn let_user_call_tuple_sret_stack_bytes(rhs: { nodes: List[{ kind: int64, type_n
     // Keep in lockstep with sret_alloc_bytes in term_emit_kind_call. Zero for pass-through / non-tuple.
     case (term_sir_helpers@sir_term_root_node(rhs).kind == 4 or term_sir_helpers@sir_term_root_node(rhs).kind == 5) and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(rhs).type_name) of {
         false -> 0;
-        true -> case len(var@find_sp_binding(outer_reg, "_callee_sret")) > 0 and (len(bound_name) == 0 or term_sir_helpers@sir_term_root_node(rhs).kind == 5) of {
+        true -> case length_bytes(var@find_sp_binding(outer_reg, "_callee_sret")) > 0 and (length_bytes(bound_name) == 0 or term_sir_helpers@sir_term_root_node(rhs).kind == 5) of {
             true -> 0;
             false -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(rhs).type_name)
         }
@@ -236,10 +246,10 @@ fn branch_tail_user_call_sret_stack_bytes(rhs: { nodes: List[{ kind: int64, type
     // `true -> { a <- …; b <- …; f(x) }` pushes the same slab as a bare `true -> f(x)`,
     // so walk the let spine to the tail before deciding (see read_hex_digits in the lexer).
     tail: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- branch_tail_strip_lets(rhs);
-    tail_is_bound: bool <- term_sir_helpers@sir_term_root_node(rhs).kind == 2 or len(bound_name) > 0;
+    tail_is_bound: bool <- term_sir_helpers@sir_term_root_node(rhs).kind == 2 or length_bytes(bound_name) > 0;
     case term_sir_helpers@sir_term_root_node(tail).kind == 4 and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(tail).type_name) of {
         false -> 0;
-        true -> case len(var@find_sp_binding(outer_reg, "_callee_sret")) > 0 and tail_is_bound == false of {
+        true -> case length_bytes(var@find_sp_binding(outer_reg, "_callee_sret")) > 0 and tail_is_bound == false of {
             true -> 0;
             false -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(tail).type_name)
         }
@@ -339,7 +349,10 @@ fn record_proj_chain_byte_offset(term: { nodes: List[{ kind: int64, type_name: s
                 true -> {
                     pre: int64 <- record_proj_chain_byte_offset(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
                     here: int64 <- prims_record@offset_bytes_before_field(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name, term_sir_helpers@sir_term_root_node(term).value);
-                    pre + here
+                    case pre < 0 or here < 0 of {
+                        true -> -1;
+                        false -> pre + here
+                    }
                 };
                 // A value base (list_head, a call, a struct literal) carries the projected record in
                 // its own type_name, so its link contributes the same offset a variable base would.

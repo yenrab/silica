@@ -38,21 +38,21 @@ fn is_space_char(c: string) -> bool {
 }
 
 fn trim_leading_spaces(s: string) -> string {
-    case len(s) == 0 of {
+    case length_bytes(s) == 0 of {
         true -> "";
         false -> case is_space_char(substring(s, 0, 1)) of {
-            true -> trim_leading_spaces(substring(s, 1, len(s)));
+            true -> trim_leading_spaces(substring(s, 1, length_bytes(s)));
             false -> s
         }
     }
 }
 
 fn trim_trailing_spaces(s: string) -> string {
-    case len(s) == 0 of {
+    case length_bytes(s) == 0 of {
         true -> "";
         false -> {
-            last: int64 <- len(s) - 1;
-            case is_space_char(substring(s, last, len(s))) of {
+            last: int64 <- length_bytes(s) - 1;
+            case is_space_char(substring(s, last, length_bytes(s))) of {
                 true -> trim_trailing_spaces(substring(s, 0, last));
                 false -> s
             }
@@ -68,12 +68,26 @@ fn trim_type_text(s: string) -> string {
 // `field : ty`) while local bindings keep source spacing (`fn(string, string)`, `field: ty`).
 // Exact trim equality then fails under process-per-unit reclaim when the trait module is
 // loaded only as an iface stub. Space-normalized compare keeps coverage stable.
+fn strip_type_spaces_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case is_space_char(substring(s, j, j + 1)) of {
+            true -> j;
+            false -> strip_type_spaces_run_end(s, j + 1, n)
+        }
+    }
+}
+
 fn strip_type_spaces_from(s: string, i: int64, acc: string) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
         false -> case is_space_char(substring(s, i, i + 1)) of {
             true -> strip_type_spaces_from(s, i + 1, acc);
-            false -> strip_type_spaces_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+            false -> {
+                n: int64 <- length_bytes(s);
+                e: int64 <- strip_type_spaces_run_end(s, i, n);
+                strip_type_spaces_from(s, e, concat(acc, substring(s, i, e)))
+            }
         }
     }
 }
@@ -83,12 +97,26 @@ fn strip_type_spaces(s: string) -> string {
 }
 
 // Interner prints function types as `(T) -> R`; source/iface often keep `fn (T) -> R`.
+fn erase_fn_keywords_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case j + 2 < n and substring(s, j, j + 2) == "fn" and substring(s, j + 2, j + 3) == "(" of {
+            true -> j;
+            false -> erase_fn_keywords_run_end(s, j + 1, n)
+        }
+    }
+}
+
 fn erase_fn_keywords_from(s: string, i: int64, acc: string) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
-        false -> case i + 2 < len(s) and substring(s, i, i + 2) == "fn" and substring(s, i + 2, i + 3) == "(" of {
+        false -> case i + 2 < length_bytes(s) and substring(s, i, i + 2) == "fn" and substring(s, i + 2, i + 3) == "(" of {
             true -> erase_fn_keywords_from(s, i + 2, acc);
-            false -> erase_fn_keywords_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+            false -> {
+                n: int64 <- length_bytes(s);
+                e: int64 <- erase_fn_keywords_run_end(s, i, n);
+                erase_fn_keywords_from(s, e, concat(acc, substring(s, i, e)))
+            }
         }
     }
 }
@@ -184,15 +212,15 @@ fn trait_program_accepts_concrete(trait_prog: { declarations: List[{ tag: int64,
 }
 
 fn starts_with_prefix(s: string, prefix: string) -> bool {
-    case len(s) < len(prefix) of {
+    case length_bytes(s) < length_bytes(prefix) of {
         true -> false;
-        false -> substring(s, 0, len(prefix)) == prefix
+        false -> substring(s, 0, length_bytes(prefix)) == prefix
     }
 }
 
 // Top-level `A | B | …` (§4.2.5, §8.2.4): index of first ` | ` at nesting depth 0, or -1.
 fn scan_top_level_sum_bar(s: string, i: int64, depth: int64) -> int64 {
-    case i + 3 > len(s) of {
+    case i + 3 > length_bytes(s) of {
         true -> -1;
         false -> case depth == 0 and substring(s, i, i + 3) == " | " of {
             true -> i;
@@ -249,7 +277,7 @@ fn collectable_non_sum_shape(concrete: string) -> bool {
         "child_spec" -> true;
         _: string -> case starts_with_prefix(concrete, "List[") of {
             true -> true;
-            false -> case len(concrete) >= 1 of {
+            false -> case length_bytes(concrete) >= 1 of {
                 true -> case substring(concrete, 0, 1) of {
                     "(" -> true;
                     "{" -> true;
@@ -267,14 +295,14 @@ fn collectable_non_sum_shape(concrete: string) -> bool {
 // §8.2.4: inline sum types whose alternatives each satisfy Collectable rules.
 fn collectable_inline_sum_or_shape(concrete: string) -> bool {
     t: string <- trim_type_text(concrete);
-    case len(t) == 0 of {
+    case length_bytes(t) == 0 of {
         true -> false;
         false -> {
             bar: int64 <- scan_top_level_sum_bar(t, 0, 0);
             case bar >= 0 of {
                 true -> {
                     left: string <- trim_type_text(substring(t, 0, bar));
-                    right: string <- trim_type_text(substring(t, bar + 3, len(t)));
+                    right: string <- trim_type_text(substring(t, bar + 3, length_bytes(t)));
                     case collectable_inline_sum_or_shape(left) of {
                         false -> false;
                         true -> collectable_inline_sum_or_shape(right)
@@ -298,7 +326,7 @@ fn is_builtin_actor_message_instance(concrete: string) -> bool {
 }
 
 fn find_arrow_in_type(s: string, i: int64) -> int64 {
-    case i + 4 > len(s) of {
+    case i + 4 > length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 4) == " -> " of {
             true -> i;

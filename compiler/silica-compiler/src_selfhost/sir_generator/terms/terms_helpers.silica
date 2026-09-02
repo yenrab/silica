@@ -39,6 +39,7 @@ use string_calls;
 use type_checker_core;
 use type_checker_expressions_actors;
 use type_checker_expressions_helpers;
+use type_checker_expressions_numeric_builtins;
 use type_checker_lists;
 use type_checker_record_types;
 use type_checker_tuple_decompose_helpers;
@@ -103,8 +104,9 @@ fn sir_atom_const(value: string) -> { nodes: List[{ kind: int64, type_name: stri
     sir_ast@make_sir_term(0, "atom", value, "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term())
 }
 
+// One authority for this built-in name list: the type checker owns it, SIR delegates.
 fn is_float_special_const_name(name: string) -> boolean {
-    name == "float16_nan" or name == "float16_inf" or name == "float16_neg_inf" or name == "float32_nan" or name == "float32_inf" or name == "float32_neg_inf" or name == "float64_nan" or name == "float64_inf" or name == "float64_neg_inf"
+    type_checker_expressions_numeric_builtins@is_float_special_const_name(name)
 }
 
 fn float_special_const_type(name: string) -> string {
@@ -131,8 +133,9 @@ fn build_float_special_const(name: string) -> { nodes: List[{ kind: int64, type_
     sir_ast@make_sir_term(0, float_special_const_type(name), float_special_const_value(name), "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term())
 }
 
+// One authority for this built-in name list: the type checker owns it, SIR delegates.
 fn is_float_predicate_name(name: string) -> boolean {
-    name == "float16_is_nan" or name == "float16_is_inf" or name == "float16_is_finite" or name == "float32_is_nan" or name == "float32_is_inf" or name == "float32_is_finite" or name == "float64_is_nan" or name == "float64_is_inf" or name == "float64_is_finite"
+    type_checker_expressions_numeric_builtins@is_float_predicate_name(name)
 }
 
 fn float_predicate_arg_type(name: string) -> string {
@@ -286,7 +289,7 @@ fn extend_context_for_bind(ctx: { env: List[{ name: string, type_name: string, d
 }
 
 fn sir_find_top_arrow_from(s: string, i: int64, depth: int64) -> int64 {
-    case i + 1 >= len(s) of {
+    case i + 1 >= length_bytes(s) of {
         true -> -1;
         false -> case depth == 0 and substring(s, i, i + 2) == "->" of {
             true -> i;
@@ -306,7 +309,7 @@ fn sir_find_top_arrow_from(s: string, i: int64, depth: int64) -> int64 {
 }
 
 fn sir_find_arrow_pos(s: string, i: int64) -> int64 {
-    case i + 4 > len(s) of {
+    case i + 4 > length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 4) == " -> " of {
             true -> i;
@@ -321,9 +324,9 @@ fn sir_params_inner_from_func_type(func_type: string) -> string {
         true -> "";
         false -> {
             params_part: string <- substring(func_type, 0, arrow_pos);
-            case len(params_part) < 2 of {
+            case length_bytes(params_part) < 2 of {
                 true -> "";
-                false -> substring(params_part, 1, len(params_part) - 1)
+                false -> substring(params_part, 1, length_bytes(params_part) - 1)
             }
         }
     }
@@ -334,7 +337,7 @@ fn sir_params_inner_from_func_type(func_type: string) -> string {
 
 fn first_formal_param_type_from_scheme(func_type: string) -> string {
     inner: string <- sir_params_inner_from_func_type(func_type);
-    case len(inner) == 0 of {
+    case length_bytes(inner) == 0 of {
         true -> "";
         false -> case tuple_contains_comma(inner) of {
             true -> tuple_first_element_type(concat(concat("(", inner), ")"));
@@ -346,7 +349,7 @@ fn first_formal_param_type_from_scheme(func_type: string) -> string {
 // In-unit copy: cross-.ll return of string from type_checker_core lookup segfaults for module@fn (bootstrap macOS).
 
 fn first_at_sir_call_name(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "@" of {
             true -> i;
@@ -359,7 +362,7 @@ fn lookup_fn_type_by_name_and_module_sir(env: List[{ name: string, type_name: st
     case env.is_nil of {
         true -> "";
         false -> case env.head.name == fn_name and env.head.is_effect_alias == false of {
-            true -> case len(required_module) == 0 of {
+            true -> case length_bytes(required_module) == 0 of {
                 true -> case env.head.source_module == "" of {
                     true -> env.head.type_name;
                     false -> lookup_fn_type_by_name_and_module_sir(env.tail, fn_name, required_module)
@@ -378,7 +381,7 @@ fn lookup_function_type_for_call_sir(env: List[{ name: string, type_name: string
     at: int64 <- first_at_sir_call_name(composite_name, 0);
     case at < 0 of {
         true -> lookup_fn_type_by_name_and_module_sir(env, composite_name, "");
-        false -> lookup_fn_type_by_name_and_module_sir(env, substring(composite_name, at + 1, len(composite_name)), substring(composite_name, 0, at))
+        false -> lookup_fn_type_by_name_and_module_sir(env, substring(composite_name, at + 1, length_bytes(composite_name)), substring(composite_name, 0, at))
     }
 }
 
@@ -386,13 +389,13 @@ fn lookup_function_type_for_call_sir(env: List[{ name: string, type_name: string
 // SIR-local surface inference (simplified env). Does not use the type-checker interner.
 
 fn sir_return_after_arrow_trim(s: string, i: int64) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> "";
         false -> case substring(s, i, i + 1) == " " of {
             true -> sir_return_after_arrow_trim(s, i + 1);
             false -> case substring(s, i, i + 1) == ">" of {
                 true -> sir_return_after_arrow_trim(s, i + 1);
-                false -> substring(s, i, len(s))
+                false -> substring(s, i, length_bytes(s))
             }
         }
     }
@@ -402,7 +405,7 @@ fn sir_parse_fn_return(func_type: string) -> string {
     arrow: int64 <- sir_find_top_arrow_from(func_type, 0, 0);
     case arrow < 0 of {
         true -> "";
-        false -> sir_return_after_arrow_trim(substring(func_type, arrow + 2, len(func_type)), 0)
+        false -> sir_return_after_arrow_trim(substring(func_type, arrow + 2, length_bytes(func_type)), 0)
     }
 }
 
@@ -414,7 +417,7 @@ fn sir_infer_call_return(context: { env: List[{ name: string, type_name: string,
     name: string <- type_checker_expressions_helpers@expr_name(expr);
     call_base: string <- type_checker_core@user_call_base_function_name(name);
     neg_ty: string <- negate_builtins@negate_arg_type(call_base);
-    case len(neg_ty) > 0 of {
+    case length_bytes(neg_ty) > 0 of {
         true -> neg_ty;
         false -> case call_base == "bnot" of {
         true -> "uint64";
@@ -436,7 +439,7 @@ fn sir_infer_call_return(context: { env: List[{ name: string, type_name: string,
                                 true -> "monitor_ref";
                                 false -> {
                                     typ: string <- lookup_function_type_for_call_sir(context.env, name);
-                                    case len(typ) > 0 of {
+                                    case length_bytes(typ) > 0 of {
                                         true -> sir_parse_fn_return(typ);
                                         false -> ""
                                     }
@@ -544,7 +547,7 @@ fn sir_infer_expr_type(context: { env: List[{ name: string, type_name: string, d
         12 -> sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
         20 -> {
             v: string <- type_checker_expressions_helpers@expr_value(expr);
-            case len(v) > 0 of { true -> v; false -> "" }
+            case length_bytes(v) > 0 of { true -> v; false -> "" }
         };
         9 -> concat("(", concat(sir_infer_tuple_chain(context, expr), ")"));
         13 -> sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_right(expr));
@@ -574,7 +577,7 @@ fn sir_context_after_sequence_body(body: { nodes: List[{ kind: int64, value: str
                     false -> sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(body))
                 };
                 rhs_trimmed: string <- type_checker_tuple_decompose_helpers@tuple_trim(rhs_type);
-                tuple_for_fill: string <- case len(type_checker_expressions_helpers@expr_value(body)) > 0 of {
+                tuple_for_fill: string <- case length_bytes(type_checker_expressions_helpers@expr_value(body)) > 0 of {
                     true -> type_checker_tuple_decompose_helpers@tuple_trim(type_checker_expressions_helpers@expr_value(body));
                     false -> rhs_trimmed
                 };
@@ -618,12 +621,12 @@ fn sir_infer_binop_left_preferred(expr: { nodes: List[{ kind: int64, value: stri
             left_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- type_checker_expressions_helpers@expr_child_inner(expr);
             right_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- type_checker_expressions_helpers@expr_child_right(expr);
             raw_lt: string <- sir_infer_expr_type(context, left_e);
-            lt: string <- case len(raw_lt) > 0 of {
+            lt: string <- case length_bytes(raw_lt) > 0 of {
                 true -> raw_lt;
                 false -> sir_negate_type_if_call(left_e)
             };
             raw_rt: string <- sir_infer_expr_type(context, right_e);
-            rt: string <- case len(raw_rt) > 0 of {
+            rt: string <- case length_bytes(raw_rt) > 0 of {
                 true -> raw_rt;
                 false -> sir_negate_type_if_call(right_e)
             };
@@ -632,7 +635,7 @@ fn sir_infer_binop_left_preferred(expr: { nodes: List[{ kind: int64, value: stri
                     true -> lt;
                     false -> case sir_is_floatish_type(rt) of {
                         true -> rt;
-                        false -> case len(lt) > 0 of {
+                        false -> case length_bytes(lt) > 0 of {
                             true -> lt;
                             false -> rt
                         }
@@ -666,10 +669,10 @@ fn sir_case_extend_context_for_pattern(context: { env: List[{ name: string, type
     pi: { is_valid: boolean, pattern_kind: int64, bool_lit: boolean, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } <- type_checker_tuple_decompose_helpers@case_parse_pattern(pat_str);
     case pi.is_valid of {
         false -> context;
-        true -> case len(pi.bind_name) > 0 and pi.bind_name != "_" of {
-            true -> { env: sir_env_add_symbol(context.env, pi.bind_name, case len(pi.bind_type) > 0 of { true -> pi.bind_type; false -> scrutinee_type }) };
-            false -> case len(pi.list_tail_name) > 0 and pi.list_tail_name != "_" of {
-                true -> { env: sir_env_add_symbol(context.env, pi.list_tail_name, case len(pi.list_tail_type) > 0 of { true -> pi.list_tail_type; false -> scrutinee_type }) };
+        true -> case length_bytes(pi.bind_name) > 0 and pi.bind_name != "_" of {
+            true -> { env: sir_env_add_symbol(context.env, pi.bind_name, case length_bytes(pi.bind_type) > 0 of { true -> pi.bind_type; false -> scrutinee_type }) };
+            false -> case length_bytes(pi.list_tail_name) > 0 and pi.list_tail_name != "_" of {
+                true -> { env: sir_env_add_symbol(context.env, pi.list_tail_name, case length_bytes(pi.list_tail_type) > 0 of { true -> pi.list_tail_type; false -> scrutinee_type }) };
                 false -> context
             }
         }
@@ -677,9 +680,9 @@ fn sir_case_extend_context_for_pattern(context: { env: List[{ name: string, type
 }
 
 fn sir_type_text_is_function(type_text: string) -> boolean {
-    case len(type_text) >= 3 and substring(type_text, 0, 3) == "fn(" of {
+    case length_bytes(type_text) >= 3 and substring(type_text, 0, 3) == "fn(" of {
         true -> true;
-        false -> case len(type_text) >= 2 and substring(type_text, 0, 1) == "(" of {
+        false -> case length_bytes(type_text) >= 2 and substring(type_text, 0, 1) == "(" of {
             // Top-level `->` only: tuple types like `(atom, fn(...) -> ...)` must not match.
             true -> sir_find_top_arrow_from(type_text, 1, 1) >= 0;
             false -> false
@@ -692,15 +695,15 @@ fn sir_identifier_is_function(context: { env: List[{ name: string, type_name: st
 }
 
 fn user_call_first_arg_expected_type(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, callee_name: string, inferred: string) -> string {
-    case len(inferred) > 0 and type_checker_record_types@record_type_starts(inferred) of {
+    case length_bytes(inferred) > 0 and type_checker_record_types@record_type_starts(inferred) of {
         true -> inferred;
         false -> {
             func_type: string <- lookup_function_type_for_call_sir(context.env, callee_name);
-            case len(func_type) == 0 of {
+            case length_bytes(func_type) == 0 of {
                 true -> inferred;
                 false -> {
                     first_ty: string <- first_formal_param_type_from_scheme(func_type);
-                    case len(first_ty) > 0 of {
+                    case length_bytes(first_ty) > 0 of {
                         true -> first_ty;
                         false -> inferred
                     }
@@ -712,14 +715,14 @@ fn user_call_first_arg_expected_type(context: { env: List[{ name: string, type_n
 
 fn user_call_expects_single_tuple_param(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, name: string) -> boolean {
     func_type: string <- lookup_function_type_for_call_sir(context.env, name);
-    case len(func_type) == 0 of {
+    case length_bytes(func_type) == 0 of {
         true -> false;
         false -> {
             params_inner: string <- sir_params_inner_from_func_type(func_type);
-            case len(params_inner) < 2 of {
+            case length_bytes(params_inner) < 2 of {
                 true -> false;
-                false -> case substring(params_inner, 0, 1) == "(" and substring(params_inner, len(params_inner) - 1, len(params_inner)) == ")" of {
-                    true -> tuple_contains_comma(substring(params_inner, 1, len(params_inner) - 1));
+                false -> case substring(params_inner, 0, 1) == "(" and substring(params_inner, length_bytes(params_inner) - 1, length_bytes(params_inner)) == ")" of {
+                    true -> tuple_contains_comma(substring(params_inner, 1, length_bytes(params_inner) - 1));
                     false -> false
                 }
             }
@@ -741,7 +744,7 @@ fn literal_type_for_expected(expected_type: string) -> string {
         "float32" -> "float32";
         "float16" -> "float16";
         "char" -> "char";
-        _: string -> case len(expected_type) >= 2 and substring(expected_type, 0, 1) == "(" of {
+        _: string -> case length_bytes(expected_type) >= 2 and substring(expected_type, 0, 1) == "(" of {
             true -> literal_type_for_expected(tuple_first_element_type(expected_type));
             false -> "int64"
         }
@@ -750,11 +753,11 @@ fn literal_type_for_expected(expected_type: string) -> string {
 
 fn user_call_callee_sir_name(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, composite: string) -> string {
     (mod_part: string, fn_part: string) <- type_checker_core@split_module_qualified_call_name(composite);
-    case len(mod_part) > 0 of {
+    case length_bytes(mod_part) > 0 of {
         true -> concat(mod_part, concat("@", fn_part));
         false -> {
             src: string <- sir_lookup_symbol_source_module(context.env, fn_part);
-            case len(src) > 0 of {
+            case length_bytes(src) > 0 of {
                 true -> concat(src, concat("@", fn_part));
                 false -> user_calls@qual_name(fn_part)
             }
@@ -765,7 +768,7 @@ fn user_call_callee_sir_name(context: { env: List[{ name: string, type_name: str
 fn call_params_tuple_for_sir(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, call_name: string) -> string {
     func_type: string <- lookup_function_type_for_call_sir(context.env, call_name);
     params: string <- sir_params_inner_from_func_type(func_type);
-    case len(params) == 0 of {
+    case length_bytes(params) == 0 of {
         true -> "";
         false -> concat("(", concat(params, ")"))
     }
@@ -773,7 +776,7 @@ fn call_params_tuple_for_sir(context: { env: List[{ name: string, type_name: str
 
 fn expected_or_inferred_call_arg_type(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, formal_type: string) -> string {
     inferred: string <- sir_infer_expr_type(context, expr);
-    case len(inferred) > 0 of {
+    case length_bytes(inferred) > 0 of {
         true -> inferred;
         // Bare function identifiers are the important non-inferable case:
         // retain the signature formal so they lower as function addresses.
@@ -964,7 +967,7 @@ fn tuple_rest_element_type(tuple_type: string) -> string {
     elements: string <- tuple_inner_str(tuple_type);
     (first: string, rest: string) <- tuple_split_first(elements);
     trimmed: string <- tuple_trim_ws(rest);
-    case len(trimmed) == 0 of {
+    case length_bytes(trimmed) == 0 of {
         true -> "";
         false -> case tuple_contains_comma(trimmed) of {
             true -> concat("(", concat(trimmed, ")"));
@@ -974,7 +977,7 @@ fn tuple_rest_element_type(tuple_type: string) -> string {
 }
 
 fn tuple_inner_str(type_str: string) -> string {
-    len_ts: int64 <- len(type_str);
+    len_ts: int64 <- length_bytes(type_str);
     case len_ts < 2 of {
         true -> "";
         false -> case substring(type_str, 0, 1) == "(" of {
@@ -990,8 +993,8 @@ fn tuple_inner_str(type_str: string) -> string {
 fn tuple_split_first(s: string) -> (string, string) {
     idx: int64 <- tuple_find_comma(s, 0);
     first: string <- substring(s, 0, idx);
-    rest: string <- case idx < len(s) of {
-        true -> substring(s, idx + 1, len(s));
+    rest: string <- case idx < length_bytes(s) of {
+        true -> substring(s, idx + 1, length_bytes(s));
         false -> ""
     };
     (first, rest)
@@ -1004,8 +1007,8 @@ fn tuple_find_comma(s: string, i: int64) -> int64 {
 // Top-level comma for tuple type splitting: count (), {}, [] so commas inside `{ a: T, b: U }` or `List[..., normal]` do not split `(flags, list)`.
 
 fn tuple_find_comma_at_depth(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
-        true -> len(s);
+    case i >= length_bytes(s) of {
+        true -> length_bytes(s);
         false -> case substring(s, i, i + 1) of {
             "(" -> tuple_find_comma_at_depth(s, i + 1, depth + 1);
             ")" -> tuple_find_comma_at_depth(s, i + 1, depth - 1);
@@ -1029,7 +1032,7 @@ fn tuple_contains_comma(s: string) -> boolean {
 // True iff a comma appears at nesting depth 0; ignores commas inside (), {}, [] (aligned with tuple_find_comma_at_depth).
 
 fn tuple_contains_comma_at_depth(s: string, i: int64, depth: int64) -> boolean {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> false;
         false -> case substring(s, i, i + 1) of {
             "(" -> tuple_contains_comma_at_depth(s, i + 1, depth + 1);
@@ -1049,7 +1052,7 @@ fn tuple_contains_comma_at_depth(s: string, i: int64, depth: int64) -> boolean {
 
 fn tuple_trim_ws(s: string) -> string {
     start: int64 <- tuple_trim_start(s, 0);
-    len_s: int64 <- len(s);
+    len_s: int64 <- length_bytes(s);
     one_less: int64 <- len_s - 1;
     end_idx: int64 <- tuple_trim_end(s, one_less);
     case start <= end_idx of {
@@ -1059,8 +1062,8 @@ fn tuple_trim_ws(s: string) -> string {
 }
 
 fn tuple_trim_start(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
-        true -> len(s);
+    case i >= length_bytes(s) of {
+        true -> length_bytes(s);
         false -> case substring(s, i, i + 1) == " " of {
             true -> tuple_trim_start(s, i + 1);
             false -> i

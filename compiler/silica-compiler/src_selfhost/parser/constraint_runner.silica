@@ -206,8 +206,8 @@ fn skip_optional_bracket_suffix_slots(slots: List[{ token: { kind: int64, lexeme
 fn scan_function_after_params_for_return_arrow(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> (bool, { file: string, line: int64, column: int64, offset: int64 }) {
     case slots.is_nil of {
         true -> (false, parser_ast@zero_location());
-        false -> case slots.head.token.kind == lexer_token_kind@token_kind_right_arrow() of {
-            true -> (false, parser_ast@zero_location());
+        false -> case slots.head.token.kind == lexer_token_kind@token_kind_right_arrow() or slots.head.token.lexeme == "->" of {
+            true -> arrow_has_no_return_type_before_body(slots.tail, slots.head.token.location);
             false -> case slots.head.token.kind == lexer_token_kind@token_kind_left_brace() of {
                 true -> (true, slots.head.token.location);
                 false -> case slots.head.token.kind == lexer_token_kind@token_kind_semicolon() of {
@@ -231,6 +231,58 @@ fn skip_brace_group_slots(slots: List[{ token: { kind: int64, lexeme: string, lo
                     false -> skip_brace_group_slots(slots.tail, depth - 1)
                 };
                 false -> skip_brace_group_slots(slots.tail, depth)
+            }
+        }
+    }
+}
+
+// After a return type, optionally skip `proc[...]` before the function body `{` or trait `;`.
+fn skip_optional_proc_effects_slots(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] {
+    trimmed: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> trimmed;
+        false -> case trimmed.head.token.kind == lexer_token_kind@token_kind_proc_keyword() or trimmed.head.token.lexeme == "proc" of {
+            true -> {
+                after_proc: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_leading_whitespace_slots(trimmed.tail);
+                case after_proc.is_nil of {
+                    true -> trimmed;
+                    false -> case after_proc.head.token.kind == lexer_token_kind@token_kind_left_bracket() or after_proc.head.token.lexeme == "[" of {
+                        true -> skip_leading_whitespace_slots(skip_bracketed_slots(after_proc, 0));
+                        false -> trimmed
+                    }
+                }
+            };
+            false -> trimmed
+        }
+    }
+}
+
+// True when `->` is present but no return type precedes the body: `fn f(...) -> { ... }`.
+// Distinguishes that from a valid inline-record return type: `fn f(...) -> { a: T } { ... }` / `-> { a: T };`.
+fn arrow_has_no_return_type_before_body(slots_after_arrow: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], arrow_loc: { file: string, line: int64, column: int64, offset: int64 }) -> (bool, { file: string, line: int64, column: int64, offset: int64 }) {
+    after_arrow: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_leading_whitespace_slots(slots_after_arrow);
+    case after_arrow.is_nil of {
+        true -> (true, arrow_loc);
+        false -> case after_arrow.head.token.kind == lexer_token_kind@token_kind_left_brace() or after_arrow.head.token.lexeme == "{" of {
+            true -> {
+                brace_loc: { file: string, line: int64, column: int64, offset: int64 } <- after_arrow.head.token.location;
+                after_group: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_brace_group_slots(after_arrow.tail, 1);
+                after_proc: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_optional_proc_effects_slots(after_group);
+                after_final: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_leading_whitespace_slots(after_proc);
+                case after_final.is_nil of {
+                    true -> case brace_group_starts_record_like(after_arrow.tail) of {
+                        true -> (false, parser_ast@zero_location());
+                        false -> (true, brace_loc)
+                    };
+                    false -> case after_final.head.token.kind == lexer_token_kind@token_kind_left_brace() or after_final.head.token.lexeme == "{" or after_final.head.token.kind == lexer_token_kind@token_kind_semicolon() or after_final.head.token.lexeme == ";" of {
+                        true -> (false, parser_ast@zero_location());
+                        false -> (true, brace_loc)
+                    }
+                }
+            };
+            false -> case after_arrow.head.token.kind == lexer_token_kind@token_kind_semicolon() or after_arrow.head.token.lexeme == ";" of {
+                true -> (true, after_arrow.head.token.location);
+                false -> (false, parser_ast@zero_location())
             }
         }
     }
@@ -361,7 +413,7 @@ fn has_missing_function_return_type(slots: List[{ token: { kind: int64, lexeme: 
 }
 
 fn token_end_offset(token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }) -> int64 {
-    token.location.offset + len(token.lexeme)
+    token.location.offset + length_bytes(token.lexeme)
 }
 
 fn is_adjacent_token_pair(left: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, right: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }) -> bool {
@@ -371,7 +423,7 @@ fn is_adjacent_token_pair(left: { kind: int64, lexeme: string, location: { file:
 fn token_starts_with_colon(token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }) -> bool {
     case token.lexeme == ":" of {
         true -> true;
-        false -> case len(token.lexeme) > 0 of {
+        false -> case length_bytes(token.lexeme) > 0 of {
             true -> substring(token.lexeme, 0, 1) == ":";
             false -> false
         }

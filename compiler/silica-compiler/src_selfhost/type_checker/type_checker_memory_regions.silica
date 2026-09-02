@@ -55,7 +55,7 @@ fn env_lookup_surface(env: List[{ name: string, type_id: int64, surface_type: st
 
 // Trim leading/trailing whitespace from string
 fn trim_type(s: string) -> string {
-    trim_type_from(s, 0, len(s) - 1)
+    trim_type_from(s, 0, length_bytes(s) - 1)
 }
 
 fn trim_type_from(s: string, start: int64, last_idx: int64) -> string {
@@ -97,9 +97,25 @@ fn cons_string(s: string, rest: List[string, mem(normal)]) -> List[string, mem(n
 }
 
 
+fn split_params_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case substring(s, j, j + 1) == "(" of {
+            true -> j;
+            false -> case substring(s, j, j + 1) == ")" of {
+                true -> j;
+                false -> case substring(s, j, j + 1) == "," of {
+                    true -> j;
+                    false -> split_params_run_end(s, j + 1, n)
+                }
+            }
+        }
+    }
+}
+
 fn split_params_loop(s: string, i: int64, depth: int64, acc: string, result: List[string, mem(normal)]) -> List[string, mem(normal)] {
-    case i >= len(s) of {
-        true -> case len(acc) > 0 of {
+    case i >= length_bytes(s) of {
+        true -> case length_bytes(acc) > 0 of {
             true -> cons_string(trim_type(acc), result);
             false -> result
         };
@@ -116,7 +132,11 @@ fn split_params_loop(s: string, i: int64, depth: int64, acc: string, result: Lis
                         };
                         false -> split_params_loop(s, i + 1, depth, concat(acc, ","), result)
                     };
-                    false -> split_params_loop(s, i + 1, depth, concat(acc, substring(s, i, i + 1)), result)
+                    false -> {
+                        n: int64 <- length_bytes(s);
+                        e: int64 <- split_params_run_end(s, i, n);
+                        split_params_loop(s, e, depth, concat(acc, substring(s, i, e)), result)
+                    }
                 }
             }
         }
@@ -156,39 +176,39 @@ fn list_string_nth(lst: List[string, mem(normal)], n: int64) -> string {
 
 // True if type string is a memory region type (ref, region, buf, atomic_ref)
 fn is_memory_region_type(type_str: string) -> bool {
-    is_ref: bool <- len(type_str) >= 4 and substring(type_str, 0, 3) == "ref" and substring(type_str, 3, 4) == "(";
-    is_ref_q: bool <- len(type_str) >= 5 and substring(type_str, 0, 4) == "ref?" and substring(type_str, 4, 5) == "(";
-    is_region: bool <- len(type_str) >= 7 and substring(type_str, 0, 6) == "region" and substring(type_str, 6, 7) == "(";
-    is_buf: bool <- len(type_str) >= 4 and substring(type_str, 0, 3) == "buf" and substring(type_str, 3, 4) == "(";
-    is_atomic: bool <- len(type_str) >= 11 and substring(type_str, 0, 10) == "atomic_ref" and substring(type_str, 10, 11) == "(";
+    is_ref: bool <- length_bytes(type_str) >= 4 and substring(type_str, 0, 3) == "ref" and substring(type_str, 3, 4) == "(";
+    is_ref_q: bool <- length_bytes(type_str) >= 5 and substring(type_str, 0, 4) == "ref?" and substring(type_str, 4, 5) == "(";
+    is_region: bool <- length_bytes(type_str) >= 7 and substring(type_str, 0, 6) == "region" and substring(type_str, 6, 7) == "(";
+    is_buf: bool <- length_bytes(type_str) >= 4 and substring(type_str, 0, 3) == "buf" and substring(type_str, 3, 4) == "(";
+    is_atomic: bool <- length_bytes(type_str) >= 11 and substring(type_str, 0, 10) == "atomic_ref" and substring(type_str, 10, 11) == "(";
     is_ref or is_ref_q or is_region or is_buf or is_atomic
 }
 
 // Extract constructor name (ref, region, buf, atomic_ref) and inner params
 fn parse_memory_region_type(type_str: string) -> (string, string) {
-    case len(type_str) >= 10 and substring(type_str, 0, 10) == "atomic_ref" of {
-        true -> case len(type_str) >= 11 and substring(type_str, 10, 11) == "(" of {
-            true -> ("atomic_ref", substring(type_str, 11, len(type_str) - 1));
+    case length_bytes(type_str) >= 10 and substring(type_str, 0, 10) == "atomic_ref" of {
+        true -> case length_bytes(type_str) >= 11 and substring(type_str, 10, 11) == "(" of {
+            true -> ("atomic_ref", substring(type_str, 11, length_bytes(type_str) - 1));
             false -> ("", "")
         };
-        false -> case len(type_str) >= 6 and substring(type_str, 0, 6) == "region" of {
-            true -> case len(type_str) >= 7 and substring(type_str, 6, 7) == "(" of {
-                true -> ("region", substring(type_str, 7, len(type_str) - 1));
+        false -> case length_bytes(type_str) >= 6 and substring(type_str, 0, 6) == "region" of {
+            true -> case length_bytes(type_str) >= 7 and substring(type_str, 6, 7) == "(" of {
+                true -> ("region", substring(type_str, 7, length_bytes(type_str) - 1));
                 false -> ("", "")
             };
-            false -> case len(type_str) >= 3 and substring(type_str, 0, 3) == "buf" of {
-                true -> case len(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
-                    true -> ("buf", substring(type_str, 4, len(type_str) - 1));
+            false -> case length_bytes(type_str) >= 3 and substring(type_str, 0, 3) == "buf" of {
+                true -> case length_bytes(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
+                    true -> ("buf", substring(type_str, 4, length_bytes(type_str) - 1));
                     false -> ("", "")
                 };
-                false -> case len(type_str) >= 4 and substring(type_str, 0, 4) == "ref?" and substring(type_str, 4, 5) == "(" of {
-                    true -> case substring(type_str, len(type_str) - 1, len(type_str)) == ")" of {
-                        true -> ("ref?", substring(type_str, 5, len(type_str) - 1));
+                false -> case length_bytes(type_str) >= 4 and substring(type_str, 0, 4) == "ref?" and substring(type_str, 4, 5) == "(" of {
+                    true -> case substring(type_str, length_bytes(type_str) - 1, length_bytes(type_str)) == ")" of {
+                        true -> ("ref?", substring(type_str, 5, length_bytes(type_str) - 1));
                         false -> ("", "")
                     };
-                    false -> case len(type_str) >= 3 and substring(type_str, 0, 3) == "ref" of {
-                        true -> case len(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
-                            true -> ("ref", substring(type_str, 4, len(type_str) - 1));
+                    false -> case length_bytes(type_str) >= 3 and substring(type_str, 0, 3) == "ref" of {
+                        true -> case length_bytes(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
+                            true -> ("ref", substring(type_str, 4, length_bytes(type_str) - 1));
                             false -> ("", "")
                         };
                         false -> ("", "")
@@ -202,7 +222,7 @@ fn parse_memory_region_type(type_str: string) -> (string, string) {
 // Validate memory region type string.
 fn validate_memory_region_type(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     (ctor: string, inner: string) <- parse_memory_region_type(type_str);
-    case len(ctor) == 0 of {
+    case length_bytes(ctor) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, concat("invalid memory region type: ", type_str), "sect4.4");
         false -> {
             params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
@@ -238,10 +258,10 @@ fn validate_ref_params(params: List[string, mem(normal)], location: { file: stri
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
     t: string <- trim_type(list_string_nth(params, 2));
-    case len(r) == 0 of {
+    case length_bytes(r) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, "ref: region identifier R cannot be empty", "sect4.4.2");
         false -> case is_valid_memory_space(space) of {
-            true -> case len(t) == 0 of {
+            true -> case length_bytes(t) == 0 of {
                 true -> type_checker_core@type_check_err("E2010", location, "ref: element type T cannot be empty", "sect4.4.2");
                 false -> type_checker_core@type_check_ok()
             };
@@ -253,7 +273,7 @@ fn validate_ref_params(params: List[string, mem(normal)], location: { file: stri
 fn validate_region_params(params: List[string, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
-    case len(r) == 0 of {
+    case length_bytes(r) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, "region: region identifier R cannot be empty", "sect4.4.1");
         false -> case is_valid_memory_space(space) of {
             true -> type_checker_core@type_check_ok();
@@ -267,10 +287,10 @@ fn validate_buf_params(params: List[string, mem(normal)], location: { file: stri
     space: string <- trim_type(list_string_nth(params, 1));
     t: string <- trim_type(list_string_nth(params, 2));
     n_str: string <- trim_type(list_string_nth(params, 3));
-    case len(r) == 0 of {
+    case length_bytes(r) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, "buf: region identifier R cannot be empty", "sect4.4.3");
         false -> case is_valid_memory_space(space) of {
-            true -> case len(t) == 0 of {
+            true -> case length_bytes(t) == 0 of {
                 true -> type_checker_core@type_check_err("E2010", location, "buf: element type T cannot be empty", "sect4.4.3");
                 false -> validate_buf_length_param(n_str, location)
             };
@@ -284,7 +304,7 @@ fn is_digit_char(c: string) -> bool {
 }
 
 fn is_nonnegative_integer_literal_from(s: string, i: int64) -> bool {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> true;
         false -> case is_digit_char(substring(s, i, i + 1)) of {
             true -> is_nonnegative_integer_literal_from(s, i + 1);
@@ -294,7 +314,7 @@ fn is_nonnegative_integer_literal_from(s: string, i: int64) -> bool {
 }
 
 fn is_nonnegative_integer_literal(s: string) -> bool {
-    len(s) > 0 and is_nonnegative_integer_literal_from(s, 0)
+    length_bytes(s) > 0 and is_nonnegative_integer_literal_from(s, 0)
 }
 
 fn buf_length_char_forbidden(c: string) -> bool {
@@ -302,7 +322,7 @@ fn buf_length_char_forbidden(c: string) -> bool {
 }
 
 fn is_simple_buf_length_identifier_from(s: string, i: int64) -> bool {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> true;
         false -> case buf_length_char_forbidden(substring(s, i, i + 1)) of {
             true -> false;
@@ -312,7 +332,7 @@ fn is_simple_buf_length_identifier_from(s: string, i: int64) -> bool {
 }
 
 fn is_simple_buf_length_identifier(s: string) -> bool {
-    case len(s) > 0 of {
+    case length_bytes(s) > 0 of {
         false -> false;
         true -> case is_digit_char(substring(s, 0, 1)) of {
             true -> false;
@@ -323,7 +343,7 @@ fn is_simple_buf_length_identifier(s: string) -> bool {
 
 fn validate_buf_length_param(n_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     n: string <- trim_type(n_str);
-    case len(n) == 0 of {
+    case length_bytes(n) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, "buf: length N cannot be empty", "sect4.4.3");
         false -> case substring(n, 0, 1) == "-" of {
             true -> type_checker_core@type_check_err("E2010", location, "buf: length N must be non-negative", "sect4.4.3");
@@ -347,7 +367,7 @@ fn validate_buf_length_param_in_context(n_str: string, location: { file: string,
             false -> {
                 name: string <- trim_type(n_str);
                 ty: string <- env_lookup_surface(context.env, name);
-                case len(ty) == 0 of {
+                case length_bytes(ty) == 0 of {
                     true -> type_checker_core@type_check_err("E2010", location, concat(concat("buf: runtime length identifier '", name), "' is not in scope"), "sect4.4.3");
                     false -> case ty == "int64" of {
                         true -> type_checker_core@type_check_ok();
@@ -364,10 +384,10 @@ fn validate_buf_params_in_context(params: List[string, mem(normal)], location: {
     space: string <- trim_type(list_string_nth(params, 1));
     t: string <- trim_type(list_string_nth(params, 2));
     n_str: string <- trim_type(list_string_nth(params, 3));
-    case len(r) == 0 of {
+    case length_bytes(r) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, "buf: region identifier R cannot be empty", "sect4.4.3");
         false -> case is_valid_memory_space(space) of {
-            true -> case len(t) == 0 of {
+            true -> case length_bytes(t) == 0 of {
                 true -> type_checker_core@type_check_err("E2010", location, "buf: element type T cannot be empty", "sect4.4.3");
                 false -> validate_buf_length_param_in_context(n_str, location, context)
             };
@@ -378,7 +398,7 @@ fn validate_buf_params_in_context(params: List[string, mem(normal)], location: {
 
 fn validate_memory_region_type_in_context(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     (ctor: string, inner: string) <- parse_memory_region_type(type_str);
-    case len(ctor) == 0 of {
+    case length_bytes(ctor) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, concat("invalid memory region type: ", type_str), "sect4.4");
         false -> {
             params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
@@ -398,10 +418,10 @@ fn validate_atomic_ref_params(params: List[string, mem(normal)], location: { fil
     r: string <- trim_type(list_string_nth(params, 0));
     space: string <- trim_type(list_string_nth(params, 1));
     t: string <- trim_type(list_string_nth(params, 2));
-    case len(r) == 0 of {
+    case length_bytes(r) == 0 of {
         true -> type_checker_core@type_check_err("E2010", location, "atomic_ref: region identifier R cannot be empty", "sect4.4.4");
         false -> case is_valid_memory_space(space) of {
-            true -> case len(t) == 0 of {
+            true -> case length_bytes(t) == 0 of {
                 true -> type_checker_core@type_check_err("E2010", location, "atomic_ref: element type T cannot be empty", "sect4.4.4");
                 false -> type_checker_core@type_check_ok()
             };
@@ -577,15 +597,15 @@ fn list_contains_string(s: string, lst: List[string, mem(normal)]) -> bool {
 // Recursively collect lifetime IDs from ref(R,...), buf(R,...), atomic_ref(R,...) in type string.
 fn collect_lifetime_ids_from_ref_types(type_str: string) -> List[string, mem(normal)] {
     t: string <- trim_type(type_str);
-    case len(t) < 4 of {
+    case length_bytes(t) < 4 of {
         true -> nil_list_string();
-        false -> case len(t) >= 11 and substring(t, 0, 10) == "atomic_ref" and substring(t, 10, 11) == "(" of {
+        false -> case length_bytes(t) >= 11 and substring(t, 0, 10) == "atomic_ref" and substring(t, 10, 11) == "(" of {
             true -> collect_from_atomic_ref(t);
-            false -> case len(t) >= 6 and substring(t, 0, 6) == "region" and substring(t, 6, 7) == "(" of {
+            false -> case length_bytes(t) >= 6 and substring(t, 0, 6) == "region" and substring(t, 6, 7) == "(" of {
                 true -> nil_list_string();
-                false -> case len(t) >= 4 and substring(t, 0, 3) == "buf" and substring(t, 3, 4) == "(" of {
+                false -> case length_bytes(t) >= 4 and substring(t, 0, 3) == "buf" and substring(t, 3, 4) == "(" of {
                     true -> collect_from_buf(t);
-                    false -> case len(t) >= 4 and substring(t, 0, 3) == "ref" and substring(t, 3, 4) == "(" of {
+                    false -> case length_bytes(t) >= 4 and substring(t, 0, 3) == "ref" and substring(t, 3, 4) == "(" of {
                         true -> collect_from_ref(t);
                         false -> collect_from_tuple_or_union(t)
                     }
@@ -596,7 +616,7 @@ fn collect_lifetime_ids_from_ref_types(type_str: string) -> List[string, mem(nor
 }
 
 fn collect_from_ref(type_str: string) -> List[string, mem(normal)] {
-    inner: string <- substring(type_str, 4, len(type_str) - 1);
+    inner: string <- substring(type_str, 4, length_bytes(type_str) - 1);
     params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
     case list_string_length(params) < 3 of {
         true -> nil_list_string();
@@ -610,7 +630,7 @@ fn collect_from_ref(type_str: string) -> List[string, mem(normal)] {
 }
 
 fn collect_from_buf(type_str: string) -> List[string, mem(normal)] {
-    inner: string <- substring(type_str, 4, len(type_str) - 1);
+    inner: string <- substring(type_str, 4, length_bytes(type_str) - 1);
     params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
     case list_string_length(params) < 4 of {
         true -> nil_list_string();
@@ -624,7 +644,7 @@ fn collect_from_buf(type_str: string) -> List[string, mem(normal)] {
 }
 
 fn collect_from_atomic_ref(type_str: string) -> List[string, mem(normal)] {
-    inner: string <- substring(type_str, 11, len(type_str) - 1);
+    inner: string <- substring(type_str, 11, length_bytes(type_str) - 1);
     params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
     case list_string_length(params) < 3 of {
         true -> nil_list_string();
@@ -640,11 +660,11 @@ fn collect_from_atomic_ref(type_str: string) -> List[string, mem(normal)] {
 // Recursively collect lifetime IDs from region(R,...) in type string.
 fn collect_lifetime_ids_from_region_types(type_str: string) -> List[string, mem(normal)] {
     t: string <- trim_type(type_str);
-    case len(t) < 8 of {
+    case length_bytes(t) < 8 of {
         true -> nil_list_string();
-        false -> case len(t) >= 7 and substring(t, 0, 6) == "region" and substring(t, 6, 7) == "(" of {
+        false -> case length_bytes(t) >= 7 and substring(t, 0, 6) == "region" and substring(t, 6, 7) == "(" of {
             true -> {
-                inner: string <- substring(t, 7, len(t) - 1);
+                inner: string <- substring(t, 7, length_bytes(t) - 1);
                 params: List[string, mem(normal)] <- reverse_list_string(split_params_at_top_level(inner));
                 case list_string_length(params) < 1 of {
                     true -> nil_list_string();
@@ -658,8 +678,8 @@ fn collect_lifetime_ids_from_region_types(type_str: string) -> List[string, mem(
 
 fn collect_from_tuple_or_union(type_str: string) -> List[string, mem(normal)] {
     t: string <- trim_type(type_str);
-    case len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
-        true -> collect_from_tuple_contents(substring(t, 1, len(t) - 1));
+    case length_bytes(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, length_bytes(t) - 1, length_bytes(t)) == ")" of {
+        true -> collect_from_tuple_contents(substring(t, 1, length_bytes(t) - 1));
         false -> case find_union_separator(t, 0, 0) >= 0 of {
             true -> collect_from_union(t);
             false -> nil_list_string()
@@ -669,8 +689,8 @@ fn collect_from_tuple_or_union(type_str: string) -> List[string, mem(normal)] {
 
 fn collect_region_ids_from_tuple_or_union(type_str: string) -> List[string, mem(normal)] {
     t: string <- trim_type(type_str);
-    case len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
-        true -> collect_region_from_tuple_contents(substring(t, 1, len(t) - 1));
+    case length_bytes(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, length_bytes(t) - 1, length_bytes(t)) == ")" of {
+        true -> collect_region_from_tuple_contents(substring(t, 1, length_bytes(t) - 1));
         false -> case find_union_separator(t, 0, 0) >= 0 of {
             true -> collect_region_from_union(t);
             false -> nil_list_string()
@@ -679,9 +699,9 @@ fn collect_region_ids_from_tuple_or_union(type_str: string) -> List[string, mem(
 }
 
 fn find_union_separator(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
-        false -> case depth == 0 and i + 1 < len(s) and substring(s, i, i + 2) == " |" of {
+        false -> case depth == 0 and i + 1 < length_bytes(s) and substring(s, i, i + 2) == " |" of {
             true -> i;
             false -> case substring(s, i, i + 1) == "(" of {
                 true -> find_union_separator(s, i + 1, depth + 1);
@@ -725,8 +745,8 @@ fn collect_from_union(type_str: string) -> List[string, mem(normal)] {
         false -> {
             left: string <- trim_type(substring(type_str, 0, sep));
             right_start: int64 <- sep + 2;
-            right: string <- case right_start < len(type_str) of {
-                true -> trim_type(substring(type_str, right_start, len(type_str)));
+            right: string <- case right_start < length_bytes(type_str) of {
+                true -> trim_type(substring(type_str, right_start, length_bytes(type_str)));
                 false -> ""
             };
             union_list_string(collect_lifetime_ids_from_ref_types(left), collect_from_union(right))
@@ -741,8 +761,8 @@ fn collect_region_from_union(type_str: string) -> List[string, mem(normal)] {
         false -> {
             left: string <- trim_type(substring(type_str, 0, sep));
             right_start: int64 <- sep + 2;
-            right: string <- case right_start < len(type_str) of {
-                true -> trim_type(substring(type_str, right_start, len(type_str)));
+            right: string <- case right_start < length_bytes(type_str) of {
+                true -> trim_type(substring(type_str, right_start, length_bytes(type_str)));
                 false -> ""
             };
             union_list_string(collect_lifetime_ids_from_region_types(left), collect_region_from_union(right))

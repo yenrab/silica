@@ -19,16 +19,11 @@
 // Adds function to symbol table, checks body expression
 // User-defined functions: store full function type (params -> return) for call resolution
 
-use parser_ast;
 use type_checker_core;
 use type_checker_expressions;
-use type_checker_memory_regions;
-use type_checker_recursion;
-use type_checker_lists;
-use type_checker_collections;
 use type_checker_expressions_actors;
-use type_checker_record_types;
-use type_checker_expressions_identifiers;
+use tc_decl_validators;
+use tc_decl_ast_support;
 
 export add_function/3;
 export check_body/3;
@@ -56,7 +51,7 @@ fn build_function_type(decl: { tag: int64, name: string, parameters: List[{ name
 
 // Add function name with full function type (params -> return) for call resolution. Used for first pass (all decls).
 fn add_function(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, all_decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } {
-    func_type: string <- type_checker_expressions_identifiers@build_function_type_for_symbol_table(decl, all_decls);
+    func_type: string <- tc_decl_ast_support@build_function_type_for_symbol_table(decl, all_decls);
     type_checker_core@context_add_symbol_surface(context, decl.name, func_type, decl.declared_effects, "")
 }
 
@@ -65,7 +60,7 @@ fn add_params_to_context_loop(params: List[{ name: string, type_name: string, lo
         true -> context;
         false -> {
             p: { name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } } <- params.head;
-            next_ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- type_checker_core@context_add_symbol_surface(context, p.name, p.type_name, parser_ast@empty_effect_name_list(), "");
+            next_ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- type_checker_core@context_add_symbol_surface(context, p.name, p.type_name, tc_decl_ast_support@empty_effect_name_list(), "");
             add_params_to_context_loop(params.tail, next_ctx)
         }
     }
@@ -77,9 +72,9 @@ fn add_params_to_context(decl: { tag: int64, name: string, parameters: List[{ na
 
 // Inline record param types `{ f: T, ... }` (§3.4.2): reject unbalanced `{` `}`.
 fn validate_record_type_string(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    case type_checker_record_types@record_type_starts(type_str) of {
+    case tc_decl_validators@record_type_starts(type_str) of {
         false -> type_checker_core@type_check_ok();
-        true -> case type_checker_record_types@record_type_braces_balanced(type_str) of {
+        true -> case tc_decl_validators@record_type_braces_balanced(type_str) of {
             true -> type_checker_core@type_check_ok();
             false -> type_checker_core@type_check_err("E2003", location, "malformed inline record type (unbalanced braces)", "sect3.4.2")
         }
@@ -87,11 +82,11 @@ fn validate_record_type_string(type_str: string, location: { file: string, line:
 }
 
 fn trim_left_type_text(s: string, i: int64) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> "";
         false -> case substring(s, i, i + 1) == " " or substring(s, i, i + 1) == "\t" or substring(s, i, i + 1) == "\n" or substring(s, i, i + 1) == "\r" of {
             true -> trim_left_type_text(s, i + 1);
-            false -> substring(s, i, len(s))
+            false -> substring(s, i, length_bytes(s))
         }
     }
 }
@@ -108,11 +103,11 @@ fn trim_right_type_text(s: string, end_i: int64) -> string {
 
 fn trim_type_text_local(s: string) -> string {
     left: string <- trim_left_type_text(s, 0);
-    trim_right_type_text(left, len(left))
+    trim_right_type_text(left, length_bytes(left))
 }
 
 fn find_top_level_or_bar(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> {
             c: string <- substring(s, i, i + 1);
@@ -142,7 +137,7 @@ fn return_type_has_top_level_or(type_str: string) -> bool {
 
 fn return_or_part_is_atom(part: string) -> bool {
     t: string <- trim_type_text_local(part);
-    len(t) > 1 and substring(t, 0, 1) == ":"
+    length_bytes(t) > 1 and substring(t, 0, 1) == ":"
 }
 
 fn invalid_return_or_part(type_str: string) -> string {
@@ -161,7 +156,7 @@ fn invalid_return_or_part_from(type_str: string) -> string {
             left: string <- substring(t, 0, bar);
             case return_or_part_is_atom(left) of {
                 false -> trim_type_text_local(left);
-                true -> invalid_return_or_part_from(substring(t, bar + 1, len(t)))
+                true -> invalid_return_or_part_from(substring(t, bar + 1, length_bytes(t)))
             }
         }
     }
@@ -172,7 +167,7 @@ fn validate_or_return_type(type_str: string, location: { file: string, line: int
         false -> type_checker_core@type_check_ok();
         true -> {
             bad: string <- invalid_return_or_part(type_str);
-            case len(bad) == 0 of {
+            case length_bytes(bad) == 0 of {
                 true -> type_checker_core@type_check_ok();
                 false -> {
                     msg: string <- concat(concat(concat("invalid OR return type ", type_str), "; OR'd return types are atom option lists, so every option must be an atom literal like :ok. Invalid option: "), bad);
@@ -196,20 +191,20 @@ fn validate_params_loop(params: List[{ name: string, type_name: string, location
             case rec_result.is_ok of {
                 false -> rec_result;
                 true -> {
-                    list_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_lists@validate_list_type_declaration(params.head.type_name, params.head.location);
+                    list_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- tc_decl_validators@validate_list_type_declaration(params.head.type_name, params.head.location);
                     case list_result.is_ok of {
                         false -> list_result;
                         true -> {
-                            col_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_collections@validate_collection_type_declaration(params.head.type_name, params.head.location);
+                            col_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- tc_decl_validators@validate_collection_type_declaration(params.head.type_name, params.head.location);
                             case col_result.is_ok of {
                                 false -> col_result;
                                 true -> {
-                                    result_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_collections@validate_collection_result_type_declaration(params.head.type_name, params.head.location);
+                                    result_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- tc_decl_validators@validate_collection_result_type_declaration(params.head.type_name, params.head.location);
                                     case result_result.is_ok of {
                                         false -> result_result;
-                                        true -> case type_checker_memory_regions@is_memory_region_type(params.head.type_name) of {
+                                        true -> case tc_decl_validators@is_memory_region_type(params.head.type_name) of {
                                             true -> {
-                                                mem_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_memory_regions@validate_memory_region_type(params.head.type_name, params.head.location);
+                                                mem_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- tc_decl_validators@validate_memory_region_type(params.head.type_name, params.head.location);
                                                 case mem_result.is_ok of {
                                                     false -> mem_result;
                                                     true -> validate_params_loop(params.tail)
@@ -253,9 +248,9 @@ fn check_body(decl: { tag: int64, name: string, parameters: List[{ name: string,
 fn check_body_after_params(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } proc[DeviceIO] {
     context_with_params: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- add_params_to_context(decl, context);
     body_ctx: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- case type_checker_expressions_actors@is_actor_behavior_declaration(decl) of {
-        true -> type_checker_core@context_add_symbol_surface(context_with_params, type_checker_expressions_actors@tc_in_behavior_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
+        true -> type_checker_core@context_add_symbol_surface(context_with_params, type_checker_expressions_actors@tc_in_behavior_marker_name(), "boolean", tc_decl_ast_support@empty_effect_name_list(), "");
         false -> case decl.name == "main" of {
-            true -> type_checker_core@context_add_symbol_surface(context_with_params, type_checker_expressions_actors@tc_in_main_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
+            true -> type_checker_core@context_add_symbol_surface(context_with_params, type_checker_expressions_actors@tc_in_main_marker_name(), "boolean", tc_decl_ast_support@empty_effect_name_list(), "");
             false -> context_with_params
         }
     };
@@ -267,20 +262,20 @@ fn check_body_after_params(decl: { tag: int64, name: string, parameters: List[{ 
             case ret_or.is_ok of {
                 false -> ret_or;
                 true -> {
-                    ret_list: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_lists@validate_list_type_declaration(decl.return_type_name, decl.return_type_location);
+                    ret_list: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- tc_decl_validators@validate_list_type_declaration(decl.return_type_name, decl.return_type_location);
                     case ret_list.is_ok of {
                         false -> ret_list;
                         true -> {
-                            ret_col: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_collections@validate_collection_type_declaration(decl.return_type_name, decl.return_type_location);
+                            ret_col: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- tc_decl_validators@validate_collection_type_declaration(decl.return_type_name, decl.return_type_location);
                             case ret_col.is_ok of {
                                 false -> ret_col;
                                 true -> {
-                                    ret_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_collections@validate_collection_result_type_declaration(decl.return_type_name, decl.return_type_location);
+                                    ret_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- tc_decl_validators@validate_collection_result_type_declaration(decl.return_type_name, decl.return_type_location);
                                     case ret_result.is_ok of {
                                         false -> ret_result;
                                         true -> case decl.return_type_name == "unit" of {
                                             true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
-                                            false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
+                                            false -> case tc_decl_validators@is_memory_region_type(decl.return_type_name) of {
                                                 true -> check_body_memory_region_return(decl, body_ctx, world);
                                                 false -> {
                                                     ret_out: { context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, id: int64, ok: boolean } <- type_checker_core@parse_type_into_context(body_ctx, decl.return_type_name);
@@ -294,7 +289,7 @@ fn check_body_after_params(decl: { tag: int64, name: string, parameters: List[{ 
                                                     case body_result.is_ok of {
                                                         false -> body_result;
                                                         true -> {
-                                                            rec_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_recursion@recursion_analyze_body(decl.body, decl.name);
+                                                            rec_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- tc_decl_validators@recursion_analyze_body(decl.body, decl.name);
                                                             case rec_result.is_ok of {
                                                                 false -> rec_result;
                                                                 true -> type_checker_expressions_actors@check_behavior_no_self_recursion(decl)
@@ -316,7 +311,7 @@ fn check_body_after_params(decl: { tag: int64, name: string, parameters: List[{ 
 }
 
 fn check_body_memory_region_return(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } proc[DeviceIO] {
-    mem_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_memory_regions@validate_memory_region_type(decl.return_type_name, decl.return_type_location);
+    mem_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- tc_decl_validators@validate_memory_region_type(decl.return_type_name, decl.return_type_location);
     case mem_result.is_ok of {
         false -> mem_result;
         true -> {
@@ -331,7 +326,7 @@ fn check_body_memory_region_return(decl: { tag: int64, name: string, parameters:
             case body_result.is_ok of {
                 false -> body_result;
                 true -> {
-                    rec_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_recursion@recursion_analyze_body(decl.body, decl.name);
+                    rec_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- tc_decl_validators@recursion_analyze_body(decl.body, decl.name);
                     case rec_result.is_ok of {
                         false -> rec_result;
                         true -> type_checker_expressions_actors@check_behavior_no_self_recursion(decl)

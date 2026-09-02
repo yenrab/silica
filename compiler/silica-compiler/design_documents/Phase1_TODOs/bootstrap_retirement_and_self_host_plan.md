@@ -288,6 +288,13 @@ Work items map to W-ids from Step 0.2. Prefer fixing and simplifying **inside `s
 
 - Trial `compiler_string_index_map.silica` in `trials/` (self-host leaf) covers insert, lookup, duplicate key via WBT-backed map.
 
+  Key identity follows the map's comparator, not the key's text. `empty_string_int64_map`
+  orders by `compare_string`, so `"10"` and `"010"` are distinct keys. Numeric maps from
+  `empty_numeric_string_int64_map` order by `compare_string_as_int64`, which compares
+  `parse_decimal_string` results, so `"10"` and `"010"` are the **same** key: re-inserting
+  `"010"` is a duplicate that returns the existing index and reports `inserted: false`.
+  The trial therefore exits `0`.
+
 ### Step 3.2 — Migrate emitter literal pools in `src_selfhost/` (5 modules)
 
 | Module (under `src_selfhost/`) | Frozen `src/` current | Migration in parallel tree |

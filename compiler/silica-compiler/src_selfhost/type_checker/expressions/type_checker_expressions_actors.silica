@@ -62,11 +62,11 @@ fn count_chain_args(expr: { nodes: List[{ kind: int64, value: string, name: stri
 }
 
 fn trim_leading_actor_from(s: string, i: int64) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> "";
         false -> case substring(s, i, i + 1) == " " of {
             true -> trim_leading_actor_from(s, i + 1);
-            false -> substring(s, i, len(s))
+            false -> substring(s, i, length_bytes(s))
         }
     }
 }
@@ -80,14 +80,14 @@ fn trim_leading_actor(s: string) -> string {
 // Distinguish by arity: 3-element reply tuple = :reply; 2-element = :no_reply.
 fn behavior_return_is_call_only(return_type: string) -> bool {
     t: string <- trim_leading_actor(return_type);
-    case len(t) >= 8 of {
+    case length_bytes(t) >= 8 of {
         false -> false;
         true -> substring(t, 0, 8) == "(:reply," or behavior_return_is_atom_3_tuple(t)
     }
 }
 
 fn behavior_return_is_atom_3_tuple(t: string) -> bool {
-    case len(t) >= 6 of {
+    case length_bytes(t) >= 6 of {
         false -> false;
         true -> case substring(t, 0, 6) == "(atom," of {
             true -> count_top_level_commas_actor(t, 1, 0, 0) == 2;
@@ -97,7 +97,7 @@ fn behavior_return_is_atom_3_tuple(t: string) -> bool {
 }
 
 fn behavior_return_is_atom_2_tuple(t: string) -> bool {
-    case len(t) >= 6 of {
+    case length_bytes(t) >= 6 of {
         false -> false;
         true -> case substring(t, 0, 6) == "(atom," of {
             true -> count_top_level_commas_actor(t, 1, 0, 0) == 1;
@@ -107,7 +107,7 @@ fn behavior_return_is_atom_2_tuple(t: string) -> bool {
 }
 
 fn count_top_level_commas_actor(s: string, i: int64, depth: int64, count: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> count;
         false -> case substring(s, i, i + 1) == "(" of {
             true -> count_top_level_commas_actor(s, i + 1, depth + 1, count);
@@ -130,14 +130,14 @@ fn count_top_level_commas_actor(s: string, i: int64, depth: int64, count: int64)
 
 fn behavior_return_is_cast_only(return_type: string) -> bool {
     t: string <- trim_leading_actor(return_type);
-    case len(t) >= 11 of {
+    case length_bytes(t) >= 11 of {
         false -> behavior_return_is_atom_2_tuple(t);
         true -> substring(t, 0, 11) == "(:no_reply," or behavior_return_is_atom_2_tuple(t)
     }
 }
 
 fn find_arrow_pos_actor(s: string, i: int64) -> int64 {
-    case i + 4 > len(s) of {
+    case i + 4 > length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 4) == " -> " of {
             true -> i;
@@ -152,22 +152,22 @@ fn get_params_inner_actor(func_type: string) -> string {
         true -> "";
         false -> {
             params_part: string <- substring(func_type, 0, arrow_pos);
-            case len(params_part) < 2 of {
+            case length_bytes(params_part) < 2 of {
                 true -> "";
-                false -> trim_leading_actor(substring(params_part, 1, len(params_part) - 1))
+                false -> trim_leading_actor(substring(params_part, 1, length_bytes(params_part) - 1))
             }
         }
     }
 }
 
 fn find_top_level_comma_actor(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
-        true -> len(s);
+    case i >= length_bytes(s) of {
+        true -> length_bytes(s);
         false -> case substring(s, i, i + 1) == "(" or substring(s, i, i + 1) == "[" or substring(s, i, i + 1) == "{" of {
             true -> find_top_level_comma_actor(s, i + 1, depth + 1);
             false -> case substring(s, i, i + 1) == ")" or substring(s, i, i + 1) == "]" or substring(s, i, i + 1) == "}" of {
                 true -> case depth <= 0 of {
-                    true -> len(s);
+                    true -> length_bytes(s);
                     false -> find_top_level_comma_actor(s, i + 1, depth - 1)
                 };
                 false -> case substring(s, i, i + 1) == "," of {
@@ -183,15 +183,15 @@ fn find_top_level_comma_actor(s: string, i: int64, depth: int64) -> int64 {
 }
 
 fn get_first_param_actor(params_inner: string) -> (string, string) {
-    case len(params_inner) == 0 of {
+    case length_bytes(params_inner) == 0 of {
         true -> ("", "");
         false -> {
             comma_pos: int64 <- find_top_level_comma_actor(params_inner, 0, 0);
-            case comma_pos >= len(params_inner) of {
+            case comma_pos >= length_bytes(params_inner) of {
                 true -> (trim_leading_actor(params_inner), "");
                 false -> {
                     first: string <- trim_leading_actor(substring(params_inner, 0, comma_pos));
-                    rest: string <- trim_leading_actor(substring(params_inner, comma_pos + 1, len(params_inner)));
+                    rest: string <- trim_leading_actor(substring(params_inner, comma_pos + 1, length_bytes(params_inner)));
                     (first, rest)
                 }
             }
@@ -203,7 +203,7 @@ fn parse_function_return_actor(func_type: string) -> string {
     arrow_pos: int64 <- find_arrow_pos_actor(func_type, 0);
     case arrow_pos < 0 of {
         true -> "";
-        false -> trim_leading_actor(substring(func_type, arrow_pos + 4, len(func_type)))
+        false -> trim_leading_actor(substring(func_type, arrow_pos + 4, length_bytes(func_type)))
     }
 }
 
@@ -212,7 +212,7 @@ fn parse_behavior_state_param_type(func_type: string) -> string {
     inner: string <- get_params_inner_actor(func_type);
     (_msg: string, after_msg: string) <- get_first_param_actor(inner);
     (state_t: string, tail: string) <- get_first_param_actor(after_msg);
-    case len(trim_leading_actor(tail)) > 0 of {
+    case length_bytes(trim_leading_actor(tail)) > 0 of {
         true -> "";
         false -> trim_leading_actor(state_t)
     }
@@ -232,11 +232,11 @@ fn validate_spawn_behavior_function_type(builtin_label: string, func_type: strin
         false -> {
             inner: string <- get_params_inner_actor(func_type);
             (_msg_t: string, after_msg: string) <- get_first_param_actor(inner);
-            case len(trim_leading_actor(after_msg)) == 0 of {
+            case length_bytes(trim_leading_actor(after_msg)) == 0 of {
                 true -> type_checker_core@type_check_err("E2005", location, concat(concat(builtin_label, ": behavior must take exactly two parameters (message, state)"), " ?15.1.1"), "sect15");
                 false -> {
                     (_state_t: string, tail: string) <- get_first_param_actor(after_msg);
-                    case len(trim_leading_actor(tail)) > 0 of {
+                    case length_bytes(trim_leading_actor(tail)) > 0 of {
                         true -> type_checker_core@type_check_err("E2005", location, concat(concat(builtin_label, ": behavior must take exactly two parameters (message, state)"), " ?15.1.1"), "sect15");
                         false -> {
                             ret: string <- parse_function_return_actor(func_type);
@@ -343,20 +343,20 @@ fn parse_behavior_reply_type(func_type: string) -> string {
     case behavior_return_is_call_only(t) of {
         false -> "";
         true -> {
-            inner: string <- case len(t) >= 2 of {
-                true -> substring(t, 1, len(t) - 1);
+            inner: string <- case length_bytes(t) >= 2 of {
+                true -> substring(t, 1, length_bytes(t) - 1);
                 false -> ""
             };
-            case len(inner) == 0 of {
+            case length_bytes(inner) == 0 of {
                 true -> "";
                 false -> {
                     first_comma: int64 <- find_top_level_comma_actor(inner, 0, 0);
-                    case first_comma >= len(inner) of {
+                    case first_comma >= length_bytes(inner) of {
                         true -> "";
                         false -> {
-                            after_first: string <- trim_leading_actor(substring(inner, first_comma + 1, len(inner)));
+                            after_first: string <- trim_leading_actor(substring(inner, first_comma + 1, length_bytes(inner)));
                             second_comma: int64 <- find_top_level_comma_actor(after_first, 0, 0);
-                            case second_comma >= len(after_first) of {
+                            case second_comma >= length_bytes(after_first) of {
                                 true -> "";
                                 false -> trim_leading_actor(substring(after_first, 0, second_comma))
                             }

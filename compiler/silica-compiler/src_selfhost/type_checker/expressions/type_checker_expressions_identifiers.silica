@@ -49,17 +49,17 @@ fn trim_spaces_idf(s: string) -> string {
 }
 
 fn trim_spaces_idf_from(s: string, i: int64) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> "";
         false -> case substring(s, i, i + 1) == " " of {
             true -> trim_spaces_idf_from(s, i + 1);
-            false -> rtrim_spaces_idf(substring(s, i, len(s)))
+            false -> rtrim_spaces_idf(substring(s, i, length_bytes(s)))
         }
     }
 }
 
 fn rtrim_spaces_idf(s: string) -> string {
-    rtrim_spaces_idf_from(s, len(s))
+    rtrim_spaces_idf_from(s, length_bytes(s))
 }
 
 fn rtrim_spaces_idf_from(s: string, i: int64) -> string {
@@ -73,19 +73,9 @@ fn rtrim_spaces_idf_from(s: string, i: int64) -> string {
 }
 
 fn assoc_placeholder_i(s: string) -> int64 {
-    t: string <- trim_spaces_idf(s);
-    case t == "ItemType" of {
+    case type_interner@is_placeholder_surface(trim_spaces_idf(s)) of {
         true -> 1;
-        false -> case t == "KeyType" of {
-            true -> 1;
-            false -> case t == "ValueType" of {
-                true -> 1;
-                false -> case t == "AccType" of {
-                    true -> 1;
-                    false -> 0
-                }
-            }
-        }
+        false -> 0
     }
 }
 
@@ -108,7 +98,7 @@ fn named_trait_expect_i(s: string) -> int64 {
 
 fn starts_lbrace_i(s: string) -> int64 {
     t: string <- trim_spaces_idf(s);
-    case len(t) of {
+    case length_bytes(t) of {
         0 -> 0;
         _: int64 -> case substring(t, 0, 1) == "{" of {
             true -> 1;
@@ -118,9 +108,9 @@ fn starts_lbrace_i(s: string) -> int64 {
 }
 
 fn starts_with_idf_i(s: string, prefix: string) -> int64 {
-    case len(s) < len(prefix) of {
+    case length_bytes(s) < length_bytes(prefix) of {
         true -> 0;
-        false -> case substring(s, 0, len(prefix)) == prefix of {
+        false -> case substring(s, 0, length_bytes(prefix)) == prefix of {
             true -> 1;
             false -> 0
         }
@@ -150,7 +140,7 @@ fn trait_head_idf(s: string) -> string {
 fn same_trait_family_i(a: string, b: string) -> int64 {
     ha: string <- trait_head_idf(a);
     hb: string <- trait_head_idf(b);
-    case len(ha) of {
+    case length_bytes(ha) of {
         0 -> 0;
         _: int64 -> case ha == hb of {
             true -> 1;
@@ -162,32 +152,51 @@ fn same_trait_family_i(a: string, b: string) -> int64 {
 fn collection_bracket_i(s: string) -> int64 {
     t: string <- strip_spaces_all_idf(trim_spaces_idf(s), 0, "");
     h: string <- trait_head_idf(t);
-    case len(h) of {
+    case length_bytes(h) of {
         0 -> 0;
-        _: int64 -> case len(t) > len(h) of {
-            true -> case substring(t, len(h), len(h) + 1) == "[" of {
-                true -> 1;
-                false -> 0
+        _: int64 -> case length_bytes(t) > length_bytes(h) of {
+            true -> {
+                // seed miscompiles length_bytes(<other var>) inline as substring's START arg
+                // (yields ""); bind it first.
+                hl: int64 <- length_bytes(h);
+                case substring(t, hl, hl + 1) == "[" of {
+                    true -> 1;
+                    false -> 0
+                }
             };
             false -> 0
         }
     }
 }
 
+fn strip_spaces_all_idf_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case substring(s, j, j + 1) == " " of {
+            true -> j;
+            false -> strip_spaces_all_idf_run_end(s, j + 1, n)
+        }
+    }
+}
+
 fn strip_spaces_all_idf(s: string, i: int64, acc: string) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
         false -> case substring(s, i, i + 1) == " " of {
             true -> strip_spaces_all_idf(s, i + 1, acc);
-            false -> strip_spaces_all_idf(s, i + 1, concat(acc, substring(s, i, i + 1)))
+            false -> {
+                n: int64 <- length_bytes(s);
+                e: int64 <- strip_spaces_all_idf_run_end(s, i, n);
+                strip_spaces_all_idf(s, e, concat(acc, substring(s, i, e)))
+            }
         }
     }
 }
 
 fn contains_substr_idf_i(s: string, tok: string, i: int64) -> int64 {
-    case i + len(tok) > len(s) of {
+    case i + length_bytes(tok) > length_bytes(s) of {
         true -> 0;
-        false -> case substring(s, i, i + len(tok)) == tok of {
+        false -> case substring(s, i, i + length_bytes(tok)) == tok of {
             true -> 1;
             false -> contains_substr_idf_i(s, tok, i + 1)
         }
@@ -195,26 +204,21 @@ fn contains_substr_idf_i(s: string, tok: string, i: int64) -> int64 {
 }
 
 fn contains_assoc_ph_idf_i(s: string) -> int64 {
-    case contains_substr_idf_i(s, "ItemType", 0) of {
-        1 -> 1;
-        _: int64 -> case contains_substr_idf_i(s, "KeyType", 0) of {
-            1 -> 1;
-            _: int64 -> case contains_substr_idf_i(s, "ValueType", 0) of {
-                1 -> 1;
-                _: int64 -> contains_substr_idf_i(s, "AccType", 0)
-            }
-        }
+    // Was a substring probe for each placeholder name; now a DAG walk.
+    case type_interner@surface_contains_placeholder(s) of {
+        true -> 1;
+        false -> 0
     }
 }
 
 fn assoc_ph_pair_ok_i(resolved: string, expect: string) -> int64 {
     case assoc_placeholder_i(expect) of {
-        1 -> case len(resolved) of {
+        1 -> case length_bytes(resolved) of {
             0 -> 0;
             _: int64 -> 1
         };
         _: int64 -> case assoc_placeholder_i(resolved) of {
-            1 -> case len(expect) of {
+            1 -> case length_bytes(expect) of {
                 0 -> 0;
                 _: int64 -> 1
             };
@@ -254,7 +258,7 @@ fn expect_is_ordering_fragment_i(expect: string) -> int64 {
 
 fn expect_is_truncated_fn_params_i(resolved: string, expect: string) -> int64 {
     t: string <- trim_spaces_idf(expect);
-    case len(t) >= 2 and substring(t, 0, 2) == "fn" of {
+    case length_bytes(t) >= 2 and substring(t, 0, 2) == "fn" of {
         false -> 0;
         true -> {
             en: string <- strip_fn_keyword_prefix_idf(t);
@@ -263,7 +267,7 @@ fn expect_is_truncated_fn_params_i(resolved: string, expect: string) -> int64 {
                     a: string <- normalize_fn_type_idf(resolved);
                     (pa: string, _: string) <- normalized_fn_params_ret(a);
                     pe: string <- unwrap_outer_parens_idf(en);
-                    case len(pa) of {
+                    case length_bytes(pa) of {
                         0 -> 0;
                         _: int64 -> case strip_spaces_all_idf(pa, 0, "") == strip_spaces_all_idf(pe, 0, "") of {
                             true -> 1;
@@ -321,7 +325,7 @@ fn ident_fallback_ok_i(resolved: string, expect: string) -> int64 {
 
 // Skip ASCII spaces only (matches trim_spaces_idf).
 fn skip_spaces_idx_idf(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> i;
         false -> case substring(s, i, i + 1) == " " of {
             true -> skip_spaces_idx_idf(s, i + 1);
@@ -333,12 +337,12 @@ fn skip_spaces_idx_idf(s: string, i: int64) -> int64 {
 // Parser reconstructs function types with spaces between tokens (`fn (` not `fn(`); strip `fn` … `(` so arity lives only inside the parens.
 fn strip_fn_keyword_prefix_idf(s: string) -> string {
     t: string <- trim_spaces_idf(s);
-    case len(t) >= 2 and substring(t, 0, 2) == "fn" of {
+    case length_bytes(t) >= 2 and substring(t, 0, 2) == "fn" of {
         false -> t;
         true -> {
             after_kw: int64 <- skip_spaces_idx_idf(t, 2);
-            case after_kw < len(t) and substring(t, after_kw, after_kw + 1) == "(" of {
-                true -> substring(t, after_kw, len(t));
+            case after_kw < length_bytes(t) and substring(t, after_kw, after_kw + 1) == "(" of {
+                true -> substring(t, after_kw, length_bytes(t));
                 false -> t
             }
         }
@@ -349,7 +353,7 @@ fn strip_fn_keyword_prefix_idf(s: string) -> string {
 // signature is stored unwrapped and the first `->` belongs to a nested
 // `fn(...) -> :less | :equal | :greater` parameter.
 fn find_last_arrow_idf(s: string, i: int64, paren: int64, brace: int64, bracket: int64, last: int64) -> int64 {
-    case i + 1 >= len(s) of {
+    case i + 1 >= length_bytes(s) of {
         true -> last;
         false -> {
             c: string <- substring(s, i, i + 1);
@@ -403,7 +407,7 @@ fn callee_outer_arrow_idf(s: string) -> int64 {
 
 // Find top-level "->" starting from i (paren/brace/bracket aware).
 fn find_arrow_idf(s: string, i: int64, paren: int64, brace: int64, bracket: int64) -> int64 {
-    case i + 1 >= len(s) of {
+    case i + 1 >= length_bytes(s) of {
         true -> -1;
         false -> {
             c: string <- substring(s, i, i + 1);
@@ -435,7 +439,7 @@ fn find_arrow_idf(s: string, i: int64, paren: int64, brace: int64, bracket: int6
 
 // Find first top-level comma (paren/brace/bracket aware).
 fn find_comma_idf(s: string, i: int64, paren: int64, brace: int64, bracket: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> {
             c: string <- substring(s, i, i + 1);
@@ -467,7 +471,7 @@ fn find_comma_idf(s: string, i: int64, paren: int64, brace: int64, bracket: int6
 
 // Find first top-level ":" (paren/brace/bracket aware).
 fn find_colon_idf(s: string, i: int64, paren: int64, brace: int64, bracket: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> {
             c: string <- substring(s, i, i + 1);
@@ -498,7 +502,7 @@ fn find_colon_idf(s: string, i: int64, paren: int64, brace: int64, bracket: int6
 }
 
 fn has_non_ident_idf(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0;
         false -> {
             c: string <- substring(s, i, i + 1);
@@ -512,7 +516,7 @@ fn has_non_ident_idf(s: string, i: int64) -> int64 {
 
 fn is_simple_ident_idf(s: string) -> int64 {
     t: string <- trim_spaces_idf(s);
-    case len(t) of {
+    case length_bytes(t) of {
         0 -> 0;
         _: int64 -> case has_non_ident_idf(t, 0) of {
             1 -> 0;
@@ -530,7 +534,7 @@ fn strip_param_name_idf(seg: string) -> string {
         false -> {
             left: string <- trim_spaces_idf(substring(t, 0, colon));
             case is_simple_ident_idf(left) of {
-                1 -> trim_spaces_idf(substring(t, colon + 1, len(t)));
+                1 -> trim_spaces_idf(substring(t, colon + 1, length_bytes(t)));
                 _: int64 -> t
             }
         }
@@ -546,9 +550,9 @@ fn normalize_fn_type_idf(s: string) -> string {
         true -> t;
         false -> {
             params_part: string <- trim_spaces_idf(substring(t, 0, arrow));
-            ret_part: string <- trim_spaces_idf(substring(t, arrow + 2, len(t)));
-            params_inner: string <- case len(params_part) >= 2 and substring(params_part, 0, 1) == "(" and substring(params_part, len(params_part) - 1, len(params_part)) == ")" of {
-                true -> trim_spaces_idf(substring(params_part, 1, len(params_part) - 1));
+            ret_part: string <- trim_spaces_idf(substring(t, arrow + 2, length_bytes(t)));
+            params_inner: string <- case length_bytes(params_part) >= 2 and substring(params_part, 0, 1) == "(" and substring(params_part, length_bytes(params_part) - 1, length_bytes(params_part)) == ")" of {
+                true -> trim_spaces_idf(substring(params_part, 1, length_bytes(params_part) - 1));
                 false -> params_part
             };
             normalized_params: string <- normalize_param_list_idf(params_inner);
@@ -558,7 +562,7 @@ fn normalize_fn_type_idf(s: string) -> string {
 }
 
 fn normalize_param_list_idf(inner: string) -> string {
-    case len(inner) == 0 of {
+    case length_bytes(inner) == 0 of {
         true -> "";
         false -> {
             comma: int64 <- find_comma_idf(inner, 0, 0, 0, 0);
@@ -566,7 +570,7 @@ fn normalize_param_list_idf(inner: string) -> string {
                 true -> strip_param_name_idf(inner);
                 false -> {
                     head: string <- strip_param_name_idf(substring(inner, 0, comma));
-                    rest: string <- normalize_param_list_idf(trim_spaces_idf(substring(inner, comma + 1, len(inner))));
+                    rest: string <- normalize_param_list_idf(trim_spaces_idf(substring(inner, comma + 1, length_bytes(inner))));
                     concat(concat(head, ","), rest)
                 }
             }
@@ -592,7 +596,7 @@ fn function_types_compatible(resolved: string, expected: string) -> boolean {
                 (pa: string, ra: string) <- normalized_fn_params_ret(a);
                 (pb: string, rb: string) <- normalized_fn_params_ret(b);
                 same_params: boolean <- type_checker_tuple_decompose_helpers@types_equal_surface(pa, pb);
-                resolved_is_atom_union: boolean <- len(ra) > 0 and substring(ra, 0, 1) == ":";
+                resolved_is_atom_union: boolean <- length_bytes(ra) > 0 and substring(ra, 0, 1) == ":";
                 same_params and rb == "atom" and resolved_is_atom_union
             }
                 }
@@ -606,7 +610,7 @@ fn is_lifted_lambda_symbol_name(m: string) -> boolean {
 }
 
 fn lifted_lam_sub_at(m: string, i: int64) -> boolean {
-    case i + 6 > len(m) of {
+    case i + 6 > length_bytes(m) of {
         true -> false;
         false -> case substring(m, i, i + 6) == ".__lam" of {
             true -> true;
@@ -621,9 +625,9 @@ fn normalized_fn_params_ret(norm: string) -> (string, string) {
         true -> ("", "");
         false -> {
             raw_params: string <- trim_spaces_idf(substring(norm, 0, arrow));
-            ret: string <- trim_spaces_idf(substring(norm, arrow + 2, len(norm)));
-            inner: string <- case len(raw_params) >= 2 and substring(raw_params, 0, 1) == "(" and substring(raw_params, len(raw_params) - 1, len(raw_params)) == ")" of {
-                true -> trim_spaces_idf(substring(raw_params, 1, len(raw_params) - 1));
+            ret: string <- trim_spaces_idf(substring(norm, arrow + 2, length_bytes(norm)));
+            inner: string <- case length_bytes(raw_params) >= 2 and substring(raw_params, 0, 1) == "(" and substring(raw_params, length_bytes(raw_params) - 1, length_bytes(raw_params)) == ")" of {
+                true -> trim_spaces_idf(substring(raw_params, 1, length_bytes(raw_params) - 1));
                 false -> raw_params
             };
             (inner, ret)
@@ -632,20 +636,20 @@ fn normalized_fn_params_ret(norm: string) -> (string, string) {
 }
 
 fn count_top_level_param_types(inner: string) -> int64 {
-    case len(inner) == 0 of {
+    case length_bytes(inner) == 0 of {
         true -> 0;
         false -> {
             comma: int64 <- find_comma_idf(inner, 0, 0, 0, 0);
             case comma < 0 of {
                 true -> 1;
-                false -> 1 + count_top_level_param_types(trim_spaces_idf(substring(inner, comma + 1, len(inner))))
+                false -> 1 + count_top_level_param_types(trim_spaces_idf(substring(inner, comma + 1, length_bytes(inner))))
             }
         }
     }
 }
 
 fn first_param_type_comma_rest(inner: string) -> (string, string) {
-    case len(inner) == 0 of {
+    case length_bytes(inner) == 0 of {
         true -> ("", "");
         false -> {
             comma: int64 <- find_comma_idf(inner, 0, 0, 0, 0);
@@ -653,7 +657,7 @@ fn first_param_type_comma_rest(inner: string) -> (string, string) {
                 true -> (trim_spaces_idf(inner), "");
                 false -> {
                     f: string <- trim_spaces_idf(substring(inner, 0, comma));
-                    r: string <- trim_spaces_idf(substring(inner, comma + 1, len(inner)));
+                    r: string <- trim_spaces_idf(substring(inner, comma + 1, length_bytes(inner)));
                     (f, r)
                 }
             }
@@ -678,7 +682,7 @@ fn param_types_prefix_match(li_res: string, li_exp: string, remaining: int64) ->
 fn take_first_n_param_types(inner: string, remaining: int64) -> string {
     case remaining == 0 of {
         true -> "";
-        false -> case len(inner) == 0 of {
+        false -> case length_bytes(inner) == 0 of {
             true -> "";
             false -> {
                 comma: int64 <- find_comma_idf(inner, 0, 0, 0, 0);
@@ -686,8 +690,8 @@ fn take_first_n_param_types(inner: string, remaining: int64) -> string {
                     true -> trim_spaces_idf(inner);
                     false -> {
                         head: string <- trim_spaces_idf(substring(inner, 0, comma));
-                        rest: string <- take_first_n_param_types(trim_spaces_idf(substring(inner, comma + 1, len(inner))), remaining - 1);
-                        case len(rest) == 0 of {
+                        rest: string <- take_first_n_param_types(trim_spaces_idf(substring(inner, comma + 1, length_bytes(inner))), remaining - 1);
+                        case length_bytes(rest) == 0 of {
                             true -> head;
                             false -> concat(concat(head, ","), rest)
                         }
@@ -713,13 +717,13 @@ fn function_type_with_prefix_params(resolved: string, n: int64) -> string {
 fn drop_first_n_param_types(inner: string, remaining: int64) -> string {
     case remaining <= 0 of {
         true -> trim_spaces_idf(inner);
-        false -> case len(inner) == 0 of {
+        false -> case length_bytes(inner) == 0 of {
             true -> "";
             false -> {
                 comma: int64 <- find_comma_idf(inner, 0, 0, 0, 0);
                 case comma < 0 of {
                     true -> "";
-                    false -> drop_first_n_param_types(trim_spaces_idf(substring(inner, comma + 1, len(inner))), remaining - 1)
+                    false -> drop_first_n_param_types(trim_spaces_idf(substring(inner, comma + 1, length_bytes(inner))), remaining - 1)
                 }
             }
         }
@@ -788,8 +792,8 @@ fn function_types_compatible_first_class_closure(resolved: string, expected: str
 
 fn unwrap_outer_parens_idf(s: string) -> string {
     t: string <- trim_spaces_idf(s);
-    case len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
-        true -> trim_spaces_idf(substring(t, 1, len(t) - 1));
+    case length_bytes(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, length_bytes(t) - 1, length_bytes(t)) == ")" of {
+        true -> trim_spaces_idf(substring(t, 1, length_bytes(t) - 1));
         false -> t
     }
 }
@@ -808,12 +812,12 @@ fn fn_ret_eq_i(ra: string, rb: string) -> int64 {
     a: string <- unwrap_outer_parens_idf(ra);
     b: string <- unwrap_outer_parens_idf(rb);
     case strip_spaces_all_idf(a, 0, "") == strip_spaces_all_idf(b, 0, "") of {
-        true -> case len(a) of {
+        true -> case length_bytes(a) of {
             0 -> 0;
             _: int64 -> 1
         };
         false -> case b == "atom" of {
-            true -> case len(a) of {
+            true -> case length_bytes(a) of {
                 0 -> 0;
                 _: int64 -> case substring(a, 0, 1) == ":" of {
                     true -> 1;
@@ -936,7 +940,7 @@ fn lifted_lambda_parent_name(lam_name: string) -> string {
 }
 
 fn parent_prefix_before_lam_marker(m: string, i: int64) -> string {
-    case i + 6 > len(m) of {
+    case i + 6 > length_bytes(m) of {
         true -> m;
         false -> case substring(m, i, i + 6) == ".__lam" of {
             true -> substring(m, 0, i);
@@ -981,7 +985,7 @@ fn build_function_type_for_symbol_table(decl: { tag: int64, name: string, parame
 }
 
 fn first_at_in_identifier_name(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "@" of {
             true -> i;
@@ -994,7 +998,7 @@ fn lookup_symbol_found_identifier(env: List[{ name: string, type_id: int64, surf
     at: int64 <- first_at_in_identifier_name(name, 0);
     case at < 0 of {
         true -> type_checker_core@lookup_symbol_found(env, name);
-        false -> lookup_symbol_found_identifier_module(env, substring(name, at + 1, len(name)), substring(name, 0, at))
+        false -> lookup_symbol_found_identifier_module(env, substring(name, at + 1, length_bytes(name)), substring(name, 0, at))
     }
 }
 
@@ -1012,7 +1016,7 @@ fn lookup_symbol_surface_identifier(env: List[{ name: string, type_id: int64, su
     at: int64 <- first_at_in_identifier_name(name, 0);
     case at < 0 of {
         true -> type_checker_core@lookup_symbol_surface(env, name);
-        false -> lookup_symbol_surface_identifier_module(env, substring(name, at + 1, len(name)), substring(name, 0, at))
+        false -> lookup_symbol_surface_identifier_module(env, substring(name, at + 1, length_bytes(name)), substring(name, 0, at))
     }
 }
 

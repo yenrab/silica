@@ -50,7 +50,7 @@ fn sir_env_add_symbol(env: List[{ name: string, type_name: string, declared_effe
 fn tuple_decompose_filled_bindings(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, rhs_type: string) -> List[{ name: string, path: string, type_str: string }, mem(normal)] {
     node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
     rhs_trimmed: string <- type_checker_tuple_decompose_helpers@tuple_trim(rhs_type);
-    tuple_for_fill: string <- case len(node.value) > 0 of {
+    tuple_for_fill: string <- case length_bytes(node.value) > 0 of {
         true -> type_checker_tuple_decompose_helpers@tuple_trim(node.value);
         false -> rhs_trimmed
     };
@@ -81,12 +81,12 @@ fn expr_type_of(expr: { nodes: List[{ kind: int64, value: string, name: string, 
 }
 
 fn tuple_needs_parens(type_str: string) -> boolean {
-    len(type_str) >= 2 and substring(type_str, 0, 1) == "("
+    length_bytes(type_str) >= 2 and substring(type_str, 0, 1) == "("
 }
 
 fn tuple_trim(s: string) -> string {
     start: int64 <- trim_start(s, 0);
-    end_pos: int64 <- trim_end(s, len(s) - 1);
+    end_pos: int64 <- trim_end(s, length_bytes(s) - 1);
     case start <= end_pos of {
         true -> substring(s, start, end_pos + 1);
         false -> ""
@@ -94,8 +94,8 @@ fn tuple_trim(s: string) -> string {
 }
 
 fn trim_start(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
-        true -> len(s);
+    case i >= length_bytes(s) of {
+        true -> length_bytes(s);
         false -> case substring(s, i, i + 1) == " " of {
             true -> trim_start(s, i + 1);
             false -> i
@@ -222,14 +222,14 @@ fn make_simple_tuple_proj(tuple_var: string, index: int64, result_type: string, 
 // "(int64,int64,int64)" -> "(int64,int64)"
 // "(int64,int64)" -> "int64"
 fn tuple_rest_type(tuple_type: string) -> string {
-    case len(tuple_type) < 2 or substring(tuple_type, 0, 1) != "(" of {
+    case length_bytes(tuple_type) < 2 or substring(tuple_type, 0, 1) != "(" of {
         true -> tuple_type;
         false -> {
-            inner: string <- substring(tuple_type, 1, len(tuple_type) - 1);
+            inner: string <- substring(tuple_type, 1, length_bytes(tuple_type) - 1);
             comma_pos: int64 <- find_top_level_comma(inner, 0);
-            rest: string <- tuple_trim(substring(inner, comma_pos + 1, len(inner)));
+            rest: string <- tuple_trim(substring(inner, comma_pos + 1, length_bytes(inner)));
             rest_has_comma: int64 <- find_top_level_comma(rest, 0);
-            case rest_has_comma < len(rest) of {
+            case rest_has_comma < length_bytes(rest) of {
                 true -> concat("(", concat(rest, ")"));
                 false -> rest
             }
@@ -239,17 +239,17 @@ fn tuple_rest_type(tuple_type: string) -> string {
 
 // Count elements in a tuple type string, e.g. "(int64,int64,int64)" -> 3
 fn count_tuple_elems(type_str: string) -> int64 {
-    case len(type_str) < 2 or substring(type_str, 0, 1) != "(" of {
+    case length_bytes(type_str) < 2 or substring(type_str, 0, 1) != "(" of {
         true -> 1;
         false -> {
-            inner: string <- substring(type_str, 1, len(type_str) - 1);
+            inner: string <- substring(type_str, 1, length_bytes(type_str) - 1);
             1 + count_top_commas(inner, 0, 0)
         }
     }
 }
 
 fn count_top_commas(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0;
         false -> case substring(s, i, i + 1) of {
             "(" -> count_top_commas(s, i + 1, depth + 1);
@@ -273,12 +273,12 @@ fn build_proj_chain(tuple_var: string, path_str: string, elem_type: string, rhs_
     tuple_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_ast@make_sir_term(1, types@type_name_to_sir(rhs_type_str), "", tuple_var, sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
     index_const: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_ast@make_sir_term(0, "int64", int64_to_str(first_idx), "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
     rest_path: string <- path_str_rest(path_str);
-    proj_result_type: string <- case len(rest_path) == 0 of {
+    proj_result_type: string <- case length_bytes(rest_path) == 0 of {
         true -> elem_type;
         false -> type_at_path(rhs_type_str, int64_to_str(first_idx))
     };
     first_proj: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_ast@make_sir_term(6, types@type_name_to_sir(proj_result_type), int64_to_str(elem_count), "tuple_proj", tuple_term, index_const);
-    case len(rest_path) == 0 of {
+    case length_bytes(rest_path) == 0 of {
         true -> first_proj;
         false -> build_proj_chain_rec(first_proj, rest_path, elem_type, rhs_type_str, int64_to_str(first_idx))
     }
@@ -288,16 +288,16 @@ fn build_proj_chain_rec(inner_term: { nodes: List[{ kind: int64, type_name: stri
     first_idx: int64 <- path_str_to_first_index(path_str);
     index_const: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_ast@make_sir_term(0, "int64", int64_to_str(first_idx), "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
     rest_path: string <- path_str_rest(path_str);
-    full_path: string <- case len(path_prefix) == 0 of {
+    full_path: string <- case length_bytes(path_prefix) == 0 of {
         true -> int64_to_str(first_idx);
         false -> concat(path_prefix, concat(",", int64_to_str(first_idx)))
     };
-    proj_result_type: string <- case len(rest_path) == 0 of {
+    proj_result_type: string <- case length_bytes(rest_path) == 0 of {
         true -> elem_type;
         false -> type_at_path(rhs_type_str, full_path)
     };
     proj: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_ast@make_sir_term(6, types@type_name_to_sir(proj_result_type), "", "tuple_proj", inner_term, index_const);
-    case len(rest_path) == 0 of {
+    case length_bytes(rest_path) == 0 of {
         true -> proj;
         false -> build_proj_chain_rec(proj, rest_path, elem_type, rhs_type_str, full_path)
     }
@@ -305,13 +305,13 @@ fn build_proj_chain_rec(inner_term: { nodes: List[{ kind: int64, type_name: stri
 
 // Extract type at path from tuple type. path "1" for index 1, "1,0" for nested.
 fn type_at_path(tuple_type: string, path: string) -> string {
-    case len(path) == 0 of {
+    case length_bytes(path) == 0 of {
         true -> tuple_type;
         false -> {
             first_idx: int64 <- path_str_to_first_index(path);
             rest_path: string <- path_str_rest(path);
             elem: string <- tuple_element_at_index(tuple_type, first_idx);
-            case len(rest_path) == 0 of {
+            case length_bytes(rest_path) == 0 of {
                 true -> elem;
                 false -> type_at_path(elem, rest_path)
             }
@@ -320,10 +320,10 @@ fn type_at_path(tuple_type: string, path: string) -> string {
 }
 
 fn tuple_element_at_index(tuple_type: string, idx: int64) -> string {
-    case len(tuple_type) < 2 of {
+    case length_bytes(tuple_type) < 2 of {
         true -> "int64";
         false -> case substring(tuple_type, 0, 1) == "(" of {
-            true -> tuple_element_at_index_inner(substring(tuple_type, 1, len(tuple_type) - 1), idx);
+            true -> tuple_element_at_index_inner(substring(tuple_type, 1, length_bytes(tuple_type) - 1), idx);
             false -> "int64"
         }
     }
@@ -334,8 +334,8 @@ fn find_top_level_comma(s: string, i: int64) -> int64 {
 }
 
 fn find_top_level_comma_at(s: string, i: int64, pdepth: int64, sqdepth: int64, brdepth: int64) -> int64 {
-    case i >= len(s) of {
-        true -> len(s);
+    case i >= length_bytes(s) of {
+        true -> length_bytes(s);
         false -> case substring(s, i, i + 1) of {
             "(" -> find_top_level_comma_at(s, i + 1, pdepth + 1, sqdepth, brdepth);
             ")" -> find_top_level_comma_at(s, i + 1, case pdepth > 0 of { true -> pdepth - 1; false -> 0 }, sqdepth, brdepth);
@@ -357,15 +357,15 @@ fn tuple_element_at_index_inner(inner: string, target_idx: int64) -> string {
         true -> {
             idx: int64 <- find_top_level_comma(inner, 0);
             first: string <- tuple_trim(substring(inner, 0, idx));
-            case len(first) >= 2 and substring(first, 0, 1) == "(" of {
+            case length_bytes(first) >= 2 and substring(first, 0, 1) == "(" of {
                 true -> concat("(", concat(first, ")"));
                 false -> first
             }
         };
         false -> {
             idx: int64 <- find_top_level_comma(inner, 0);
-            rest: string <- case idx < len(inner) of {
-                true -> tuple_trim(substring(inner, idx + 1, len(inner)));
+            rest: string <- case idx < length_bytes(inner) of {
+                true -> tuple_trim(substring(inner, idx + 1, length_bytes(inner)));
                 false -> ""
             };
             tuple_element_at_index_inner(rest, target_idx - 1)
@@ -384,14 +384,14 @@ fn path_str_to_first_index(path_str: string) -> int64 {
 
 fn path_str_rest(path_str: string) -> string {
     comma_pos: int64 <- find_comma(path_str, 0);
-    case comma_pos >= 0 and comma_pos + 1 < len(path_str) of {
-        true -> substring(path_str, comma_pos + 1, len(path_str));
+    case comma_pos >= 0 and comma_pos + 1 < length_bytes(path_str) of {
+        true -> substring(path_str, comma_pos + 1, length_bytes(path_str));
         false -> ""
     }
 }
 
 fn find_comma(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "," of {
             true -> i;
@@ -405,7 +405,7 @@ fn str_to_int64(s: string) -> int64 {
 }
 
 fn str_to_int64_acc(s: string, i: int64, acc: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
         false -> case substring(s, i, i + 1) of {
             "0" -> str_to_int64_acc(s, i + 1, acc * 10 + 0);

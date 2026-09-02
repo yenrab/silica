@@ -90,7 +90,7 @@ fn param_type_sep() -> string {
 
 // SIR stores param_types as "int64|int64", but outer_reg bindings use "|" as field delimiters.
 fn replace_pipe_with_comma_loop(s: string, i: int64, acc: string) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -124,7 +124,7 @@ fn encode_one_binding(b: { local_name: string, c_symbol: string, meta_path: stri
 fn encode_bindings_loop(bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], acc: string) -> string {
     case bindings.is_nil of {
         true -> acc;
-        false -> case len(acc) == 0 of {
+        false -> case length_bytes(acc) == 0 of {
             true -> encode_bindings_loop(bindings.tail, encode_one_binding(bindings.head));
             false -> encode_bindings_loop(bindings.tail, concat(concat(acc, binding_entry_sep()), encode_one_binding(bindings.head)))
         }
@@ -136,13 +136,13 @@ fn encode_bindings_for_outer(bindings: List[{ local_name: string, c_symbol: stri
 }
 
 fn find_field_sep(s: string, sep: string, start: int64) -> int64 {
-    case start >= len(s) of {
+    case start >= length_bytes(s) of {
         true -> -1;
-        false -> case len(sep) == 0 of {
+        false -> case length_bytes(sep) == 0 of {
             true -> -1;
-            false -> case len(s) - start < len(sep) of {
+            false -> case length_bytes(s) - start < length_bytes(sep) of {
                 true -> find_field_sep(s, sep, start + 1);
-                false -> case substring(s, start, start + len(sep)) == sep of {
+                false -> case substring(s, start, start + length_bytes(sep)) == sep of {
                     true -> start;
                     false -> find_field_sep(s, sep, start + 1)
                 }
@@ -152,9 +152,9 @@ fn find_field_sep(s: string, sep: string, start: int64) -> int64 {
 }
 
 fn substring_to_end(s: string, start: int64) -> string {
-    case start >= len(s) of {
+    case start >= length_bytes(s) of {
         true -> "";
-        false -> substring(s, start, len(s))
+        false -> substring(s, start, length_bytes(s))
     }
 }
 
@@ -164,13 +164,13 @@ fn parse_binding_entry(entry: string) -> (string, string, string, string) {
         true -> ("", "", "", "");
         false -> {
             local: string <- substring(entry, 0, s1);
-            rest1: string <- substring_to_end(entry, s1 + len(binding_field_sep()));
+            rest1: string <- substring_to_end(entry, s1 + length_bytes(binding_field_sep()));
             s2: int64 <- find_field_sep(rest1, binding_field_sep(), 0);
             case s2 < 0 of {
                 true -> ("", "", "", "");
                 false -> {
                     c_sym: string <- substring(rest1, 0, s2);
-                    pt: string <- substring_to_end(rest1, s2 + len(binding_field_sep()));
+                    pt: string <- substring_to_end(rest1, s2 + length_bytes(binding_field_sep()));
                     rt: string <- inferred_return_type_from_param_types(pt);
                     (local, c_sym, pt, rt)
                 }
@@ -180,7 +180,7 @@ fn parse_binding_entry(entry: string) -> (string, string, string, string) {
 }
 
 fn lookup_in_encoded(encoded: string, local_name: string) -> (bool, string, string, string) {
-    case len(encoded) == 0 of {
+    case length_bytes(encoded) == 0 of {
         true -> (false, "", "", "");
         false -> {
             sep_at: int64 <- find_field_sep(encoded, binding_entry_sep(), 0);
@@ -194,7 +194,7 @@ fn lookup_in_encoded(encoded: string, local_name: string) -> (bool, string, stri
                 };
                 false -> {
                     head: string <- substring(encoded, 0, sep_at);
-                    tail: string <- substring_to_end(encoded, sep_at + len(binding_entry_sep()));
+                    tail: string <- substring_to_end(encoded, sep_at + length_bytes(binding_entry_sep()));
                     (ln: string, cs: string, pt: string, rt: string) <- parse_binding_entry(head);
                     case ln == local_name of {
                         true -> (true, cs, pt, rt);
@@ -249,7 +249,7 @@ fn param_types_are_ptr_len_pair(param_types: string) -> bool {
         true -> false;
         false -> {
             p1: string <- substring(param_types, 0, sep);
-            p2: string <- substring_to_end(param_types, sep + len(param_type_sep()));
+            p2: string <- substring_to_end(param_types, sep + length_bytes(param_type_sep()));
             case find_field_sep(p2, param_type_sep(), 0) >= 0 of {
                 true -> false;
                 false -> p1 == "uint8" and p2 == "uint64"
@@ -258,16 +258,22 @@ fn param_types_are_ptr_len_pair(param_types: string) -> bool {
     }
 }
 
-fn type_text_contains(s: string, needle: string) -> bool {
-    case len(needle) == 0 of {
-        true -> true;
-        false -> case len(s) < len(needle) of {
-            true -> false;
-            false -> case substring(s, 0, len(needle)) == needle of {
-                true -> true;
-                false -> type_text_contains(substring(s, 1, len(s)), needle)
-            }
+fn type_text_contains_at(s: string, needle: string, i: int64, n: int64, m: int64) -> bool {
+    case i + m > n of {
+        true -> false;
+        false -> case substring(s, i, i + m) == needle of {
+            true -> true;
+            false -> type_text_contains_at(s, needle, i + 1, n, m)
         }
+    }
+}
+
+fn type_text_contains(s: string, needle: string) -> bool {
+    m: int64 <- length_bytes(needle);
+    n: int64 <- length_bytes(s);
+    case m == 0 of {
+        true -> true;
+        false -> type_text_contains_at(s, needle, 0, n, m)
     }
 }
 
@@ -349,7 +355,7 @@ fn emit_guarded_foreign_call_lines(c_symbol: string) -> string {
 fn emit_result_mov(dest: string) -> string {
     case dest == "X0" or dest == "W0" or dest == "D0" or dest == "S0" or dest == "H0" of {
         true -> "";
-        false -> case len(dest) > 0 of {
+        false -> case length_bytes(dest) > 0 of {
             true -> {
                 prefix: string <- substring(dest, 0, 1);
                 src: string <- case prefix == "D" or prefix == "S" or prefix == "H" of {
@@ -426,11 +432,11 @@ fn emit_foreign_user_call(
         false -> ""
     };
     result_mov: string <- emit_result_mov(dest);
-    with_comment: string <- case len(eff_comment) > 0 of {
+    with_comment: string <- case length_bytes(eff_comment) > 0 of {
         true -> concat(eff_comment, "\n");
         false -> ""
     };
-    with_pre: string <- case len(pre_barrier) > 0 of {
+    with_pre: string <- case length_bytes(pre_barrier) > 0 of {
         true -> concat(with_comment, concat(pre_barrier, "\n"));
         false -> with_comment
     };
@@ -479,11 +485,11 @@ fn emit_foreign_tail_call(c_symbol: string, call_effects: string, fn_effects: st
     bl: string <- emit_guarded_foreign_call_lines(c_symbol);
     // BL returns from C; unlike Silica tail BR, we must RET to our caller (kind-5 epilogue is omitted).
     ret_line: string <- "    RET\n";
-    with_comment: string <- case len(eff_comment) > 0 of {
+    with_comment: string <- case length_bytes(eff_comment) > 0 of {
         true -> concat(eff_comment, "\n");
         false -> ""
     };
-    with_pre: string <- case len(pre_barrier) > 0 of {
+    with_pre: string <- case length_bytes(pre_barrier) > 0 of {
         true -> concat(with_comment, concat(pre_barrier, concat("\n", frame_release)));
         false -> concat(with_comment, frame_release)
     };

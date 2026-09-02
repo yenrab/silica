@@ -28,14 +28,19 @@ Silica is a functional systems programming language designed for AArch64 archite
 - **Process Monad**: Sequential computations represented as monadic processes
 - **Actor-Based Concurrency**: Message passing as primary concurrency mechanism
 - **Region-Based Memory**: Safe memory management without garbage collection
-- **No Loops**: Recursion only; runtime handles internal looping
-- **AArch64-Native**: First-class support for ARM hardware features
-- **No Generics**: Polymorphism achieved through traits, not generic type parameters
-- **LLM-Friendly and Human-Readable**: Syntax and semantics designed to be easily parseable by Large Language Models while remaining intuitive for human developers. This includes explicit type annotations, unambiguous syntax patterns, consistent naming conventions, and clear structural patterns that reduce ambiguity in both automated analysis and human comprehension.
+- **References Stay With Their Region**: A `ref` or `buf` is never separated from the region that contains the memory it refers to; the region's lifetime is part of the reference type
+- **Heap Is an Effect**: Allocating or growing region-backed storage is a `mem(<space>)` effect on a sequence, not an invisible runtime service
+- **Designed for Modern Chips**: First-class support for what current hardware actually exposes (AArch64, RISC-V, x86-64, and later targets), not a portable 1970s machine model
+- **LLM-Friendly and Human-Readable**: Syntax and semantics designed to be easily parseable by Large Language Models while remaining intuitive for human developers. This includes one way at the language level, no type aliases, explicit type annotations, unambiguous syntax patterns, consistent naming conventions, and clear structural patterns that reduce ambiguity in both automated analysis and human comprehension.
+  - **One Way at the Language Level**: Each job has one language-level construct; programs vary by composing those constructs. This keeps generation choices at the composition layer.
+    - **No Loops**: Recursion only; runtime handles internal looping
+    - **No Generics**: Polymorphism achieved through traits, not generic type parameters
+    - **Unambiguous Syntax**: Distinct operators and delimiters for distinct jobs (see §1.3.2)
+  - **No Aliases**: No type aliases or user-declared type names; the shape is written at the use site so readers and models do not unwind alias definition sets (see §1.3.8, §3.4.2)
 
 ### 1.3 LLM-Friendly Design Principles
 
-Silica is designed to be both LLM-friendly and human-readable. The following design choices support this goal:
+Silica is designed to be both LLM-friendly and human-readable. One way at the language level is part of that: generators choose how to compose constructs, not which of several primitives to use for the same job. The following design choices support this goal:
 
 #### 1.3.1 Explicit Type Annotations
 - Function parameters and return types are always explicit: `fn add(x: int64, y: int64) -> int64`
@@ -84,6 +89,11 @@ Silica is designed to be both LLM-friendly and human-readable. The following des
 - Clear export declarations: `export add/2;`
 - Module structure matches file structure
 - **Benefit**: Makes dependencies explicit and traceable
+
+#### 1.3.8 No Aliases
+- Silica has **no type aliases** and **no user-declared type names** (§3.4.2): there is no `type UserId = int64` and no named synonym for a record or sum
+- Composite types are written **inline** at the use site; the same shape appears in application code and in library APIs
+- **Benefit**: LLMs and humans do not get lost in deep or circular alias definition sets; the type in source is the type that is meant
 
 ### 1.4 Target Platform
 Silica targets AArch64 (64-bit ARM) architectures with optional support for:
@@ -307,7 +317,7 @@ atom_literal ::= ":" atom_name
 - Whitespace: space, tab, newline, carriage return
 - Grouping: `( ) { } [ ] ,`
 - Operators: `+ - * / % < > = ! : ; . |`
-- Other: `& @ # ? ~ ^` plus backtick and backslash
+- Other: `& @ ? ~ ^` plus backtick and backslash
 
 Examples:
 - `:ok`, `:error`, `:not_found`
@@ -357,7 +367,7 @@ Examples:
 
 ##### Function and Type Operators
 ```
-"->"  ":"   "::"  "#"
+"->"  ":"   "::"
 ```
 
 ##### Module Qualification Operator
@@ -1983,44 +1993,47 @@ fn test() -> string {
 
 The compiler cannot determine whether the literal `42` should be treated as `int32` or `int64`.
 
-**Solution: Type Annotation with `#`**
+**Resolution: Inference from the viable implementations**
 
-Use the type annotation operator `#` to specify the exact type:
+An integer literal has type `int` (§10.1.2): it is unsized until context fixes it. At a trait
+method call the compiler collects the implementations whose parameter type the argument can
+inhabit, and:
 
-```
-type_annotation_expression ::= expression "#" type
-```
+1. **Exactly one viable implementation**: that implementation is selected and the literal takes
+   its parameter type. No annotation is needed. `Shape@double_area(5)` where the only numeric
+   implementation is `impl fn area(side: int32)` resolves to `int32`.
+2. **More than one viable implementation**: the call is ambiguous and is rejected (E4001).
+   Disambiguate by binding the value to a typed name and passing that name.
+3. **No viable implementation**: the call is rejected; no implementation accepts the argument.
 
+**Disambiguating an ambiguous call:**
 ```silica
 fn test() -> string {
-    result1: string <- display@format(42 # int32);
-    result2: string <- display@format(42 # int64);
-    result1
+    sequence proc[mem(normal)]
+        small: int32 <- 42;
+        large: int64 <- 42;
+        result1: string <- display@format(small);
+        result2: string <- display@format(large)
+    produces
+        pure result1
+    end
 }
 ```
 
-**Type Annotation Rules:**
-
-1. **Required When Ambiguous**: Type annotation is required when the argument type cannot be inferred
-2. **Multiple Implementations**: Use `#` to explicitly select which type implementation to invoke
-3. **No Conversion**: Type annotation specifies type, does not convert or transform the value
-4. **Works with All Expressions**: Works with variables, literals, and complex expressions
-
-**Compiler Error for Missing Type Annotation:**
+**Compiler Error for an Ambiguous Trait Call:**
 
 ```
 ❌ Compilation error: AmbiguousTypeImplementationError at example.silica:5:10 [E4001]
 
 Cannot infer type for trait method call: display@format()
 Multiple implementations exist: impl fn format for int32, impl fn format for int64
-Use type annotation: value # type to disambiguate
-Example: display@format(42 # int32)
+Bind the argument to a typed name and pass that name to select an implementation
+Example: small: int32 <- 42; display@format(small)
 See specification: spec:§3.4.12
 ```
 
-**Precedence Note:** Type annotation `#` binds tighter than all binary operators (see §3.9). For example, `42 # int32 + 5` parses as `(42 # int32) + 5`.
-
-**Related:** See Section 3.3.11 (Type Annotation Expressions) for general syntax.
+The error is reported at the call site that supplies the ambiguous argument, and names the
+competing implementations.
 
 #### 3.4.13 Actor System Traits
 
@@ -2179,44 +2192,7 @@ Ok(100)
 
 **Note**: Constructor calls do not use generic type parameters. The enclosing **inline** sum type (e.g. `Some(int) | None`, `Ok(int) | Error(string)`) is determined from the context of the expression—there is no separate type name to qualify (§3.4.2).
 
-#### 3.3.11 Type Annotation Expressions
-
-Type annotation expressions specify the type of a value to resolve ambiguity, particularly when calling trait methods with multiple type implementations.
-
-```
-type_annotation_expression ::= expression "#" type
-```
-
-**Syntax:**
-```silica
-value # type
-```
-
-**Semantics:**
-Type annotation does not perform a conversion. It specifies which type the compiler should assign to an expression. This is especially useful when:
-1. A value's type is ambiguous (e.g., a numeric literal without context)
-2. Calling trait methods where multiple implementations exist for different types
-3. Distinguishing between different type implementations of the same trait
-
-**Examples:**
-```silica
-// Disambiguate numeric literals
-result: int32 <- 42 # int32
-other: int64 <- 42 # int64
-
-// Call trait methods with specific type implementations
-// (display.silica defines: impl fn format(n: int32) -> string { ... }
-//                          impl fn format(n: int64) -> string { ... })
-
-// Explicitly select which implementation to use
-s1: string <- display@format(42 # int32)
-s2: string <- display@format(42 # int64)
-```
-
-**Type Checking:**
-The expression `value # type` succeeds if the compiler can confirm that `value` can be assigned type `type`. No implicit conversions occur; the value must be structurally compatible with the type.
-
-#### 3.3.12 Cast Expressions
+#### 3.3.11 Cast Expressions
 ```
 cast_expression ::= "cast" "(" expression "," expression ")"
 ```
@@ -2980,8 +2956,6 @@ From highest to lowest precedence:
    - `or` (left associative)
 
 Parentheses can be used to override precedence.
-
-**Type annotation precedence note:** Type annotation binds tighter than all binary operators. For example, `42 # int32 + 5` parses as `(42 # int32) + 5`, not `42 # (int32 + 5)`.
 
 ## 4. Built-in Types
 

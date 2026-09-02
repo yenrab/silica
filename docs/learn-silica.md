@@ -56,10 +56,10 @@ You will recognize most of the pieces. The combination is the point. Silica puts
 The design rules, in the order you will feel them:
 
 - **Effects are explicit.** If a block prints, allocates, or sends a message, a `sequence` says so. Callers inherit that obligation.
-- **Memory is regional and stack-shaped per actor.** There is no garbage collector and no shared heap for long-lived application data.
+- **Heap is an effect.** Allocating or growing region-backed storage is `mem(<space>)` on a sequence, not an invisible runtime service.
+- **Memory is regional and stack-shaped per actor.** There is no garbage collector and no shared heap for long-lived application data. A `ref` or `buf` is never separated from the region that contains the memory it refers to.
 - **Concurrency is message passing.** Isolation comes first. Sharing is a deliberate, typed move of a region, not a default. A well-designed application is a set of actors, not a tree of function calls.
-- **No** `for` **or** `while`**.** You write recursion. The runtime may loop internally.
-- **No generics maze.** Traits plus concrete types. Every type occurrence in source is a shape you can read.
+- **Readable for people and for LLMs.** One way at the language level: recursion, not loops; traits, not generics; one operator per job. You compose those pieces; you do not pick among several primitives that do the same thing. There are no type aliases: the shape at the use site is the type, so nothing has to be unfolded through a definition set.
 - **FFI is visible.** Mixed stacks wear `dangerous_` up the import graph. Pure Silica stays visibly pure.
 
 Motto: *secure by default at compile time — fail soft, never fail silent.*

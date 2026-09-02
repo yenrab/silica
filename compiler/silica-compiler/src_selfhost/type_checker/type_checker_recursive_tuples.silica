@@ -38,18 +38,32 @@ fn strip_spaces(s: string) -> string {
     strip_spaces_from(s, 0, "")
 }
 
+fn strip_spaces_from_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case substring(s, j, j + 1) == " " of {
+            true -> j;
+            false -> strip_spaces_from_run_end(s, j + 1, n)
+        }
+    }
+}
+
 fn strip_spaces_from(s: string, i: int64, acc: string) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
         false -> case substring(s, i, i + 1) == " " of {
             true -> strip_spaces_from(s, i + 1, acc);
-            false -> strip_spaces_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+            false -> {
+                n: int64 <- length_bytes(s);
+                e: int64 <- strip_spaces_from_run_end(s, i, n);
+                strip_spaces_from(s, e, concat(acc, substring(s, i, e)))
+            }
         }
     }
 }
 
 fn trim_type(s: string) -> string {
-    trim_type_from(strip_spaces(s), 0, len(strip_spaces(s)) - 1)
+    trim_type_from(strip_spaces(s), 0, length_bytes(strip_spaces(s)) - 1)
 }
 
 fn trim_type_from(s: string, start: int64, last_idx: int64) -> string {
@@ -70,7 +84,7 @@ fn top_level_param_count(inner: string) -> int64 {
 }
 
 fn top_level_param_count_from(s: string, i: int64, depth: int64, count: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> case count == 0 of { true -> 0; false -> count + 1 };
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -99,7 +113,7 @@ fn nth_top_level_param(inner: string, target: int64) -> string {
 }
 
 fn nth_top_level_param_from(s: string, i: int64, target: int64, depth: int64, idx: int64, acc: string) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> case idx == target of { true -> trim_type(acc); false -> "" };
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -128,9 +142,9 @@ fn nth_top_level_param_from(s: string, i: int64, target: int64, depth: int64, id
 
 fn parse_ref_q_type(type_str: string) -> (bool, string) {
     t: string <- trim_type(type_str);
-    case len(t) >= 5 and substring(t, 0, 4) == "ref?" and substring(t, 4, 5) == "(" of {
-        true -> case substring(t, len(t) - 1, len(t)) == ")" of {
-            true -> (true, substring(t, 5, len(t) - 1));
+    case length_bytes(t) >= 5 and substring(t, 0, 4) == "ref?" and substring(t, 4, 5) == "(" of {
+        true -> case substring(t, length_bytes(t) - 1, length_bytes(t)) == ")" of {
+            true -> (true, substring(t, 5, length_bytes(t) - 1));
             false -> (false, "")
         };
         false -> (false, "")
@@ -139,9 +153,9 @@ fn parse_ref_q_type(type_str: string) -> (bool, string) {
 
 fn parse_ref_type(type_str: string) -> (bool, string) {
     t: string <- trim_type(type_str);
-    case len(t) >= 4 and substring(t, 0, 3) == "ref" and substring(t, 3, 4) == "(" of {
-        true -> case substring(t, len(t) - 1, len(t)) == ")" of {
-            true -> (true, substring(t, 4, len(t) - 1));
+    case length_bytes(t) >= 4 and substring(t, 0, 3) == "ref" and substring(t, 3, 4) == "(" of {
+        true -> case substring(t, length_bytes(t) - 1, length_bytes(t)) == ")" of {
+            true -> (true, substring(t, 4, length_bytes(t) - 1));
             false -> (false, "")
         };
         false -> (false, "")
@@ -150,12 +164,12 @@ fn parse_ref_type(type_str: string) -> (bool, string) {
 
 fn is_tuple_type(type_str: string) -> bool {
     t: string <- trim_type(type_str);
-    len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")"
+    length_bytes(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, length_bytes(t) - 1, length_bytes(t)) == ")"
 }
 
 fn tuple_inner(type_str: string) -> string {
     t: string <- trim_type(type_str);
-    substring(t, 1, len(t) - 1)
+    substring(t, 1, length_bytes(t) - 1)
 }
 
 fn third_param_type(param_list: string) -> string {
@@ -234,7 +248,7 @@ fn ref_optional_inner_ref_type(type_str: string) -> string {
 
 fn ref_optional_atom_union(type_str: string) -> string {
     inner_ref: string <- ref_optional_inner_ref_type(type_str);
-    case len(inner_ref) == 0 of {
+    case length_bytes(inner_ref) == 0 of {
         true -> "";
         false -> concat(":none|", inner_ref)
     }
@@ -480,7 +494,7 @@ fn validate_ref_q_type(type_str: string, location: { file: string, line: int64, 
     (ok: bool, inner: string) <- parse_ref_q_type(type_str);
     case ok of {
         false -> type_checker_core@type_check_err("E2010", location, concat("invalid ref? type: ", type_str), "recursive_tuple§2");
-        true -> case len(nth_top_level_param(inner, 0)) == 0 or len(nth_top_level_param(inner, 1)) == 0 or len(nth_top_level_param(inner, 2)) == 0 of {
+        true -> case length_bytes(nth_top_level_param(inner, 0)) == 0 or length_bytes(nth_top_level_param(inner, 1)) == 0 or length_bytes(nth_top_level_param(inner, 2)) == 0 of {
             true -> type_checker_core@type_check_err("E2010", location, "ref?(R, Space, T) requires three parameters", "recursive_tuple§2");
             false -> validate_recursive_type_declaration(nth_top_level_param(inner, 2), location)
         }

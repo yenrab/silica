@@ -42,7 +42,7 @@ fn join_call_final(prefix: string, args_asm: string, suffix: string) -> string {
     concat(prefix, concat(args_asm, suffix))
 }
 
-// Keep this out of emit_generic_user_call_asm_inner. A nested `case len(rest_asm)`
+// Keep this out of emit_generic_user_call_asm_inner. A nested `case length_bytes(rest_asm)`
 // in that function was compiled so both arms were kept: dest-X0 tuple_make twice,
 // one ADD #16 (functions_addition/fn_tuple_decompose_in_decl hang).
 fn sequential_call_args_with_rest(arg1_asm: string, rest_asm: string, arg1_type_name: string, flags: { reorder: bool, rem_first: bool, add_second_first: bool, arg2_first_substring: bool, arg2_save_x0: bool }) -> string {
@@ -75,7 +75,7 @@ fn sequential_call_args_with_rest(arg1_asm: string, rest_asm: string, arg1_type_
 }
 
 fn sequential_call_args_asm(arg1_asm: string, rest_asm: string, arg1_type_name: string, flags: { reorder: bool, rem_first: bool, add_second_first: bool, arg2_first_substring: bool, arg2_save_x0: bool }) -> string {
-    case len(rest_asm) > 0 of {
+    case length_bytes(rest_asm) > 0 of {
         true -> sequential_call_args_with_rest(arg1_asm, rest_asm, arg1_type_name, flags);
         false -> concat(arg1_asm, "\n")
     }
@@ -89,7 +89,7 @@ fn emit_rest_args(rest: { nodes: List[{ kind: int64, type_name: string, value: s
     case term_sir_helpers@sir_term_root_node(rest).name == "user_call_rest" of {
         true -> {
             fpool_prev: string <- var@find_sp_binding(bound.outer_reg, "_fpool");
-            outer_f: string <- case gpr_slot >= 1 and len(fpool_prev) == 0 of {
+            outer_f: string <- case gpr_slot >= 1 and length_bytes(fpool_prev) == 0 of {
                 true -> concat(bound.outer_reg, "|_fpool=X9");
                 false -> bound.outer_reg
             };
@@ -146,7 +146,7 @@ fn emit_rest_args(rest: { nodes: List[{ kind: int64, type_name: string, value: s
             save_src_reg: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner)).kind == 1 of {
                 true -> {
                     bound: string <- var@find_sp_binding_bare_or_percent_param(outer_f, term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner)).name);
-                    case len(bound) > 0 and var@binding_is_physical_int_reg(bound) of {
+                    case length_bytes(bound) > 0 and var@binding_is_physical_int_reg(bound) of {
                         true -> bound;
                         false -> next_reg
                     }
@@ -162,7 +162,7 @@ fn emit_rest_args(rest: { nodes: List[{ kind: int64, type_name: string, value: s
         };
         false -> {
             fpool_prev2: string <- var@find_sp_binding(bound.outer_reg, "_fpool");
-            outer_f2: string <- case gpr_slot >= 1 and len(fpool_prev2) == 0 of {
+            outer_f2: string <- case gpr_slot >= 1 and length_bytes(fpool_prev2) == 0 of {
                 true -> concat(bound.outer_reg, "|_fpool=X9");
                 false -> bound.outer_reg
             };
@@ -231,11 +231,11 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
     };
     callee_sret_bind: string <- var@find_sp_binding(bound.outer_reg, "_callee_sret");
     // Enclosing fn aggregate return: caller already passed X8 = sret buffer — do not SUB/MOV (record_make still uses stack).
-    use_pass_through_sret: bool <- len(callee_sret_bind) > 0
+    use_pass_through_sret: bool <- length_bytes(callee_sret_bind) > 0
         and ffi_found == false
         and sret_n > 0
         and reg_conventions@is_aggregate_struct_or_tuple_return_type(term_sir_helpers@sir_term_root_node(term).type_name)
-        and (len(bound.bound_name) == 0 or call_opts.use_tail);
+        and (length_bytes(bound.bound_name) == 0 or call_opts.use_tail);
     // Tuple-returning user calls write through caller X8 (AAPCS64 indirect result). Without SUB/MOV X8
     // the callee stores into whatever X8 held. Record returns heap-promote in the
     // callee and do not need a caller sret slab. Let-spines that end in a tuple call still own
@@ -276,7 +276,7 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
     };
     arg1_asm: string <- emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner),  arg1_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: bound.debug });
     fpool_a0: string <- var@find_sp_binding(bound.outer_reg, "_fpool");
-    outer_arg2: string <- case gpr_after_a0 >= 1 and len(fpool_a0) == 0 of {
+    outer_arg2: string <- case gpr_after_a0 >= 1 and length_bytes(fpool_a0) == 0 of {
         true -> concat(bound.outer_reg, "|_fpool=X9");
         false -> bound.outer_reg
     };
@@ -287,7 +287,7 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
         };
         false -> ""
     };
-    call_eff_for_blr: string <- case len(call_opts.blr_effect_value_override) > 0 of {
+    call_eff_for_blr: string <- case length_bytes(call_opts.blr_effect_value_override) > 0 of {
         true -> call_opts.blr_effect_value_override;
         false -> term_sir_helpers@sir_term_root_node(term).value
     };
@@ -361,7 +361,7 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
     // Needed before use_two_arg_gpr_reorder: substring arg1 must use use_arg2_first_around_substring_arg1, not STR X0/reorder.
     arg1_is_substring: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6
         and (term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "string_substring" or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "string_substring_until_char");
-    use_two_arg_gpr_reorder: bool <- len(rest_asm) > 0
+    use_two_arg_gpr_reorder: bool <- length_bytes(rest_asm) > 0
         and arg1_reg == "X0"
         and arg2_reg == "X1"
         and two_arg_tail_rest
@@ -388,7 +388,7 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
             false -> false
         }
     };
-    use_two_arg_gpr_reorder_rem_first: bool <- len(rest_asm) > 0
+    use_two_arg_gpr_reorder_rem_first: bool <- length_bytes(rest_asm) > 0
         and two_arg_tail_rest
         and arg2_term_ok
         and rem_arg1_is_divisor;
@@ -436,13 +436,13 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
             false -> false
         }
     };
-    use_two_arg_gpr_reorder_add_second_first: bool <- len(rest_asm) > 0
+    use_two_arg_gpr_reorder_add_second_first: bool <- length_bytes(rest_asm) > 0
         and two_arg_tail_rest
         and arg2_term_ok
         and (add_second_before_sub or mul_second_before_sub);
     // str_len_acc/count_a_acc/sum_digits_acc: arg1=substring sets MOV X1,#start clobbering acc(X1) before arg2 can use it.
     // Fix: emit arg2 (rest_asm) first to compute acc result into X1, save X1, emit substring arg1, restore X1.
-    use_arg2_first_around_substring_arg1: bool <- len(rest_asm) > 0
+    use_arg2_first_around_substring_arg1: bool <- length_bytes(rest_asm) > 0
         and two_arg_tail_rest
         and arg1_is_substring
         and arg1_reg == "X0"
@@ -458,7 +458,7 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
         }
     };
     arg2_bound_in_x0_or_w0: bool <- arg2_binding_for_reorder == "X0" or arg2_binding_for_reorder == "W0";
-    use_arg2_save_around_arg1_x0: bool <- len(rest_asm) > 0
+    use_arg2_save_around_arg1_x0: bool <- length_bytes(rest_asm) > 0
         and two_arg_tail_rest
         and arg1_reg == "X0"
         and arg2_term_ok
@@ -474,7 +474,7 @@ fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name
         true -> recursion_support@emit_fuel_backedge_stub_comment();
         false -> ""
     };
-    before_call: string <- case len(call_opts.line_before_call_asm) > 0 of {
+    before_call: string <- case length_bytes(call_opts.line_before_call_asm) > 0 of {
         true -> concat(call_opts.line_before_call_asm, "\n");
         false -> ""
     };

@@ -25,17 +25,35 @@ use type_checker_tuple_decompose_helpers;
 use type_checker_record_types;
 use type_checker_traits;
 use type_checker_expressions_identifiers;
+use type_interner;
 
 export dispatch_actual_fits_impl_parameter/3;
 export recv_type_for_trait_link_mangle/3;
 export call_site_actual_matches_formal/3;
 export infer_trait_dispatch_concrete_from_impls_status/4;
 export specialize_trait_formal_from_actual/3;
+export trait_concrete_for_call_site/4;
+
+// A collection module's exported record spells its comparators with the module's own type
+// placeholders (compare_key: fn(KeyType, KeyType) -> ...). An instantiated value carries the
+// concrete types (fn(int64, int64) -> ...). The two records are structurally identical apart
+// from those positions, so plain equality rejected an instantiated collection passed back to
+// its own module -- E2003 naming two records that differ only in KeyType/ValueType. Bind the
+// placeholders instead; bindings are fresh per call site, so KeyType may be int64 here and
+// string elsewhere.
+fn placeholder_schema_matches_formal(actual: string, formal: string) -> bool {
+    case type_interner@surface_contains_placeholder(formal) of {
+        false -> false;
+        true -> type_interner@surface_matches_schema(actual, formal)
+    }
+}
 
 fn call_site_actual_matches_formal(inferred: string, formal: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
     fin: string <- type_checker_traits@trim_type_text(inferred);
     fdecl: string <- type_checker_traits@trim_type_text(formal);
     case fin == fdecl of {
+        true -> true;
+        false -> case placeholder_schema_matches_formal(fin, fdecl) of {
         true -> true;
         false -> case call_site_record_types_compatible(fin, fdecl, world) of {
             true -> true;
@@ -56,6 +74,7 @@ fn call_site_actual_matches_formal(inferred: string, formal: string, world: List
                 }
             }
         }
+    }
     }
 }
 
@@ -259,6 +278,75 @@ fn recv_type_for_trait_link_mangle(recv_inferred: string, callee_decls: List[{ t
                     case st == 1 of {
                         true -> conc;
                         false -> recv_inferred
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn is_integer_type_name_fit(t: string) -> bool {
+    t == "int8" or t == "int16" or t == "int32" or t == "int64" or t == "uint8" or t == "uint16" or t == "uint32" or t == "uint64"
+}
+
+fn gather_int_impl_candidates_loop(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], trait_self: string, inferred_actual: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], cand0: string, cand_count: int64) -> (int64, string) {
+    case decls.is_nil of {
+        true -> (cand_count, cand0);
+        false -> {
+            conc: string <- impl_first_param_if_concrete_impl(trait_self, decls.head);
+            case len(conc) == 0 of {
+                true -> gather_int_impl_candidates_loop(decls.tail, trait_self, inferred_actual, world, cand0, cand_count);
+                false -> case is_integer_type_name_fit(conc) of {
+                    false -> gather_int_impl_candidates_loop(decls.tail, trait_self, inferred_actual, world, cand0, cand_count);
+                    true -> case cand_count == 0 of {
+                        true -> gather_int_impl_candidates_loop(decls.tail, trait_self, inferred_actual, world, conc, 1);
+                        false -> case cand0 == conc of {
+                            true -> gather_int_impl_candidates_loop(decls.tail, trait_self, inferred_actual, world, cand0, cand_count);
+                            false -> (-1, "")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn infer_trait_concrete_for_int_literal(trait_prog: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }, trait_self: string, inferred_actual: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> (int64, string) {
+    (cc: int64, ct: string) <- gather_int_impl_candidates_loop(trait_prog.declarations, trait_self, inferred_actual, world, "", 0);
+    case cc < 0 of {
+        true -> (2, "");
+        false -> case cc == 0 of {
+            true -> (0, "");
+            false -> (1, ct)
+        }
+    }
+}
+
+// silica-specification §3.4.12: when the formal is a trait, the type bound for the callee's body
+// is the SELECTED implementation's, not the raw actual. call_site_actual_matches_formal accepts
+// any type against a trait formal, so `Shape@double_area(5)` passed int64 straight through and
+// the provided-method body was then checked with s: int64 -- failing against
+// `impl fn area(side: int32)` and reporting E2003 inside the trait file, not at the call.
+// §10.1.2: an integer literal is unsized `int`, so it may select any integer implementation;
+// with exactly one viable it needs no annotation. Falls back to the actual, so non-trait formals
+// and unresolved cases behave exactly as before.
+fn trait_concrete_for_call_site(lit_int: bool, actual: string, formal: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> string {
+    ft: string <- type_checker_traits@trim_type_text(formal);
+    (is_trait: bool, trait_prog: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) <- type_checker_traits@find_program_declaring_trait(world, ft);
+    case is_trait of {
+        false -> actual;
+        true -> {
+            (st: int64, conc: string) <- infer_trait_dispatch_concrete_from_impls_status(trait_prog, ft, actual, world);
+            case st == 1 of {
+                true -> conc;
+                false -> case lit_int of {
+                    false -> actual;
+                    true -> {
+                        (lst: int64, lconc: string) <- infer_trait_concrete_for_int_literal(trait_prog, ft, actual, world);
+                        case lst == 1 of {
+                            true -> lconc;
+                            false -> actual
+                        }
                     }
                 }
             }

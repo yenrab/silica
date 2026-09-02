@@ -87,12 +87,12 @@ fn record_type_has_only_scalar_fields(record_str: string) -> bool {
 // True when every field type is a scalar or a (possibly nested) record whose leaves are all scalars.
 fn has_only_scalar_fields_inner_loop(remaining: string) -> bool {
     inner: string <- strip_spaces_rt(remaining);
-    case len(inner) == 0 of {
+    case length_bytes(inner) == 0 of {
         true -> true;
         false -> {
             (seg, rest) <- record_case_field_step(inner);
             (fname, fty) <- record_field_segment_name_sub(seg);
-            case len(fname) == 0 of {
+            case length_bytes(fname) == 0 of {
                 true -> has_only_scalar_fields_inner_loop(rest);
                 false -> case inner_field_scalar_ok_for_inline(fty) of {
                     false -> false;
@@ -116,7 +116,7 @@ fn inner_field_scalar_ok_for_inline(fty: string) -> bool {
     t: string <- strip_spaces_rt(fty);
     case record_type_starts(t) of {
         true -> record_type_has_only_scalar_fields(t);
-        false -> case len(t) > 0 and substring(t, 0, 1) == "(" of {
+        false -> case length_bytes(t) > 0 and substring(t, 0, 1) == "(" of {
             true -> false;
             false -> value_flat_leaf_field_type_p(t)
         }
@@ -133,12 +133,12 @@ fn field_value_flat_slot_bytes(fty: string) -> int64 {
 
 fn sum_field_value_flat_loop(remaining: string) -> int64 {
     inner: string <- strip_spaces_rt(remaining);
-    case len(inner) == 0 of {
+    case length_bytes(inner) == 0 of {
         true -> 0;
         false -> {
             (seg, rest) <- record_case_field_step(inner);
             (fname, fty) <- record_field_segment_name_sub(seg);
-            case len(fname) == 0 of {
+            case length_bytes(fname) == 0 of {
                 true -> sum_field_value_flat_loop(rest);
                 false -> field_value_flat_slot_bytes(fty) + sum_field_value_flat_loop(rest)
             }
@@ -158,13 +158,13 @@ fn record_type_is_child_spec(record_str: string) -> bool {
     R: string <- strip_spaces_rt(record_str);
     case record_type_starts(R) of {
         false -> false;
-        true -> len(find_field_type_in_record(R, "id")) > 0
-            and len(find_field_type_in_record(R, "agent_type")) > 0
-            and len(find_field_type_in_record(R, "initial_state")) > 0
-            and len(find_field_type_in_record(R, "behavior")) > 0
-            and len(find_field_type_in_record(R, "restart")) > 0
-            and len(find_field_type_in_record(R, "shutdown")) > 0
-            and len(find_field_type_in_record(R, "flavor")) > 0
+        true -> length_bytes(find_field_type_in_record(R, "id")) > 0
+            and length_bytes(find_field_type_in_record(R, "agent_type")) > 0
+            and length_bytes(find_field_type_in_record(R, "initial_state")) > 0
+            and length_bytes(find_field_type_in_record(R, "behavior")) > 0
+            and length_bytes(find_field_type_in_record(R, "restart")) > 0
+            and length_bytes(find_field_type_in_record(R, "shutdown")) > 0
+            and length_bytes(find_field_type_in_record(R, "flavor")) > 0
     }
 }
 
@@ -212,7 +212,7 @@ fn strip_spaces_rt(s: string) -> string {
 }
 
 fn string_has_space_rt(s: string, i: int64) -> bool {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> false;
         false -> case substring(s, i, i + 1) == " " of {
             true -> true;
@@ -221,12 +221,26 @@ fn string_has_space_rt(s: string, i: int64) -> bool {
     }
 }
 
+fn strip_spaces_rt_from_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case substring(s, j, j + 1) == " " of {
+            true -> j;
+            false -> strip_spaces_rt_from_run_end(s, j + 1, n)
+        }
+    }
+}
+
 fn strip_spaces_rt_from(s: string, i: int64, acc: string) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
         false -> case substring(s, i, i + 1) == " " of {
             true -> strip_spaces_rt_from(s, i + 1, acc);
-            false -> strip_spaces_rt_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+            false -> {
+                n: int64 <- length_bytes(s);
+                e: int64 <- strip_spaces_rt_from_run_end(s, i, n);
+                strip_spaces_rt_from(s, e, concat(acc, substring(s, i, e)))
+            }
         }
     }
 }
@@ -236,11 +250,11 @@ fn strip_spaces_rt_from(s: string, i: int64, acc: string) -> string {
 // the compiler's own types meant stripping a multi-thousand-character string thousands of times.
 fn record_type_starts(s: string) -> bool {
     i: int64 <- first_non_space_index_rt(s, 0);
-    i < len(s) and substring(s, i, i + 1) == "{"
+    i < length_bytes(s) and substring(s, i, i + 1) == "{"
 }
 
 fn first_non_space_index_rt(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> i;
         false -> case substring(s, i, i + 1) == " " of {
             true -> first_non_space_index_rt(s, i + 1);
@@ -250,7 +264,7 @@ fn first_non_space_index_rt(s: string, i: int64) -> int64 {
 }
 
 fn extract_inner_from_brace(t: string, i: int64, depth: int64) -> string {
-    case i >= len(t) of {
+    case i >= length_bytes(t) of {
         true -> "";
         false -> {
             c: string <- substring(t, i, i + 1);
@@ -269,7 +283,7 @@ fn extract_inner_from_brace(t: string, i: int64, depth: int64) -> string {
 }
 
 fn extract_braced_body(t: string) -> string {
-    case len(t) < 2 of {
+    case length_bytes(t) < 2 of {
         true -> "";
         false -> extract_inner_from_brace(t, 1, 1)
     }
@@ -278,8 +292,8 @@ fn extract_braced_body(t: string) -> string {
 // Paren depth tracked so fn / tuple types nested in record fields (e.g. `start: (int64, fn(...) -> (:no_reply, int64))`
 // for §15.4.13.2 child_spec) do not split record fields at their internal commas.
 fn first_top_comma_or_end(content: string, i: int64, brace_depth: int64, bracket_depth: int64, paren_depth: int64) -> int64 {
-    case i >= len(content) of {
-        true -> len(content);
+    case i >= length_bytes(content) of {
+        true -> length_bytes(content);
         false -> {
             c: string <- substring(content, i, i + 1);
             case c == "{" of {
@@ -309,7 +323,7 @@ fn first_top_comma_or_end(content: string, i: int64, brace_depth: int64, bracket
 }
 
 fn colon_at_depth0_seg(seg: string, i: int64, brace_depth: int64, bracket_depth: int64, paren_depth: int64) -> int64 {
-    case i >= len(seg) of {
+    case i >= length_bytes(seg) of {
         true -> -1;
         false -> {
             c: string <- substring(seg, i, i + 1);
@@ -340,7 +354,7 @@ fn colon_at_depth0_seg(seg: string, i: int64, brace_depth: int64, bracket_depth:
 }
 
 fn scan_after_comma(content: string, field: string, seg_end: int64) -> string {
-    case seg_end >= len(content) of {
+    case seg_end >= length_bytes(content) of {
         true -> "";
         false -> case substring(content, seg_end, seg_end + 1) == "," of {
             true -> scan_field_in_content(content, field, seg_end + 1);
@@ -350,12 +364,12 @@ fn scan_after_comma(content: string, field: string, seg_end: int64) -> string {
 }
 
 fn scan_field_in_content(content: string, field: string, start: int64) -> string {
-    case start > len(content) of {
+    case start > length_bytes(content) of {
         true -> "";
         false -> {
             seg_end: int64 <- first_top_comma_or_end(content, start, 0, 0, 0);
             seg: string <- strip_spaces_rt(substring(content, start, seg_end));
-            case len(seg) == 0 of {
+            case length_bytes(seg) == 0 of {
                 true -> "";
                 false -> {
                     colon: int64 <- colon_at_depth0_seg(seg, 0, 0, 0, 0);
@@ -363,7 +377,7 @@ fn scan_field_in_content(content: string, field: string, start: int64) -> string
                         true -> scan_after_comma(content, field, seg_end);
                         false -> {
                             fname: string <- strip_spaces_rt(substring(seg, 0, colon));
-                            fty: string <- strip_spaces_rt(substring(seg, colon + 1, len(seg)));
+                            fty: string <- strip_spaces_rt(substring(seg, colon + 1, length_bytes(seg)));
                             case fname == field of {
                                 true -> fty;
                                 false -> scan_after_comma(content, field, seg_end)
@@ -378,7 +392,7 @@ fn scan_field_in_content(content: string, field: string, start: int64) -> string
 
 fn find_field_type_in_record(record_str: string, field: string) -> string {
     t: string <- strip_spaces_rt(record_str);
-    case len(t) < 2 of {
+    case length_bytes(t) < 2 of {
         true -> "";
         false -> case substring(t, 0, 1) == "{" of {
             false -> "";
@@ -391,7 +405,7 @@ fn find_field_type_in_record(record_str: string, field: string) -> string {
 }
 
 fn count_top_level_commas_from(content: string, i: int64, brace_depth: int64, bracket_depth: int64, paren_depth: int64) -> int64 {
-    case i >= len(content) of {
+    case i >= length_bytes(content) of {
         true -> 0;
         false -> {
             c: string <- substring(content, i, i + 1);
@@ -427,7 +441,7 @@ fn tuple_shell_flat_bytes(elem_count: int64) -> int64 {
 
 // Tuple arity / comma counting for `(T1, T2, …)` strings — mirrors prims_tuple.count_* without importing prims_tuple (cycle break).
 fn count_paren_tuple_commas(s: string, i: int64, paren_depth: int64, brace_depth: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0;
         false -> case substring(s, i, i + 1) of {
             "(" -> count_paren_tuple_commas(s, i + 1, paren_depth + 1, brace_depth);
@@ -446,10 +460,10 @@ fn count_paren_tuple_commas(s: string, i: int64, paren_depth: int64, brace_depth
 }
 
 fn count_paren_tuple_type_elements(type_name: string) -> int64 {
-    case len(type_name) < 2 of {
+    case length_bytes(type_name) < 2 of {
         true -> 1;
         false -> case substring(type_name, 0, 1) == "(" of {
-            true -> 1 + count_paren_tuple_commas(substring(type_name, 1, len(type_name) - 1), 0, 0, 0);
+            true -> 1 + count_paren_tuple_commas(substring(type_name, 1, length_bytes(type_name) - 1), 0, 0, 0);
             false -> 1
         }
     }
@@ -459,7 +473,7 @@ fn count_record_fields(record_str: string) -> int64 {
     t: string <- strip_spaces_rt(record_str);
     content: string <- extract_braced_body(t);
     inner: string <- strip_spaces_rt(content);
-    case len(inner) == 0 of {
+    case length_bytes(inner) == 0 of {
         true -> 0;
         false -> count_top_level_commas_from(inner, 0, 0, 0, 0) + 1
     }
@@ -474,7 +488,7 @@ fn slot_bytes_for_field_type(fty: string) -> int64 {
             nf: int64 <- count_record_fields(t);
             tuple_shell_flat_bytes(nf)
         };
-        false -> case len(t) > 0 and substring(t, 0, 1) == "(" and reg_conventions@is_tuple_type(t) of {
+        false -> case length_bytes(t) > 0 and substring(t, 0, 1) == "(" and reg_conventions@is_tuple_type(t) of {
             true -> {
                 ne: int64 <- count_paren_tuple_type_elements(t);
                 tuple_shell_flat_bytes(ne)
@@ -484,18 +498,24 @@ fn slot_bytes_for_field_type(fty: string) -> int64 {
     }
 }
 
+// Returns -1 when `field` is not a field of this record, NOT the accumulated total.
+// Returning the total made every unmatched name resolve to the same in-range offset:
+// storing wbt_map's compare_key/compare_value into a wbt_set record put all four on one
+// slot, left compare_item unwritten, and the stale word was called as the comparator --
+// a SIGFPE and a _sigtramp loop instead of a diagnostic. Callers must treat -1 as poison
+// and never do arithmetic on it; it reaches tuple_flat_memref, which emits `.err`.
 fn offset_bytes_before_field_in_content(content: string, field: string, start: int64, acc: int64) -> int64 {
-    case start > len(content) of {
-        true -> acc;
+    case start > length_bytes(content) of {
+        true -> -1;
         false -> {
             seg_end: int64 <- first_top_comma_or_end(content, start, 0, 0, 0);
             seg: string <- strip_spaces_rt(substring(content, start, seg_end));
             colon: int64 <- colon_at_depth0_seg(seg, 0, 0, 0, 0);
             case colon < 0 of {
-                true -> acc;
+                true -> -1;
                 false -> {
                     fname: string <- strip_spaces_rt(substring(seg, 0, colon));
-                    fty: string <- strip_spaces_rt(substring(seg, colon + 1, len(seg)));
+                    fty: string <- strip_spaces_rt(substring(seg, colon + 1, length_bytes(seg)));
                     case fname == field of {
                         true -> acc;
                         false -> offset_bytes_before_field_in_content(content, field, seg_end + 1, acc + field_value_flat_slot_bytes(fty))
@@ -506,10 +526,15 @@ fn offset_bytes_before_field_in_content(content: string, field: string, start: i
     }
 }
 
+// -1, not 0, when the string is not a record type at all: a non-record has no fields, so
+// every field offset in it is meaningless. Returning 0 aimed every such query at the first
+// slot, which is a plausible-looking address and therefore silent corruption. Poison
+// propagates to tuple_flat_memref, which emits `.err`. Companion to the unknown-field -1 in
+// offset_bytes_before_field_in_content.
 fn offset_bytes_before_field(record_str: string, field: string) -> int64 {
     t: string <- strip_spaces_rt(record_str);
     case record_type_starts(t) of {
-        false -> 0;
+        false -> -1;
         true -> {
             content: string <- extract_braced_body(t);
             offset_bytes_before_field_in_content(content, field, 0, 0)
@@ -528,7 +553,7 @@ fn count_record_chain(term: { nodes: List[{ kind: int64, type_name: string, valu
 }
 
 fn brace_walk(s: string, i: int64, depth: int64) -> bool {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> depth == 0;
         false -> {
             c: string <- substring(s, i, i + 1);
@@ -548,7 +573,7 @@ fn brace_walk(s: string, i: int64, depth: int64) -> bool {
 
 fn record_type_braces_balanced(s: string) -> bool {
     t: string <- strip_spaces_rt(s);
-    case len(t) < 2 of {
+    case length_bytes(t) < 2 of {
         true -> false;
         false -> case substring(t, 0, 1) == "{" of {
             false -> true;
@@ -565,10 +590,10 @@ fn record_case_inner_body(full_pat: string) -> string {
 fn record_case_field_step(remaining_inner: string) -> (string, string) {
     seg_end: int64 <- first_top_comma_or_end(remaining_inner, 0, 0, 0, 0);
     first: string <- strip_spaces_rt(substring(remaining_inner, 0, seg_end));
-    rest: string <- case seg_end >= len(remaining_inner) of {
+    rest: string <- case seg_end >= length_bytes(remaining_inner) of {
         true -> "";
         false -> case substring(remaining_inner, seg_end, seg_end + 1) == "," of {
-            true -> strip_spaces_rt(substring(remaining_inner, seg_end + 1, len(remaining_inner)));
+            true -> strip_spaces_rt(substring(remaining_inner, seg_end + 1, length_bytes(remaining_inner)));
             false -> ""
         }
     };
@@ -579,7 +604,7 @@ fn record_field_segment_name_sub(seg: string) -> (string, string) {
     colon: int64 <- colon_at_depth0_seg(seg, 0, 0, 0, 0);
     case colon < 0 of {
         true -> ("", "");
-        false -> (strip_spaces_rt(substring(seg, 0, colon)), strip_spaces_rt(substring(seg, colon + 1, len(seg))))
+        false -> (strip_spaces_rt(substring(seg, 0, colon)), strip_spaces_rt(substring(seg, colon + 1, length_bytes(seg))))
     }
 }
 
@@ -588,7 +613,7 @@ fn nested_stack_bytes_for_field_type(fty: string) -> int64 {
     t: string <- strip_spaces_rt(fty);
     case record_type_starts(t) of {
         true -> record_type_flat_stack_bytes(t);
-        false -> case len(t) > 0 and substring(t, 0, 1) == "(" and reg_conventions@is_tuple_type(t) of {
+        false -> case length_bytes(t) > 0 and substring(t, 0, 1) == "(" and reg_conventions@is_tuple_type(t) of {
             true -> tuple_shell_flat_bytes(count_paren_tuple_type_elements(t));
             false -> 0
         }
@@ -597,12 +622,12 @@ fn nested_stack_bytes_for_field_type(fty: string) -> int64 {
 
 fn record_fields_nested_stack_bytes_loop(remaining_inner: string) -> int64 {
     inner: string <- strip_spaces_rt(remaining_inner);
-    case len(inner) == 0 of {
+    case length_bytes(inner) == 0 of {
         true -> 0;
         false -> {
             (seg, rest) <- record_case_field_step(inner);
             (fname, fty) <- record_field_segment_name_sub(seg);
-            here: int64 <- case len(fname) == 0 of {
+            here: int64 <- case length_bytes(fname) == 0 of {
                 true -> 0;
                 false -> nested_stack_bytes_for_field_type(fty)
             };

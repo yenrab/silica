@@ -35,7 +35,7 @@ fn expr_to_sir(context: { env: List[{ name: string, type_name: string, declared_
 
 // 256-case lookup: single-byte string to 0-255. Per utf8_support.md design.
 fn byte_to_int64(byte_str: string) -> int64 {
-    case len(byte_str) < 1 of {
+    case length_bytes(byte_str) < 1 of {
         true -> 0;
         false -> case substring(byte_str, 0, 1) of {
             "\x00" -> 0; "\x01" -> 1; "\x02" -> 2; "\x03" -> 3; "\x04" -> 4; "\x05" -> 5; "\x06" -> 6; "\x07" -> 7; "\x08" -> 8; "\x09" -> 9; "\x0A" -> 10; "\x0B" -> 11; "\x0C" -> 12; "\x0D" -> 13; "\x0E" -> 14; "\x0F" -> 15;
@@ -61,10 +61,10 @@ fn byte_to_int64(byte_str: string) -> int64 {
 
 // Resolve escape sequences in char literal content (between quotes). Returns UTF-8 bytes.
 fn resolve_char_content(inner: string) -> string {
-    case len(inner) < 1 of {
+    case length_bytes(inner) < 1 of {
         true -> inner;
         false -> case substring(inner, 0, 1) == "\\" of {
-            true -> case len(inner) >= 2 of {
+            true -> case length_bytes(inner) >= 2 of {
                 true -> case substring(inner, 1, 2) of {
                     "\\" -> "\\";
                     "'" -> "'";
@@ -73,7 +73,7 @@ fn resolve_char_content(inner: string) -> string {
                     "t" -> "\t";
                     "r" -> "\r";
                     "e" -> "\x1b";
-                    "x" -> case len(inner) >= 4 of {
+                    "x" -> case length_bytes(inner) >= 4 of {
                         true -> hex_escape_to_byte(inner, 2);
                         false -> "\\"
                     };
@@ -86,7 +86,7 @@ fn resolve_char_content(inner: string) -> string {
     }
 }
 
-// Parse \xNN at position pos; return single-byte string. Assumes len(inner) >= pos+2.
+// Parse \xNN at position pos; return single-byte string. Assumes length_bytes(inner) >= pos+2.
 fn hex_escape_to_byte(inner: string, pos: int64) -> string {
     hi: string <- substring(inner, pos, pos + 1);
     lo: string <- substring(inner, pos + 1, pos + 2);
@@ -130,7 +130,7 @@ fn int64_to_byte_string(n: int64) -> string {
 // packed = Σᵢ byte_to_int64(substring(resolved, i, i+1)) × 256^i for i in 0..len
 // ASCII-only path: one byte is one character, so character substring yields a single byte.
 fn packed_bytes_acc(resolved: string, i: int64, acc: int64, mult: int64) -> int64 {
-    case i >= len(resolved) of {
+    case i >= length_bytes(resolved) of {
         true -> acc;
         false -> {
             b: int64 <- byte_to_int64(substring(resolved, i, i + 1));
@@ -155,7 +155,7 @@ fn find_next_byte(resolved: string, prefix: string, b: int64) -> int64 {
 }
 
 fn packed_bytes_via_prefix(resolved: string, i: int64, acc: int64, mult: int64, prefix: string) -> int64 {
-    n: int64 <- len(resolved);
+    n: int64 <- length_bytes(resolved);
     case i >= n of {
         true -> acc;
         false -> {
@@ -167,7 +167,7 @@ fn packed_bytes_via_prefix(resolved: string, i: int64, acc: int64, mult: int64, 
 }
 
 fn pack_resolved_bytes(resolved: string) -> int64 {
-    n_bytes: int64 <- len(resolved);
+    n_bytes: int64 <- length_bytes(resolved);
     n_chars: int64 <- length_chars(resolved);
     case n_chars == n_bytes of {
         true -> packed_bytes_acc(resolved, 0, 0, 1);
@@ -180,7 +180,7 @@ fn char_lexeme_to_utf8_encoded(lexeme: string) -> int64 {
     n: int64 <- length_chars(lexeme);
     inner: string <- case n >= 3 of { true -> substring(lexeme, 1, n - 1); false -> "" };
     resolved: string <- resolve_char_content(inner);
-    char_len: int64 <- len(resolved);
+    char_len: int64 <- length_bytes(resolved);
     packed: int64 <- pack_resolved_bytes(resolved);
     char_len * 72057594037927936 + packed
 }

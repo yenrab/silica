@@ -43,7 +43,7 @@ SDS_LEAF_MAKEFLAGS = \
 	SDS_STDLIB_CACHE="$(SDS_STDLIB_CACHE)" \
 	SDS_STDLIB_MODULES="$(SDS_STDLIB_MODULES)"
 
-.PHONY: all integrate record-golden clean help stdlib-objs $(SUB_TRIALS)
+.PHONY: all integrate record-golden clean help stdlib-objs gate-stdlib $(SUB_TRIALS)
 
 .DEFAULT_GOAL := all
 
@@ -82,6 +82,63 @@ stdlib-objs:
 	done; \
 	[ "$$missing" -eq 0 ]
 	@echo "✅ standard_data_structures: reusing .stdlib_cache/lib/*.o for every trial"
+
+# Fast assembly-drift report for bringing up a new compiler.
+#
+# .ascomp is canonical: `integrate` fails on any mismatch, and so does this target.
+# It answers the same question far faster and with better triage -- it normalises the
+# o<N> label counters and separates code drift from comment drift -- so run it FIRST
+# against a new compiler and let the trial fan-out confirm rather than debug.
+#
+# The four shared stdlib goldens live in stdlib_goldens/ and are symlinked into each
+# leaf's lib/, so there is exactly one copy to regenerate.
+#
+# The four shared stdlib modules are 13,776 lines producing ~779KB of recorded
+# assembly, and wbt_map/wbt_set goldens are byte-identical in both leaves that
+# carry them -- emission does not depend on the surrounding silica.config. So
+# these four units exercise far more of the compiler than any single trial while
+# costing a tiny fraction of the 107-trial fan-out.
+#
+# Run this FIRST against a new compiler; run `integrate` once it passes, so the
+# trial fan-out confirms rather than debugs.
+#
+#   make gate-stdlib
+#   make gate-stdlib SILICA_COMPILER=/path/to/self-hosted-compiler
+gate-stdlib: stdlib-objs
+	@echo "=== standard_data_structures: stdlib golden gate ==="
+	@ok=0; ko=0; \
+	for m in $(SDS_STDLIB_MODULES); do \
+		sams="$(SDS_STDLIB_CACHE)/lib/$$m.sams"; \
+		case "$$m" in \
+			OrderedMap|OrderedSet) golden="$(THIS_DIR)ordered_collections/lib/$$m.ascomp";; \
+			*) golden="$(THIS_DIR)wbt_core/lib/$$m.ascomp";; \
+		esac; \
+		if [ ! -f "$$sams" ]; then \
+			echo "❌❌ gate-stdlib: $$m produced no assembly"; ko=$$((ko + 1)); continue; \
+		fi; \
+		if [ ! -f "$$golden" ]; then \
+			echo "❌❌ gate-stdlib: $$m has no golden at $$golden"; ko=$$((ko + 1)); continue; \
+		fi; \
+		if diff -Bw -q "$$sams" "$$golden" > /dev/null 2>&1; then \
+			echo "✅✅ gate-stdlib: $$m matches its golden exactly"; ok=$$((ok + 1)); continue; \
+		fi; \
+		raw=$$(diff -Bw "$$sams" "$$golden" | grep -c '^[<>]'); \
+		sed -E 's/o[0-9]+/oN/g' "$$sams"   > "$$sams.norm"; \
+		sed -E 's/o[0-9]+/oN/g' "$$golden" > "$$sams.gnorm"; \
+		norm=$$(diff -Bw "$$sams.norm" "$$sams.gnorm" | grep -c '^[<>]'); \
+		subst=$$(diff -Bw "$$sams.norm" "$$sams.gnorm" | grep '^[<>]' | grep -vc '^[<>][[:space:]]*;'); \
+		echo "❌❌ gate-stdlib: $$m differs -- $$raw diff lines; $$norm after normalising o<N> counters; $$subst of those are code, not comments"; \
+		if [ "$$norm" -eq 0 ]; then \
+			echo "        (drift is ENTIRELY SIR/label counter numbering -- generated code is identical)"; \
+		else \
+			echo "        first real differences (counters normalised):"; \
+			diff -Bw "$$sams.norm" "$$sams.gnorm" | head -30 | sed 's/^/        /' || true; \
+		fi; \
+		rm -f "$$sams.norm" "$$sams.gnorm"; \
+		ko=$$((ko + 1)); \
+	done; \
+	echo "gate-stdlib: $$ok matched, $$ko differed"; \
+	[ "$$ko" -eq 0 ]
 
 all: stdlib-objs
 	@failed=0; \
@@ -133,5 +190,6 @@ help:
 	@echo "  integrate       - compile stdlib once, then run all dependency leaves"
 	@echo "  record-golden   - compile stdlib once, then capture .ascomp/.scout/.golden_fail"
 	@echo "  stdlib-objs     - compile shared stdlib .o files into .stdlib_cache/"
+	@echo "  gate-stdlib     - FAST gate: 4 stdlib modules must match their .ascomp goldens"
 	@echo "  clean           - clean all leaves and the stdlib object cache"
 	@echo "  Subdirs: $(SUB_TRIALS)"

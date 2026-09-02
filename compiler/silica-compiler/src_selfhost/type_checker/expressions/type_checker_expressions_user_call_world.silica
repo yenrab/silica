@@ -23,7 +23,7 @@ use instantiated_fn_name;
 export try_resolve_qualified_call_func_type/4;
 
 fn first_at(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0 - 1;
         false -> case substring(s, i, i + 1) == "@" of {
             true -> i;
@@ -43,8 +43,8 @@ fn chars_eq_at(a: string, b: string, i: int64, n: int64) -> int64 {
 }
 
 fn names_eq_i(a: string, b: string) -> int64 {
-    la: int64 <- len(a);
-    lb: int64 <- len(b);
+    la: int64 <- length_bytes(a);
+    lb: int64 <- length_bytes(b);
     case la - lb of {
         0 -> chars_eq_at(a, b, 0, la);
         _: int64 -> 0
@@ -111,7 +111,7 @@ fn build_fn_type(decl: { tag: int64, name: string, parameters: List[{ name: stri
 }
 
 fn decl_name_hits(decl_name: string, resolved_fn: string) -> int64 {
-    case len(decl_name) of {
+    case length_bytes(decl_name) of {
         0 -> 0;
         _: int64 -> names_eq_i(decl_name, resolved_fn)
     }
@@ -163,7 +163,7 @@ fn find_fn_by_name(decls: List[{ tag: int64, name: string, parameters: List[{ na
         true -> parser_ast@dummy_decl();
         false -> case names_eq_i(decls.head.name, fn_name) of {
             0 -> find_fn_by_name(decls.tail, fn_name);
-            _: int64 -> case len(decls.head.return_type_name) of {
+            _: int64 -> case length_bytes(decls.head.return_type_name) of {
                 0 -> find_fn_by_name(decls.tail, fn_name);
                 _: int64 -> decls.head
             }
@@ -209,7 +209,7 @@ fn env_surface_by_name(env: List[{ name: string, type_id: int64, surface_type: s
         true -> "";
         false -> case names_eq_i(env.head.name, fn_name) of {
             0 -> env_surface_by_name(env.tail, fn_name);
-            _: int64 -> case len(env.head.surface_type) of {
+            _: int64 -> case length_bytes(env.head.surface_type) of {
                 0 -> env_surface_by_name(env.tail, fn_name);
                 _: int64 -> env.head.surface_type
             }
@@ -218,8 +218,8 @@ fn env_surface_by_name(env: List[{ name: string, type_id: int64, surface_type: s
 }
 
 fn env_has_name(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], a: string, b: string) -> int64 {
-    case len(env_surface_by_name(env, a)) of {
-        0 -> case len(env_surface_by_name(env, b)) of {
+    case length_bytes(env_surface_by_name(env, a)) of {
+        0 -> case length_bytes(env_surface_by_name(env, b)) of {
             0 -> 0;
             _: int64 -> 1
         };
@@ -233,32 +233,40 @@ fn try_resolve_qualified_call_func_type(expr: { nodes: List[{ kind: int64, value
     case at of {
         -1 -> (false, "");
         _: int64 -> {
-            fn_id: string <- substring(call_name, at + 1, len(call_name));
+            fn_id: string <- substring(call_name, at + 1, length_bytes(call_name));
             resolved_fn: string <- instantiated_fn_name@resolve_call_fn_name(fn_id, expr_root_value(expr));
-            // Env already has a surface: return empty so check uses env with from_world=false.
-            // A nonempty world type would take the collection-inference path and break
-            // wbt_set@empty / from_sorted (those resolve from iface env, not world).
-            // When env has no surface, walk world by name/arity. Do not use
-            // cross-module bools (seed-built selfhost drops them; that is E2005
-            // on wbt_trial_i64@fold_set_i64 while wbt_set@empty still resolves).
-            case env_has_name(context.env, resolved_fn, fn_id) of {
-                1 -> (false, "");
-                _: int64 -> {
+            // STAGE 1: a module-qualified call resolves ONLY through its own module.
+            // `env` is a flat, bare-name namespace shared by locals and (currently) every
+            // imported module's exports, so consulting it here let wbt_set@empty pick up
+            // wbt_map's surface whenever both were imported -- the value then carried the
+            // wrong record type and corrupted every downstream layout decision. `world` is
+            // already keyed by (module, name, arity) via find_prog_local + find_fn_name_arity,
+            // which is the correct lookup, so go straight to it. Unqualified names still
+            // resolve from env; imported functions cannot be called unqualified (E2005).
             ac: int64 <- count_call_args(expr);
             pprog: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } <- find_prog_local(substring(call_name, 0, at), world);
             d0: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- find_fn_name_arity(pprog.declarations, resolved_fn, ac);
             (h0: bool, t0: string) <- type_from_decl(d0, resolved_fn);
-            case len(t0) of {
+            case length_bytes(t0) of {
                 0 -> {
                     d1: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- find_fn_by_name(pprog.declarations, resolved_fn);
                     (h1: bool, t1: string) <- type_from_decl(d1, resolved_fn);
-                    case len(t1) of {
+                    case length_bytes(t1) of {
                         0 -> {
+                            // Stay inside the qualified module. find_fn_in_world matches the bare
+                            // name across EVERY module and takes the first hit, so with wbt_set and
+                            // wbt_map both exporting empty/from_sorted/delete, a wbt_set@... call
+                            // could pick up wbt_map's declaration and carry wbt_map's record type.
+                            // The set record then gets map field names, compare_item is never
+                            // written, and calling that stale slot as a comparator traps and spins
+                            // in the runtime's longjmp recovery. Falling back to the bare name is
+                            // still correct (resolved_fn may be an instantiated name) but must be
+                            // confined to this module's declarations.
                             (hw: bool, tw: string) <- type_from_decl(find_fn_in_world(world, resolved_fn), resolved_fn);
-                            case len(tw) of {
+                            case length_bytes(tw) of {
                                 0 -> {
                                     (hf: bool, tf: string) <- type_from_decl(find_fn_in_world(world, fn_id), fn_id);
-                                    case len(tf) of {
+                                    case length_bytes(tf) of {
                                         0 -> (false, "");
                                         _: int64 -> (hf, tf)
                                     }
@@ -270,8 +278,6 @@ fn try_resolve_qualified_call_func_type(expr: { nodes: List[{ kind: int64, value
                     }
                 };
                 _: int64 -> (h0, t0)
-            }
-                }
             }
         }
     }

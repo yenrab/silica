@@ -431,13 +431,14 @@ The compilation process consists of three sequential phases:
 ### Key Design Patterns from Specification
 
 1. **Explicit Type Annotations**: No type inference - all types must be explicit
-2. **Effect Tracking**: All effects must be explicitly declared
-3. **Region-Based Memory**: No garbage collection - static analysis for memory safety
-4. **Trait-Based Polymorphism**: No generics - traits provide polymorphism
-5. **Module System**: Filename-based modules with explicit imports/exports
-6. **Error Messages**: Structured format with both human-readable and LLM-parseable components
-7. **AArch64-Native**: First-class support for ARM hardware features
-8. **Parallel Compilation**: Parse phase fully parallelizable, type check sequential, codegen constrained parallel
+2. **Effect Tracking**: All effects must be explicitly declared; heap allocation is a `mem(<space>)` effect
+3. **Region-Based Memory**: No garbage collection - static analysis for memory safety; a reference is never separated from its region
+4. **LLM-Friendly / One Way at the Language Level**: One construct per job (recursion not loops; traits not generics); no type aliases; programs vary by composition
+5. **Trait-Based Polymorphism**: No generics - traits provide polymorphism
+6. **Module System**: Filename-based modules with explicit imports/exports
+7. **Error Messages**: Structured format with both human-readable and LLM-parseable components
+8. **Designed for Modern Chips**: First-class support for what current hardware exposes, not a 1970s portable machine model
+9. **Parallel Compilation**: Parse phase fully parallelizable, type check sequential, codegen constrained parallel
 
 ### Compiler Architecture Insights
 

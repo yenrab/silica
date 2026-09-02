@@ -68,12 +68,26 @@ fn trim_type_text(s: string) -> string {
 // `field : ty`) while local bindings keep source spacing (`fn(string, string)`, `field: ty`).
 // Exact trim equality then fails under process-per-unit reclaim when the trait module is
 // loaded only as an iface stub. Space-normalized compare keeps coverage stable.
+fn strip_type_spaces_from_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case is_space_char(substring(s, j, j + 1)) of {
+            true -> j;
+            false -> strip_type_spaces_from_run_end(s, j + 1, n)
+        }
+    }
+}
+
 fn strip_type_spaces_from(s: string, i: int64, acc: string) -> string {
     case i >= len(s) of {
         true -> acc;
         false -> case is_space_char(substring(s, i, i + 1)) of {
             true -> strip_type_spaces_from(s, i + 1, acc);
-            false -> strip_type_spaces_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+            false -> {
+                n: int64 <- len(s);
+                e: int64 <- strip_type_spaces_from_run_end(s, i, n);
+                strip_type_spaces_from(s, e, concat(acc, substring(s, i, e)))
+            }
         }
     }
 }
@@ -84,12 +98,26 @@ fn strip_type_spaces(s: string) -> string {
 
 // Interner prints function types as `(T) -> R`; source/iface often keep `fn (T) -> R`.
 // After space stripping, drop the `fn` keyword before `(`.
+fn erase_fn_keywords_from_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case j + 2 < n and substring(s, j, j + 2) == "fn" and substring(s, j + 2, j + 3) == "(" of {
+            true -> j;
+            false -> erase_fn_keywords_from_run_end(s, j + 1, n)
+        }
+    }
+}
+
 fn erase_fn_keywords_from(s: string, i: int64, acc: string) -> string {
     case i >= len(s) of {
         true -> acc;
         false -> case i + 2 < len(s) and substring(s, i, i + 2) == "fn" and substring(s, i + 2, i + 3) == "(" of {
             true -> erase_fn_keywords_from(s, i + 2, acc);
-            false -> erase_fn_keywords_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+            false -> {
+                n: int64 <- len(s);
+                e: int64 <- erase_fn_keywords_from_run_end(s, i, n);
+                erase_fn_keywords_from(s, e, concat(acc, substring(s, i, e)))
+            }
         }
     }
 }

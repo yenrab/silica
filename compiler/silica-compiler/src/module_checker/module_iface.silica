@@ -175,16 +175,24 @@ fn reverse_iface_strings(lst: ListIfaceString, acc: ListIfaceString) -> ListIfac
 }
 
 
-fn hash_string_iface_acc(s: string, i: int64, acc: int64) -> int64 {
-    case i >= len(s) of {
+// `len` is O(n) (it scans the string), so calling it 3x per character made this hash
+// O(n^2): hashing one 175KB dependency source cost ~23s. `n` is hoisted out of the
+// loop; the arithmetic is unchanged, so hash values are identical.
+fn hash_string_iface_acc_n(s: string, i: int64, n: int64, acc: int64) -> int64 {
+    case i >= n of {
         true -> acc;
         false -> do
-            piece: string <- substring(s, i, case i + 3 <= len(s) of { true -> i + 3; false -> len(s) });
-            mixed: int64 <- acc * 131 + len(piece) * (i + 1) + len(s);
+            e: int64 <- case i + 3 <= n of { true -> i + 3; false -> n };
+            piece: string <- substring(s, i, e);
+            mixed: int64 <- acc * 131 + len(piece) * (i + 1) + n;
             next: int64 <- case mixed < 0 of { true -> 0 - mixed; false -> mixed };
-            hash_string_iface_acc(s, i + 1, next)
+            hash_string_iface_acc_n(s, i + 1, n, next)
         end
     }
+}
+
+fn hash_string_iface_acc(s: string, i: int64, acc: int64) -> int64 {
+    hash_string_iface_acc_n(s, i, len(s), acc)
 }
 
 fn hash_string_iface(s: string) -> string {

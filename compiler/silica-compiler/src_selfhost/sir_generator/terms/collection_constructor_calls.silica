@@ -14,7 +14,7 @@ export is_collection_constructor_let/2;
 export build_collection_constructor_lets/6;
 
 fn first_at_ctor(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "@" of {
             true -> i;
@@ -27,7 +27,7 @@ fn ctor_base_ok_i(call_name: string) -> int64 {
     at: int64 <- first_at_ctor(call_name, 0);
     base: string <- case at < 0 of {
         true -> call_name;
-        false -> substring(call_name, at + 1, len(call_name))
+        false -> substring(call_name, at + 1, length_bytes(call_name))
     };
     case base == "empty" of {
         true -> 1;
@@ -41,9 +41,9 @@ fn ctor_base_ok_i(call_name: string) -> int64 {
 fn bind_has_runtime_fields_i(bind_type: string) -> int64 {
     key_ty: string <- type_checker_record_types@find_field_type_in_record(bind_type, "specialization_key");
     region_ty: string <- type_checker_record_types@find_field_type_in_record(bind_type, "region");
-    case len(key_ty) of {
+    case length_bytes(key_ty) of {
         0 -> 0;
-        _: int64 -> case len(region_ty) of {
+        _: int64 -> case length_bytes(region_ty) of {
             0 -> 0;
             _: int64 -> 1
         }
@@ -85,14 +85,30 @@ fn raw_binding_name(bind_name: string) -> string {
 
 fn region_type_for_bind(bind_type: string) -> string {
     space: string <- type_checker_collections@collection_space_from_type(bind_type);
-    case len(space) == 0 of {
+    case length_bytes(space) == 0 of {
         true -> "region(L, normal)";
         false -> {
-            inner: string <- case len(space) >= 5 and substring(space, 0, 4) == "mem(" of {
-                true -> substring(space, 4, len(space) - 1);
+            inner: string <- case length_bytes(space) >= 5 and substring(space, 0, 4) == "mem(" of {
+                true -> substring(space, 4, length_bytes(space) - 1);
                 false -> "normal"
             };
             concat(concat("region(L, ", inner), ")")
+        }
+    }
+}
+
+// A module-qualified call denotes the callee module's declaration. env is keyed by bare
+// name, so falling back to the bare name alone let `wbt_set@empty` pick up `wbt_map`'s
+// `empty` whenever both were imported: the record was then built with the map's field
+// names against the set's record type, every unmatched name resolved to the same
+// not-found offset, and compare_item was never written. Confine the fallback to the
+// module named in the call.
+fn env_lookup_type_name_in_module(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], name: string, module_name: string) -> string {
+    case env.is_nil of {
+        true -> "";
+        false -> case env.head.name == name and env.head.source_module == module_name of {
+            true -> env.head.type_name;
+            false -> env_lookup_type_name_in_module(env.tail, name, module_name)
         }
     }
 }
@@ -110,19 +126,34 @@ fn env_lookup_type_name(env: List[{ name: string, type_name: string, declared_ef
 fn return_type_from_call(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, call_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> string {
     node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(call_expr);
     fn_type: string <- env_lookup_type_name(context.env, node.name);
-    fn_use: string <- case len(fn_type) of {
+    fn_use: string <- case length_bytes(fn_type) of {
         0 -> {
             at: int64 <- first_at_ctor(node.name, 0);
             case at < 0 of {
                 true -> "";
-                false -> env_lookup_type_name(context.env, substring(node.name, at + 1, len(node.name)))
+                false -> env_lookup_type_name_in_module(context.env, substring(node.name, at + 1, length_bytes(node.name)), substring(node.name, 0, at))
             }
         };
         _: int64 -> fn_type
     };
-    case len(fn_use) > 0 of {
+    case length_bytes(fn_use) > 0 of {
         true -> extract_return_from_fn_type(fn_use);
         false -> ""
+    }
+}
+
+// The declared type text spells the arrow as `-> {`, so the span after it starts
+// with a space. Emitter spill selection keys on the first character of the SIR type
+// (term_reg_spill@let_rhs_type_spills_across_io), and " {" is not a record: the
+// constructor re-anchor binding then stays in a caller-saved register and the merged
+// record reads it back after an intervening call has overwritten it.
+fn skip_leading_spaces_ctor(s: string, i: int64) -> string {
+    case i >= length_bytes(s) of {
+        true -> "";
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> skip_leading_spaces_ctor(s, i + 1);
+            false -> substring(s, i, length_bytes(s))
+        }
     }
 }
 
@@ -131,12 +162,12 @@ fn extract_return_from_fn_type(fn_type: string) -> string {
     arrow: int64 <- find_arrow_in_fn_type(t, 0, 0);
     case arrow < 0 of {
         true -> "";
-        false -> substring(t, arrow + 2, len(t))
+        false -> skip_leading_spaces_ctor(substring(t, arrow + 2, length_bytes(t)), 0)
     }
 }
 
 fn find_arrow_in_fn_type(s: string, i: int64, depth: int64) -> int64 {
-    case i + 2 > len(s) of {
+    case i + 2 > length_bytes(s) of {
         true -> -1;
         false -> {
             c: string <- substring(s, i, i + 1);
@@ -175,12 +206,12 @@ fn field_type_from_segment(seg: string) -> string {
     colon: int64 <- find_colon_in_segment(seg, 0, 0, 0);
     case colon < 0 of {
         true -> "";
-        false -> substring(seg, colon + 1, len(seg))
+        false -> substring(seg, colon + 1, length_bytes(seg))
     }
 }
 
 fn find_colon_in_segment(s: string, i: int64, depth: int64, paren: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> {
             c: string <- substring(s, i, i + 1);
@@ -251,7 +282,7 @@ fn fn_side_binding_name(bind_name: string, fn_field: string) -> string {
 }
 
 fn should_inject_ordering_bundles_i(bind_name: string) -> int64 {
-    case len(bind_name) == 1 and substring(bind_name, 0, 1) == "_" of {
+    case length_bytes(bind_name) == 1 and substring(bind_name, 0, 1) == "_" of {
         true -> 0;
         false -> 1
     }
@@ -316,10 +347,10 @@ fn merged_record_type_with_bundle_fields(
         false -> {
             fname: string <- ordering_field_at_for_merge(bind_type, mod_name, field_idx);
             bundle_name: string <- ordering_bundle_field_name(fname);
-            with_field: string <- case len(type_checker_record_types@find_field_type_in_record(bind_type, bundle_name)) > 0 of {
+            with_field: string <- case length_bytes(type_checker_record_types@find_field_type_in_record(bind_type, bundle_name)) > 0 of {
                 true -> bind_type;
                 false -> concat(
-                    substring(bind_type, 0, len(bind_type) - 1),
+                    substring(bind_type, 0, length_bytes(bind_type) - 1),
                     concat(", ", concat(bundle_name, ": int64}"))
                 )
             };
@@ -380,7 +411,7 @@ fn build_merge_layers(
     region_type: string,
     acc: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }
 ) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    case len(remaining) == 0 of {
+    case length_bytes(remaining) == 0 of {
         true -> acc;
         false -> build_merge_layers_step(remaining, raw_ast_type, merged_ast_type, raw_var, arena_var, key_var, region_type, acc)
     }
@@ -411,7 +442,7 @@ fn build_merged_record(
     field_count: int64
 ) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     inner: string <- type_checker_record_types@record_case_inner_body(cfg.raw_ast_type);
-    merged_base_type: string <- case len(cfg.bind_type) > 0 and substring(cfg.bind_type, 0, 1) == "{" of {
+    merged_base_type: string <- case length_bytes(cfg.bind_type) > 0 and substring(cfg.bind_type, 0, 1) == "{" of {
         true -> cfg.bind_type;
         false -> cfg.raw_ast_type
     };
@@ -438,19 +469,19 @@ fn build_collection_constructor_lets(context: { env: List[{ name: string, type_n
     region_type: string <- region_type_for_bind(bind_type);
     bind_type_sir: string <- types@type_name_to_sir(bind_type);
     raw_looked_up: string <- return_type_from_call(context, rhs_expr);
-    bind_trim: string <- case len(bind_type) > 0 and substring(bind_type, 0, 1) == " " of {
-        true -> substring(bind_type, 1, len(bind_type));
+    bind_trim: string <- case length_bytes(bind_type) > 0 and substring(bind_type, 0, 1) == " " of {
+        true -> substring(bind_type, 1, length_bytes(bind_type));
         false -> bind_type
     };
-    raw_ast_type: string <- case len(raw_looked_up) of {
-        0 -> case len(bind_trim) > 0 and substring(bind_trim, 0, 1) == "{" of {
+    raw_ast_type: string <- case length_bytes(raw_looked_up) of {
+        0 -> case length_bytes(bind_trim) > 0 and substring(bind_trim, 0, 1) == "{" of {
             true -> bind_trim;
             false -> ""
         };
         _: int64 -> raw_looked_up
     };
     orient_lexeme: string <- type_checker_collections@constructor_orientation_atom_lexeme(mod_name);
-    case len(raw_ast_type) == 0 of {
+    case length_bytes(raw_ast_type) == 0 of {
         true -> {
             prefixed_fn: string <- concat("%", bind_name);
             sir_ast@make_sir_term(2, bind_type_sir, "", prefixed_fn, rhs_sir, inner_sir)

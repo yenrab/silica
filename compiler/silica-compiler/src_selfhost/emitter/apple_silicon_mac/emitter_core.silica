@@ -379,7 +379,7 @@ fn emit_module_with_atom_and_debug(sir_module: { module_name: string, used_modul
         int16_rodata_str: string <- int_rodata@emit_int16_rodata_section(int16_table);
         int8_rodata_str: string <- int_rodata@emit_int8_rodata_section(int8_table);
         code_part: string <- concat(concat(header, "\n"), funcs_with_helper);
-        with_atom: string <- case len(atom_rodata_str) > 0 of {
+        with_atom: string <- case length_bytes(atom_rodata_str) > 0 of {
             true -> concat(concat(code_part, "\n"), atom_rodata_str);
             false -> code_part
         };
@@ -551,7 +551,7 @@ fn aapcs_arg_slots_at_index(param_types: string, idx: int64) -> (int64, int64) {
 }
 
 fn param_reg_for_aapcs_slots(gpr_slot: int64, fp_slot: int64, param_type: string) -> string {
-    is_tuple: bool <- len(param_type) >= 2 and substring(param_type, 0, 1) == "(";
+    is_tuple: bool <- length_bytes(param_type) >= 2 and substring(param_type, 0, 1) == "(";
     is_string: bool <- param_type == "string";
     is_pointer: bool <- is_tuple or is_string;
     is_narrow: bool <- param_type == "int32" or param_type == "int16" or param_type == "int8" or param_type == "uint32" or param_type == "uint16" or param_type == "uint8" or param_type == "bool";
@@ -584,7 +584,7 @@ fn param_type_at_index(param_types: string, idx: int64) -> string {
         true -> param_types;
         false -> case idx of {
             0 -> substring(param_types, 0, pipe);
-            _: int64 -> param_type_at_index(substring(param_types, pipe + 1, len(param_types)), idx - 1)
+            _: int64 -> param_type_at_index(substring(param_types, pipe + 1, length_bytes(param_types)), idx - 1)
         }
     }
 }
@@ -610,7 +610,7 @@ fn is_gpr64_param_type(ptype: string) -> bool {
 
 // Count int64/uint64 parameters (pipe-separated param_types).
 fn count_gpr64_params_from(param_types: string, acc: int64) -> int64 {
-    case len(param_types) == 0 of {
+    case length_bytes(param_types) == 0 of {
         true -> acc;
         false -> {
             pipe: int64 <- find_pipe_in_param_names(param_types, 0);
@@ -618,7 +618,7 @@ fn count_gpr64_params_from(param_types: string, acc: int64) -> int64 {
                 true -> case is_gpr64_param_type(param_types) of { true -> acc + 1; false -> acc };
                 false -> {
                     head: string <- substring(param_types, 0, pipe);
-                    rest: string <- substring(param_types, pipe + 1, len(param_types));
+                    rest: string <- substring(param_types, pipe + 1, length_bytes(param_types));
                     n: int64 <- case is_gpr64_param_type(head) of { true -> 1; false -> 0 };
                     count_gpr64_params_from(rest, acc + n)
                 }
@@ -635,7 +635,7 @@ fn count_gpr64_params(param_types: string) -> int64 {
 // int64 ABI shadow (MOV X19,X0 / X20,X1) only applies when X0 and X1 are the first two *GPR64* arguments.
 // Struct/tuple/string/etc. in X0 must not be copied as if it were int64 (e.g. move_point(struct, int64, int64)).
 fn first_param_is_gpr64(param_types: string) -> bool {
-    case len(param_types) == 0 of {
+    case length_bytes(param_types) == 0 of {
         true -> false;
         false -> is_gpr64_param_type(param_type_at_index(param_types, 0))
     }
@@ -670,25 +670,25 @@ fn build_param_outer_reg_int64_abi_shadow_loop(param_names: string, param_types:
     pipe: int64 <- find_pipe_in_param_names(param_names, 0);
     ptype: string <- param_type_at_index(param_types, idx);
     case pipe < 0 of {
-        true -> case len(param_names) == 0 of {
+        true -> case length_bytes(param_names) == 0 of {
             true -> acc;
             false -> {
                 prefixed: string <- concat("%", param_names);
                 br: string <- bind_reg_int64_abi_shadow(param_types, idx, ptype, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21);
-                sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
+                sep: string <- case length_bytes(acc) == 0 of { true -> ""; false -> "|" };
                 merged: string <- concat(acc, concat(sep, concat(prefixed, concat("=", br))));
                 merged
             }
         };
         false -> {
             first: string <- substring(param_names, 0, pipe);
-            rest: string <- case pipe + 1 < len(param_names) of { true -> substring(param_names, pipe + 1, len(param_names)); false -> "" };
-            rest_types: string <- case pipe + 1 < len(param_types) of { true -> substring(param_types, pipe + 1, len(param_types)); false -> "" };
+            rest: string <- case pipe + 1 < length_bytes(param_names) of { true -> substring(param_names, pipe + 1, length_bytes(param_names)); false -> "" };
+            rest_types: string <- case pipe + 1 < length_bytes(param_types) of { true -> substring(param_types, pipe + 1, length_bytes(param_types)); false -> "" };
             prefixed: string <- concat("%", first);
             br: string <- bind_reg_int64_abi_shadow(param_types, idx, ptype, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21);
-            sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
+            sep: string <- case length_bytes(acc) == 0 of { true -> ""; false -> "|" };
             part: string <- concat(sep, concat(prefixed, concat("=", br)));
-            base: string <- case len(acc) == 0 of {
+            base: string <- case length_bytes(acc) == 0 of {
                 true -> {
                     pt0: string <- param_type_at_index(param_types, 0);
                     case is_gpr64_param_type(pt0) of { true -> "X19"; false -> param_reg_for_index(param_types, 0, pt0) }
@@ -702,7 +702,7 @@ fn build_param_outer_reg_int64_abi_shadow_loop(param_names: string, param_types:
 }
 
 fn build_param_outer_reg_int64_abi_shadow(param_names: string, param_types: string, string_shadow: bool, second_param_shadow: bool, reply_sret_second_uses_x21: bool, hold_second_in_x21: bool) -> string {
-    case len(param_names) == 0 of {
+    case length_bytes(param_names) == 0 of {
         true -> "";
         false -> {
             first_ptype: string <- param_type_at_index(param_types, 0);
@@ -844,7 +844,7 @@ fn needs_second_param_x21_bl_survival(fn_val: { name: string, return_type: strin
 
 // Reply triple: legacy parser string (atom, R, S) or source form (:reply, R, S); two top-level commas after '('.
 fn count_top_level_commas_tuple_ty(s: string, i: int64, depth: int64, count: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> count;
         false -> case substring(s, i, i + 1) == "(" of {
             true -> count_top_level_commas_tuple_ty(s, i + 1, depth + 1, count);
@@ -868,11 +868,11 @@ fn count_top_level_commas_tuple_ty(s: string, i: int64, depth: int64, count: int
 // Actor runtime passes X2 = sret pointer before BLR to a behavior. Both (:reply, …, …) and (:no_reply, …) returns use it.
 fn behavior_return_uses_actor_sret_tuple(return_type: string) -> bool {
     t: string <- prims_record@strip_spaces_rt(return_type);
-    case len(t) >= 8 of {
+    case length_bytes(t) >= 8 of {
         false -> false;
         true -> case substring(t, 0, 8) == "(:reply," of {
             true -> count_top_level_commas_tuple_ty(t, 1, 0, 0) == 2;
-            false -> case len(t) >= 11 of {
+            false -> case length_bytes(t) >= 11 of {
                 false -> false;
                 true -> case substring(t, 0, 11) == "(:no_reply," of {
                     true -> count_top_level_commas_tuple_ty(t, 1, 0, 0) == 1;
@@ -1028,24 +1028,24 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
     pipe: int64 <- find_pipe_in_param_names(param_names, 0);
     ptype: string <- param_type_at_index(param_types, idx);
     case pipe < 0 of {
-        true -> case len(param_names) == 0 of {
+        true -> case length_bytes(param_names) == 0 of {
             true -> acc;
             false -> {
                 prefixed: string <- concat("%", param_names);
                 br: string <- bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow, aggregate_first_shadow);
-                sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
+                sep: string <- case length_bytes(acc) == 0 of { true -> ""; false -> "|" };
                 concat(acc, concat(sep, concat(prefixed, concat("=", br))))
             }
         };
         false -> {
             first: string <- substring(param_names, 0, pipe);
-            rest: string <- case pipe + 1 < len(param_names) of { true -> substring(param_names, pipe + 1, len(param_names)); false -> "" };
-            rest_types: string <- case pipe + 1 < len(param_types) of { true -> substring(param_types, pipe + 1, len(param_types)); false -> "" };
+            rest: string <- case pipe + 1 < length_bytes(param_names) of { true -> substring(param_names, pipe + 1, length_bytes(param_names)); false -> "" };
+            rest_types: string <- case pipe + 1 < length_bytes(param_types) of { true -> substring(param_types, pipe + 1, length_bytes(param_types)); false -> "" };
             prefixed: string <- concat("%", first);
             br: string <- bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow, aggregate_first_shadow);
-            sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
+            sep: string <- case length_bytes(acc) == 0 of { true -> ""; false -> "|" };
             part: string <- concat(sep, concat(prefixed, concat("=", br)));
-            base: string <- case len(acc) == 0 of { true -> param_reg_for_index(param_types, idx, ptype); false -> acc };
+            base: string <- case length_bytes(acc) == 0 of { true -> param_reg_for_index(param_types, idx, ptype); false -> acc };
             next_acc: string <- concat(base, part);
             build_param_outer_reg_loop(rest, rest_types, idx + 1, next_acc, string_shadow, second_param_shadow, aggregate_first_shadow)
         }
@@ -1053,7 +1053,7 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
 }
 
 fn find_pipe_in_param_names(s: string, start: int64) -> int64 {
-    case start >= len(s) of {
+    case start >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, start, start + 1) == "|" of {
             true -> start;
@@ -1063,7 +1063,7 @@ fn find_pipe_in_param_names(s: string, start: int64) -> int64 {
 }
 
 fn build_param_outer_reg(param_names: string, param_types: string, string_shadow: bool, aggregate_first_shadow: bool) -> string {
-    case len(param_names) == 0 of {
+    case length_bytes(param_names) == 0 of {
         true -> "";
         false -> {
             first_ptype: string <- param_type_at_index(param_types, 0);
@@ -1082,7 +1082,7 @@ fn build_param_outer_reg(param_names: string, param_types: string, string_shadow
 // Tail-call bodies (kind 5) still need this when the callee is not passed the aggregate unchanged (e.g. load a field
 // then BR to another function — see calculate_order_total loading order.items before tail-calling sum_items).
 fn first_param_aggregate_needs_x11_base(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case len(fn_val.param_types) == 0 of {
+    case length_bytes(fn_val.param_types) == 0 of {
         true -> false;
         false -> {
             p0: string <- param_type_at_index(fn_val.param_types, 0);
@@ -1101,7 +1101,7 @@ fn first_param_aggregate_needs_x11_base(fn_val: { name: string, return_type: str
 }
 
 fn first_param_is_aggregate_struct_or_tuple(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> bool {
-    case len(fn_val.param_types) == 0 of {
+    case length_bytes(fn_val.param_types) == 0 of {
         true -> false;
         false -> reg_conventions@is_aggregate_struct_or_tuple_return_type(param_type_at_index(fn_val.param_types, 0))
     }
@@ -1112,7 +1112,7 @@ fn first_param_is_aggregate_struct_or_tuple(fn_val: { name: string, return_type:
 fn first_param_x0_shadow_enabled(param_types: string, body_kind: int64) -> bool {
     case body_kind == 5 of {
         true -> false;
-        false -> case len(param_types) == 0 of {
+        false -> case length_bytes(param_types) == 0 of {
             true -> false;
             false -> {
                 p0: string <- param_type_at_index(param_types, 0);
@@ -1149,7 +1149,7 @@ fn list_cons_pattern_tail_nonwild(name: string) -> int64 {
     case pipe_n < 0 of {
         true -> 0;
         false -> {
-            right_pat: string <- substring(name, pipe_n + 1, len(name));
+            right_pat: string <- substring(name, pipe_n + 1, length_bytes(name));
             case right_pat == "_" of {
                 true -> 0;
                 false -> 1
@@ -1367,7 +1367,7 @@ fn fs_param_is_simple_gpr(ptype: string) -> bool {
 }
 
 fn fs_all_params_simple_gpr(param_types: string) -> bool {
-    case len(param_types) == 0 of {
+    case length_bytes(param_types) == 0 of {
         true -> true;
         false -> {
             pipe: int64 <- find_pipe_in_param_names(param_types, 0);
@@ -1375,7 +1375,7 @@ fn fs_all_params_simple_gpr(param_types: string) -> bool {
                 true -> fs_param_is_simple_gpr(param_types);
                 false -> {
                     head: string <- substring(param_types, 0, pipe);
-                    rest: string <- substring(param_types, pipe + 1, len(param_types));
+                    rest: string <- substring(param_types, pipe + 1, length_bytes(param_types));
                     case fs_param_is_simple_gpr(head) of {
                         false -> false;
                         true -> fs_all_params_simple_gpr(rest)
@@ -1387,13 +1387,13 @@ fn fs_all_params_simple_gpr(param_types: string) -> bool {
 }
 
 fn fs_count_params(param_names: string) -> int64 {
-    case len(param_names) == 0 of {
+    case length_bytes(param_names) == 0 of {
         true -> 0;
         false -> {
             pipe: int64 <- find_pipe_in_param_names(param_names, 0);
             case pipe < 0 of {
                 true -> 1;
-                false -> 1 + fs_count_params(substring(param_names, pipe + 1, len(param_names)))
+                false -> 1 + fs_count_params(substring(param_names, pipe + 1, length_bytes(param_names)))
             }
         }
     }
@@ -1477,8 +1477,8 @@ fn fs_callee_reg_for_index(i: int64) -> string {
 
 // 64-bit view of a param's ABI register (W3 -> X3) so the entry copy moves the full register.
 fn fs_x_view_of_abi(reg: string) -> string {
-    case len(reg) > 1 and substring(reg, 0, 1) == "W" of {
-        true -> concat("X", substring(reg, 1, len(reg)));
+    case length_bytes(reg) > 1 and substring(reg, 0, 1) == "W" of {
+        true -> concat("X", substring(reg, 1, length_bytes(reg)));
         false -> reg
     }
 }
@@ -1510,7 +1510,7 @@ fn fs_name_at_index(param_names: string, idx: int64) -> string {
         true -> param_names;
         false -> case idx of {
             0 -> substring(param_names, 0, pipe);
-            _: int64 -> fs_name_at_index(substring(param_names, pipe + 1, len(param_names)), idx - 1)
+            _: int64 -> fs_name_at_index(substring(param_names, pipe + 1, length_bytes(param_names)), idx - 1)
         }
     }
 }
@@ -1738,12 +1738,12 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
         // Module linkage: |_lm= must not be the whole outer string — base_reg_of/extract_sp_bindings expect
         // "BASE|bindings". Zero-arg functions had param_outer_emit "" and produced "|_lm=mod", which broke
         // that invariant and could crash the host (silica_string_len on bad pointer). Use X0 as synthetic base.
-        param_outer_emit_lm: string <- case len(param_outer_emit) > 0 of {
+        param_outer_emit_lm: string <- case length_bytes(param_outer_emit) > 0 of {
             true -> concat(param_outer_emit, concat("|_lm=", ctx.module_name));
             false -> concat("X0|_lm=", ctx.module_name)
         };
         ffi_enc: string <- ffi_foreign@encode_bindings_for_outer(ctx.foreign_bindings);
-        param_outer_emit_ffi: string <- case len(ffi_enc) > 0 of {
+        param_outer_emit_ffi: string <- case length_bytes(ffi_enc) > 0 of {
             true -> concat(param_outer_emit_lm, concat("|_ffi=", ffi_enc));
             false -> param_outer_emit_lm
         };

@@ -58,7 +58,7 @@ Two books on this site:
 - [Learn to Program]({{ '/learn-programming/' | relative_url }}) — an introduction to programming for readers who have never written a program. Uses Silica as the teaching language.
 - [Silica for Programmers]({{ '/learn-silica/' | relative_url }}) — a short introduction to Silica if you already write software.
 
-[Silica's Design Principles]({{ '/design-principles/' | relative_url }}) states the eight choices the language is built around. The [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) and [tutorials](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/tutorials_and_howtos) are the next step after either book.
+[Silica's Design Principles]({{ '/design-principles/' | relative_url }}) states the choices the language is built around. The [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) and [tutorials](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/tutorials_and_howtos) are the next step after either book.
 
 ## Why Silica is worth your attention
 
@@ -66,7 +66,7 @@ Two books on this site:
 
 #### Memory and effects are first-class
 
-Side effects are tracked in types; memory is organized through regions and references with static lifetime reasoning—so many whole classes of bugs never become runnable code.
+Side effects are tracked in types; memory is organized through regions and references with static lifetime reasoning—so many whole classes of bugs never become runnable code. A reference is never separated from the region that holds its memory. Allocating or growing that storage is a `mem(…)` effect, not a silent heap.
 
 See the [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) (memory model, effects, actors). Related design docs: [actor capabilities and message ordering](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica_actor_capabilities_specification.md) (draft extension) and [memory effects on AArch64 / OS-free targets](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/memory-effects-aarch64-implementation-plan.md) (implementation plan).
 

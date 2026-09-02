@@ -58,25 +58,25 @@ export skip_whitespace/1;
 {-
 - Holds the source text and current position (byte offset, line, column) for incremental tokenization.
 - Used as the state passed through the lexer: new_lexer creates it, advance/peek_char/peek_next_char update or read it, and make_token uses it to build { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } } values with correct locations. Fits into the design as the single mutable (conceptually) cursor over the source string.
-- Example: right after new_lexer("FN x() {}", "main.silica"), the { source: string, position: int64, line: int64, column: int64, file: string } has source that string, position 0, line 1, column 1, file "main.silica".
+- Example: right after new_lexer("FN x() {}", "main.silica"), the { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } has source that string, position 0, line 1, column 1, file "main.silica".
 - Example: after advancing past "FN ", position is 3, line still 1, column 4; the next peek_char would return "x".
 - Example: after advancing past a newline, line is incremented and column resets to 1 so that subsequent tokens get the correct { file: string, line: int64, column: int64, offset: int64 }.
 - Last-date-modified: 2025-02-10
 - Last-modified-by: Lee S. Barney
 -}
 {-
-- Builds a { source: string, position: int64, line: int64, column: int64, file: string } for the given source string and file name, with position at the start (offset 0, line 1, column 1).
-- Used to initialize lexical analysis: call this once per file or input string, then pass the returned { source: string, position: int64, line: int64, column: int64, file: string } to the tokenizer. The resulting { source: string, position: int64, line: int64, column: int64, file: string } is ready for peek_char, advance, and token production.
-- Example: new_lexer("FN x() {}", "main.silica") returns a { source: string, position: int64, line: int64, column: int64, file: string } with that source, position 0, line 1, column 1, file "main.silica"; the next character is "f".
-- Example: new_lexer("", "empty.silica") returns a { source: string, position: int64, line: int64, column: int64, file: string } with empty source and position 0; peek_char will yield "".
-- Example: new_lexer("a\nb", "f.silica") returns a { source: string, position: int64, line: int64, column: int64, file: string } at the first character "a"; after advancing past the newline, line becomes 2 and column 1.
+- Builds a { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } for the given source string and file name, with position at the start (offset 0, line 1, column 1).
+- Used to initialize lexical analysis: call this once per file or input string, then pass the returned { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } to the tokenizer. The resulting { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } is ready for peek_char, advance, and token production.
+- Example: new_lexer("FN x() {}", "main.silica") returns a { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } with that source, position 0, line 1, column 1, file "main.silica"; the next character is "f".
+- Example: new_lexer("", "empty.silica") returns a { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } with empty source and position 0; peek_char will yield "".
+- Example: new_lexer("a\nb", "f.silica") returns a { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } at the first character "a"; after advancing past the newline, line becomes 2 and column 1.
 - Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single struct construction; source and file are not copied, only referenced.
 - Last-date-modified: 2025-02-10
 - Last-modified-by: Lee S. Barney
 -}
-fn new_lexer(source: string, file: string) -> { source: string, position: int64, line: int64, column: int64, file: string } {
+fn new_lexer(source: string, file: string) -> { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } {
     sequence
-        result: { source: string, position: int64, line: int64, column: int64, file: string } <- { source: source, position: 0, line: 1, column: 1, file: file }
+        result: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- { source: source, position: 0, line: 1, column: 1, file: file, offset: 0 }
     produces
         pure result
     end
@@ -84,7 +84,7 @@ fn new_lexer(source: string, file: string) -> { source: string, position: int64,
 
 {-
 - Returns a { file: string, line: int64, column: int64, offset: int64 } reflecting the lexer’s current position (file, line, column, and byte offset).
-- Used when building tokens or reporting errors so that each token or message can record where it came from. The result is built from the { source: string, position: int64, line: int64, column: int64, file: string }’s file, line, column, and position fields.
+- Used when building tokens or reporting errors so that each token or message can record where it came from. The result is built from the { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }’s file, line, column, and position fields.
 - Example: for a lexer just returned by new_lexer("FN", "x.silica"), current_location returns { file: "x.silica", line: 1, column: 1, offset: 0 }.
 - Example: after advancing 5 characters on line 1, current_location returns column 6 and offset 5 (line still 1).
 - Example: after advancing past a newline, current_location returns line 2, column 1, and offset equal to the new position.
@@ -92,9 +92,9 @@ fn new_lexer(source: string, file: string) -> { source: string, position: int64,
 - Last-date-modified: 2025-02-10
 - Last-modified-by: Lee S. Barney
 -}
-fn current_location(lexer: { source: string, position: int64, line: int64, column: int64, file: string }) -> { file: string, line: int64, column: int64, offset: int64 } {
+fn current_location(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) -> { file: string, line: int64, column: int64, offset: int64 } {
     sequence
-        result: { file: string, line: int64, column: int64, offset: int64 } <- { file: lexer.file, line: lexer.line, column: lexer.column, offset: length_bytes(substring(lexer.source, 0, lexer.position)) }
+        result: { file: string, line: int64, column: int64, offset: int64 } <- { file: lexer.file, line: lexer.line, column: lexer.column, offset: lexer.offset }
     produces
         pure result
     end
@@ -136,7 +136,7 @@ fn token_get_kind(t: { kind: int64, lexeme: string, location: { file: string, li
 - Last-date-modified: 2025-02-10
 - Last-modified-by: Lee S. Barney
 -}
-fn peek_char(lexer: { source: string, position: int64, line: int64, column: int64, file: string }) -> string {
+fn peek_char(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) -> string {
     // Use substring to get single character at position
     // Returns empty string if position is beyond source length
     substring(lexer.source, lexer.position, lexer.position + 1)
@@ -152,22 +152,22 @@ fn peek_char(lexer: { source: string, position: int64, line: int64, column: int6
 - Last-date-modified: 2025-02-10
 - Last-modified-by: Lee S. Barney
 -}
-fn peek_next_char(lexer: { source: string, position: int64, line: int64, column: int64, file: string }) -> string {
+fn peek_next_char(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) -> string {
     substring(lexer.source, lexer.position + 1, lexer.position + 2)
 }
 
 
 {-
-- Returns a { source: string, position: int64, line: int64, column: int64, file: string } with position advanced by one character; line and column are updated (column resets to 1 after a newline, otherwise column increments).
-- Used after consuming a character so the next peek_char or token start reflects the new position. Does not mutate the original lexer; returns a new { source: string, position: int64, line: int64, column: int64, file: string }. Newline handling keeps line/column correct for source locations.
-- Example: for a lexer at the "f" of "FN", advance returns a { source: string, position: int64, line: int64, column: int64, file: string } with position 1, line 1, column 2; peek_char on the result returns "n".
-- Example: for a lexer at the newline in "a\nb", advance returns a { source: string, position: int64, line: int64, column: int64, file: string } with position past the newline, line 2, column 1; the next character is "b".
-- Example: for a lexer already at EOF (position at source length), advance still returns a { source: string, position: int64, line: int64, column: int64, file: string } with position+1; line and column are updated as if the current character were non-newline (peek_char is "").
-- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One peek_char, comparisons, and one new { source: string, position: int64, line: int64, column: int64, file: string } struct; no recursion or unbounded allocation.
+- Returns a { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } with position advanced by one character; line and column are updated (column resets to 1 after a newline, otherwise column increments).
+- Used after consuming a character so the next peek_char or token start reflects the new position. Does not mutate the original lexer; returns a new { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }. Newline handling keeps line/column correct for source locations.
+- Example: for a lexer at the "f" of "FN", advance returns a { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } with position 1, line 1, column 2; peek_char on the result returns "n".
+- Example: for a lexer at the newline in "a\nb", advance returns a { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } with position past the newline, line 2, column 1; the next character is "b".
+- Example: for a lexer already at EOF (position at source length), advance still returns a { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } with position+1; line and column are updated as if the current character were non-newline (peek_char is "").
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One peek_char, comparisons, and one new { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } struct; no recursion or unbounded allocation.
 - Last-date-modified: 2025-02-10
 - Last-modified-by: Lee S. Barney
 -}
-fn advance(lexer: { source: string, position: int64, line: int64, column: int64, file: string }) -> { source: string, position: int64, line: int64, column: int64, file: string } {
+fn advance(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) -> { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } {
     // Get current character to check if its newline
     current: string <- peek_char(lexer);
     
@@ -187,7 +187,8 @@ fn advance(lexer: { source: string, position: int64, line: int64, column: int64,
         position: lexer.position + 1,
         line: new_line,
         column: new_column,
-        file: lexer.file
+        file: lexer.file,
+        offset: lexer.offset + length_bytes(current)
     }
 }
 
@@ -197,14 +198,15 @@ fn advance(lexer: { source: string, position: int64, line: int64, column: int64,
 - continuation bytes (never newline). Updates position and column; line unchanged.
 - Last-date-modified: 2025-03-03
 -}
-fn advance_by(lexer: { source: string, position: int64, line: int64, column: int64, file: string }, n: int64) -> { source: string, position: int64, line: int64, column: int64, file: string } {
+fn advance_by(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }, n: int64) -> { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } {
     sequence
-        result: { source: string, position: int64, line: int64, column: int64, file: string } <- {
+        result: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } <- {
         source: lexer.source,
         position: lexer.position + n,
         line: lexer.line,
         column: lexer.column + n,
-        file: lexer.file
+        file: lexer.file,
+        offset: lexer.offset + length_bytes(substring(lexer.source, lexer.position, lexer.position + n))
     }
     produces
         pure result
@@ -222,7 +224,7 @@ fn advance_by(lexer: { source: string, position: int64, line: int64, column: int
 - Last-date-modified: 2025-02-10
 - Last-modified-by: Lee S. Barney
 -}
-fn extract_lexeme(lexer: { source: string, position: int64, line: int64, column: int64, file: string }, start_pos: int64) -> string {
+fn extract_lexeme(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }, start_pos: int64) -> string {
     substring(lexer.source, start_pos, lexer.position)
 }
 
@@ -257,7 +259,7 @@ fn is_whitespace(c: string) -> bool {
 - Last-date-modified: 2025-02-10
 - Last-modified-by: Lee S. Barney
 -}
-fn skip_whitespace(lexer: { source: string, position: int64, line: int64, column: int64, file: string }) -> { source: string, position: int64, line: int64, column: int64, file: string } {
+fn skip_whitespace(lexer: { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 }) -> { source: string, position: int64, line: int64, column: int64, file: string, offset: int64 } {
     current: string <- peek_char(lexer);
     case current of {
         "" -> lexer;

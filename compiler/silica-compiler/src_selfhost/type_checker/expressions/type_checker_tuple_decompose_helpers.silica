@@ -24,6 +24,7 @@ use type_checker_recursive_tuples;
 use type_checker_lists;
 use type_checker_record_types;
 use type_checker_expressions_actors;
+use type_checker_builtin_signatures;
 
 export infer_expr_type/2;
 export infer_literal_type/1;
@@ -50,7 +51,7 @@ export infer_case_first_rhs_type/3;
 export case_parse_record_field_subpat/2;
 
 fn tuple_needs_parens(type_str: string) -> bool {
-    len(type_str) >= 2 and substring(type_str, 0, 1) == "("
+    length_bytes(type_str) >= 2 and substring(type_str, 0, 1) == "("
 }
 
 
@@ -76,11 +77,11 @@ fn numeric_literal_contains_dot_from(value: string, pos: int64, length: int64) -
 }
 
 fn numeric_literal_contains_dot(value: string) -> bool {
-    numeric_literal_contains_dot_from(value, 0, len(value))
+    numeric_literal_contains_dot_from(value, 0, length_bytes(value))
 }
 
 fn infer_literal_type(value: string) -> string {
-    case len(value) == 0 of {
+    case length_bytes(value) == 0 of {
         true -> "int64";
         false -> case substring(value, 0, 1) == "\"" of {
             true -> "string";
@@ -88,10 +89,10 @@ fn infer_literal_type(value: string) -> string {
                 true -> "char";
                 false -> case substring(value, 0, 1) == "." of {
                     true -> "float64";
-                    false -> case len(value) >= 1 of {
-                        true -> case substring(value, len(value) - 1, len(value)) == "f" of {
+                    false -> case length_bytes(value) >= 1 of {
+                        true -> case substring(value, length_bytes(value) - 1, length_bytes(value)) == "f" of {
                             true -> "float32";
-                            false -> case substring(value, len(value) - 1, len(value)) == "h" of {
+                            false -> case substring(value, length_bytes(value) - 1, length_bytes(value)) == "h" of {
                                 true -> "float16";
                                 false -> case numeric_literal_contains_dot(value) of {
                                     true -> "float32";
@@ -109,7 +110,7 @@ fn infer_literal_type(value: string) -> string {
 
 // Parse " ( T1 , T2 ) -> R " return type (same convention as check_user_defined_call).
 fn find_arrow_pos_infer_depth(s: string, i: int64, depth: int64) -> int64 {
-    case i + 2 > len(s) of {
+    case i + 2 > length_bytes(s) of {
         true -> -1;
         false -> {
             c: string <- substring(s, i, i + 1);
@@ -133,14 +134,14 @@ fn find_arrow_pos_infer(s: string, i: int64) -> int64 {
 
 fn trim_function_return_prefix_infer(s: string) -> string {
     t: string <- trim_leading_infer_from(s, 0);
-    case len(t) > 0 and substring(t, 0, 1) == ">" of {
-        true -> trim_leading_infer_from(substring(t, 1, len(t)), 0);
+    case length_bytes(t) > 0 and substring(t, 0, 1) == ">" of {
+        true -> trim_leading_infer_from(substring(t, 1, length_bytes(t)), 0);
         false -> t
     }
 }
 
 fn parse_function_return_after_arrow_infer(func_type: string, arrow_pos: int64) -> string {
-    trim_function_return_prefix_infer(substring(func_type, arrow_pos + 2, len(func_type)))
+    trim_function_return_prefix_infer(substring(func_type, arrow_pos + 2, length_bytes(func_type)))
 }
 
 fn parse_function_return_from_scheme(func_type: string) -> string {
@@ -152,11 +153,11 @@ fn parse_function_return_from_scheme(func_type: string) -> string {
 }
 
 fn trim_leading_infer_from(s: string, i: int64) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> "";
         false -> case substring(s, i, i + 1) == " " of {
             true -> trim_leading_infer_from(s, i + 1);
-            false -> substring(s, i, len(s))
+            false -> substring(s, i, length_bytes(s))
         }
     }
 }
@@ -188,16 +189,7 @@ fn is_narrow_integral_binop_context(t: string) -> bool {
 }
 
 fn negate_builtin_operand_type(name: string) -> string {
-    case name of {
-        "negate_int8" -> "int8";
-        "negate_int16" -> "int16";
-        "negate_int32" -> "int32";
-        "negate_int64" -> "int64";
-        "negate_float16" -> "float16";
-        "negate_float32" -> "float32";
-        "negate_float64" -> "float64";
-        _: string -> ""
-    }
+    type_checker_builtin_signatures@builtin_operand_type(name)
 }
 
 // SIR lowering for kind-3 binary: when enclosing context fixes the numeric type (float* or narrow int),
@@ -232,7 +224,7 @@ fn infer_binop_left_preferred_operand_type(expr: { nodes: List[{ kind: int64, va
             left_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(left_e);
             right_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(right_e);
             raw_lt: string <- infer_expr_type(left_e, context);
-            lt: string <- case len(raw_lt) > 0 of {
+            lt: string <- case length_bytes(raw_lt) > 0 of {
                 true -> raw_lt;
                 false -> case left_node.kind == 1 of {
                     true -> negate_builtin_operand_type(left_node.name);
@@ -243,7 +235,7 @@ fn infer_binop_left_preferred_operand_type(expr: { nodes: List[{ kind: int64, va
                 }
             };
             raw_rt: string <- infer_expr_type(right_e, context);
-            rt: string <- case len(raw_rt) > 0 of {
+            rt: string <- case length_bytes(raw_rt) > 0 of {
                 true -> raw_rt;
                 false -> case right_node.kind == 1 of {
                     true -> negate_builtin_operand_type(right_node.name);
@@ -258,7 +250,7 @@ fn infer_binop_left_preferred_operand_type(expr: { nodes: List[{ kind: int64, va
                     true -> lt;
                     false -> case is_floatish_type_infer(rt) of {
                         true -> rt;
-                        false -> case len(lt) > 0 of { true -> lt; false -> rt }
+                        false -> case length_bytes(lt) > 0 of { true -> lt; false -> rt }
                     }
                 };
                 false -> lt
@@ -275,12 +267,12 @@ fn infer_binary_expr_type(expr: { nodes: List[{ kind: int64, value: string, name
         true -> {
             lt: string <- infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
             rt: string <- infer_expr_type(parser_ast@expr_at(expr, node.right_expr), context);
-            case len(lt) > 0 of {
-                true -> case len(rt) > 0 of {
+            case length_bytes(lt) > 0 of {
+                true -> case length_bytes(rt) > 0 of {
                     true -> case lt == rt of { true -> lt; false -> "" };
                     false -> lt
                 };
-                false -> case len(rt) > 0 of { true -> rt; false -> "" }
+                false -> case length_bytes(rt) > 0 of { true -> rt; false -> "" }
             }
         };
         false -> case is_bitwise_op_infer(op) of {
@@ -345,7 +337,7 @@ fn infer_core_set_placement(expr: { nodes: List[{ kind: int64, value: string, na
 // Same semantics as type_checker_core lookup_fn_type_by_name_and_module + lookup_function_type_for_call.
 // Must live in this .ll: cross-module string return from core `fn` to this `fn` segfaults (e.g. mod@fn for +).
 fn first_at_infer_call_name(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "@" of {
             true -> i;
@@ -358,10 +350,10 @@ fn lookup_fn_type_by_name_and_module_infer(env: List[{ name: string, type_id: in
     case env.is_nil of {
         true -> "";
         false -> case env.head.name == fn_name of {
-            true -> case len(env.head.surface_type) == 0 of {
+            true -> case length_bytes(env.head.surface_type) == 0 of {
                 true -> lookup_fn_type_by_name_and_module_infer(env.tail, fn_name, required_module);
-                false -> case len(required_module) == 0 of {
-                    true -> case len(env.head.source_module) == 0 of {
+                false -> case length_bytes(required_module) == 0 of {
+                    true -> case length_bytes(env.head.source_module) == 0 of {
                         true -> env.head.surface_type;
                         false -> lookup_fn_type_by_name_and_module_infer(env.tail, fn_name, required_module)
                     };
@@ -380,88 +372,37 @@ fn lookup_function_type_for_call_infer(env: List[{ name: string, type_id: int64,
     at: int64 <- first_at_infer_call_name(composite_name, 0);
     case at < 0 of {
         true -> lookup_fn_type_by_name_and_module_infer(env, composite_name, "");
-        false -> lookup_fn_type_by_name_and_module_infer(env, substring(composite_name, at + 1, len(composite_name)), substring(composite_name, 0, at))
+        false -> lookup_fn_type_by_name_and_module_infer(env, substring(composite_name, at + 1, length_bytes(composite_name)), substring(composite_name, 0, at))
     }
 }
 
 fn infer_string_builtin_return(name: string) -> string {
-    case name of {
-        "starts_with" -> "boolean";
-        "ends_with" -> "boolean";
-        "contains" -> "boolean";
-        "concat" -> "string";
-        "concatenate" -> "string";
-        "substring" -> "string";
-        "substring_until_char" -> "string";
-        "len" -> "int64";
-        "length_bytes" -> "int64";
-        "length_chars" -> "int64";
-        _: string -> ""
-    }
+    type_checker_builtin_signatures@builtin_string_return_type(name)
 }
 
 fn infer_call_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
     node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
     call_base: string <- type_checker_core@user_call_base_function_name(node.name);
-    neg_ty: string <- negate_builtin_operand_type(call_base);
-    case len(neg_ty) > 0 of {
-        true -> neg_ty;
-        false -> {
-            str_ty: string <- infer_string_builtin_return(call_base);
-            case len(str_ty) > 0 of {
-                true -> str_ty;
-                false -> case call_base == "bnot" of {
-                    true -> "uint64";
-                    false -> case call_base == "spawn" or call_base == "spawn_registered" of {
-                        true -> "actor_ref";
-                        false -> case call_base == "spawn_dangerous" or call_base == "spawn_dangerous_registered" of {
-                            true -> "dangerous_actor_ref";
-                            false -> case call_base == "spawn_registered_supervisor" of {
-                                true -> "supervisor_ref";
-                                false -> case call_base == "call_supervisor" of {
-                                    true -> type_checker_expressions_actors@supervisor_reply_record_type();
-                                    false -> case call_base == "link" of {
-                                        true -> "atom";
-                                        false -> case call_base == "add_child" of {
-                                            true -> "atom";
-                                            false -> case call_base == "monitor" of {
-                                                true -> "monitor_ref";
-                                                false -> case call_base == "demonitor" of {
-                                                    true -> "atom";
-                                                    false -> case call_base == "self" of {
-                                                        true -> "actor_ref";
-                                                        false -> case call_base == "cast" of {
-                                                            true -> "boolean";
-                                                            false -> case call_base == "send" of {
-                                                                true -> "atom";
-                                                                false -> case call_base == "core_id" of {
-                                                                    true -> infer_core_id_placement(expr, context);
-                                                                    false -> case call_base == "core_set" of {
-                                                                        true -> infer_core_set_placement(expr, context);
-                                                                        false -> {
-                                                                            rt: string <- infer_actor_runtime_return(call_base);
-                                                                            case len(rt) > 0 of {
-                                                                                true -> rt;
-                                                                                false -> {
-                                                                                    typ: string <- lookup_function_type_for_call_infer(context.env, node.name);
-                                                                                    case len(typ) > 0 of {
-                                                                                        true -> parse_function_return_from_scheme(typ);
-                                                                                        false -> case type_checker_lists@is_list_primitive_name(node.name) of {
-                                                                                            true -> type_checker_lists@infer_list_primitive_return(expr);
-                                                                                            false -> ""
-                                                                                        }
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
+    bt: string <- type_checker_builtin_signatures@builtin_return_type(call_base);
+    case length_bytes(bt) > 0 of {
+        true -> bt;
+        false -> case call_base == "call_supervisor" of {
+            true -> type_checker_expressions_actors@supervisor_reply_record_type();
+            false -> case call_base == "core_id" of {
+                true -> infer_core_id_placement(expr, context);
+                false -> case call_base == "core_set" of {
+                    true -> infer_core_set_placement(expr, context);
+                    false -> {
+                        rt: string <- infer_actor_runtime_return(call_base);
+                        case length_bytes(rt) > 0 of {
+                            true -> rt;
+                            false -> {
+                                typ: string <- lookup_function_type_for_call_infer(context.env, node.name);
+                                case length_bytes(typ) > 0 of {
+                                    true -> parse_function_return_from_scheme(typ);
+                                    false -> case type_checker_lists@is_list_primitive_name(node.name) of {
+                                        true -> type_checker_lists@infer_list_primitive_return(expr);
+                                        false -> ""
                                     }
                                 }
                             }
@@ -484,7 +425,7 @@ fn infer_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: strin
                     true -> "spawn_affinity_efficiency_cores";
                     false -> {
                         resolved: string <- env_lookup_surface(context.env, node.name);
-                        case len(resolved) > 0 of { true -> resolved; false -> "" }
+                        case length_bytes(resolved) > 0 of { true -> resolved; false -> "" }
                     }
                 }
             }
@@ -497,7 +438,7 @@ fn infer_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: strin
         7 -> "boolean";
         8 -> "string";
         12 -> infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
-        20 -> case len(node.value) > 0 of { true -> node.value; false -> "" };
+        20 -> case length_bytes(node.value) > 0 of { true -> node.value; false -> "" };
         9 -> concat("(", concat(infer_tuple_chain_elems(expr, context), ")"));
         13 -> infer_case_expr_kind13(expr, context);
         19 -> infer_if_expr_kind19(expr, context);
@@ -534,8 +475,8 @@ fn infer_if_expr_kind19(expr: { nodes: List[{ kind: int64, value: string, name: 
     else_t: string <- infer_expr_type(else_e, context);
     case else_node.kind < 0 of {
         true -> then_t;
-        false -> case len(then_t) > 0 of {
-            true -> case len(else_t) > 0 of {
+        false -> case length_bytes(then_t) > 0 of {
+            true -> case length_bytes(else_t) > 0 of {
                 true -> case types_equal_surface(then_t, else_t) of { true -> then_t; false -> "" };
                 false -> ""
             };
@@ -557,11 +498,11 @@ fn infer_struct_literal_type(expr: { nodes: List[{ kind: int64, value: string, n
 fn infer_struct_lit_chain(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, acc: string, need_comma: bool) -> string {
     node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
     case node.kind == -1 or node.kind == 999 of {
-        true -> case len(acc) > 0 of { true -> concat(acc, "}"); false -> "" };
+        true -> case length_bytes(acc) > 0 of { true -> concat(acc, "}"); false -> "" };
         false -> case node.kind == 21 of {
             true -> {
                 it: string <- infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
-                case len(it) == 0 of {
+                case length_bytes(it) == 0 of {
                     true -> "";
                     false -> {
                         chunk: string <- case need_comma of {
@@ -581,11 +522,11 @@ fn infer_struct_lit_chain(expr: { nodes: List[{ kind: int64, value: string, name
 fn infer_field_access_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
     node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
     base_t: string <- infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
-    case len(base_t) == 0 of {
+    case length_bytes(base_t) == 0 of {
         true -> "";
         false -> {
             exp: string <- type_checker_record_types@expand_named_topology_type(base_t);
-            effective: string <- case len(exp) > 0 of { true -> exp; false -> base_t };
+            effective: string <- case length_bytes(exp) > 0 of { true -> exp; false -> base_t };
             case type_checker_record_types@record_type_starts(effective) of {
                 true -> type_checker_record_types@find_field_type_in_record(effective, node.name);
                 false -> type_checker_lists@list_field_access_type(effective, node.name)
@@ -596,7 +537,7 @@ fn infer_field_access_type(expr: { nodes: List[{ kind: int64, value: string, nam
 
 fn tuple_trim(s: string) -> string {
     start: int64 <- trim_start(s, 0);
-    end_pos: int64 <- trim_end(s, len(s) - 1);
+    end_pos: int64 <- trim_end(s, length_bytes(s) - 1);
     case start <= end_pos of {
         true -> substring(s, start, end_pos + 1);
         false -> ""
@@ -604,8 +545,8 @@ fn tuple_trim(s: string) -> string {
 }
 
 fn trim_start(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
-        true -> len(s);
+    case i >= length_bytes(s) of {
+        true -> length_bytes(s);
         false -> case substring(s, i, i + 1) == " " of {
             true -> trim_start(s, i + 1);
             false -> i
@@ -647,8 +588,8 @@ fn digit_char(d: int64) -> string {
 // Tuple element splitting: commas inside `(...)`, `[...]`, and `{...}` must not split elements
 // (e.g. second element `List[int64, mem(normal)]`).
 fn td_find_top_level_comma_at(s: string, i: int64, pdepth: int64, sqdepth: int64, brdepth: int64) -> int64 {
-    case i >= len(s) of {
-        true -> len(s);
+    case i >= length_bytes(s) of {
+        true -> length_bytes(s);
         false -> case substring(s, i, i + 1) of {
             "(" -> td_find_top_level_comma_at(s, i + 1, pdepth + 1, sqdepth, brdepth);
             ")" -> td_find_top_level_comma_at(s, i + 1, case pdepth > 0 of { true -> pdepth - 1; false -> 0 }, sqdepth, brdepth);
@@ -670,15 +611,15 @@ fn td_tuple_element_at_index_inner(inner: string, target_idx: int64) -> string {
         true -> {
             idx: int64 <- td_find_top_level_comma_at(inner, 0, 0, 0, 0);
             first: string <- tuple_trim(substring(inner, 0, idx));
-            case len(first) >= 2 and substring(first, 0, 1) == "(" of {
+            case length_bytes(first) >= 2 and substring(first, 0, 1) == "(" of {
                 true -> concat("(", concat(first, ")"));
                 false -> first
             }
         };
         false -> {
             idx: int64 <- td_find_top_level_comma_at(inner, 0, 0, 0, 0);
-            rest: string <- case idx < len(inner) of {
-                true -> tuple_trim(substring(inner, idx + 1, len(inner)));
+            rest: string <- case idx < length_bytes(inner) of {
+                true -> tuple_trim(substring(inner, idx + 1, length_bytes(inner)));
                 false -> ""
             };
             td_tuple_element_at_index_inner(rest, target_idx - 1)
@@ -687,17 +628,17 @@ fn td_tuple_element_at_index_inner(inner: string, target_idx: int64) -> string {
 }
 
 fn td_tuple_element_at_index(tuple_type: string, idx: int64) -> string {
-    case len(tuple_type) < 2 of {
+    case length_bytes(tuple_type) < 2 of {
         true -> "";
         false -> case substring(tuple_type, 0, 1) == "(" of {
-            true -> td_tuple_element_at_index_inner(substring(tuple_type, 1, len(tuple_type) - 1), idx);
+            true -> td_tuple_element_at_index_inner(substring(tuple_type, 1, length_bytes(tuple_type) - 1), idx);
             false -> ""
         }
     }
 }
 
 fn td_path_find_comma(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "," of {
             true -> i;
@@ -717,8 +658,8 @@ fn td_path_str_first_index(path_str: string) -> int64 {
 
 fn td_path_str_rest(path_str: string) -> string {
     comma_pos: int64 <- td_path_find_comma(path_str, 0);
-    case comma_pos >= 0 and comma_pos + 1 < len(path_str) of {
-        true -> substring(path_str, comma_pos + 1, len(path_str));
+    case comma_pos >= 0 and comma_pos + 1 < length_bytes(path_str) of {
+        true -> substring(path_str, comma_pos + 1, length_bytes(path_str));
         false -> ""
     }
 }
@@ -728,7 +669,7 @@ fn td_str_to_int64(s: string) -> int64 {
 }
 
 fn td_str_to_int64_acc(s: string, i: int64, acc: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
         false -> case substring(s, i, i + 1) of {
             "0" -> td_str_to_int64_acc(s, i + 1, acc * 10 + 0);
@@ -747,13 +688,13 @@ fn td_str_to_int64_acc(s: string, i: int64, acc: int64) -> int64 {
 }
 
 fn tuple_rhs_type_at_path(tuple_type: string, path: string) -> string {
-    case len(path) == 0 of {
+    case length_bytes(path) == 0 of {
         true -> tuple_type;
         false -> {
             first_idx: int64 <- td_path_str_first_index(path);
             rest_path: string <- td_path_str_rest(path);
             elem: string <- td_tuple_element_at_index(tuple_type, first_idx);
-            case len(rest_path) == 0 of {
+            case length_bytes(rest_path) == 0 of {
                 true -> elem;
                 false -> tuple_rhs_type_at_path(elem, rest_path)
             }
@@ -766,7 +707,7 @@ fn fill_empty_binding_types_from_rhs(bindings: List[{ name: string, path: string
         true -> bindings;
         false -> {
             b: { name: string, path: string, type_str: string } <- bindings.head;
-            new_ty: string <- case len(b.type_str) > 0 of {
+            new_ty: string <- case length_bytes(b.type_str) > 0 of {
                 true -> b.type_str;
                 false -> tuple_rhs_type_at_path(rhs_tuple_type, b.path)
             };
@@ -801,7 +742,7 @@ fn pattern_bindings_valid(bindings: List[{ name: string, path: string, type_str:
 fn check_all_typed(bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     case bindings.is_nil of {
         true -> type_checker_core@type_check_ok();
-        false -> case len(bindings.head.type_str) == 0 of {
+        false -> case length_bytes(bindings.head.type_str) == 0 of {
             true -> type_checker_core@type_check_err("E2006", location, "tuple decomposition pattern elements must be typed (ident : type)", "sect4");
             false -> {
                 list_result: { is_ok: bool, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- type_checker_lists@validate_list_type_declaration(bindings.head.type_str, location);
@@ -836,7 +777,7 @@ fn build_pattern_type_at_prefix(bindings: List[{ name: string, path: string, typ
     result: { first_type: string, rest: List[{ name: string, path: string, type_str: string }, mem(normal)] } <- collect_type_at_prefix(bindings, prefix, idx);
     first_type: string <- result.first_type;
     rest: List[{ name: string, path: string, type_str: string }, mem(normal)] <- result.rest;
-    case len(first_type) == 0 of {
+    case length_bytes(first_type) == 0 of {
         true -> "()";
         false -> case rest.is_nil of {
             true -> first_type;
@@ -877,7 +818,7 @@ fn collect_flat_sibling_types(bindings: List[{ name: string, path: string, type_
 
 fn make_path(prefix: string, idx: int64) -> string {
     idx_str: string <- int64_to_str(idx);
-    case len(prefix) == 0 of {
+    case length_bytes(prefix) == 0 of {
         true -> idx_str;
         false -> concat(concat(prefix, ","), idx_str)
     }
@@ -906,7 +847,7 @@ fn collect_type_at_prefix_with_path(bindings: List[{ name: string, path: string,
 }
 
 fn path_starts_with(full: string, prefix: string) -> bool {
-    len(full) > len(prefix) and substring(full, 0, len(prefix)) == prefix and (len(full) == len(prefix) or substring(full, len(prefix), len(prefix) + 1) == ",")
+    length_bytes(full) > length_bytes(prefix) and substring(full, 0, length_bytes(prefix)) == prefix and (length_bytes(full) == length_bytes(prefix) or substring(full, length_bytes(prefix), length_bytes(prefix) + 1) == ",")
 }
 
 fn skip_bindings_with_prefix(bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], prefix: string) -> List[{ name: string, path: string, type_str: string }, mem(normal)] {
@@ -938,26 +879,58 @@ fn types_equal_surface(a: string, b: string) -> bool {
     }
 }
 
-fn normalize_mem_normal_alias(s: string) -> string {
-    case len(s) < 11 of {
-        true -> s;
-        false -> case substring(s, 0, 11) == "mem(normal)" of {
-            true -> concat("normal", normalize_mem_normal_alias(substring(s, 11, len(s))));
-            false -> concat(substring(s, 0, 1), normalize_mem_normal_alias(substring(s, 1, len(s))))
+fn normalize_mem_alias_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j + 11 > n of {
+        true -> n;
+        false -> case substring(s, j, j + 11) == "mem(normal)" of {
+            true -> j;
+            false -> normalize_mem_alias_run_end(s, j + 1, n)
         }
     }
+}
+
+fn normalize_mem_normal_alias_from(s: string, i: int64, n: int64, acc: string) -> string {
+    case i >= n of {
+        true -> acc;
+        false -> case i + 11 <= n and substring(s, i, i + 11) == "mem(normal)" of {
+            true -> normalize_mem_normal_alias_from(s, i + 11, n, concat(acc, "normal"));
+            false -> {
+                e: int64 <- normalize_mem_alias_run_end(s, i, n);
+                normalize_mem_normal_alias_from(s, e, n, concat(acc, substring(s, i, e)))
+            }
+        }
+    }
+}
+
+fn normalize_mem_normal_alias(s: string) -> string {
+    n: int64 <- length_bytes(s);
+    normalize_mem_normal_alias_from(s, 0, n, "")
 }
 
 fn strip_spaces(s: string) -> string {
     strip_spaces_from(s, 0, "")
 }
 
+fn strip_spaces_from_run_end(s: string, j: int64, n: int64) -> int64 {
+    case j >= n of {
+        true -> j;
+        false -> case substring(s, j, j + 1) == " " of {
+            true -> j;
+            false -> strip_spaces_from_run_end(s, j + 1, n)
+        }
+    }
+}
+
 fn strip_spaces_from(s: string, i: int64, acc: string) -> string {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> acc;
         false -> case substring(s, i, i + 1) == " " of {
             true -> strip_spaces_from(s, i + 1, acc);
-            false -> strip_spaces_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+            false -> {
+                n: int64 <- length_bytes(s);
+                e: int64 <- strip_spaces_from_run_end(s, i, n);
+                strip_spaces_from(s, e, concat(acc, substring(s, i, e)))
+            }
         }
     }
 }
@@ -972,7 +945,7 @@ fn case_flip_bool(b: bool) -> bool {
 }
 
 fn case_find_colon_outside_string_depth(s: string, i: int64, in_string: bool, pdepth: int64, bdepth: int64, sdepth: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "\"" of {
             true -> case_find_colon_outside_string_depth(s, i + 1, case_flip_bool(in_string), pdepth, bdepth, sdepth);
@@ -1022,10 +995,10 @@ fn case_find_colon_outside_string(s: string, i: int64, in_string: bool) -> int64
 }
 
 fn case_close_quote_index(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "\\" of {
-            true -> case i + 1 >= len(s) of {
+            true -> case i + 1 >= length_bytes(s) of {
                 true -> -1;
                 false -> case_close_quote_index(s, i + 2)
             };
@@ -1042,7 +1015,7 @@ fn case_char_is_digit(c: string) -> bool {
 }
 
 fn case_all_digits_from(s: string, i: int64) -> bool {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> true;
         false -> case case_char_is_digit(substring(s, i, i + 1)) of {
             true -> case_all_digits_from(s, i + 1);
@@ -1052,10 +1025,10 @@ fn case_all_digits_from(s: string, i: int64) -> bool {
 }
 
 fn case_string_is_signed_int_literal(s: string) -> bool {
-    case len(s) == 0 of {
+    case length_bytes(s) == 0 of {
         true -> false;
         false -> case substring(s, 0, 1) == "-" of {
-            true -> case len(s) < 2 of { true -> false; false -> case_all_digits_from(s, 1) };
+            true -> case length_bytes(s) < 2 of { true -> false; false -> case_all_digits_from(s, 1) };
             false -> case_all_digits_from(s, 0)
         }
     }
@@ -1066,7 +1039,7 @@ fn case_char_is_ident_letter_or_underscore(c: string) -> bool {
 }
 
 fn case_ident_rest_ok(s: string, i: int64) -> bool {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> true;
         false -> {
             c: string <- substring(s, i, i + 1);
@@ -1079,7 +1052,7 @@ fn case_ident_rest_ok(s: string, i: int64) -> bool {
 }
 
 fn case_simple_ident_token(s: string) -> bool {
-    case len(s) == 0 of {
+    case length_bytes(s) == 0 of {
         true -> false;
         false -> {
             c0: string <- substring(s, 0, 1);
@@ -1097,8 +1070,8 @@ fn case_try_atom_literal_pattern(t: string) -> { is_valid: bool, pattern_kind: i
     case substring(t, 0, 1) == ":" of {
         false -> inv;
         true -> {
-            atom_rest: string <- strip_spaces(substring(t, 1, len(t)));
-            case len(atom_rest) == 0 of {
+            atom_rest: string <- strip_spaces(substring(t, 1, length_bytes(t)));
+            case length_bytes(atom_rest) == 0 of {
                 true -> inv;
                 false -> {
                     ci: int64 <- case_find_colon_outside_string(atom_rest, 0, false);
@@ -1114,7 +1087,7 @@ fn case_try_atom_literal_pattern(t: string) -> { is_valid: bool, pattern_kind: i
 
 
 fn case_parens_balanced_from(s: string, i: int64, depth: int64, in_string: bool) -> bool {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> depth == 0;
         false -> case substring(s, i, i + 1) == "\"" of {
             true -> case_parens_balanced_from(s, i + 1, depth, case_flip_bool(in_string));
@@ -1136,12 +1109,12 @@ fn case_parens_balanced_from(s: string, i: int64, depth: int64, in_string: bool)
 }
 
 fn case_is_tuple_pattern_form(t: string) -> bool {
-    len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" and case_parens_balanced_from(t, 0, 0, false)
+    length_bytes(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, length_bytes(t) - 1, length_bytes(t)) == ")" and case_parens_balanced_from(t, 0, 0, false)
 }
 
 fn case_find_top_level_comma_pat(s: string, i: int64, in_string: bool, pdepth: int64, bdepth: int64, sqdepth: int64) -> int64 {
-    case i >= len(s) of {
-        true -> len(s);
+    case i >= length_bytes(s) of {
+        true -> length_bytes(s);
         false -> case substring(s, i, i + 1) == "\"" of {
             true -> case_find_top_level_comma_pat(s, i + 1, case_flip_bool(in_string), pdepth, bdepth, sqdepth);
             false -> case in_string of {
@@ -1172,8 +1145,8 @@ fn case_tuple_elem_at(inner: string, idx: int64) -> string {
         };
         false -> {
             c: int64 <- case_find_top_level_comma_pat(inner, 0, false, 0, 0, 0);
-            rest: string <- case c < len(inner) of {
-                true -> substring(inner, c + 1, len(inner));
+            rest: string <- case c < length_bytes(inner) of {
+                true -> substring(inner, c + 1, length_bytes(inner));
                 false -> ""
             };
             case_tuple_elem_at(rest, idx - 1)
@@ -1182,11 +1155,11 @@ fn case_tuple_elem_at(inner: string, idx: int64) -> string {
 }
 
 fn case_count_tuple_elems_from(inner: string, i: int64, acc: int64) -> int64 {
-    case i >= len(inner) of {
+    case i >= length_bytes(inner) of {
         true -> acc;
         false -> {
             c: int64 <- case_find_top_level_comma_pat(inner, i, false, 0, 0, 0);
-            case c >= len(inner) of {
+            case c >= length_bytes(inner) of {
                 true -> acc + 1;
                 false -> case_count_tuple_elems_from(inner, c + 1, acc + 1)
             }
@@ -1195,7 +1168,7 @@ fn case_count_tuple_elems_from(inner: string, i: int64, acc: int64) -> int64 {
 }
 
 fn case_count_tuple_elems(inner: string) -> int64 {
-    case len(strip_spaces(inner)) == 0 of {
+    case length_bytes(strip_spaces(inner)) == 0 of {
         true -> 0;
         false -> case_count_tuple_elems_from(inner, 0, 0)
     }
@@ -1220,7 +1193,7 @@ fn case_try_tuple_pattern(t: string) -> { is_valid: bool, pattern_kind: int64, b
     case case_is_tuple_pattern_form(t) of {
         false -> inv;
         true -> {
-            inner: string <- substring(t, 1, len(t) - 1);
+            inner: string <- substring(t, 1, length_bytes(t) - 1);
             n: int64 <- case_count_tuple_elems(inner);
             case n < 1 of {
                 true -> inv;
@@ -1253,8 +1226,8 @@ fn case_tuple_pat_matches_full(pat_str: string, scrutinee_type: string) -> bool 
     case case_is_tuple_pattern_form(pat_str) and case_is_tuple_pattern_form(st) of {
         false -> false;
         true -> {
-            p_inner: string <- substring(pat_str, 1, len(pat_str) - 1);
-            s_inner: string <- substring(st, 1, len(st) - 1);
+            p_inner: string <- substring(pat_str, 1, length_bytes(pat_str) - 1);
+            s_inner: string <- substring(st, 1, length_bytes(st) - 1);
             pn: int64 <- case_count_tuple_elems(p_inner);
             sn: int64 <- case_count_tuple_elems(s_inner);
             case pn == sn and pn > 0 of {
@@ -1267,7 +1240,7 @@ fn case_tuple_pat_matches_full(pat_str: string, scrutinee_type: string) -> bool 
 
 fn case_parse_pattern(pat_str: string) -> { is_valid: bool, pattern_kind: int64, bool_lit: bool, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } {
     t: string <- strip_spaces(pat_str);
-    case len(t) == 0 of {
+    case length_bytes(t) == 0 of {
         true -> { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
         false -> case t == "_" of {
             true -> { is_valid: true, pattern_kind: 3, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "_", bind_type: "", list_tail_name: "", list_tail_type: "" };
@@ -1293,7 +1266,7 @@ fn case_parse_pattern(pat_str: string) -> { is_valid: bool, pattern_kind: int64,
                                                     false -> { is_valid: true, pattern_kind: 1, bool_lit: false, str_lit: substring(t, 1, cq), int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" }
                                                 }
                                             };
-                                            false -> case len(t) >= 3 and substring(t, 0, 1) == "'" and substring(t, len(t) - 1, len(t)) == "'" of {
+                                            false -> case length_bytes(t) >= 3 and substring(t, 0, 1) == "'" and substring(t, length_bytes(t) - 1, length_bytes(t)) == "'" of {
                                                 true -> { is_valid: true, pattern_kind: 10, bool_lit: false, str_lit: t, int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
                                                 false -> case t == "true" of {
                                                     true -> { is_valid: true, pattern_kind: 0, bool_lit: true, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
@@ -1308,8 +1281,8 @@ fn case_parse_pattern(pat_str: string) -> { is_valid: bool, pattern_kind: int64,
                                                                     case colon >= 0 of {
                                                                         true -> {
                                                                             name_raw: string <- strip_spaces(substring(t, 0, colon));
-                                                                            typ_raw: string <- strip_spaces(substring(t, colon + 1, len(t)));
-                                                                            case len(name_raw) == 0 or len(typ_raw) == 0 of {
+                                                                            typ_raw: string <- strip_spaces(substring(t, colon + 1, length_bytes(t)));
+                                                                            case length_bytes(name_raw) == 0 or length_bytes(typ_raw) == 0 of {
                                                                                 true -> { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
                                                                                 false -> case name_raw == "_" of {
                                                                                     true -> { is_valid: true, pattern_kind: 3, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "_", bind_type: typ_raw, list_tail_name: "", list_tail_type: "" };
@@ -1343,7 +1316,7 @@ fn case_parse_pattern(pat_str: string) -> { is_valid: bool, pattern_kind: int64,
 fn case_parse_record_field_subpat(sub: string, field_ty: string) -> { is_valid: bool, pattern_kind: int64, bool_lit: bool, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } {
     inv: { is_valid: bool, pattern_kind: int64, bool_lit: bool, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } <- { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
     s: string <- strip_spaces(sub);
-    case len(s) == 0 of {
+    case length_bytes(s) == 0 of {
         true -> inv;
         false -> case s == "_" of {
             true -> { is_valid: true, pattern_kind: 3, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "_", bind_type: field_ty, list_tail_name: "", list_tail_type: "" };
@@ -1366,7 +1339,7 @@ fn is_primitive_numeric_type_name(t: string) -> bool {
 }
 
 fn case_find_union_bar(s: string, pos: int64) -> int64 {
-    case pos >= len(s) of {
+    case pos >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, pos, pos + 1) == "|" of {
             true -> pos;
@@ -1377,11 +1350,11 @@ fn case_find_union_bar(s: string, pos: int64) -> int64 {
 
 fn case_unwrap_atom_union_parens(t: string) -> string {
     s: string <- strip_spaces(t);
-    case len(s) >= 2 and substring(s, 0, 1) == "(" and substring(s, len(s) - 1, len(s)) == ")" of {
+    case length_bytes(s) >= 2 and substring(s, 0, 1) == "(" and substring(s, length_bytes(s) - 1, length_bytes(s)) == ")" of {
         false -> s;
         true -> {
-            inner: string <- substring(s, 1, len(s) - 1);
-            case len(inner) > 0 and substring(inner, 0, 1) == ":" of {
+            inner: string <- substring(s, 1, length_bytes(s) - 1);
+            case length_bytes(inner) > 0 and substring(inner, 0, 1) == ":" of {
                 true -> inner;
                 false -> s
             }
@@ -1392,7 +1365,7 @@ fn case_unwrap_atom_union_parens(t: string) -> string {
 fn case_atom_union_contains(union_text: string, atom_name: string) -> bool {
     needle: string <- concat(":", atom_name);
     parts: string <- case_unwrap_atom_union_parens(union_text);
-    case len(parts) == 0 of {
+    case length_bytes(parts) == 0 of {
         true -> false;
         false -> case parts == needle of {
             true -> true;
@@ -1402,7 +1375,7 @@ fn case_atom_union_contains(union_text: string, atom_name: string) -> bool {
                     true -> false;
                     false -> case substring(parts, 0, bar) == needle of {
                         true -> true;
-                        false -> case_atom_union_contains(substring(parts, bar + 1, len(parts)), atom_name)
+                        false -> case_atom_union_contains(substring(parts, bar + 1, length_bytes(parts)), atom_name)
                     }
                 }
             }
@@ -1412,7 +1385,7 @@ fn case_atom_union_contains(union_text: string, atom_name: string) -> bool {
 
 fn case_type_is_atom_union(t: string) -> bool {
     s: string <- case_unwrap_atom_union_parens(t);
-    len(s) > 0 and substring(s, 0, 1) == ":" and case_find_union_bar(s, 0) >= 0
+    length_bytes(s) > 0 and substring(s, 0, 1) == ":" and case_find_union_bar(s, 0) >= 0
 }
 
 fn case_list_cons_matches(pi: { is_valid: bool, pattern_kind: int64, bool_lit: bool, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string }, scrutinee_type: string) -> bool {
@@ -1433,7 +1406,7 @@ fn case_pattern_matches_scrutinee(pi: { is_valid: bool, pattern_kind: int64, boo
             0 -> types_equal_surface(scrutinee_type, "boolean");
             1 -> types_equal_surface(scrutinee_type, "string");
             2 -> types_equal_surface(scrutinee_type, pi.bind_type) or (types_equal_surface(scrutinee_type, "failure_reason") and types_equal_surface(pi.bind_type, "atom")) or type_checker_recursive_tuples@case_pattern_matches_ref_optional(scrutinee_type, pi.bind_type);
-            3 -> case len(pi.bind_type) == 0 of {
+            3 -> case length_bytes(pi.bind_type) == 0 of {
                 true -> pi.bind_name == "_";
                 false -> case types_equal_surface(scrutinee_type, pi.bind_type) of {
                     true -> true;
@@ -1441,7 +1414,7 @@ fn case_pattern_matches_scrutinee(pi: { is_valid: bool, pattern_kind: int64, boo
                         true -> true;
                         false -> case types_equal_surface(pi.bind_type, "atom") and case_type_is_atom_union(scrutinee_type) of {
                             true -> true;
-                            false -> case len(pi.bind_type) >= 5 of {
+                            false -> case length_bytes(pi.bind_type) >= 5 of {
                                 true -> case substring(pi.bind_type, 0, 5) == "List[" of {
                                     true -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
                                     false -> false
@@ -1466,16 +1439,16 @@ fn case_pattern_matches_scrutinee(pi: { is_valid: bool, pattern_kind: int64, boo
 
 fn case_record_inner_fields_match_more(rem: string, scrutinee_type: string) -> bool {
     r: string <- strip_spaces(rem);
-    case len(r) == 0 of {
+    case length_bytes(r) == 0 of {
         true -> true;
         false -> {
             (seg: string, rest: string) <- type_checker_record_types@record_case_field_step(r);
             (fname: string, sub: string) <- type_checker_record_types@record_field_segment_name_sub(seg);
-            case len(fname) == 0 of {
+            case length_bytes(fname) == 0 of {
                 true -> false;
                 false -> {
                     fty: string <- type_checker_record_types@find_field_type_in_record(scrutinee_type, fname);
-                    case len(fty) == 0 of {
+                    case length_bytes(fty) == 0 of {
                         true -> false;
                         false -> {
                             spi: { is_valid: bool, pattern_kind: int64, bool_lit: bool, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } <- case_parse_record_field_subpat(sub, fty);
@@ -1500,7 +1473,7 @@ fn case_record_pat_matches_full(pat_str: string, scrutinee_type: string) -> bool
         true -> {
             inner: string <- type_checker_record_types@record_case_inner_body(pat_str);
             rin: string <- strip_spaces(inner);
-            case len(rin) == 0 of {
+            case length_bytes(rin) == 0 of {
                 true -> type_checker_record_types@count_record_fields(scrutinee_type) == 0;
                 false -> case_record_inner_fields_match_more(rin, scrutinee_type)
             }
@@ -1510,23 +1483,23 @@ fn case_record_pat_matches_full(pat_str: string, scrutinee_type: string) -> bool
 
 fn case_record_pattern_has_nonwildcard_bind_loop(rem: string, scrutinee_type: string) -> bool {
     r: string <- strip_spaces(rem);
-    case len(r) == 0 of {
+    case length_bytes(r) == 0 of {
         true -> false;
         false -> {
             (seg: string, rest: string) <- type_checker_record_types@record_case_field_step(r);
             (fname: string, sub: string) <- type_checker_record_types@record_field_segment_name_sub(seg);
-            case len(fname) == 0 of {
+            case length_bytes(fname) == 0 of {
                 true -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type);
                 false -> {
                     fty: string <- type_checker_record_types@find_field_type_in_record(scrutinee_type, fname);
-                    case len(fty) == 0 of {
+                    case length_bytes(fty) == 0 of {
                         true -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type);
                         false -> {
                             spi: { is_valid: bool, pattern_kind: int64, bool_lit: bool, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } <- case_parse_record_field_subpat(sub, fty);
                             case spi.is_valid of {
                                 false -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type);
                                 true -> case spi.pattern_kind of {
-                                    2 -> case len(spi.bind_name) > 0 and spi.bind_name != "_" of { true -> true; false -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type) };
+                                    2 -> case length_bytes(spi.bind_name) > 0 and spi.bind_name != "_" of { true -> true; false -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type) };
                                     8 -> case case_record_pattern_has_nonwildcard_bind_loop(type_checker_record_types@record_case_inner_body(spi.bind_type), fty) of { true -> true; false -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type) };
                                     _: int64 -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type)
                                 }
@@ -1541,16 +1514,16 @@ fn case_record_pattern_has_nonwildcard_bind_loop(rem: string, scrutinee_type: st
 
 fn case_extend_record_fields_rem(context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, rem: string, scrutinee_type: string) -> { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } {
     r: string <- strip_spaces(rem);
-    case len(r) == 0 of {
+    case length_bytes(r) == 0 of {
         true -> context;
         false -> {
             (seg: string, rest: string) <- type_checker_record_types@record_case_field_step(r);
             (fname: string, sub: string) <- type_checker_record_types@record_field_segment_name_sub(seg);
-            case len(fname) == 0 of {
+            case length_bytes(fname) == 0 of {
                 true -> case_extend_record_fields_rem(context, rest, scrutinee_type);
                 false -> {
                     fty: string <- type_checker_record_types@find_field_type_in_record(scrutinee_type, fname);
-                    case len(fty) == 0 of {
+                    case length_bytes(fty) == 0 of {
                         true -> case_extend_record_fields_rem(context, rest, scrutinee_type);
                         false -> {
                             spi: { is_valid: bool, pattern_kind: int64, bool_lit: bool, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } <- case_parse_record_field_subpat(sub, fty);
@@ -1577,8 +1550,8 @@ fn case_pattern_has_named_binding(pi: { is_valid: bool, pattern_kind: int64, boo
     case pi.is_valid of {
         false -> false;
         true -> case pi.pattern_kind of {
-            2 -> len(pi.bind_name) > 0;
-            6 -> (len(pi.bind_name) > 0 and pi.bind_name != "_") or (len(pi.list_tail_name) > 0 and pi.list_tail_name != "_");
+            2 -> length_bytes(pi.bind_name) > 0;
+            6 -> (length_bytes(pi.bind_name) > 0 and pi.bind_name != "_") or (length_bytes(pi.list_tail_name) > 0 and pi.list_tail_name != "_");
             8 -> case_record_pattern_has_nonwildcard_bind_loop(type_checker_record_types@record_case_inner_body(pi.bind_type), scrutinee_type);
             _: int64 -> false
         }
@@ -1610,11 +1583,11 @@ fn case_extend_context_for_pattern(context: { env: List[{ name: string, type_id:
             6 -> case case_list_cons_matches(pi, scrutinee_type) of {
                 false -> context;
                 true -> {
-                    ctx_after_head: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- case len(pi.bind_name) > 0 and pi.bind_name != "_" of {
+                    ctx_after_head: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- case length_bytes(pi.bind_name) > 0 and pi.bind_name != "_" of {
                         true -> type_checker_core@context_add_symbol_surface(context, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), "");
                         false -> context
                     };
-                    case len(pi.list_tail_name) > 0 and pi.list_tail_name != "_" of {
+                    case length_bytes(pi.list_tail_name) > 0 and pi.list_tail_name != "_" of {
                         true -> type_checker_core@context_add_symbol_surface(ctx_after_head, pi.list_tail_name, pi.list_tail_type, parser_ast@empty_effect_name_list(), "");
                         false -> ctx_after_head
                     }
@@ -1692,7 +1665,7 @@ fn case_scan_bool_coverage(branches: { nodes: List[{ kind: int64, value: string,
 fn infer_case_expr_kind13(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
     node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
     scrut_t: string <- infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
-    case len(scrut_t) == 0 of {
+    case length_bytes(scrut_t) == 0 of {
         true -> "";
         false -> infer_case_first_rhs_type(parser_ast@expr_at(expr, node.right_expr), scrut_t, context)
     }

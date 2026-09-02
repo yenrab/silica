@@ -95,7 +95,7 @@ fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: stri
 }
 
 fn find_pipe_from(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "|" of {
             true -> i;
@@ -105,7 +105,7 @@ fn find_pipe_from(s: string, i: int64) -> int64 {
 }
 
 fn base_reg_raw(outer: string) -> string {
-    case len(outer) == 0 of {
+    case length_bytes(outer) == 0 of {
         true -> "";
         false -> case substring(outer, 0, 1) == "|" of {
             true -> "";
@@ -121,7 +121,7 @@ fn base_reg_raw(outer: string) -> string {
 }
 
 fn base_reg_check(raw: string) -> string {
-    case len(raw) > 0 and substring(raw, 0, 1) == "[" of {
+    case length_bytes(raw) > 0 and substring(raw, 0, 1) == "[" of {
         true -> "";
         false -> raw
     }
@@ -132,7 +132,7 @@ fn base_reg_of(outer: string) -> string {
 }
 
 fn match_prefix_at_inner(haystack: string, needle: string, start: int64, i: int64) -> bool {
-    case i >= len(needle) of {
+    case i >= length_bytes(needle) of {
         true -> true;
         false -> case substring(haystack, start + i, start + i + 1) == substring(needle, i, i + 1) of {
             true -> match_prefix_at_inner(haystack, needle, start, i + 1);
@@ -142,9 +142,9 @@ fn match_prefix_at_inner(haystack: string, needle: string, start: int64, i: int6
 }
 
 fn match_prefix_at(haystack: string, needle: string, start: int64) -> bool {
-    case start + len(needle) > len(haystack) of {
+    case start + length_bytes(needle) > length_bytes(haystack) of {
         true -> false;
-        false -> case len(needle) == 0 of {
+        false -> case length_bytes(needle) == 0 of {
             true -> true;
             false -> match_prefix_at_inner(haystack, needle, start, 0)
         }
@@ -152,7 +152,7 @@ fn match_prefix_at(haystack: string, needle: string, start: int64) -> bool {
 }
 
 fn find_str_at(haystack: string, needle: string, start: int64) -> int64 {
-    case start + len(needle) > len(haystack) of {
+    case start + length_bytes(needle) > length_bytes(haystack) of {
         true -> -1;
         false -> case match_prefix_at(haystack, needle, start) of {
             true -> start;
@@ -165,21 +165,21 @@ fn extract_sp_bindings(outer: string) -> string {
     pipe: int64 <- find_pipe_from(outer, 0);
     case pipe < 0 of {
         true -> "";
-        false -> substring(outer, pipe, len(outer))
+        false -> substring(outer, pipe, length_bytes(outer))
     }
 }
 
 fn find_sp_binding_extract(outer_reg: string, val_start: int64) -> string {
     val_end: int64 <- find_pipe_from(outer_reg, val_start);
     case val_end < 0 of {
-        true -> substring(outer_reg, val_start, len(outer_reg));
+        true -> substring(outer_reg, val_start, length_bytes(outer_reg));
         false -> substring(outer_reg, val_start, val_end)
     }
 }
 
 // emitter_core stores formal params as "|%name=REG". User-call SIR uses bare callee names ("op").
 fn find_sp_binding_percent_param(outer_reg: string, bare_param_name: string) -> string {
-    percent_name: string <- case len(bare_param_name) > 0 and substring(bare_param_name, 0, 1) == "%" of {
+    percent_name: string <- case length_bytes(bare_param_name) > 0 and substring(bare_param_name, 0, 1) == "%" of {
         true -> bare_param_name;
         false -> concat("%", bare_param_name)
     };
@@ -191,11 +191,11 @@ fn find_sp_binding_percent_param(outer_reg: string, bare_param_name: string) -> 
 // both select the last (innermost) binding.
 fn find_sp_binding_bare_or_percent_param(outer_reg: string, name: string) -> string {
     b0: string <- find_last_sp_binding(outer_reg, name);
-    case len(b0) > 0 of {
+    case length_bytes(b0) > 0 of {
         true -> case b0 == "SP" of {
             true -> {
                 percent_binding: string <- find_sp_binding_percent_param(outer_reg, name);
-                case len(percent_binding) > 0 of {
+                case length_bytes(percent_binding) > 0 of {
                     true -> percent_binding;
                     false -> b0
                 }
@@ -213,17 +213,17 @@ fn find_sp_binding_in(outer_reg: string, var_name: string) -> string {
     case pos < 0 of {
         true -> case substring(var_name, 0, 1) == "%" of {
             true -> {
-                bare: string <- substring(var_name, 1, len(var_name));
+                bare: string <- substring(var_name, 1, length_bytes(var_name));
                 key2: string <- concat("|", concat(bare, "="));
                 pos2: int64 <- find_str_at(outer_reg, key2, 0);
                 case pos2 < 0 of {
                     true -> "";
-                    false -> find_sp_binding_extract(outer_reg, pos2 + len(key2))
+                    false -> find_sp_binding_extract(outer_reg, pos2 + length_bytes(key2))
                 }
             };
             false -> ""
         };
-        false -> find_sp_binding_extract(outer_reg, pos + len(key))
+        false -> find_sp_binding_extract(outer_reg, pos + length_bytes(key))
     }
 }
 
@@ -231,10 +231,10 @@ fn find_sp_binding_in(outer_reg: string, var_name: string) -> string {
 // succeed even when base_reg_of(outer_reg) prefixes the string (e.g. X1|... vs |...).
 fn find_sp_binding(outer_reg: string, var_name: string) -> string {
     sp_only: string <- extract_sp_bindings(outer_reg);
-    case len(sp_only) > 0 of {
+    case length_bytes(sp_only) > 0 of {
         true -> {
             first: string <- find_sp_binding_in(sp_only, var_name);
-            case len(first) > 0 of {
+            case length_bytes(first) > 0 of {
                 true -> first;
                 false -> find_sp_binding_in(outer_reg, var_name)
             }
@@ -249,9 +249,9 @@ fn find_sp_binding(outer_reg: string, var_name: string) -> string {
 fn parse_x29_neg_offset_bytes(mem_ref: string) -> int64 {
     pref: string <- "[X29, #-";
     plen: int64 <- 8;
-    case len(mem_ref) > plen + 1 and substring(mem_ref, 0, plen) == pref of {
-        true -> case substring(mem_ref, len(mem_ref) - 1, len(mem_ref)) == "]" of {
-            true -> string_parse@string_to_int64(substring(mem_ref, plen, len(mem_ref) - 1));
+    case length_bytes(mem_ref) > plen + 1 and substring(mem_ref, 0, plen) == pref of {
+        true -> case substring(mem_ref, length_bytes(mem_ref) - 1, length_bytes(mem_ref)) == "]" of {
+            true -> string_parse@string_to_int64(substring(mem_ref, plen, length_bytes(mem_ref) - 1));
             false -> 0 - 1
         };
         false -> 0 - 1
@@ -331,7 +331,7 @@ fn reg_offset_for_index(base_reg: string, idx_str: string) -> string {
 // Keep in sync with module_linkage@asm_symbol_for_definition / asm_linkage_symbol_for_call (that module imports var — duplicate here).
 fn linkage_module_from_outer(outer_reg: string) -> string {
     lm: string <- find_sp_binding(outer_reg, "_lm");
-    case len(lm) > 0 of {
+    case length_bytes(lm) > 0 of {
         true -> lm;
         false -> "main"
     }
@@ -345,7 +345,7 @@ fn linkage_qual_fn_top_level(name: string) -> string {
 }
 
 fn linkage_starts_with_main_dot(s: string) -> bool {
-    len(s) >= 5 and substring(s, 0, 5) == "main."
+    length_bytes(s) >= 5 and substring(s, 0, 5) == "main."
 }
 
 // Keep in sync with module_linkage@macho_escape_global_asm_symbol / asm_symbol_for_definition.
@@ -358,7 +358,7 @@ fn linkage_asm_decimal_digit_char(c: string) -> bool {
 }
 
 fn linkage_macho_global_sym_needs_underscore_prefix(raw: string) -> bool {
-    case len(raw) > 0 of {
+    case length_bytes(raw) > 0 of {
         false -> false;
         true -> {
             first: string <- substring(raw, 0, 1);
@@ -386,7 +386,7 @@ fn linkage_asm_symbol_for_module_fn(module_name: string, fn_name: string) -> str
     raw: string <- case qual == "main" or qual == "main.main" or qual == "main.m" of {
         true -> "main";
         false -> case linkage_starts_with_main_dot(qual) of {
-            true -> concat(module_name, concat(".", substring(qual, 5, len(qual))));
+            true -> concat(module_name, concat(".", substring(qual, 5, length_bytes(qual))));
             false -> concat(module_name, concat("_", instantiated_fn_name@link_name_to_asm_symbol(qual)))
         }
     };
@@ -394,7 +394,7 @@ fn linkage_asm_symbol_for_module_fn(module_name: string, fn_name: string) -> str
 }
 
 fn first_at_in_fn_ref(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "@" of {
             true -> i;
@@ -408,7 +408,7 @@ fn linkage_asm_symbol_for_named_fn_ref(outer_reg: string, bare_sir_name: string)
     case at >= 0 of {
         true -> {
             qmod: string <- substring(bare_sir_name, 0, at);
-            qfn: string <- substring(bare_sir_name, at + 1, len(bare_sir_name));
+            qfn: string <- substring(bare_sir_name, at + 1, length_bytes(bare_sir_name));
             linkage_asm_symbol_for_module_fn(qmod, qfn)
         };
         false -> linkage_asm_symbol_for_module_fn(linkage_module_from_outer(outer_reg), bare_sir_name)
@@ -416,16 +416,16 @@ fn linkage_asm_symbol_for_named_fn_ref(outer_reg: string, bare_sir_name: string)
 }
 
 fn enclosing_sp_binding(bound_name: string, base_bound_reg: string) -> string {
-    case len(base_bound_reg) > 0 and substring(base_bound_reg, 0, 1) == "[" of {
+    case length_bytes(base_bound_reg) > 0 and substring(base_bound_reg, 0, 1) == "[" of {
         true -> concat("|", concat(bound_name, concat("=", base_bound_reg)));
         false -> ""
     }
 }
 
 fn reg_binding(bound_name: string, base_bound_reg: string) -> string {
-    case len(base_bound_reg) > 7 and substring(base_bound_reg, 0, 7) == "[X29, #" of {
+    case length_bytes(base_bound_reg) > 7 and substring(base_bound_reg, 0, 7) == "[X29, #" of {
         true -> concat("|", concat(bound_name, concat("=", base_bound_reg)));
-        false -> case len(base_bound_reg) > 0 and substring(base_bound_reg, 0, 1) != "[" of {
+        false -> case length_bytes(base_bound_reg) > 0 and substring(base_bound_reg, 0, 1) != "[" of {
         true -> concat("|", concat(bound_name, concat("=", base_bound_reg)));
         false -> ""
         }
@@ -447,7 +447,7 @@ fn new_tp_binding(let_name: string, inner_term: { nodes: List[{ kind: int64, typ
 // Do not use the parent's bound_reg here — that incorrectly maps e.g. |%empty_list=X0 when the list lives in X1.
 fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer: string, let_name: string, inner_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, sp_adj: int64, rhs_reg: string) -> string {
     raw_base: string <- base_reg_of(base_bound_reg);
-    base: string <- case len(raw_base) == 0 of {
+    base: string <- case length_bytes(raw_base) == 0 of {
         true -> base_reg_of(current_outer);
         false -> raw_base
     };
@@ -493,7 +493,7 @@ fn is_ident_char(c: string) -> bool {
 }
 
 fn suffix_chars_all_digits(s: string, i: int64) -> bool {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> true;
         false -> case is_ident_digit_char(substring(s, i, i + 1)) of {
             true -> suffix_chars_all_digits(s, i + 1);
@@ -504,15 +504,15 @@ fn suffix_chars_all_digits(s: string, i: int64) -> bool {
 
 // W*/X* GPR names used in |name= bindings (function pointers live in the integer ABI).
 fn binding_is_physical_int_reg(binding: string) -> bool {
-    case len(binding) < 2 of {
+    case length_bytes(binding) < 2 of {
         true -> false;
         false -> {
             p: string <- substring(binding, 0, 1);
             case p == "X" or p == "W" of {
                 false -> false;
                 true -> {
-                    suf: string <- substring(binding, 1, len(binding));
-                    case len(suf) == 0 of {
+                    suf: string <- substring(binding, 1, length_bytes(binding));
+                    case length_bytes(suf) == 0 of {
                         true -> false;
                         false -> case suffix_chars_all_digits(suf, 0) of {
                             false -> false;
@@ -539,7 +539,7 @@ fn bare_name_valid_loop(s: string, i: int64, n: int64) -> bool {
 }
 
 fn bare_name_is_valid_symbol(s: string) -> bool {
-    n: int64 <- len(s);
+    n: int64 <- length_bytes(s);
     case n == 0 of {
         true -> false;
         false -> case is_ident_start_char(substring(s, 0, 1)) of {
@@ -553,7 +553,7 @@ fn bare_name_is_valid_symbol(s: string) -> bool {
 // sir_name_contains_lifted_lambda_sub). Dots are not bare-identifier chars; without this we emit invalid
 // `MOV dest, %take.__lam0` instead of ADRP/ADD. Names starting with `main.` still map via linkage_asm_symbol_for_named_fn_ref.
 fn lifted_lambda_sub_at(m: string, i: int64) -> bool {
-    case i + 6 > len(m) of {
+    case i + 6 > length_bytes(m) of {
         true -> false;
         false -> case substring(m, i, i + 6) == ".__lam" of {
             true -> true;
@@ -567,7 +567,7 @@ fn sir_name_contains_lifted_lambda_sub(m: string) -> bool {
 }
 
 fn lifted_hof_wrapper_sub_at(m: string, i: int64) -> bool {
-    case i + 5 > len(m) of {
+    case i + 5 > length_bytes(m) of {
         true -> false;
         false -> case substring(m, i, i + 5) == ".__lw" of {
             true -> true;
@@ -583,7 +583,7 @@ fn sir_name_contains_lifted_hof_wrapper_sub(m: string) -> bool {
 fn bare_qualifies_as_fn_pointer_asm_symbol(bare: string) -> bool {
     case bare_name_is_valid_symbol(bare) of {
         true -> true;
-        false -> case len(bare) >= 5 and substring(bare, 0, 5) == "main." of {
+        false -> case length_bytes(bare) >= 5 and substring(bare, 0, 5) == "main." of {
             true -> true;
             false -> case first_at_in_fn_ref(bare, 0) >= 0 of {
                 true -> true;
@@ -598,7 +598,7 @@ fn is_memory_ref(s: string) -> bool {
 }
 
 fn emit_var_with_base_reg(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, base: string, outer_reg: string) -> string {
-    case len(base) > 0 of {
+    case length_bytes(base) > 0 of {
         true -> emit_var_reg_outer(term, dest, base, outer_reg);
         false -> emit_var_outer(term, dest, outer_reg)
     }
@@ -625,22 +625,22 @@ fn emit_var_with_sp_check_core(term: { nodes: List[{ kind: int64, type_name: str
     // Resolve |name= once: prefer last binding (prepend tail rebind appends |%v=X2 after stale |%v=X0).
     sp_last: string <- find_last_sp_binding(outer_reg, sir_term_root_node(term).name);
     sp_first: string <- find_sp_binding(outer_reg, sir_term_root_node(term).name);
-    sp_fin: string <- case len(sp_last) > 0 of {
+    sp_fin: string <- case length_bytes(sp_last) > 0 of {
         true -> sp_last;
         false -> sp_first
     };
-    sp_resolved: string <- case len(sp_fin) > 0 of {
+    sp_resolved: string <- case length_bytes(sp_fin) > 0 of {
         true -> sp_fin;
         false -> find_sp_binding_bare_or_percent_param(outer_reg, bare_name_from_term(sir_term_root_node(term).name))
     };
     sp_effective: string <- case spurious_non_gpr_binding_for_fn_param(sp_resolved, sir_term_root_node(term).type_name) of {
         true -> {
             pct: string <- find_sp_binding_bare_or_percent_param(outer_reg, bare_name_from_term(sir_term_root_node(term).name));
-            case len(pct) > 0 of { true -> pct; false -> sp_resolved }
+            case length_bytes(pct) > 0 of { true -> pct; false -> sp_resolved }
         };
         false -> sp_resolved
     };
-    case len(sp_effective) > 0 of {
+    case length_bytes(sp_effective) > 0 of {
         true -> case is_memory_ref(sp_effective) of {
             true -> emit_var_sp_load(dest, sp_effective);
             false -> emit_var_reg_outer(term, dest, sp_effective, outer_reg)
@@ -651,7 +651,7 @@ fn emit_var_with_sp_check_core(term: { nodes: List[{ kind: int64, type_name: str
                 true -> {
                     pct: string <- find_sp_binding_percent_param(outer_reg, bare_fn);
                     base: string <- base_reg_of(outer_reg);
-                    case len(pct) > 0 of {
+                    case length_bytes(pct) > 0 of {
                         true -> emit_var_reg_outer(term, dest, pct, outer_reg);
                         false -> case binding_is_physical_int_reg(base) of {
                             true -> emit_var_reg_outer(term, dest, base, outer_reg);
@@ -675,7 +675,7 @@ fn emit_var_with_sp_check_core(term: { nodes: List[{ kind: int64, type_name: str
 //   "(T1, T2, ...) -> R"   (stripped form emitted by sir_generator types@type_name_to_sir)
 // Both denote a function value. We detect either.
 fn find_top_arrow_from(s: string, i: int64, depth: int64) -> int64 {
-    case i + 1 >= len(s) of {
+    case i + 1 >= length_bytes(s) of {
         true -> -1;
         false -> case depth == 0 and substring(s, i, i + 2) == "->" of {
             true -> i;
@@ -695,7 +695,7 @@ fn find_top_arrow_from(s: string, i: int64, depth: int64) -> int64 {
 }
 
 fn type_name_is_function(type_name: string) -> bool {
-    n: int64 <- len(type_name);
+    n: int64 <- length_bytes(type_name);
     case n >= 3 and substring(type_name, 0, 3) == "fn(" of {
         true -> true;
         false -> case n >= 3 and substring(type_name, 0, 3) == "fn " of {
@@ -709,8 +709,8 @@ fn type_name_is_function(type_name: string) -> bool {
 }
 
 fn bare_name_from_term(term_name: string) -> string {
-    case len(term_name) > 0 and substring(term_name, 0, 1) == "%" of {
-        true -> substring(term_name, 1, len(term_name));
+    case length_bytes(term_name) > 0 and substring(term_name, 0, 1) == "%" of {
+        true -> substring(term_name, 1, length_bytes(term_name));
         false -> term_name
     }
 }
@@ -746,7 +746,7 @@ fn strip_mov_x2_x1_then_x1_x2(s: string) -> string {
     pos: int64 <- find_str_at(s, old, 0);
     case pos < 0 of {
         true -> s;
-        false -> concat(substring(s, 0, pos), concat("    MOV X2, X1\n\n", substring(s, pos + len(old), len(s))))
+        false -> concat(substring(s, 0, pos), concat("    MOV X2, X1\n\n", substring(s, pos + length_bytes(old), length_bytes(s))))
     }
 }
 
@@ -760,7 +760,7 @@ fn emit_var_reg_outer(term: { nodes: List[{ kind: int64, type_name: string, valu
     reg_effective: string <- case spurious_non_gpr_binding_for_fn_param(reg, sir_term_root_node(term).type_name) of {
         true -> {
             pct: string <- find_sp_binding_bare_or_percent_param(outer_reg, bare_fn);
-            case len(pct) > 0 of { true -> pct; false -> reg }
+            case length_bytes(pct) > 0 of { true -> pct; false -> reg }
         };
         false -> reg
     };
@@ -769,9 +769,9 @@ fn emit_var_reg_outer(term: { nodes: List[{ kind: int64, type_name: string, valu
             true -> emit_var_reg_core(term, dest, reg_effective);
             false -> emit_fn_symbol_adrp_add(dest, linkage_asm_symbol_for_named_fn_ref(outer_reg, bare_fn));
         };
-        false -> case len(reg_effective) > 0 and substring(reg_effective, 0, 1) == "%" of {
+        false -> case length_bytes(reg_effective) > 0 and substring(reg_effective, 0, 1) == "%" of {
             true -> {
-                bare: string <- substring(reg, 1, len(reg));
+                bare: string <- substring(reg, 1, length_bytes(reg));
                 case bare_qualifies_as_fn_pointer_asm_symbol(bare) of {
                     true -> emit_fn_symbol_adrp_add(dest, linkage_asm_symbol_for_named_fn_ref(outer_reg, bare));
                     false -> emit_var_reg_core(term, dest, reg_effective)
@@ -790,12 +790,12 @@ fn emit_var_reg_core(term: { nodes: List[{ kind: int64, type_name: string, value
     case dest == reg of {
         true -> "";
         false -> {
-            first: string <- case len(dest) > 0 of { true -> substring(dest, 0, 1); false -> "" };
-            reg_first: string <- case len(reg) > 0 of { true -> substring(reg, 0, 1); false -> "" };
+            first: string <- case length_bytes(dest) > 0 of { true -> substring(dest, 0, 1); false -> "" };
+            reg_first: string <- case length_bytes(reg) > 0 of { true -> substring(reg, 0, 1); false -> "" };
             matched_reg: string <- case first == "X" and reg_first == "W" of {
-                true -> concat("X", substring(reg, 1, len(reg)));
+                true -> concat("X", substring(reg, 1, length_bytes(reg)));
                 false -> case first == "W" and reg_first == "X" of {
-                    true -> concat("W", substring(reg, 1, len(reg)));
+                    true -> concat("W", substring(reg, 1, length_bytes(reg)));
                     false -> reg
                 }
             };
@@ -804,7 +804,7 @@ fn emit_var_reg_core(term: { nodes: List[{ kind: int64, type_name: string, value
                     fmov_src: string <- case reg_first == "H" of {
                         true -> matched_reg;
                         false -> case reg_first == "X" of {
-                            true -> concat("W", substring(matched_reg, 1, len(matched_reg)));
+                            true -> concat("W", substring(matched_reg, 1, length_bytes(matched_reg)));
                             false -> case reg_first == "W" of {
                                 true -> matched_reg;
                                 false -> matched_reg
@@ -846,11 +846,11 @@ fn reg_reserved_as_sret_buffer(outer_reg: string, reg: string) -> bool {
 fn is_reg_bound(outer_reg: string, reg: string) -> bool {
     key_mid: string <- concat(concat("=", reg), "|");
     key_end: string <- concat("=", reg);
-    end_pos: int64 <- len(outer_reg) - len(key_end);
+    end_pos: int64 <- length_bytes(outer_reg) - length_bytes(key_end);
     case find_str_at(outer_reg, key_mid, 0) >= 0 of {
         true -> true;
         false -> case end_pos >= 0 of {
-            true -> case substring(outer_reg, end_pos, len(outer_reg)) == key_end of {
+            true -> case substring(outer_reg, end_pos, length_bytes(outer_reg)) == key_end of {
                 true -> true;
                 false -> reg_reserved_as_sret_buffer(outer_reg, reg)
             };
@@ -913,7 +913,7 @@ fn find_last_sp_binding_rec(outer_reg: string, key: string, start: int64, last_p
     case pos < 0 of {
         true -> case last_pos < 0 of {
             true -> "";
-            false -> find_sp_binding_extract(outer_reg, last_pos + len(key))
+            false -> find_sp_binding_extract(outer_reg, last_pos + length_bytes(key))
         };
         false -> find_last_sp_binding_rec(outer_reg, key, pos + 1, pos)
     }
@@ -922,11 +922,11 @@ fn find_last_sp_binding_rec(outer_reg: string, key: string, start: int64, last_p
 fn find_last_sp_binding(outer_reg: string, var_name: string) -> string {
     key: string <- concat("|", concat(var_name, "="));
     res: string <- find_last_sp_binding_rec(outer_reg, key, 0, -1);
-    case len(res) > 0 of {
+    case length_bytes(res) > 0 of {
         true -> res;
         false -> case substring(var_name, 0, 1) == "%" of {
             true -> {
-                bare: string <- substring(var_name, 1, len(var_name));
+                bare: string <- substring(var_name, 1, length_bytes(var_name));
                 key2: string <- concat("|", concat(bare, "="));
                 find_last_sp_binding_rec(outer_reg, key2, 0, -1)
             };

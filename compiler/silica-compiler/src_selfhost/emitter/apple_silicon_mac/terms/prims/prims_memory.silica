@@ -165,7 +165,7 @@ fn emit_region_bump_check(bump_math: string) -> string {
 }
 
 fn memory_type_is_tuple(type_name: string) -> bool {
-    len(type_name) >= 2 and substring(type_name, 0, 1) == "("
+    length_bytes(type_name) >= 2 and substring(type_name, 0, 1) == "("
 }
 
 fn memory_value_is_tuple_like(value: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
@@ -328,9 +328,13 @@ fn int64_to_str(n: int64) -> string {
 
 fn bounds_len_from_prim_value(value: string) -> string {
     marker: string <- "|bounds:";
-    case len(value) >= len(marker) of {
-        true -> case substring(value, 0, len(marker)) == marker of {
-            true -> substring(value, len(marker), len(value));
+    case length_bytes(value) >= length_bytes(marker) of {
+        true -> case substring(value, 0, length_bytes(marker)) == marker of {
+            true -> {
+                // seed miscompiles length_bytes(<other var>) inline as substring's START arg (yields ""); bind it first.
+                m: int64 <- length_bytes(marker);
+                substring(value, m, length_bytes(value))
+            };
             false -> ""
         };
         false -> ""
@@ -338,8 +342,8 @@ fn bounds_len_from_prim_value(value: string) -> string {
 }
 
 fn is_decimal_literal(s: string, i: int64) -> bool {
-    case i >= len(s) of {
-        true -> len(s) > 0;
+    case i >= length_bytes(s) of {
+        true -> length_bytes(s) > 0;
         false -> case substring(s, i, i + 1) of {
             "0" -> is_decimal_literal(s, i + 1);
             "1" -> is_decimal_literal(s, i + 1);
@@ -358,13 +362,13 @@ fn is_decimal_literal(s: string, i: int64) -> bool {
 
 fn emit_buf_bounds_check(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, outer_reg: string, _label_sfx: string) -> string {
     len_param: string <- bounds_len_from_prim_value(sir_term_root_node(term).value);
-    case len(len_param) == 0 of {
+    case length_bytes(len_param) == 0 of {
         true -> "";
         false -> case is_decimal_literal(len_param, 0) of {
             true -> concat(concat("    CMP X2, #", len_param), "\n    B.GE L_buf_bounds\n");
             false -> {
                 binding: string <- var@find_sp_binding(outer_reg, len_param);
-                case len(binding) == 0 of {
+                case length_bytes(binding) == 0 of {
                     true -> "";
                     false -> concat(concat("    CMP X2, ", binding), "\n    B.GE L_buf_bounds\n")
                 }
@@ -374,11 +378,11 @@ fn emit_buf_bounds_check(term: { nodes: List[{ kind: int64, type_name: string, v
 }
 
 fn memory_type_contains_from(h: string, needle: string, i: int64) -> bool {
-    case len(needle) == 0 of {
+    case length_bytes(needle) == 0 of {
         true -> true;
-        false -> case i + len(needle) > len(h) of {
+        false -> case i + length_bytes(needle) > length_bytes(h) of {
             true -> false;
-            false -> case substring(h, i, i + len(needle)) == needle of {
+            false -> case substring(h, i, i + length_bytes(needle)) == needle of {
                 true -> true;
                 false -> memory_type_contains_from(h, needle, i + 1)
             }
@@ -391,9 +395,9 @@ fn memory_type_contains(h: string, needle: string) -> bool {
 }
 
 fn w_reg_from_gpr(reg: string) -> string {
-    case len(reg) > 0 of {
+    case length_bytes(reg) > 0 of {
         true -> case substring(reg, 0, 1) == "X" of {
-            true -> concat("W", substring(reg, 1, len(reg)));
+            true -> concat("W", substring(reg, 1, length_bytes(reg)));
             false -> reg
         };
         false -> reg

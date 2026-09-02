@@ -280,7 +280,7 @@ Note:
 6. Recursion Form Requirements (Lowerable Recursion)
 ================================================================================
 
-Silica expresses iteration via recursion only (Section 1.2: "No Loops" principle).
+Silica expresses iteration via recursion only (Section 1.2 / 1.3: LLM-Friendly / One Way at the Language Level / No Loops).
 
 6.1 Canonical SIMD Recursion Scheme
 To be SIMD-lowerable, the user MUST express SIMD map through one of:

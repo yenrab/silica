@@ -409,11 +409,11 @@ fn is_digit_dag(c: string) -> boolean {
 }
 
 fn parse_signed_dec_dag(s: string) -> (boolean, int64) {
-    case len(s) == 0 of {
+    case length_bytes(s) == 0 of {
         true -> (false, 0);
         false -> case substring(s, 0, 1) == "-" of {
             true -> {
-                (ok: boolean, n: int64) <- parse_unsigned_dec_dag(substring(s, 1, len(s)));
+                (ok: boolean, n: int64) <- parse_unsigned_dec_dag(substring(s, 1, length_bytes(s)));
                 case ok of { true -> (true, 0 - n); false -> (false, 0) }
             };
             false -> parse_unsigned_dec_dag(s)
@@ -422,14 +422,14 @@ fn parse_signed_dec_dag(s: string) -> (boolean, int64) {
 }
 
 fn parse_unsigned_dec_dag(s: string) -> (boolean, int64) {
-    case len(s) == 0 of {
+    case length_bytes(s) == 0 of {
         true -> (false, 0);
         false -> parse_unsigned_dec_dag_loop(s, 0, 0)
     }
 }
 
 fn parse_unsigned_dec_dag_loop(s: string, i: int64, acc: int64) -> (boolean, int64) {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> (true, acc);
         false -> {
             ch: string <- substring(s, i, i + 1);
@@ -448,7 +448,7 @@ fn parse_unsigned_dec_dag_loop(s: string, i: int64, acc: int64) -> (boolean, int
 }
 
 fn find_comma_dag(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0 - 1;
         false -> case substring(s, i, i + 1) == "," of {
             true -> i;
@@ -458,14 +458,14 @@ fn find_comma_dag(s: string, i: int64) -> int64 {
 }
 
 fn parse_root_ids_line(s: string, i: int64, acc: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> reverse_int_roots(acc, empty_int_roots());
         false -> {
             c: int64 <- find_comma_dag(s, i);
             case c < 0 of {
                 true -> {
-                    piece: string <- substring(s, i, len(s));
-                    case len(piece) == 0 of {
+                    piece: string <- substring(s, i, length_bytes(s));
+                    case length_bytes(piece) == 0 of {
                         true -> reverse_int_roots(acc, empty_int_roots());
                         false -> {
                             (ok: boolean, n: int64) <- parse_signed_dec_dag(piece);
@@ -508,7 +508,7 @@ fn parse_dag_node_line(s: string) -> (boolean, { kind: int64, arg_a: int64, arg_
                                     (ok_a: boolean, a: int64) <- parse_signed_dec_dag(substring(s, c1 + 1, c2));
                                     (ok_b: boolean, b: int64) <- parse_signed_dec_dag(substring(s, c2 + 1, c3));
                                     (ok_c: boolean, c: int64) <- parse_signed_dec_dag(substring(s, c3 + 1, c4));
-                                    flag_s: string <- substring(s, c4 + 1, len(s));
+                                    flag_s: string <- substring(s, c4 + 1, length_bytes(s));
                                     case ok_k and ok_a and ok_b and ok_c of {
                                         false -> (false, { kind: 0, arg_a: 0, arg_b: 0, arg_c: 0, buf_size_is_name: false });
                                         true -> (true, { kind: k, arg_a: a, arg_b: b, arg_c: c, buf_size_is_name: flag_s == "1" })
@@ -550,21 +550,25 @@ fn take_n_node_lines(lines: List[string, mem(normal)], n: int64, acc: List[{ kin
 }
 
 fn starts_with_dag(s: string, prefix: string) -> boolean {
-    case len(s) < len(prefix) of {
+    case length_bytes(s) < length_bytes(prefix) of {
         true -> false;
-        false -> substring(s, 0, len(prefix)) == prefix
+        false -> substring(s, 0, length_bytes(prefix)) == prefix
     }
 }
 
 fn header_after_dag(line: string, key: string) -> string {
     case starts_with_dag(line, key) of {
-        true -> substring(line, len(key), len(line));
+        true -> {
+            // seed miscompiles length_bytes(<other var>) inline as substring's START arg (yields ""); bind it first.
+            k: int64 <- length_bytes(key);
+            substring(line, k, length_bytes(line))
+        };
         false -> ""
     }
 }
 
 fn find_newline_dag(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0 - 1;
         false -> case substring(s, i, i + 1) == "\n" of {
             true -> i;
@@ -574,14 +578,14 @@ fn find_newline_dag(s: string, i: int64) -> int64 {
 }
 
 fn split_lines_dag(s: string, i: int64, acc: List[string, mem(normal)]) -> List[string, mem(normal)] {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> reverse_dag_names(acc, empty_dag_names());
         false -> {
             nl: int64 <- find_newline_dag(s, i);
             case nl < 0 of {
                 true -> {
-                    line: string <- substring(s, i, len(s));
-                    case len(line) == 0 of {
+                    line: string <- substring(s, i, length_bytes(s));
+                    case length_bytes(line) == 0 of {
                         true -> reverse_dag_names(acc, empty_dag_names());
                         false -> reverse_dag_names(cons_dag_name(line, acc), empty_dag_names())
                     }
@@ -609,7 +613,7 @@ fn parse_dag_from_content(content: string) -> (
     List[int64, mem(normal)],
     List[int64, mem(normal)]
 ) {
-    case len(content) == 0 of {
+    case length_bytes(content) == 0 of {
         true -> (false, empty_dag_names(), empty_dag_nodes(), empty_int_roots(), empty_int_roots());
         false -> {
             lines: List[string, mem(normal)] <- split_lines_dag(content, 0, empty_dag_names());

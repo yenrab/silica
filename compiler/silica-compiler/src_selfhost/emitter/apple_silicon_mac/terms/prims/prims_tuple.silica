@@ -80,20 +80,20 @@ fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: stri
 }
 
 fn strip_ty_leading(s: string) -> string {
-    case len(s) == 0 of {
+    case length_bytes(s) == 0 of {
         true -> "";
         false -> case substring(s, 0, 1) == " " of {
-            true -> strip_ty_leading(substring(s, 1, len(s)));
+            true -> strip_ty_leading(substring(s, 1, length_bytes(s)));
             false -> s
         }
     }
 }
 
 fn strip_ty_trailing(s: string) -> string {
-    case len(s) == 0 of {
+    case length_bytes(s) == 0 of {
         true -> "";
-        false -> case substring(s, len(s) - 1, len(s)) == " " of {
-            true -> strip_ty_trailing(substring(s, 0, len(s) - 1));
+        false -> case substring(s, length_bytes(s) - 1, length_bytes(s)) == " " of {
+            true -> strip_ty_trailing(substring(s, 0, length_bytes(s) - 1));
             false -> s
         }
     }
@@ -104,11 +104,11 @@ fn strip_ty(s: string) -> string {
 }
 
 fn tuple_inner_content(type_name: string) -> string {
-    substring(type_name, 1, len(type_name) - 1)
+    substring(type_name, 1, length_bytes(type_name) - 1)
 }
 
 fn next_comma_top_level(inner: string, start: int64, paren_depth: int64, brace_depth: int64, bracket_depth: int64) -> int64 {
-    case start >= len(inner) of {
+    case start >= length_bytes(inner) of {
         true -> -1;
         false -> case substring(inner, start, start + 1) of {
             "(" -> next_comma_top_level(inner, start + 1, paren_depth + 1, brace_depth, bracket_depth);
@@ -139,7 +139,7 @@ fn tuple_type_segment_at(inner: string, idx: int64) -> string {
             c: int64 <- next_comma_top_level(inner, 0, 0, 0, 0);
             case c < 0 of {
                 true -> "";
-                false -> tuple_type_segment_at(substring(inner, c + 1, len(inner)), idx - 1)
+                false -> tuple_type_segment_at(substring(inner, c + 1, length_bytes(inner)), idx - 1)
             }
         }
     }
@@ -167,7 +167,7 @@ fn nested_tuple_span_bytes(tuple_ty: string) -> int64 {
 // Byte span of one tuple slot's type segment (matches emit_flat_tuple_stores stepping / memcpy sizes).
 fn tuple_segment_stride_bytes(seg_raw: string, parent_tuple_elem_count: int64) -> int64 {
     seg: string <- strip_ty(seg_raw);
-    case len(seg) == 0 of {
+    case length_bytes(seg) == 0 of {
         true -> 8;
         false -> case reg_conventions@is_float32_type(seg) and parent_tuple_elem_count > 1 of {
             true -> 16;
@@ -177,7 +177,7 @@ fn tuple_segment_stride_bytes(seg_raw: string, parent_tuple_elem_count: int64) -
                 // tuple_proj of a (record, int64) pair load the second element at #64 while
                 // construction stored pointers at #0/#8.
                 true -> 8;
-                false -> case len(seg) >= 5 and substring(seg, 0, 5) == "List[" of {
+                false -> case length_bytes(seg) >= 5 and substring(seg, 0, 5) == "List[" of {
                     true -> 8;
                     false -> case substring(seg, 0, 1) == "(" of {
                         // Matches emit_flat_tuple_stores non-record aggregates: nested tuple_make/record_make
@@ -226,7 +226,7 @@ fn scan_tuple_has_f32(type_name: string, i: int64, cnt: int64) -> bool {
 }
 
 fn tuple_type_uses_boxed_float32(type_name: string) -> bool {
-    case len(type_name) < 2 or substring(type_name, 0, 1) != "(" of {
+    case length_bytes(type_name) < 2 or substring(type_name, 0, 1) != "(" of {
         true -> false;
         false -> {
             cnt: int64 <- count_type_elements(type_name);
@@ -254,10 +254,10 @@ fn count_chain_elements(term: { nodes: List[{ kind: int64, type_name: string, va
 }
 
 fn count_type_elements(type_name: string) -> int64 {
-    case len(type_name) < 2 of {
+    case length_bytes(type_name) < 2 of {
         true -> 1;
         false -> case substring(type_name, 0, 1) == "(" of {
-            true -> 1 + count_top_level_commas(substring(type_name, 1, len(type_name) - 1), 0, 0, 0, 0);
+            true -> 1 + count_top_level_commas(substring(type_name, 1, length_bytes(type_name) - 1), 0, 0, 0, 0);
             false -> 1
         }
     }
@@ -265,7 +265,7 @@ fn count_type_elements(type_name: string) -> int64 {
 
 // Tuple arity from surface `(a, b, ...)`: commas inside nested `(...)`, `{ ... }`, or `[ ... ]` do not separate tuple slots.
 fn count_top_level_commas(s: string, i: int64, paren_depth: int64, brace_depth: int64, bracket_depth: int64) -> int64 {
-    case i >= len(s) of {
+    case i >= length_bytes(s) of {
         true -> 0;
         false -> case substring(s, i, i + 1) of {
             "(" -> count_top_level_commas(s, i + 1, paren_depth + 1, brace_depth, bracket_depth);
@@ -319,8 +319,8 @@ fn emit_flat_store(type_name: string, reg_num: string, idx: int64) -> string {
 }
 
 fn emit_flat_mov_dest(dest: string) -> string {
-    dest_ptr: string <- case len(dest) > 0 and substring(dest, 0, 1) == "W" of {
-        true -> concat("X", substring(dest, 1, len(dest)));
+    dest_ptr: string <- case length_bytes(dest) > 0 and substring(dest, 0, 1) == "W" of {
+        true -> concat("X", substring(dest, 1, length_bytes(dest)));
         false -> dest
     };
     case dest == "SP" of {
@@ -353,8 +353,8 @@ fn ldr_prefix_for_type(type_name: string) -> string {
 fn emit_tuple_proj(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
     offset_str: string <- index_to_offset(sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).value);
     prefix: string <- ldr_prefix_for_type(sir_term_root_node(term).type_name);
-    dest_num: string <- case len(dest) > 0 of {
-        true -> substring(dest, 1, len(dest));
+    dest_num: string <- case length_bytes(dest) > 0 of {
+        true -> substring(dest, 1, length_bytes(dest));
         false -> "0"
     };
     ldr_reg: string <- concat(prefix, dest_num);
