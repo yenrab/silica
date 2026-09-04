@@ -12,28 +12,6 @@ The [language specification](https://github.com/yenrab/silica/blob/main/compiler
 
 [Back to Silica]({% link index.md %})
 
-On this page
-
-1. [Explicit effects](#explicit-effects)
-2. [Process monad](#process-monad)
-3. [Actor-based concurrency](#actor-based-concurrency)
-4. [Region-based memory](#region-based-memory)
-5. [References stay with their region](#references-stay-with-their-region)
-6. [Heap is an effect](#heap-is-an-effect)
-7. [Designed for modern chips](#designed-for-modern-chips)
-8. [LLM-friendly and human-readable](#llm-friendly-and-human-readable)
-  - [One way at the language level](#one-way-at-the-language-level)
-  - [No loops](#no-loops)
-  - [No generics](#no-generics)
-  - [Unambiguous syntax](#unambiguous-syntax)
-    - [Explicit type annotations](#explicit-type-annotations)
-    - [Consistent naming conventions](#consistent-naming-conventions)
-    - [Concrete types over generics](#concrete-types-over-generics)
-    - [Structured pattern matching](#structured-pattern-matching)
-    - [Explicit effect tracking](#explicit-effect-tracking)
-    - [Module and import clarity](#module-and-import-clarity)
-    - [No aliases](#no-aliases)
-
 ## 1. Explicit effects
 
 All side effects are tracked in type signatures.

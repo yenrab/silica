@@ -18,28 +18,9 @@ The [language specification](https://github.com/yenrab/silica/blob/main/compiler
 
 Simple runnable programs live in `[trials/](https://github.com/yenrab/silica/tree/main/trials)`. Each subdirectory is one topic. The snippets in this book are maps of the idea. Open those files when you want a program that is meant to compile and run.
 
-On this page
-
-1. [Positioning](#1-positioning)
-2. [Syntax in one pass](#2-syntax-in-one-pass)
-3. [Types are structural](#3-types-are-structural)
-4. [Functions, bindings, case](#4-functions-bindings-case)
-5. [Sequences and effects](#5-sequences-and-effects)
-6. [Data](#6-data)
-7. [Recursion only](#7-recursion-only)
-8. [Modules and traits](#8-modules-and-traits)
-9. [Regions](#9-regions)
-10. [Actors](#10-actors)
-11. [Fifi](#11-fifi)
-12. [What the compiler rejects](#12-what-the-compiler-rejects)
-13. [Next](#13-next)
-
-
-
 ## 1. Positioning
 
 You will recognize most of the pieces. The combination is the point. Silica puts effects, isolation, and memory into one model so the compiler can refuse programs that other languages would accept and then hope a review or a collector saves.
-
 
 | You know                              | Silica’s analogue                        | Difference that matters                                                                                                                     |
 | ------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -51,7 +32,6 @@ You will recognize most of the pieces. The combination is the point. Silica puts
 | ML / OCaml ADTs                       | Inline sums, tagged tuples, atoms        | No user-declared type names. You write the shape at the use site.                                                                           |
 | C++ / Java generics                   | Traits over concrete inline types        | No `T` parameters in user code.                                                                                                             |
 | Python names, `if`/`for`, GC, `print` | Bindings, `case`, regions, `device_io`   | Types and effects are written down. Names do not mutate. There is no heap collector.                                                        |
-
 
 The design rules, in the order you will feel them:
 
@@ -87,7 +67,6 @@ fn main() -> int64 {
 
 Operators you will hit immediately:
 
-
 | Token        | Role                            |
 | ------------ | ------------------------------- |
 | `<-`         | Bind a name to a value          |
@@ -97,7 +76,6 @@ Operators you will hit immediately:
 | `@`          | Module qualify: `math@add`      |
 | `//` `{- -}` | Comments                        |
 | `:ok`        | Atom literal                    |
-
 
 There is no standalone `if`. You branch with `case`. The keyword `if` exists only as a guard on a case arm: `n: int64 if n > 0 -> …`. Python `if` / `elif` / `else` and unguarded `match` do not exist here.
 
@@ -208,7 +186,6 @@ That is the honesty rule. A helper that prints cannot hide inside an innocent-lo
 
 Built-in effects:
 
-
 | Effect            | Means                                                 |
 | ----------------- | ----------------------------------------------------- |
 | `device_io`       | stdout, console, files                                |
@@ -219,7 +196,6 @@ Built-in effects:
 | `hot_swap`        | dynamic code load                                     |
 | `register_rwr`    | MMIO; only inside `spawn_device` behaviors            |
 | `external_danger` | outbound FFI; only inside `spawn_dangerous` behaviors |
-
 
 Print helpers require `device_io`. In Python, `print` is an ordinary call. Here the sequence must admit the effect, and every caller up the chain must too. The trials use `print_string`, `print_bool`, and `println` — open those files for the spelling that compiles today.
 

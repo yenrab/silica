@@ -16,30 +16,6 @@ This book is for people who have never written a computer program. You do not ne
 
 If you already write software, this is the wrong book. Use [Silica for Programmers]({{ '/learn-silica/' | relative_url }}) instead.
 
-On this page
-
-1. [How to read this book](#1-how-to-read-this-book)
-2. [What a program is](#2-what-a-program-is)
-3. [Your first program](#3-your-first-program)
-4. [Values](#4-values)
-5. [Names](#5-names)
-6. [Types](#6-types)
-7. [Functions](#7-functions)
-8. [Decisions](#8-decisions)
-9. [Doing things in order](#9-doing-things-in-order)
-10. [Talking to the outside world](#10-talking-to-the-outside-world)
-11. [Text](#11-text)
-12. [Grouping values](#12-grouping-values)
-13. [Lists](#13-lists)
-14. [Repeating work](#14-repeating-work)
-15. [When something can go wrong](#15-when-something-can-go-wrong)
-16. [Splitting a program into pieces](#16-splitting-a-program-into-pieces)
-17. [Many workers at once](#17-many-workers-at-once)
-18. [What the compiler is trying to tell you](#18-what-the-compiler-is-trying-to-tell-you)
-19. [Where to go next](#19-where-to-go-next)
-
-
-
 ## 1. How to read this book
 
 Read in order. Each chapter uses only ideas already introduced.
@@ -161,8 +137,6 @@ Parentheses control order, as in arithmetic class:
 (2 + 3) * 4       // 20, not 14
 ```
 
-
-
 ### Try this
 
 1. What is `8 / 3` in Silica? Why is it not `2.666…`?
@@ -236,7 +210,6 @@ fn main() -> int64 {
 
 A few types you will see often:
 
-
 | Type      | Example values  | Everyday meaning |
 | --------- | --------------- | ---------------- |
 | `int64`   | `0`, `42`, `-1` | whole numbers    |
@@ -245,7 +218,6 @@ A few types you will see often:
 | `char`    | `'x'`           | one character    |
 | `atom`    | `:ok`, `:error` | a named label    |
 | `()`      | `()`            | no useful value  |
-
 
 Silica also has smaller and larger number types (`int8`, `uint64`, `float64`, and others). You can ignore them until you have a reason. `int64` is the default whole number.
 
@@ -321,8 +293,6 @@ fn main() -> int64 {
     triple(5)
 }
 ```
-
-
 
 ## 8. Decisions
 
@@ -661,8 +631,6 @@ fn product(numbers: List[int64]) -> int64 {
     }
 }
 ```
-
-
 
 ## 15. When something can go wrong
 

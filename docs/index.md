@@ -5,15 +5,14 @@ layout: default
 
 <div class="masthead"><img src="./silica_icon_small.png" alt="Silica" width="256" height="256"><span class="masthead-tagline">Secure by default at compile time — fail soft, never fail silent</span></div>
 
-[View the project on GitHub](https://github.com/yenrab/silica) · [Build the compiler](https://github.com/yenrab/silica#building-the-compiler) · [Learn to program]({{ '/learn-programming/' | relative_url }}) · [Silica for programmers]({{ '/learn-silica/' | relative_url }}) · [Silica's Design Principles]({{ '/design-principles/' | relative_url }}) · [Language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) · [Participate]({{ '/participate/' | relative_url }})
-
-On this page
-
-- [Learn](#learn)
-- [Silica's Design Principles]({{ '/design-principles/' | relative_url }})
-- [Why Silica is worth your attention](#why-silica-is-worth-your-attention)
-- [Why participate](#why-participate-in-silicas-development)
-- [Get the source](#get-the-source)
+<div class="cards">
+  <a class="card" href="{{ '/learn-programming/' | relative_url }}"><b>Learn to Program</b><span>An introduction to programming for readers who have never written a program.</span></a>
+  <a class="card" href="{{ '/learn-silica/' | relative_url }}"><b>Silica for Programmers</b><span>A short introduction to Silica if you already write software.</span></a>
+  <a class="card" href="{{ '/design-principles/' | relative_url }}"><b>Design Principles</b><span>The choices the language is built around, stated for readers.</span></a>
+  <a class="card" href="https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md"><b>Language Specification</b><span>The normative source: effects, regions, actors, and the FFI contract.</span></a>
+  <a class="card" href="https://github.com/yenrab/silica#building-the-compiler"><b>Build the Compiler</b><span>Bootstrap path, seed compiler, and the self-hosted tree.</span></a>
+  <a class="card" href="{{ '/participate/' | relative_url }}"><b>Participate</b><span>In-flight work on parallel language and runtime tracks.</span></a>
+</div>
 
 Silica's target is to be the world’s most intellectually honest, secure language and runtime—without asking you to fight the tools or the language to get there.
 
@@ -47,9 +46,7 @@ That turns security audits, dependency reviews, release gates, and hand-offs bet
 
 See the [FFI wrapper specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica_ffi_wrapper_specification.md), the [dangerous FFI security model](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/dangerous_ffi_security_model.md), and the tutorial on [designing apps with foreign functions](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md).
 
-![](./silica_icon_emoji.png)
-
-Motto: Secure by default at compile time — fail soft, never fail silent
+<div class="motto"><img src="./silica_icon_emoji.png" alt=""><p>Motto: Secure by default at compile time — fail soft, never fail silent</p></div>
 
 ## Learn
 
