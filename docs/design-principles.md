@@ -1,8 +1,8 @@
 ---
-
-## title: Silica's Design Principles
+title: Silica's Design Principles
 layout: default
 permalink: /design-principles/
+---
 
 # Silica's Design Principles
 
