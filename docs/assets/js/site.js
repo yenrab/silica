@@ -114,14 +114,37 @@
 
   /* ---------------------------------------------------------
      Label each code block with its language.
+
+     Only direct children of .content are considered: kramdown gives
+     INLINE code spans the same `highlighter-rouge` class, and matching
+     those would drop a label inside every `word` in the prose.
      --------------------------------------------------------- */
-  Array.prototype.forEach.call(content.querySelectorAll(".highlighter-rouge"), function (block) {
-    var match = /(?:^|\s)language-([\w+-]+)/.exec(block.className);
-    if (!match) return;
+  Array.prototype.slice.call(content.children).forEach(function (node) {
+    var lang = null;
+
+    if (node.tagName === "PRE") {
+      // No Rouge lexer for Silica: a bare <pre><code class="language-x">.
+      var inner = node.querySelector("code[class*='language-']");
+      if (inner) lang = /language-([\w+-]+)/.exec(inner.className);
+    } else if (node.tagName === "DIV" && node.classList.contains("highlighter-rouge")) {
+      lang = /language-([\w+-]+)/.exec(node.className);
+    }
+
+    if (!lang || lang[1] === "plaintext") return;
 
     var label = document.createElement("div");
     label.className = "code-label";
-    label.textContent = match[1];
-    block.insertBefore(label, block.firstChild);
+    label.textContent = lang[1];
+
+    if (node.tagName === "PRE") {
+      // Wrap so the label sits above the scroll area, not inside it.
+      var wrap = document.createElement("div");
+      wrap.className = "code-block";
+      node.parentNode.insertBefore(wrap, node);
+      wrap.appendChild(label);
+      wrap.appendChild(node);
+    } else {
+      node.insertBefore(label, node.firstChild);
+    }
   });
 })();
