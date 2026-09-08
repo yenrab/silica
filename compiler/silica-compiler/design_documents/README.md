@@ -27,6 +27,12 @@ Use the entries below for **quick navigation**. Each item links to a file in thi
 
 ---
 
+## [porting_to_linux_x86_64_hosted.md](./porting_to_linux_x86_64_hosted.md)
+
+**Porting plan** for the **Linux x86_64 hosted** target (DigitalOcean droplets), executed entirely on one Linux machine: Rust bootstrap → Linux seed from `src/` → Linux selfhost from `src_selfhost/` → fixpoint. Covers the LLVM 15 pin for the bootstrap's typed-pointer IR, the `linux_x86_64` backend directories, per-target trial goldens, the register model decision, and droplet deployment.
+
+---
+
 ## [porting_for_os_free_targets.md](./porting_for_os_free_targets.md)
 
 **Porting plan** for **OS-free / raw-metal** boards: what “complete” means, present vs missing (including MMIO map and volatile load/store), device registers vs CPU GPRs vs system registers, board-pack contract, and phased bring-up.
