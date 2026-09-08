@@ -1,0 +1,47 @@
+// Trial: a region allocated LOCALLY and never moved out is owned by the scope that
+// created it, and must be released there.
+//
+// silica-specification §3.247: region handles are move-only; ownership transfers on
+// pass and on return. Here `r` is neither passed to a user function nor returned --
+// local_one() hands back only an int64 -- so ownership ends with the binding and the
+// region must be destroyed at scope end.
+//
+// This trial WRITES one word per 4 KB page of the buffer it allocates. The existing
+// region_move_* trials allocate 1.6 MB but never touch it, so the pages are never
+// faulted in and a leak costs no resident memory -- they pass whether or not the
+// region is freed. Touching each page makes a leak cost real RSS instead.
+//
+// 3000 iterations x 32 KB = ~96 MB resident if leaked, against a few MB if released.
+fn local_one(n: int64) -> int64 {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        pad: buf(L1, normal, int64, 4096) <- alloc_buf(r, 4096);
+        _a: atom <- write_buf(pad, 0, 1);
+        _b: atom <- write_buf(pad, 512, 1);
+        _c: atom <- write_buf(pad, 1024, 1);
+        _d: atom <- write_buf(pad, 1536, 1);
+        _e: atom <- write_buf(pad, 2048, 1);
+        _f: atom <- write_buf(pad, 2560, 1);
+        _g: atom <- write_buf(pad, 3072, 1);
+        _h: atom <- write_buf(pad, 3584, 1);
+        v: int64 <- read_buf(pad, 3584)
+    produces
+        pure v * n
+    end
+}
+
+fn loop_local(i: int64, acc: int64) -> int64 {
+    case i <= 0 of {
+        true -> acc;
+        false -> loop_local(i - 1, acc + local_one(1))
+    }
+}
+
+fn main() -> int64 {
+    sequence
+        total: int64 <- loop_local(3000, 0)
+    produces
+        pure case total == 3000 of { true -> 0; false -> 1 }
+    end
+}

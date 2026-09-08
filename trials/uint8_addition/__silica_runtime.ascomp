@@ -2348,12 +2348,102 @@ _silica_rt_region_alloc:                ; @silica_rt_region_alloc
 	ldp	x20, x19, [sp], #32
 	ret
 LBBra_fallback:
-	mov	x0, x19
+	add	x0, x19, #16
 	bl	_malloc
+	cbz	x0, LBBra_oom
+	adrp	x8, _silica_rt_region_list@PAGE
+	add	x8, x8, _silica_rt_region_list@PAGEOFF
+	ldr	x9, [x8]
+	str	x9, [x0]
+	str	x19, [x0, #8]
+	str	x0, [x8]
+	add	x0, x0, #16
+LBBra_oom:
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
 	ret
 	.cfi_endproc
+	.globl	_silica_rt_raw_alloc
+_silica_rt_raw_alloc:
+; X0=size. malloc with a [next][size] header, NOT linked into the global region
+; list. Region memory must be freeable by its owner; anything on that list can
+; only be freed by unwinding to a mark, which is scope-shaped and unsound here.
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	mov	x19, x0
+	add	x0, x19, #16
+	bl	_malloc
+	cbz	x0, LBBrw_oom
+	str	xzr, [x0]
+	str	x19, [x0, #8]
+	add	x0, x0, #16
+LBBrw_oom:
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.globl	_silica_rt_region_destroy
+_silica_rt_region_destroy:
+; X0=region handle. Frees every extension block on the [r+16] chain, then the
+; region header. Blocks come from _silica_rt_raw_alloc, so each malloc base is
+; payload-16. Null handle is a no-op so a moved-out region is safe to skip.
+	cbz	x0, LBBrd_ret
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	str	x21, [sp, #-16]!
+	mov	x19, x0
+	ldr	x20, [x19, #16]
+LBBrd_loop:
+	cbz	x20, LBBrd_hdr
+	ldr	x21, [x20, #16]
+	sub	x0, x20, #16
+	bl	_free
+	mov	x20, x21
+	b	LBBrd_loop
+LBBrd_hdr:
+	sub	x0, x19, #16
+	bl	_free
+	ldr	x21, [sp], #16
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+LBBrd_ret:
+	ret
+	.globl	_silica_rt_region_mark
+_silica_rt_region_mark:
+	adrp	x16, _silica_rt_region_list@PAGE
+	add	x16, x16, _silica_rt_region_list@PAGEOFF
+	ldr	x16, [x16]
+	ret
+	.globl	_silica_rt_region_release_to
+_silica_rt_region_release_to:
+	stp	x29, x30, [sp, #-16]!
+	stp	x0, x1, [sp, #-16]!
+	stp	x19, x20, [sp, #-16]!
+	stp	x21, x22, [sp, #-16]!
+	mov	x21, x16
+	adrp	x19, _silica_rt_region_list@PAGE
+	add	x19, x19, _silica_rt_region_list@PAGEOFF
+	ldr	x20, [x19]
+Lrrt_loop:
+	cmp	x20, x21
+	b.eq	Lrrt_done
+	cbz	x20, Lrrt_done
+	ldr	x1, [x20]
+	str	x1, [x19]
+	mov	x0, x20
+	mov	x20, x1
+	bl	_free
+	b	Lrrt_loop
+Lrrt_done:
+	str	x21, [x19]
+	ldp	x21, x22, [sp], #16
+	ldp	x19, x20, [sp], #16
+	ldp	x0, x1, [sp], #16
+	ldp	x29, x30, [sp], #16
+	ret
+	.globl	_silica_rt_region_list
+	.comm	_silica_rt_region_list,8,3
                                         ; -- End function
 	.globl	_silica_rt_actor_supervision_ingress_enqueue ; Phase B — synthetic exit / trial hook; bounded queue
 	.p2align	2
@@ -2604,7 +2694,7 @@ Lct_free_loop:
 Lct_free_clear:
 	str	xzr, [x19, #256]
 	str	xzr, [x19, #264]
-	str	xzr, [x19, #272]
+; Do not clear ACB[+272] (sync_failure_reported) — that flag outlives the child-table list.
 	ldr	x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
 	ret
@@ -3215,6 +3305,14 @@ Lmr_freq_reset:
 	b.hi	Lmr_freq_escalate
 	b	Lmr_freq_ok
 Lmr_freq_escalate:
+; Claim sync_failure_reported BEFORE mark-dead+signal. Otherwise actor_thread_main can
+; observe alive==0, take LBB1_exit, and emit a duplicate root failure banner/note.
+	ldr	x8, [x20, #192]
+	cbnz	x8, Lmr_freq_escalate_mark_dead
+	ldr	x8, [x20, #272]
+	cbnz	x8, Lmr_freq_escalate_mark_dead
+	mov	x8, #1
+	str	x8, [x20, #272]
 	add	x0, x20, #16
 	bl	_os_unfair_lock_lock
 	str	wzr, [x20, #152]
@@ -3222,12 +3320,6 @@ Lmr_freq_escalate:
 	bl	_silica_rt_cv_signal
 	add	x0, x20, #16
 	bl	_os_unfair_lock_unlock
-	ldr	x8, [x20, #192]
-	cbnz	x8, Lmr_done
-	ldr	x8, [x20, #272]
-	cbnz	x8, Lmr_done
-	mov	x8, #1
-	str	x8, [x20, #272]
 	mov	x0, x20
 	bl	_silica_rt_actor_deliver_unwind_report
 	mov	w0, #2
@@ -3237,6 +3329,15 @@ Lmr_root_note_b:
 	add	x1, x1, L_silica_root_actor_exit@PAGEOFF
 	mov	w2, #43
 	bl	_write
+	b	Lmr_done
+Lmr_freq_escalate_mark_dead:
+	add	x0, x20, #16
+	bl	_os_unfair_lock_lock
+	str	wzr, [x20, #152]
+	add	x0, x20, #80
+	bl	_silica_rt_cv_signal
+	add	x0, x20, #16
+	bl	_os_unfair_lock_unlock
 	b	Lmr_done
 Lmr_freq_ok:
 	ldr	x0, [x20, #296]
@@ -4655,6 +4756,13 @@ Lcs_f1_loop:
 	strb	w9, [x10]
 	add	x26, x26, #1
 	b	Lcs_f1_loop
+Lcs_fault_site:
+	add	x0, x19, x26
+	sub	x1, x27, x26
+	bl	_silica_rt_fault_site_snprint
+	cmp	x0, #0
+	b.le	Lcs_end_banner
+	add	x26, x26, x0
 Lcs_end_banner:
 ; Write L_phase_f_end banner char by char.
 Lcs_end_a:
@@ -5209,6 +5317,24 @@ _silica_rt_ffi_altstack_mem:
 	.zero	65536
 _silica_rt_sync_fault_handlers_installed:
 	.zero	4
+	.globl	_silica_rt_fault_pc
+_silica_rt_fault_pc:
+	.zero	8
+_silica_rt_fault_dlinfo:
+	.zero	48
+_silica_rt_fault_hexbuf:
+	.zero	32
+_silica_rt_fault_addr:
+	.zero	8
+_silica_rt_fault_actor:
+	.zero	8
+_silica_rt_fault_sbase:
+	.zero	8
+_silica_rt_fault_ssize:
+	.zero	8
+	.globl	_silica_rt_own_image_base
+_silica_rt_own_image_base:
+	.zero	8
 _silica_rt_ffi_altstack_active:
 	.zero	4
 	.section	__TEXT,__text,regular,pure_instructions
@@ -5325,6 +5451,44 @@ _silica_rt_sync_fault_handler:
 	mov	x22, x0
 	mov	x23, x1
 	mov	x24, x2
+	adrp	x8, _silica_rt_fault_pc@PAGE
+	add	x8, x8, _silica_rt_fault_pc@PAGEOFF
+	cbz	x24, Lsfh_pc_done
+	ldr	x9, [x24, #48]
+	cbz	x9, Lsfh_pc_done
+	ldr	x9, [x9, #272]
+	str	x9, [x8]
+	ldr	x9, [x23, #24]
+	adrp	x8, _silica_rt_fault_addr@PAGE
+	add	x8, x8, _silica_rt_fault_addr@PAGEOFF
+	str	x9, [x8]
+	bl	_silica_rt_tls_current_actor_get
+	adrp	x8, _silica_rt_fault_actor@PAGE
+	add	x8, x8, _silica_rt_fault_actor@PAGEOFF
+	str	x0, [x8]
+	cbz	x0, Lsfh_no_actor
+	ldr	x9, [x0, #160]
+	adrp	x8, _silica_rt_fault_sbase@PAGE
+	add	x8, x8, _silica_rt_fault_sbase@PAGEOFF
+	str	x9, [x8]
+	ldr	x9, [x0, #184]
+	adrp	x8, _silica_rt_fault_ssize@PAGE
+	add	x8, x8, _silica_rt_fault_ssize@PAGEOFF
+	str	x9, [x8]
+Lsfh_no_actor:
+	adrp	x0, _silica_rt_sync_fault_handler@PAGE
+	add	x0, x0, _silica_rt_sync_fault_handler@PAGEOFF
+	adrp	x1, _silica_rt_fault_dlinfo@PAGE
+	add	x1, x1, _silica_rt_fault_dlinfo@PAGEOFF
+	bl	_dladdr
+	adrp	x1, _silica_rt_fault_dlinfo@PAGE
+	add	x1, x1, _silica_rt_fault_dlinfo@PAGEOFF
+	ldr	x2, [x1, #8]
+	adrp	x3, _silica_rt_own_image_base@PAGE
+	add	x3, x3, _silica_rt_own_image_base@PAGEOFF
+	str	x2, [x3]
+	bl	_silica_rt_print_fault_site
+Lsfh_pc_done:
 	mov	x0, x22
 	mov	x1, x23
 	bl	_silica_rt_ffi_guarded_fault_handler_try
@@ -5348,6 +5512,8 @@ _silica_rt_sync_fault_handler:
 	mov	x1, #0x1000
 	mov	w2, #3
 	bl	_mprotect
+	cmp	w0, #0
+	b.ne	L_sfh_unrecoverable
 	ldr	x8, [x20, #160]
 	bic	x9, x19, #0xfff
 	add	x9, x9, #0x1000
@@ -5363,6 +5529,8 @@ L_sfh_stack_done:
 	ldp	x24, x23, [sp], #64
 	ret
 L_sfh_overflow:
+	ldr	w9, [x20, #152]
+	cbz	w9, L_sfh_crash
 	str	wzr, [x20, #152]
 	add	x0, x20, #80
 	bl	_silica_rt_cv_signal
@@ -5371,11 +5539,14 @@ L_sfh_overflow:
 	ldp	x22, x21, [sp, #16]
 	ldp	x24, x23, [sp], #64
 	ret
+L_sfh_unrecoverable:
+	bl	_silica_rt_print_fault_site
+	mov	w0, #70
+	bl	_exit
 L_sfh_crash:
-	mov	w0, w22
-	bl	_signal
-	mov	w0, w22
-	bl	_raise
+	bl	_silica_rt_print_fault_site
+	mov	w0, #70
+	bl	_exit
 L_sfh_done:
 	ldp	x29, x30, [sp, #48]
 	ldp	x20, x19, [sp, #32]
@@ -5422,6 +5593,30 @@ Lloh_gk1:
 	mov	x10, #1
 L_gft_store_arena:
 	str	x10, [x20, #56]
+	adrp	x0, _silica_rt_fault_pc@PAGE
+	add	x0, x0, _silica_rt_fault_pc@PAGEOFF
+	ldr	x0, [x0]
+	cbz	x0, Lgft_do_jmp
+	adrp	x1, _silica_rt_fault_dlinfo@PAGE
+	add	x1, x1, _silica_rt_fault_dlinfo@PAGEOFF
+	stp	x19, x20, [sp, #-16]!
+	bl	_dladdr
+	ldp	x19, x20, [sp], #16
+	cbz	w0, Lgft_do_jmp
+	adrp	x1, _silica_rt_fault_dlinfo@PAGE
+	add	x1, x1, _silica_rt_fault_dlinfo@PAGEOFF
+	ldr	x2, [x1, #8]
+	adrp	x3, _silica_rt_own_image_base@PAGE
+	add	x3, x3, _silica_rt_own_image_base@PAGEOFF
+	ldr	x3, [x3]
+	cbz	x3, Lgft_do_jmp
+	cmp	x2, x3
+	b.ne	Lgft_do_jmp
+	mov	x0, xzr
+	ldp	x19, x30, [sp], #16
+	ldp	x21, x20, [sp], #16
+	ret
+Lgft_do_jmp:
 	add	x0, x20, #64
 	mov	w1, #1
 	bl	_siglongjmp
@@ -5517,6 +5712,280 @@ Lloh_gff_msg1:
 L_silica_foreign_fault_msg:
 	.asciz	"foreign_fault\n"
 	.section	__TEXT,__text,regular,pure_instructions
+	.section	__TEXT,__cstring,cstring_literals
+	.p2align	2
+Lpfs_pre:
+	.asciz	"[silica] fault at 0x"
+Lpfs_in:
+	.asciz	" in "
+Lpfs_plus:
+	.asciz	"+0x"
+Lpfs_eol:
+	.asciz	"\n"
+Lpfs_nib:
+	.asciz	"0123456789abcdef"
+Lfss_pre:
+	.asciz	"  fault_pc: 0x"
+Lpfs_ad:
+	.asciz	"  addr=0x"
+Lpfs_ac:
+	.asciz	"  actor=0x"
+Lpfs_sb:
+	.asciz	"  sbase=0x"
+Lpfs_ss:
+	.asciz	"  ssize=0x"
+	.section	__TEXT,__text,regular,pure_instructions
+	.p2align	2
+_silica_rt_fault_puts:
+	stp	x29, x30, [sp, #-32]!
+	mov	x29, sp
+	str	x19, [sp, #16]
+	mov	x19, x0
+	cbz	x19, Lfp_out
+	mov	x1, #0
+Lfp_len:
+	ldrb	w2, [x19, x1]
+	cbz	w2, Lfp_w
+	add	x1, x1, #1
+	b	Lfp_len
+Lfp_w:
+	cbz	x1, Lfp_out
+	mov	x2, x1
+	mov	x1, x19
+	mov	x0, #2
+	bl	_write
+Lfp_out:
+	ldr	x19, [sp, #16]
+	ldp	x29, x30, [sp], #32
+	ret
+	.p2align	2
+_silica_rt_fault_puthex:
+	stp	x29, x30, [sp, #-48]!
+	mov	x29, sp
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	mov	x19, x0
+	adrp	x20, _silica_rt_fault_hexbuf@PAGE
+	add	x20, x20, _silica_rt_fault_hexbuf@PAGEOFF
+	adrp	x21, Lpfs_nib@PAGE
+	add	x21, x21, Lpfs_nib@PAGEOFF
+	mov	x22, #0
+Lph_loop:
+	cmp	x22, #16
+	b.hs	Lph_w
+	mov	x2, #60
+	sub	x2, x2, x22, lsl #2
+	lsr	x3, x19, x2
+	and	x3, x3, #0xf
+	ldrb	w4, [x21, x3]
+	strb	w4, [x20, x22]
+	add	x22, x22, #1
+	b	Lph_loop
+Lph_w:
+	mov	x0, #2
+	mov	x1, x20
+	mov	x2, #16
+	bl	_write
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #48
+	ret
+	.globl	_silica_rt_print_fault_site
+	.p2align	2
+_silica_rt_print_fault_site:
+	stp	x29, x30, [sp, #-48]!
+	mov	x29, sp
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	adrp	x19, _silica_rt_fault_pc@PAGE
+	add	x19, x19, _silica_rt_fault_pc@PAGEOFF
+	ldr	x20, [x19]
+	cbz	x20, Lpfs_done
+	adrp	x0, Lpfs_pre@PAGE
+	add	x0, x0, Lpfs_pre@PAGEOFF
+	bl	_silica_rt_fault_puts
+	mov	x0, x20
+	bl	_silica_rt_fault_puthex
+	mov	x0, x20
+	adrp	x1, _silica_rt_fault_dlinfo@PAGE
+	add	x1, x1, _silica_rt_fault_dlinfo@PAGEOFF
+	bl	_dladdr
+	cbz	w0, Lpfs_nl
+	adrp	x21, _silica_rt_fault_dlinfo@PAGE
+	add	x21, x21, _silica_rt_fault_dlinfo@PAGEOFF
+	ldr	x22, [x21, #16]
+	cbz	x22, Lpfs_nl
+	adrp	x0, Lpfs_in@PAGE
+	add	x0, x0, Lpfs_in@PAGEOFF
+	bl	_silica_rt_fault_puts
+	mov	x0, x22
+	bl	_silica_rt_fault_puts
+	ldr	x1, [x21, #24]
+	cbz	x1, Lpfs_nl
+	sub	x22, x20, x1
+	adrp	x0, Lpfs_plus@PAGE
+	add	x0, x0, Lpfs_plus@PAGEOFF
+	bl	_silica_rt_fault_puts
+	mov	x0, x22
+	bl	_silica_rt_fault_puthex
+Lpfs_nl:
+	adrp	x0, Lpfs_ad@PAGE
+	add	x0, x0, Lpfs_ad@PAGEOFF
+	bl	_silica_rt_fault_puts
+	adrp	x0, _silica_rt_fault_addr@PAGE
+	add	x0, x0, _silica_rt_fault_addr@PAGEOFF
+	ldr	x0, [x0]
+	bl	_silica_rt_fault_puthex
+	adrp	x0, Lpfs_ac@PAGE
+	add	x0, x0, Lpfs_ac@PAGEOFF
+	bl	_silica_rt_fault_puts
+	adrp	x0, _silica_rt_fault_actor@PAGE
+	add	x0, x0, _silica_rt_fault_actor@PAGEOFF
+	ldr	x0, [x0]
+	bl	_silica_rt_fault_puthex
+	adrp	x0, Lpfs_sb@PAGE
+	add	x0, x0, Lpfs_sb@PAGEOFF
+	bl	_silica_rt_fault_puts
+	adrp	x0, _silica_rt_fault_sbase@PAGE
+	add	x0, x0, _silica_rt_fault_sbase@PAGEOFF
+	ldr	x0, [x0]
+	bl	_silica_rt_fault_puthex
+	adrp	x0, Lpfs_ss@PAGE
+	add	x0, x0, Lpfs_ss@PAGEOFF
+	bl	_silica_rt_fault_puts
+	adrp	x0, _silica_rt_fault_ssize@PAGE
+	add	x0, x0, _silica_rt_fault_ssize@PAGEOFF
+	ldr	x0, [x0]
+	bl	_silica_rt_fault_puthex
+	adrp	x0, Lpfs_eol@PAGE
+	add	x0, x0, Lpfs_eol@PAGEOFF
+	bl	_silica_rt_fault_puts
+Lpfs_done:
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #48
+	ret
+	.p2align	2
+_silica_rt_fault_bufcat:
+	mov	x4, x2
+Lbc_loop:
+	ldrb	w5, [x3], #1
+	cbz	w5, Lbc_out
+	cmp	x4, x1
+	b.hs	Lbc_out
+	add	x6, x0, x4
+	strb	w5, [x6]
+	add	x4, x4, #1
+	b	Lbc_loop
+Lbc_out:
+	mov	x0, x4
+	ret
+	.p2align	2
+_silica_rt_fault_bufhex:
+	mov	x4, x2
+	adrp	x7, Lpfs_nib@PAGE
+	add	x7, x7, Lpfs_nib@PAGEOFF
+	mov	x5, #0
+Lbh_loop:
+	cmp	x5, #16
+	b.hs	Lbh_out
+	cmp	x4, x1
+	b.hs	Lbh_out
+	mov	x6, #60
+	sub	x6, x6, x5, lsl #2
+	lsr	x8, x3, x6
+	and	x8, x8, #0xf
+	ldrb	w9, [x7, x8]
+	add	x10, x0, x4
+	strb	w9, [x10]
+	add	x4, x4, #1
+	add	x5, x5, #1
+	b	Lbh_loop
+Lbh_out:
+	mov	x0, x4
+	ret
+	.globl	_silica_rt_fault_site_snprint
+	.p2align	2
+_silica_rt_fault_site_snprint:
+	stp	x29, x30, [sp, #-64]!
+	mov	x29, sp
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	stp	x23, x24, [sp, #48]
+	mov	x19, x0
+	mov	x20, x1
+	adrp	x21, _silica_rt_fault_pc@PAGE
+	add	x21, x21, _silica_rt_fault_pc@PAGEOFF
+	ldr	x22, [x21]
+	cbz	x22, Lfss_zero
+	mov	x23, #0
+	mov	x0, x19
+	mov	x1, x20
+	mov	x2, x23
+	adrp	x3, Lfss_pre@PAGE
+	add	x3, x3, Lfss_pre@PAGEOFF
+	bl	_silica_rt_fault_bufcat
+	mov	x23, x0
+	mov	x0, x19
+	mov	x1, x20
+	mov	x2, x23
+	mov	x3, x22
+	bl	_silica_rt_fault_bufhex
+	mov	x23, x0
+	mov	x0, x22
+	adrp	x1, _silica_rt_fault_dlinfo@PAGE
+	add	x1, x1, _silica_rt_fault_dlinfo@PAGEOFF
+	bl	_dladdr
+	cbz	w0, Lfss_eol
+	adrp	x24, _silica_rt_fault_dlinfo@PAGE
+	add	x24, x24, _silica_rt_fault_dlinfo@PAGEOFF
+	ldr	x2, [x24, #16]
+	cbz	x2, Lfss_eol
+	mov	x0, x19
+	mov	x1, x20
+	mov	x2, x23
+	adrp	x3, Lpfs_in@PAGE
+	add	x3, x3, Lpfs_in@PAGEOFF
+	bl	_silica_rt_fault_bufcat
+	mov	x23, x0
+	ldr	x3, [x24, #16]
+	mov	x0, x19
+	mov	x1, x20
+	mov	x2, x23
+	bl	_silica_rt_fault_bufcat
+	mov	x23, x0
+	ldr	x3, [x24, #24]
+	cbz	x3, Lfss_eol
+	sub	x22, x22, x3
+	mov	x0, x19
+	mov	x1, x20
+	mov	x2, x23
+	adrp	x3, Lpfs_plus@PAGE
+	add	x3, x3, Lpfs_plus@PAGEOFF
+	bl	_silica_rt_fault_bufcat
+	mov	x23, x0
+	mov	x0, x19
+	mov	x1, x20
+	mov	x2, x23
+	mov	x3, x22
+	bl	_silica_rt_fault_bufhex
+	mov	x23, x0
+Lfss_eol:
+	mov	x0, x19
+	mov	x1, x20
+	mov	x2, x23
+	adrp	x3, Lpfs_eol@PAGE
+	add	x3, x3, Lpfs_eol@PAGEOFF
+	bl	_silica_rt_fault_bufcat
+	b	Lfss_out
+Lfss_zero:
+	mov	x0, #0
+Lfss_out:
+	ldp	x23, x24, [sp, #48]
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #64
+	ret
 
 	.section	__DATA,__bss
 	.p2align	3
@@ -5568,15 +6037,17 @@ Lcal_found:
 	ret
 Lcal_insert:
 	stp	x12, x13, [sp, #-16]!
-	mov	x0, #4112
+	mov	x0, #4128
 	bl	_malloc
 	ldp	x12, x13, [sp], #16
 	cbz	x0, Lcal_abort
-	add	x14, x0, #16
+	add	x14, x0, #32
 	str	x14, [x0]
-	mov	x15, #4112
+	mov	x15, #4128
 	add	x14, x0, x15
 	str	x14, [x0, #8]
+	str	xzr, [x0, #16]
+	str	x14, [x0, #24]
 	str	x19, [x12]
 	str	x0, [x12, #8]
 	adrp	x13, _silica_rt_canonical_arena_count@PAGE

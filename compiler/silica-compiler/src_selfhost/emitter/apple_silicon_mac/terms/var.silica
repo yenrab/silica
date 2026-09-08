@@ -35,12 +35,14 @@ export find_sp_binding/2;
 export find_sp_binding_bare_or_percent_param/2;
 export base_reg_of/1;
 export is_memory_ref/1;
+export is_callee_saved_reg/1;
 export sp_offset_for_index/1;
-export sp_offset_for_byte_adj/2;
+export fp_ptr_to_region/2;
+export sp_offset_for_byte/1;
+export fp_offset_for_byte/3;
 export reg_offset_for_byte/2;
-export new_tp_binding/3;
-export build_outer_with_sp/7;
-export sp_offset_for_index_adj/2;
+export new_tp_binding/4;
+export build_outer_with_sp/6;
 export reg_offset_for_index/2;
 export reg_binding/2;
 export extract_sp_bindings/1;
@@ -48,6 +50,7 @@ export is_reg_bound/2;
 export reg_reserved_as_sret_buffer/2;
 export next_free_int_reg/1;
 export find_last_sp_binding/2;
+export find_reg_pref_binding/2;
 export binding_is_physical_int_reg/1;
 export type_name_is_function/1;
 
@@ -131,7 +134,7 @@ fn base_reg_of(outer: string) -> string {
     base_reg_check(base_reg_raw(outer))
 }
 
-fn match_prefix_at_inner(haystack: string, needle: string, start: int64, i: int64) -> bool {
+fn match_prefix_at_inner(haystack: string, needle: string, start: int64, i: int64) -> boolean {
     case i >= length_bytes(needle) of {
         true -> true;
         false -> case substring(haystack, start + i, start + i + 1) == substring(needle, i, i + 1) of {
@@ -141,7 +144,7 @@ fn match_prefix_at_inner(haystack: string, needle: string, start: int64, i: int6
     }
 }
 
-fn match_prefix_at(haystack: string, needle: string, start: int64) -> bool {
+fn match_prefix_at(haystack: string, needle: string, start: int64) -> boolean {
     case start + length_bytes(needle) > length_bytes(haystack) of {
         true -> false;
         false -> case length_bytes(needle) == 0 of {
@@ -190,7 +193,11 @@ fn find_sp_binding_percent_param(outer_reg: string, bare_param_name: string) -> 
 // register binding for the same name. Calls and ordinary variable loads must
 // both select the last (innermost) binding.
 fn find_sp_binding_bare_or_percent_param(outer_reg: string, name: string) -> string {
-    b0: string <- find_last_sp_binding(outer_reg, name);
+    // Kind-preferring, not position-preferring: a destructuring records the same
+    // name twice (`%r=[SP, #8]` for the slab offset and `%r=X21` for the register
+    // it was loaded into). The slab is popped by then, so the offset reads garbage;
+    // the register holds the live value. See find_reg_pref_binding.
+    b0: string <- find_reg_pref_binding(outer_reg, name);
     case length_bytes(b0) > 0 of {
         true -> case b0 == "SP" of {
             true -> {
@@ -308,14 +315,36 @@ fn index_to_int(idx_str: string) -> int64 {
     string_parse@string_to_int64(idx_str)
 }
 
-fn sp_offset_for_index_adj(idx_str: string, adj: int64) -> string {
-    offset: int64 <- index_to_int(idx_str) * 8 + adj;
-    concat("[SP, #", concat(atom_table@int64_to_decimal_string(offset), "]"))
+
+
+// Frame-pointer-relative slot reference.
+//
+// A slot living at [SP, #k] when SP sits `spd` bytes below the frame pointer is at
+// X29 - (spd - k). Unlike the SP-relative form this reference stays correct however
+// SP moves later -- an and/or short-circuit save, a further aggregate slot, an
+// argument spill -- which is the corruption the SP-relative form allowed: the
+// offset was frozen as text at bind time and silently went stale.
+fn fp_offset_for_byte(byte_off: int64, adj: int64, spd: int64) -> string {
+    from_fp: int64 <- spd - (byte_off + adj);
+    case from_fp == 0 of {
+        true -> "[X29]";
+        false -> concat("[X29, #-", concat(atom_table@int64_to_decimal_string(from_fp), "]"))
+    }
 }
 
-fn sp_offset_for_byte_adj(byte_off: int64, adj: int64) -> string {
-    offset: int64 <- byte_off + adj;
-    concat("[SP, #", concat(atom_table@int64_to_decimal_string(offset), "]"))
+// Aggregates live in fixed-frame regions now; nothing displaces SP under a
+// projection, so there is no correction term to add.
+// dest = X29 - n (the base of a fixed-frame aggregate region). SUB's immediate
+// stops at 4095, so deeper frames put the displacement in a register first.
+fn fp_ptr_to_region(dest: string, n: int64) -> string {
+    case n > 4095 of {
+        true -> concat("    MOV X17, #", concat(atom_table@int64_to_decimal_string(n), concat("\n    SUB ", concat(dest, ", X29, X17"))));
+        false -> concat("    SUB ", concat(dest, concat(", X29, #", atom_table@int64_to_decimal_string(n))))
+    }
+}
+
+fn sp_offset_for_byte(byte_off: int64) -> string {
+    concat("[SP, #", concat(atom_table@int64_to_decimal_string(byte_off), "]"))
 }
 
 fn reg_offset_for_byte(base_reg: string, byte_off: int64) -> string {
@@ -344,12 +373,12 @@ fn linkage_qual_fn_top_level(name: string) -> string {
     }
 }
 
-fn linkage_starts_with_main_dot(s: string) -> bool {
+fn linkage_starts_with_main_dot(s: string) -> boolean {
     length_bytes(s) >= 5 and substring(s, 0, 5) == "main."
 }
 
 // Keep in sync with module_linkage@macho_escape_global_asm_symbol / asm_symbol_for_definition.
-fn linkage_asm_decimal_digit_char(c: string) -> bool {
+fn linkage_asm_decimal_digit_char(c: string) -> boolean {
     case c of {
         "0" -> true; "1" -> true; "2" -> true; "3" -> true; "4" -> true;
         "5" -> true; "6" -> true; "7" -> true; "8" -> true; "9" -> true;
@@ -357,7 +386,7 @@ fn linkage_asm_decimal_digit_char(c: string) -> bool {
     }
 }
 
-fn linkage_macho_global_sym_needs_underscore_prefix(raw: string) -> bool {
+fn linkage_macho_global_sym_needs_underscore_prefix(raw: string) -> boolean {
     case length_bytes(raw) > 0 of {
         false -> false;
         true -> {
@@ -432,12 +461,27 @@ fn reg_binding(bound_name: string, base_bound_reg: string) -> string {
     }
 }
 
-fn new_tp_binding(let_name: string, inner_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, sp_adj: int64) -> string {
+fn new_tp_binding(let_name: string, inner_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, base_ptr: string, base_region: string) -> string {
     case sir_term_root_node(inner_term).kind == 6 and sir_term_root_node(inner_term).name == "tuple_proj" of {
         true -> {
             pix: int64 <- string_parse@string_to_int64(sir_term_root_node(sir_term_at(inner_term, sir_term_root_node(inner_term).right_expr)).value);
             byte_o: int64 <- prims_tuple@tuple_field_start_byte_offset(sir_term_root_node(sir_term_at(inner_term, sir_term_root_node(inner_term).inner)).type_name, pix);
-            concat("|", concat(let_name, concat("=", sp_offset_for_byte_adj(byte_o, sp_adj))))
+            // Mint the binding THROUGH THE BASE POINTER when the aggregate lives behind
+              // one (a heap-promoted tuple reached via a projection). A static [SP, #off]
+              // is only correct while the aggregate is still in its original stack slot;
+              // once that slot is released the offset points below SP at freed memory --
+              // decompose_nested_bare read b from [SP, #-16] this way.
+              // base_region names the source aggregate's fixed-frame region
+              // ("[X29, #-32]"). Element k of it is at X29-(base-k), which is
+              // absolute -- no displacement correction, and it survives SP movement.
+              base_rb: int64 <- parse_x29_neg_offset_bytes(base_region);
+              case length_bytes(base_ptr) > 0 of {
+                  true -> concat("|", concat(let_name, concat("=", reg_offset_for_byte(base_ptr, byte_o))));
+                  false -> case base_rb > 0 of {
+                      true -> concat("|", concat(let_name, concat("=", fp_offset_for_byte(byte_o, 0, base_rb))));
+                      false -> concat("|", concat(let_name, concat("=", sp_offset_for_byte(byte_o))))
+                  }
+              }
         };
         false -> ""
     }
@@ -445,7 +489,7 @@ fn new_tp_binding(let_name: string, inner_term: { nodes: List[{ kind: int64, typ
 
 // rhs_reg: register where this let's RHS will be emitted (must match |let_name= in outer for downstream lookups).
 // Do not use the parent's bound_reg here — that incorrectly maps e.g. |%empty_list=X0 when the list lives in X1.
-fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer: string, let_name: string, inner_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, sp_adj: int64, rhs_reg: string) -> string {
+fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer: string, let_name: string, inner_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, rhs_reg: string) -> string {
     raw_base: string <- base_reg_of(base_bound_reg);
     base: string <- case length_bytes(raw_base) == 0 of {
         true -> base_reg_of(current_outer);
@@ -454,13 +498,32 @@ fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer
     sp_part: string <- extract_sp_bindings(current_outer);
     enc: string <- enclosing_sp_binding(bound_name, base_bound_reg);
     rb: string <- reg_binding(let_name, rhs_reg);
-    nb: string <- new_tp_binding(let_name, inner_term, sp_adj);
-    concat(base, concat(sp_part, concat(enc, concat(nb, rb))))
+    base_name: string <- case sir_term_root_node(inner_term).kind == 6 and sir_term_root_node(inner_term).name == "tuple_proj" of {
+        true -> sir_term_root_node(sir_term_at(inner_term, sir_term_root_node(inner_term).inner)).name;
+        false -> ""
+    };
+    base_ptr: string <- case length_bytes(base_name) > 0 of {
+        true -> {
+            pr: string <- find_last_sp_binding(current_outer, concat("_ptr.", base_name));
+            case length_bytes(pr) > 0 and is_memory_ref(pr) == false and is_callee_saved_reg(pr) of { true -> pr; false -> "" }
+        };
+        false -> ""
+    };
+    base_region: string <- case length_bytes(base_name) > 0 of {
+        true -> find_last_sp_binding(current_outer, concat("_va.", base_name));
+        false -> ""
+    };
+    nb: string <- new_tp_binding(let_name, inner_term, base_ptr, base_region);
+    // RA: the register binding (rb) must precede the tuple-projection binding (nb).
+    // find_sp_binding returns the FIRST match, so with nb first every read of the
+    // name resolved to a remembered [SP, #k] slot even while the value lived in a
+    // register -- and that slot is wrong once it is released or SP moves.
+    concat(base, concat(sp_part, concat(enc, concat(rb, nb))))
 }
 
 // Detect a valid AArch64 symbol character (alpha, digit, underscore).
 // (Silica string comparison is equality-only, so we enumerate rather than use `>=`/`<=`.)
-fn is_ident_start_char(c: string) -> bool {
+fn is_ident_start_char(c: string) -> boolean {
     case c of {
         "_" -> true;
         "a" -> true; "b" -> true; "c" -> true; "d" -> true; "e" -> true;
@@ -477,7 +540,7 @@ fn is_ident_start_char(c: string) -> bool {
     }
 }
 
-fn is_ident_digit_char(c: string) -> bool {
+fn is_ident_digit_char(c: string) -> boolean {
     case c of {
         "0" -> true; "1" -> true; "2" -> true; "3" -> true; "4" -> true;
         "5" -> true; "6" -> true; "7" -> true; "8" -> true; "9" -> true;
@@ -485,14 +548,14 @@ fn is_ident_digit_char(c: string) -> bool {
     }
 }
 
-fn is_ident_char(c: string) -> bool {
+fn is_ident_char(c: string) -> boolean {
     case is_ident_start_char(c) of {
         true -> true;
         false -> is_ident_digit_char(c)
     }
 }
 
-fn suffix_chars_all_digits(s: string, i: int64) -> bool {
+fn suffix_chars_all_digits(s: string, i: int64) -> boolean {
     case i >= length_bytes(s) of {
         true -> true;
         false -> case is_ident_digit_char(substring(s, i, i + 1)) of {
@@ -503,7 +566,7 @@ fn suffix_chars_all_digits(s: string, i: int64) -> bool {
 }
 
 // W*/X* GPR names used in |name= bindings (function pointers live in the integer ABI).
-fn binding_is_physical_int_reg(binding: string) -> bool {
+fn binding_is_physical_int_reg(binding: string) -> boolean {
     case length_bytes(binding) < 2 of {
         true -> false;
         false -> {
@@ -528,7 +591,7 @@ fn binding_is_physical_int_reg(binding: string) -> bool {
     }
 }
 
-fn bare_name_valid_loop(s: string, i: int64, n: int64) -> bool {
+fn bare_name_valid_loop(s: string, i: int64, n: int64) -> boolean {
     case i >= n of {
         true -> true;
         false -> case is_ident_char(substring(s, i, i + 1)) of {
@@ -538,7 +601,7 @@ fn bare_name_valid_loop(s: string, i: int64, n: int64) -> bool {
     }
 }
 
-fn bare_name_is_valid_symbol(s: string) -> bool {
+fn bare_name_is_valid_symbol(s: string) -> boolean {
     n: int64 <- length_bytes(s);
     case n == 0 of {
         true -> false;
@@ -552,7 +615,7 @@ fn bare_name_is_valid_symbol(s: string) -> bool {
 // Lambda lifting (constraint_extract) uses synthetic names "<enclosing_fn>.__lam<n>" (see sir_generator
 // sir_name_contains_lifted_lambda_sub). Dots are not bare-identifier chars; without this we emit invalid
 // `MOV dest, %take.__lam0` instead of ADRP/ADD. Names starting with `main.` still map via linkage_asm_symbol_for_named_fn_ref.
-fn lifted_lambda_sub_at(m: string, i: int64) -> bool {
+fn lifted_lambda_sub_at(m: string, i: int64) -> boolean {
     case i + 6 > length_bytes(m) of {
         true -> false;
         false -> case substring(m, i, i + 6) == ".__lam" of {
@@ -562,11 +625,11 @@ fn lifted_lambda_sub_at(m: string, i: int64) -> bool {
     }
 }
 
-fn sir_name_contains_lifted_lambda_sub(m: string) -> bool {
+fn sir_name_contains_lifted_lambda_sub(m: string) -> boolean {
     lifted_lambda_sub_at(m, 0)
 }
 
-fn lifted_hof_wrapper_sub_at(m: string, i: int64) -> bool {
+fn lifted_hof_wrapper_sub_at(m: string, i: int64) -> boolean {
     case i + 5 > length_bytes(m) of {
         true -> false;
         false -> case substring(m, i, i + 5) == ".__lw" of {
@@ -576,11 +639,11 @@ fn lifted_hof_wrapper_sub_at(m: string, i: int64) -> bool {
     }
 }
 
-fn sir_name_contains_lifted_hof_wrapper_sub(m: string) -> bool {
+fn sir_name_contains_lifted_hof_wrapper_sub(m: string) -> boolean {
     lifted_hof_wrapper_sub_at(m, 0)
 }
 
-fn bare_qualifies_as_fn_pointer_asm_symbol(bare: string) -> bool {
+fn bare_qualifies_as_fn_pointer_asm_symbol(bare: string) -> boolean {
     case bare_name_is_valid_symbol(bare) of {
         true -> true;
         false -> case length_bytes(bare) >= 5 and substring(bare, 0, 5) == "main." of {
@@ -593,7 +656,15 @@ fn bare_qualifies_as_fn_pointer_asm_symbol(bare: string) -> bool {
     }
 }
 
-fn is_memory_ref(s: string) -> bool {
+// A _ptr.<name> record is only trustworthy across a call if it names a
+// callee-saved GPR. The <=2-element ptr_binding_inner path records whatever
+// register the RHS transiently occupied (often X0) and emits no MOV, so
+// minting [that_reg, #off] reads garbage once a call clobbers it.
+fn is_callee_saved_reg(r: string) -> boolean {
+    r == "X19" or r == "X20" or r == "X21" or r == "X22" or r == "X23" or r == "X24" or r == "X25" or r == "X26" or r == "X27" or r == "X28"
+}
+
+fn is_memory_ref(s: string) -> boolean {
     find_str_at(s, "[", 0) >= 0
 }
 
@@ -608,7 +679,7 @@ fn emit_var_with_sp_check(term: { nodes: List[{ kind: int64, type_name: string, 
     emit_var_with_sp_check_core(term, dest, outer_reg)
 }
 
-fn spurious_non_gpr_binding_for_fn_param(reg: string, type_name: string) -> bool {
+fn spurious_non_gpr_binding_for_fn_param(reg: string, type_name: string) -> boolean {
     case type_name_is_function(type_name) of {
         false -> false;
         true -> case binding_is_physical_int_reg(reg) of {
@@ -622,8 +693,12 @@ fn spurious_non_gpr_binding_for_fn_param(reg: string, type_name: string) -> bool
 }
 
 fn emit_var_with_sp_check_core(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, outer_reg: string) -> string {
-    // Resolve |name= once: prefer last binding (prepend tail rebind appends |%v=X2 after stale |%v=X0).
-    sp_last: string <- find_last_sp_binding(outer_reg, sir_term_root_node(term).name);
+    // Resolve |name= once: prefer the REGISTER binding, else the last binding.
+    // (A prepend tail rebind appends |%v=X2 after a stale |%v=X0 -- both registers,
+    // so taking the last register keeps that intent. A destructuring instead records
+    // |%r=[SP, #8] alongside |%r=X21, where the slab offset is already popped and
+    // reads garbage; kind-preference beats it regardless of concat order.)
+    sp_last: string <- find_reg_pref_binding(outer_reg, sir_term_root_node(term).name);
     sp_first: string <- find_sp_binding(outer_reg, sir_term_root_node(term).name);
     sp_fin: string <- case length_bytes(sp_last) > 0 of {
         true -> sp_last;
@@ -694,7 +769,7 @@ fn find_top_arrow_from(s: string, i: int64, depth: int64) -> int64 {
     }
 }
 
-fn type_name_is_function(type_name: string) -> bool {
+fn type_name_is_function(type_name: string) -> boolean {
     n: int64 <- length_bytes(type_name);
     case n >= 3 and substring(type_name, 0, 3) == "fn(" of {
         true -> true;
@@ -833,7 +908,7 @@ fn emit_var_reg_core(term: { nodes: List[{ kind: int64, type_name: string, value
 
 // Actor behavior reply buffer (|_tuple_sret=X20) and user-call aggregate sret (|_callee_sret=X8)
 // are not ordinary let bindings but must not be used as let-RHS spill targets.
-fn reg_reserved_as_sret_buffer(outer_reg: string, reg: string) -> bool {
+fn reg_reserved_as_sret_buffer(outer_reg: string, reg: string) -> boolean {
     case find_sp_binding(outer_reg, "_tuple_sret") == reg of {
         true -> true;
         false -> find_sp_binding(outer_reg, "_callee_sret") == reg
@@ -843,7 +918,7 @@ fn reg_reserved_as_sret_buffer(outer_reg: string, reg: string) -> bool {
 // Check if a register appears as a bound value in outer_reg.
 // Uses "|" delimited format: |varname=REGNAME. Matches exact register name only
 // (e.g. "X1" won't match "X10" or "X11" because those have extra digits before the next | or end).
-fn is_reg_bound(outer_reg: string, reg: string) -> bool {
+fn is_reg_bound(outer_reg: string, reg: string) -> boolean {
     key_mid: string <- concat(concat("=", reg), "|");
     key_end: string <- concat("=", reg);
     end_pos: int64 <- length_bytes(outer_reg) - length_bytes(key_end);
@@ -916,6 +991,44 @@ fn find_last_sp_binding_rec(outer_reg: string, key: string, start: int64, last_p
             false -> find_sp_binding_extract(outer_reg, last_pos + length_bytes(key))
         };
         false -> find_last_sp_binding_rec(outer_reg, key, pos + 1, pos)
+    }
+}
+
+// Position-independent variable lookup: prefer the REGISTER binding for a name,
+// wherever it sits in outer_reg, else fall back to the last binding.
+//
+// A destructuring records both a slab offset and the register the element was
+// actually loaded into, e.g. `%r=[SP, #8]` and `%r=X21`. The slab offset points
+// into memory the callee already promoted to the heap and popped, so it reads
+// garbage. Which of the two a positional lookup returns depends on the order the
+// bindings happen to be concatenated in -- find_sp_binding (first) and
+// find_last_sp_binding (last) want OPPOSITE orders, so no single ordering can
+// satisfy both. Choosing on the binding's KIND instead of its position is stable
+// under either ordering.
+fn find_reg_pref_rec(outer_reg: string, key: string, start: int64, best: string, last: string) -> string {
+    pos: int64 <- find_str_at(outer_reg, key, start);
+    case pos < 0 of {
+        true -> case length_bytes(best) > 0 of { true -> best; false -> last };
+        false -> {
+            v: string <- find_sp_binding_extract(outer_reg, pos + length_bytes(key));
+            nb: string <- case length_bytes(v) > 0 and is_memory_ref(v) == false of { true -> v; false -> best };
+            find_reg_pref_rec(outer_reg, key, pos + 1, nb, v)
+        }
+    }
+}
+
+fn find_reg_pref_binding(outer_reg: string, var_name: string) -> string {
+    key: string <- concat("|", concat(var_name, "="));
+    res: string <- find_reg_pref_rec(outer_reg, key, 0, "", "");
+    case length_bytes(res) > 0 of {
+        true -> res;
+        false -> case substring(var_name, 0, 1) == "%" of {
+            true -> {
+                bare: string <- substring(var_name, 1, length_bytes(var_name));
+                find_reg_pref_rec(outer_reg, concat("|", concat(bare, "=")), 0, "", "")
+            };
+            false -> ""
+        }
     }
 }
 

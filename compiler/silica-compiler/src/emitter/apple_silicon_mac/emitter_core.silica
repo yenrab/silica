@@ -165,7 +165,14 @@ fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: Ato
     float64_literal_table: Float64LiteralTable <- float64_literal_pool@build_float64_literal_table(sir_module);
     float32_literal_table: Float32LiteralTable <- float32_literal_pool@build_float32_literal_table(sir_module);
     string_literal_table: StringLiteralTable <- string_literal_pool@build_string_literal_table(sir_module);
-    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, emitter_debug, sir_module.module_name, sir_module.foreign_bindings);
+    // Scope release is DISABLED. mark/release_to frees everything allocated since a
+    // frame's entry, which is scope-shaped; this language frees by ownership (regions
+    // move on pass and return). Narrowing the gate three ways -- body_creates_region,
+    // the kind-5 tail guard, and purity on region_scope -- produced the identical
+    // live-free fault each time, so the mechanism is unsound here, not merely
+    // mis-gated. body_creates_region and the sharpened gate below are retained for
+    // the ownership-based release that replaces this.
+    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, emitter_debug, sir_module.module_name, sir_module.foreign_bindings, false, false);
     needs_region_helpers: bool <- prims_memory@module_uses_region_allocation(sir_module);
     region_helpers: string <- case needs_region_helpers of {
         true -> concat("\n", prims_memory@emit_region_helpers());
@@ -437,13 +444,13 @@ fn emit_module_asm_prelude(sir_module: SIRModule) -> string {
     concat(concat(concat(concat(concat(concat(concat(concat(text, use_line), exp), ffi_ext), ffi_free_ext), trait_meta), phase_g_marker), sup_tramps), main_g)
 }
 
-fn emit_functions(fns: ListSIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool, module_name: string, foreign_bindings: ListSIRForeignBinding) -> string proc[DeviceIO] {
+fn emit_functions(fns: ListSIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool, module_name: string, foreign_bindings: ListSIRForeignBinding, arena_ok: bool, region_ok: bool) -> string proc[DeviceIO] {
     do
     case fns.is_nil of {
         true -> "";
         false -> do
-            fn_asm: string <- emit_sir_function(fns.head, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug, module_name, foreign_bindings);
-            rest_asm: string <- emit_functions(fns.tail, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug, module_name, foreign_bindings);
+            fn_asm: string <- emit_sir_function(fns.head, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug, module_name, foreign_bindings, arena_ok, region_ok);
+            rest_asm: string <- emit_functions(fns.tail, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug, module_name, foreign_bindings, arena_ok, region_ok);
             case rest_asm == "" of {
                 true -> fn_asm;
                 false -> concat(concat(fn_asm, "\n"), rest_asm)
@@ -553,8 +560,22 @@ fn bind_reg_for_param(param_types: string, idx: int64, ptype: string, string_sha
     }
 }
 
+// region / ref / buf handles are pointers: they arrive in a general-purpose
+// register like any other 64-bit value. Classifying them as GPR64 params is what
+// makes the ABI entry shadow fire for them. Without it the emitter assumes the
+// handle stays in its ABI home register, and a later statement's result landing
+// in X0 silently replaces it -- alloc_buf(r, n) after alloc_ref(r, n) then passes
+// the ref, not the region.
+fn type_name_is_region_handle(ptype: string) -> bool {
+    n: int64 <- len(ptype);
+    (n >= 7 and substring(ptype, 0, 7) == "region(")
+        or (n >= 5 and substring(ptype, 0, 5) == "ref?(")
+        or (n >= 4 and substring(ptype, 0, 4) == "ref(")
+        or (n >= 4 and substring(ptype, 0, 4) == "buf(")
+}
+
 fn is_gpr64_param_type(ptype: string) -> bool {
-    ptype == "int64" or ptype == "uint64" or var@type_name_is_function(ptype)
+    ptype == "int64" or ptype == "uint64" or var@type_name_is_function(ptype) or type_name_is_region_handle(ptype)
 }
 
 // Count int64/uint64 parameters (pipe-separated param_types).
@@ -1614,7 +1635,74 @@ fn function_needs_callee_saved_x19_x20_frame(fn_val: SIRFunction) -> bool {
     }
 }
 
-fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool, module_name: string, foreign_bindings: ListSIRForeignBinding) -> string proc[DeviceIO] {
+// True when `name` is a primitive that allocates region/arena memory.
+// Read/compare primitives (read_ref, ref_eq, list_length, string_length_bytes, ...)
+// are deliberately absent: they hand back existing memory rather than making any.
+fn prim_allocates(name: string) -> bool {
+    name == "string_concat" or name == "string_substring" or name == "string_substring_until_char"
+        or name == "list_cons" or name == "tuple_make" or name == "record_make"
+        or name == "alloc_region" or name == "alloc_ref" or name == "alloc_rec" or name == "alloc_buf" or name == "build"
+        or prims_actors@is_actor_prim(name)
+}
+
+// True when this frame creates region/arena memory of its own.
+//
+// This is the condition that decides whether a scope release is worth emitting at
+// all. Without it the release fired on every pure scalar-returning function --
+// about 77% of them, nearly all tiny predicates that allocate nothing -- and paid
+// a mark plus a list walk on every call for memory that was never made. Only
+// ~9% of functions actually allocate.
+//
+// A user call returning non-scalar data counts: the callee's allocation arrives in
+// this frame, and since regions move on return, this frame now owns it. A call
+// returning a scalar leaves nothing behind, so it does not count on its own,
+// though its arguments still might.
+fn body_creates_region(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case arena_scope_ret_ok(term.type_name) of {
+                false -> true;
+                true -> body_creates_region(term.inner) or body_creates_region(term.right_expr)
+            };
+            6 -> case prim_allocates(term.name) of {
+                true -> true;
+                false -> body_creates_region(term.inner) or body_creates_region(term.right_expr)
+            };
+            2 -> body_creates_region(term.inner) or body_creates_region(term.right_expr);
+            3 -> body_creates_region(term.inner) or body_creates_region(term.right_expr);
+            5 -> body_creates_region(term.inner) or body_creates_region(term.right_expr);
+            7 -> body_creates_region(term.inner) or body_creates_region(term.right_expr);
+            8 -> body_creates_region(term.inner) or body_creates_region(term.right_expr);
+            _: int64 -> false
+        }
+    }
+}
+
+fn arena_scope_ret_ok(t: string) -> bool {
+    case t of {
+        "boolean" -> true;
+        "bool" -> true;
+        "int64" -> true;
+        "int32" -> true;
+        "int16" -> true;
+        "int8" -> true;
+        "uint64" -> true;
+        "uint32" -> true;
+        "uint16" -> true;
+        "uint8" -> true;
+        "atom" -> true;
+        _: string -> false
+    }
+}
+
+// Scope-exit release (spec 12.1.2): only where the region runtime is emitted,
+// otherwise the calls would be undefined symbols. Conservative by design.
+fn module_emits_region_runtime(sir_module: SIRModule) -> bool {
+    module_needs_actor_runtime(sir_module) or prims_memory@module_uses_alloc_region(sir_module) or prims_memory@module_uses_region_allocation(sir_module) or module_needs_region_alloc_for_aggregate_copy(sir_module)
+}
+
+fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool, module_name: string, foreign_bindings: ListSIRForeignBinding, arena_ok: bool, region_ok: bool) -> string proc[DeviceIO] {
     do
     entry_label: string <- module_linkage@asm_symbol_for_definition(module_name, fn_val.name);
     eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
@@ -1766,6 +1854,13 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
     kind5_frame_blocks_tail: bool <- fn_val.body.kind == 5 and (function_needs_callee_saved_x19_x20_frame(fn_val) or needs_actor_ref_x21_x22_frame(fn_val) or needs_callee_x23_x24_frame(fn_val) or needs_callee_x25_x26_frame(fn_val) or needs_callee_x27_x28_frame(fn_val) or frame_spill_bytes(fn_val) > 0);
     kind5_no_tail: bool <- main_kind5_no_tail or kind5_frame_blocks_tail;
     kind5_tail_returns_directly: bool <- fn_val.body.kind == 5 and kind5_no_tail == false;
+    creates_mem: bool <- body_creates_region(fn_val.body);
+    arena_scope: bool <- arena_ok and emitter_effects@is_pure(fn_val.effects) and arena_scope_ret_ok(fn_val.return_type) and creates_mem and kind5_tail_returns_directly == false;
+    region_scope: bool <- region_ok and emitter_effects@is_pure(fn_val.effects) and arena_scope_ret_ok(fn_val.return_type) and creates_mem and kind5_tail_returns_directly == false;
+    arena_mark_push: string <- case arena_scope of { true -> "    BL L_sc_arena_mark\n    STP X16, X17, [SP, #-16]!\n"; false -> "" };
+    arena_release_pop: string <- case arena_scope of { true -> "    LDP X16, X17, [SP], #16\n    BL L_sc_arena_release_to\n"; false -> "" };
+    region_mark_push: string <- case region_scope of { true -> "    BL _silica_rt_region_mark\n    STP X16, X17, [SP, #-16]!\n"; false -> "" };
+    region_release_pop: string <- case region_scope of { true -> "    LDP X16, X17, [SP], #16\n    BL _silica_rt_region_release_to\n"; false -> "" };
     // Inject _silica_pid_registry_init at the start of every program entry-point. The routine
     // (prims_actors_runtime_asm.silica) spawns the global primitive PID registry behavior and
     // stores the actor_ref in _silica_pid_registry_ref.
@@ -1953,7 +2048,7 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
             end
         }
     };
-    concat(concat(concat(eff_comment, "\n"), concat(prologue_full, "\n")), concat(registry_init_inject, concat(concat(concat(body, "\n"), float_to_exit), epilogue)))
+    concat(concat(concat(eff_comment, "\n"), concat(concat(concat(prologue_full, region_mark_push), arena_mark_push), "\n")), concat(registry_init_inject, concat(concat(concat(body, "\n"), float_to_exit), concat(arena_release_pop, concat(region_release_pop, epilogue)))))
     end
 }
 

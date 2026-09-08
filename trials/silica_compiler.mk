@@ -68,14 +68,20 @@ $(SILICA_COMPILER):
 #   $(call RUN_SILICA_COMPILER_WITH,$(abspath $(SILICA_COMPILER)))
 # Quiet variant (no reclaim chatter) for golden-output capture:
 #   $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)")
+# Per-unit compile timeout. Without it a compiler hang blocks the suite indefinitely --
+# an orphaned resume loop once spun for 14 hours overnight. Exit 142 = alarm fired.
+SILICA_COMPILE_TIMEOUT ?= 300
 define RUN_SILICA_COMPILER_WITH
 	while true; do \
-		$(1); \
+		perl -e 'alarm shift @ARGV; exec @ARGV' $(SILICA_COMPILE_TIMEOUT) $(1); \
 		ec=$$?; \
 		if [ $$ec -eq 0 ]; then break; fi; \
 		if [ $$ec -eq 75 ]; then \
 			echo "  (reclaiming memory; continuing next unit)"; \
 			continue; \
+		fi; \
+		if [ $$ec -eq 142 ]; then \
+			echo "❌❌ compiler TIMED OUT after $(SILICA_COMPILE_TIMEOUT)s (compile hang)"; \
 		fi; \
 		exit $$ec; \
 	done
@@ -86,7 +92,7 @@ endef
 # would abort the recipe before the diff step. Callers use `|| true` around the loop.
 define RUN_SILICA_COMPILER_QUIET_WITH
 	while true; do \
-		$(1); \
+		perl -e 'alarm shift @ARGV; exec @ARGV' $(SILICA_COMPILE_TIMEOUT) $(1); \
 		ec=$$?; \
 		if [ $$ec -eq 0 ]; then break; fi; \
 		if [ $$ec -eq 75 ]; then continue; fi; \

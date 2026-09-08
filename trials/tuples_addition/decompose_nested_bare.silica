@@ -1,0 +1,22 @@
+// Regression: nested tuple decomposition where every binding is consumed by a
+// single combined condition, with no intervening uses.
+//
+// Two defects show up in this shape, both distinct from the short-circuit SP
+// problem that decompose_field_in_and pins:
+//
+//   MOV X21, X0        ; all three decomposed bindings are assigned the SAME
+//   MOV X21, X0        ; register, so the earlier two are clobbered on the spot
+//   MOV X21, X0
+//   LDR W0, [SP, #-16] ; and the inner tuple's slot is read AFTER it was popped
+//                      ; (ADD SP, SP, #16) -- Apple arm64 has no red zone, so
+//                      ; that memory is not guaranteed to survive
+//
+// decompose_nested_inner does not catch this: its `_used_n` / `_used_b` bindings
+// change register allocation enough to hide it. All three values are correct, so
+// the only right answer is 0.
+fn main() -> int64 {
+    t: ((uint8, string), uint64) <- ((1, "hello"), 42);
+    (inner: (uint8, string), n: uint64) <- t;
+    (b: uint8, s: string) <- inner;
+    case s == "hello" and b == 1 and n == 42 of { true -> 0; false -> 1 }
+}

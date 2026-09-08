@@ -1,0 +1,20 @@
+// Regression: a tuple field read inside an `and` / `or` operand.
+//
+// The short-circuit save (`STR Xd, [SP, #-16]!` in term_emitter.silica) holds SP
+// 16 bytes lower for the whole of both operands -- it must, because the left
+// compare's CSET overwrites dest, which can be a live parameter (see
+// compiler_addition/and_param_reuse). Aggregate slots, however, are frozen at bind
+// time as the literal text "[SP, #n]", so every field read inside a short-circuit
+// operand addresses 16 bytes off: a wrong value when an integer is read, and a
+// fault when a string is, because the loaded descriptor pointer is garbage.
+//
+// Both operands here are true, so the only correct answer is 0. This trial fails
+// until aggregate slots are addressed relative to the frame pointer (X29), which
+// is immune to SP movement.
+fn main() -> int64 {
+    t: (int64, string) <- (1, "hello");
+    (b: int64, s: string) <- t;
+    ok1: boolean <- b == 1 and s == "hello";
+    ok2: boolean <- s == "hello" and b == 1;
+    case ok1 and ok2 of { true -> 0; false -> 1 }
+}

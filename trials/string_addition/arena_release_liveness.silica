@@ -1,0 +1,34 @@
+// Trial: scope-exit arena release must not free strings that are still live.
+//
+// scalar_churn is pure and returns int64, so per silica-specification §12.1.2 it
+// qualifies for scope-exit release of everything it allocated -- nothing it
+// allocates can escape. Strings created by the CALLER before the call live below
+// that scope's mark and must survive it untouched.
+//
+// A regression that releases too much (rewinding past the caller's allocations)
+// corrupts `keep` here rather than leaking, so this guards the dangerous
+// direction of the change. Want: hello world / 64 / true / 11
+fn scalar_churn(n: int64) -> int64 {
+    sequence
+        a: string <- concatenate("xxxxxxxx", "yyyyyyyy");
+        b: string <- concatenate(a, a);
+        c: string <- concatenate(b, b)
+    produces
+        pure length_bytes(c) + n
+    end
+}
+
+fn main() -> atom {
+    sequence proc[device_io] keep: string <- concatenate("hello", " world");
+        n1: int64 <- scalar_churn(0);
+        n2: int64 <- scalar_churn(0);
+        n3: int64 <- scalar_churn(n2 - n1);
+        print_string(keep);
+        println();
+        print_int64(n3);
+        println();
+        print_bool(keep == "hello world");
+        println();
+        print_int64(length_bytes(keep))
+        produces pure :ok end
+}

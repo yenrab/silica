@@ -24,8 +24,19 @@ use prims_actors;
 use string_parse;
 use reg_conventions;
 use term_sir_helpers;
+use term_aggregate_helpers;
 
 export spill_reg_chain_from_outer/1;
+export next_frame_spill_slot/1;
+export next_frame_region/2;
+export frame_region_for/2;
+export region_name_escapes/3;
+export body_has_moving_call/1;
+export let_owns_local_region/1;
+export body_kind_census/1;
+export emit_region_destroy_reg/1;
+export agg_subtree_bytes/2;
+export agg_offset_for/4;
 export type_name_is_list_like/1;
 export outer_for_aggregate_let_rhs/2;
 export outer_append_id_ret_tuple_sret/3;
@@ -68,7 +79,7 @@ fn spill_reg_chain_from_outer(outer_reg: string) -> string {
     }
 }
 
-fn binding_name_matches_ref(binding_name: string, ref_name: string) -> bool {
+fn binding_name_matches_ref(binding_name: string, ref_name: string) -> boolean {
     case binding_name == ref_name of {
         true -> true;
         false -> case length_bytes(binding_name) > 0 and substring(binding_name, 0, 1) == "%" of {
@@ -81,13 +92,13 @@ fn binding_name_matches_ref(binding_name: string, ref_name: string) -> bool {
     }
 }
 
-fn sir_term_references_binding(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, binding_name: string) -> bool {
+fn sir_term_references_binding(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, binding_name: string) -> boolean {
     case term.root < 0 of {
         true -> false;
         false -> {
             // Kind 4/5 callees live in `.name`. Omitting them lets a later let steal the
             // register holding a function parameter, then BLR to garbage.
-            local_ref: bool <- case term_sir_helpers@sir_term_root_node(term).kind of {
+            local_ref: boolean <- case term_sir_helpers@sir_term_root_node(term).kind of {
                 1 -> binding_name_matches_ref(binding_name, term_sir_helpers@sir_term_root_node(term).name);
                 0 -> case term_sir_helpers@sir_term_root_node(term).type_name == "fn_ptr" of {
                     true -> binding_name_matches_ref(binding_name, term_sir_helpers@sir_term_root_node(term).value);
@@ -118,7 +129,7 @@ fn find_equals_from_binding(s: string, i: int64) -> int64 {
     }
 }
 
-fn outer_reg_has_live_binding_from(outer_reg: string, reg: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, start: int64) -> bool {
+fn outer_reg_has_live_binding_from(outer_reg: string, reg: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, start: int64) -> boolean {
     pipe: int64 <- var@find_pipe_from(outer_reg, start);
     case pipe < 0 of {
         true -> false;
@@ -128,7 +139,7 @@ fn outer_reg_has_live_binding_from(outer_reg: string, reg: string, body: { nodes
             seg_end: int64 <- case next_pipe < 0 of { true -> length_bytes(outer_reg); false -> next_pipe };
             segment: string <- substring(outer_reg, seg_start, seg_end);
             eq: int64 <- find_equals_from_binding(segment, 0);
-            live_here: bool <- case eq < 1 of {
+            live_here: boolean <- case eq < 1 of {
                 true -> false;
                 false -> {
                     binding_name: string <- substring(segment, 0, eq);
@@ -149,11 +160,11 @@ fn outer_reg_has_live_binding_from(outer_reg: string, reg: string, body: { nodes
     }
 }
 
-fn outer_reg_has_live_binding(outer_reg: string, reg: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+fn outer_reg_has_live_binding(outer_reg: string, reg: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     outer_reg_has_live_binding_from(outer_reg, reg, body, 0)
 }
 
-fn spill_reg_unavailable_for_body(outer_reg: string, reg: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+fn spill_reg_unavailable_for_body(outer_reg: string, reg: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     var@reg_reserved_as_sret_buffer(outer_reg, reg)
         or outer_reg_has_live_binding(outer_reg, reg, body)
 }
@@ -211,7 +222,7 @@ fn outer_reg_keep_callee_saved(outer_reg: string) -> string {
     }
 }
 
-fn is_float_scalar_type(type_name: string) -> bool {
+fn is_float_scalar_type(type_name: string) -> boolean {
     type_name == "float64" or type_name == "float32" or type_name == "float16"
 }
 
@@ -229,7 +240,7 @@ fn fp_reg_for_type_index(type_name: string, idx: int64) -> string {
     concat(fp_prefix_for_type(type_name), atom_table@int64_to_decimal_string(idx))
 }
 
-fn fp_v_index_bound(outer_reg: string, idx: int64) -> bool {
+fn fp_v_index_bound(outer_reg: string, idx: int64) -> boolean {
     s: string <- atom_table@int64_to_decimal_string(idx);
     var@is_reg_bound(outer_reg, concat("D", s)) or var@is_reg_bound(outer_reg, concat("S", s)) or var@is_reg_bound(outer_reg, concat("H", s))
 }
@@ -262,7 +273,7 @@ fn fp_spill_reg_chain_from_outer(type_name: string, outer_reg: string) -> string
     }
 }
 
-fn is_caller_saved_fp(reg: string) -> bool {
+fn is_caller_saved_fp(reg: string) -> boolean {
     case length_bytes(reg) < 2 of {
         true -> false;
         false -> {
@@ -280,7 +291,7 @@ fn is_caller_saved_fp(reg: string) -> bool {
 
 // Parser joins list types with spaces (e.g. "List [int64, normal]"), not only "List[int64, normal]".
 
-fn type_name_is_list_like(type_name: string) -> bool {
+fn type_name_is_list_like(type_name: string) -> boolean {
     case length_bytes(type_name) >= 5 and substring(type_name, 0, 5) == "List[" of {
         true -> true;
         false -> case length_bytes(type_name) >= 6 and substring(type_name, 0, 6) == "List [" of {
@@ -290,7 +301,7 @@ fn type_name_is_list_like(type_name: string) -> bool {
     }
 }
 
-fn type_name_is_memory_handle_like(type_name: string) -> bool {
+fn type_name_is_memory_handle_like(type_name: string) -> boolean {
     t: string <- prims_record@strip_spaces_rt(type_name);
     case length_bytes(t) >= 7 and substring(t, 0, 7) == "region(" of {
         true -> true;
@@ -339,7 +350,7 @@ fn outer_append_id_ret_tuple_sret(term: { nodes: List[{ kind: int64, type_name: 
 // be spilled: they are returned in X0 (caller-saved) and can be clobbered by subsequent BL calls in
 // the same sequence body.
 
-fn let_rhs_type_spills_across_io(type_name: string) -> bool {
+fn let_rhs_type_spills_across_io(type_name: string) -> boolean {
     case type_name of {
         "int64" -> true;
         "i64" -> true;
@@ -395,7 +406,7 @@ fn let_rhs_type_spills_across_io(type_name: string) -> bool {
     }
 }
 
-fn type_name_starts_uppercase(type_name: string) -> bool {
+fn type_name_starts_uppercase(type_name: string) -> boolean {
     case length_bytes(type_name) == 0 of {
         true -> false;
         false -> case substring(type_name, 0, 1) of {
@@ -410,7 +421,7 @@ fn type_name_starts_uppercase(type_name: string) -> bool {
     }
 }
 
-fn is_caller_saved_gpr(reg: string) -> bool {
+fn is_caller_saved_gpr(reg: string) -> boolean {
     xreg: string <- case length_bytes(reg) > 1 and substring(reg, 0, 1) == "W" of {
         true -> concat("X", substring(reg, 1, length_bytes(reg)));
         false -> reg
@@ -427,7 +438,7 @@ fn is_caller_saved_gpr(reg: string) -> bool {
     }
 }
 
-fn frame_spill_ref(spill_ref: string) -> bool {
+fn frame_spill_ref(spill_ref: string) -> boolean {
     length_bytes(spill_ref) > 7 and substring(spill_ref, 0, 7) == "[X29, #"
 }
 
@@ -441,7 +452,11 @@ fn max_frame_spill_offset_from(outer_reg: string, start: int64) -> int64 {
             seg_end: int64 <- case next_pipe < 0 of { true -> length_bytes(outer_reg); false -> next_pipe };
             segment: string <- substring(outer_reg, seg_start, seg_end);
             eq: int64 <- find_equals_from_binding(segment, 0);
-            here: int64 <- case eq < 1 of {
+            // Aggregate REGION bindings (_va.<name>, _agg) also render as [X29,#-N]
+            // but are assigned by node index, not by this running max. Counting them
+            // here would push each sibling deeper and overflow the reservation.
+            is_region_key: boolean <- eq > 0 and (substring(segment, 0, 4) == "_va." or substring(segment, 0, 4) == "_agg");
+            here: int64 <- case eq < 1 or is_region_key of {
                 true -> 0;
                 false -> {
                     mem_ref: string <- substring(segment, eq + 1, length_bytes(segment));
@@ -463,12 +478,346 @@ fn max_frame_spill_offset_from(outer_reg: string, start: int64) -> int64 {
     }
 }
 
+// Allocate an nbytes aggregate region in the fixed frame instead of moving SP.
+// Returns the region base as a frame memref ("[X29, #-96]"); element k lives at
+// X29-(base-k), which tuple_flat_memref_at renders directly. Sized off the
+// deepest offset already handed out, same discipline as next_frame_spill_slot.
+// Bytes an entire subtree needs for aggregate regions.
+//
+// kind 7 is the case branch-list cons (inner = branch, right_expr = rest). Only
+// ONE branch runs, so their regions overlap rather than stack -- max, not sum.
+// Everything else stacks: a let's RHS aggregate stays live across the body, and
+// True liveness for a let-bound aggregate: the pre-order position of the last
+// VARIABLE use of `name` in the body, or -1 if it is never read. Shadowing by an
+// inner let of the same name ends the range. Local copies of the register
+// allocator's helpers -- emitter_core owns those and imports this module, so it
+// cannot be imported back.
+fn agg_name_is_read(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name: string) -> boolean {
+    case term.root < 0 of {
+        true -> false;
+        false -> {
+            n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(term);
+            case n.kind == 1 and n.name == name of {
+                true -> true;
+                false -> {
+                    li: boolean <- agg_name_is_read(term_sir_helpers@sir_term_at(term, n.inner), name);
+                    case li of {
+                        true -> true;
+                        false -> case n.kind == 2 and n.name == name of {
+                            true -> false;
+                            false -> agg_name_is_read(term_sir_helpers@sir_term_at(term, n.right_expr), name)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Ownership escape test for a region binding (spec 3.247: handles are move-only).
+// A region whose name appears inside a user call (kind 5) has been MOVED -- the
+// callee owns it now and this scope must not also destroy it. Reads and
+// alloc_ref/alloc_buf borrows leave ownership here.
+fn rgn_has_prefix(nm: string, p: string) -> boolean {
+    length_bytes(nm) >= length_bytes(p) and substring(nm, 0, length_bytes(p)) == p
+}
+
+fn rgn_is_moving_call(nm: string) -> boolean {
+    case length_bytes(nm) == 0 of {
+        true -> false;
+        false -> (rgn_has_prefix(nm, "alloc_") or rgn_has_prefix(nm, "read_") or rgn_has_prefix(nm, "write_") or rgn_has_prefix(nm, "region_") or rgn_has_prefix(nm, "fresh_")) == false
+    }
+}
+
+fn region_name_escapes(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name: string, in_call: boolean) -> boolean {
+    case term.root < 0 of {
+        true -> false;
+        false -> {
+            n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(term);
+            case in_call and n.kind == 1 and n.name == name of {
+                true -> true;
+                false -> {
+                    // A user call is kind 4 named for the callee (verified from SIR:
+                    // "4:consume,1:%r,6:user_call_rest"), NOT kind 5. Memory prims
+                    // alloc_*/read_*/write_* take a region by BORROW and do not move it.
+                    deeper: boolean <- in_call or n.kind == 5 or (n.kind == 4 and rgn_is_moving_call(n.name));
+                    li: boolean <- region_name_escapes(term_sir_helpers@sir_term_at(term, n.inner), name, deeper);
+                    case li of {
+                        true -> true;
+                        false -> region_name_escapes(term_sir_helpers@sir_term_at(term, n.right_expr), name, deeper)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Destroy a region held in `reg`, preserving X0/X1 (the scope's result) across it.
+fn emit_region_destroy_reg(reg: string) -> string {
+    case length_bytes(reg) == 0 of {
+        true -> "";
+        false -> case var@is_memory_ref(reg) of {
+            true -> concat("    STP X0, X1, [SP, #-16]!\n", concat(var@emit_ldr_mem_ref("X0", reg), "\n    BL _silica_rt_region_destroy\n    LDP X0, X1, [SP], #16\n"));
+            false -> concat("    STP X0, X1, [SP, #-16]!\n    MOV X0, ", concat(reg, "\n    BL _silica_rt_region_destroy\n    LDP X0, X1, [SP], #16\n"))
+        }
+    }
+}
+
+// True when this let binds a locally created region that never leaves the scope.
+// TEMPORARY diagnostic: which node kinds actually appear in this body.
+fn body_kind_census(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    case term.root < 0 of {
+        true -> "";
+        false -> {
+            n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(term);
+            here: string <- concat(atom_table@int64_to_decimal_string(n.kind), concat(":", concat(n.name, ",")));
+            concat(here, concat(body_kind_census(term_sir_helpers@sir_term_at(term, n.inner)), body_kind_census(term_sir_helpers@sir_term_at(term, n.right_expr))))
+        }
+    }
+}
+
+fn body_has_user_call(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
+    case term.root < 0 of {
+        true -> false;
+        false -> {
+            n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(term);
+            case n.kind == 5 of {
+                true -> true;
+                false -> case body_has_user_call(term_sir_helpers@sir_term_at(term, n.inner)) of {
+                    true -> true;
+                    false -> body_has_user_call(term_sir_helpers@sir_term_at(term, n.right_expr))
+                }
+            }
+        }
+    }
+}
+
+// Any call that is not a borrow prim can move the region out of this scope.
+// Matching the handle to a specific argument proved unreliable (main in
+// compiler_addition/region_grow destroyed a region it had passed to fill, a double
+// free), so this asks the name-independent question: does the scope contain ANY
+// moving call at all?
+fn body_has_moving_call(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
+    case term.root < 0 of {
+        true -> false;
+        false -> {
+            n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(term);
+            case n.kind == 4 or n.kind == 5 of {
+                true -> true;
+                false -> case body_has_moving_call(term_sir_helpers@sir_term_at(term, n.inner)) of {
+                    true -> true;
+                    false -> body_has_moving_call(term_sir_helpers@sir_term_at(term, n.right_expr))
+                }
+            }
+        }
+    }
+}
+
+// True if `name` appears anywhere that is NOT a direct argument of a borrow prim.
+// Storing it into an aggregate, returning it, or passing it on all count.
+fn rgn_is_region_borrow_prim(nm: string) -> boolean {
+    rgn_has_prefix(nm, "alloc_") or rgn_has_prefix(nm, "region_") or nm == "ref_in_region"
+}
+
+fn region_used_outside_borrow(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name: string, in_borrow: boolean) -> boolean {
+    case term.root < 0 of {
+        true -> false;
+        false -> {
+            n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(term);
+            case n.kind == 1 and n.name == name and in_borrow == false of {
+                true -> true;
+                false -> {
+                    b: boolean <- in_borrow or (n.kind == 6 and rgn_is_region_borrow_prim(n.name));
+                    li: boolean <- region_used_outside_borrow(term_sir_helpers@sir_term_at(term, n.inner), name, b);
+                    case li of {
+                        true -> true;
+                        false -> region_used_outside_borrow(term_sir_helpers@sir_term_at(term, n.right_expr), name, b)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn let_owns_local_region(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
+    rhs: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner);
+    case term_sir_helpers@sir_term_root_node(rhs).name == "alloc_region" of {
+        false -> false;
+        // Conservative: destroy only when the scope contains NO user call. A call is
+        // the only way ownership moves on, and matching the handle to a specific
+        // argument proved unreliable -- move_one and consume both destroyed the same
+        // region, a double free (Trace/BPT trap). Missing a destroy leaks; emitting
+        // one twice corrupts, so this errs toward the leak.
+        // Destroy only when the handle is used EXCLUSIVELY as a borrow-prim argument
+        // (alloc_ref/alloc_buf/alloc_rec/read_*/write_*). Any other appearance may
+        // carry it out of the scope -- notably `{ region: r, ... }`, a record that is
+        // then returned. Checking only for moving CALLS missed that, so the region was
+        // freed while the returned tree still pointed into it (near-null tree.region
+        // in wbt_map_smart_node_finish_alloc).
+        true -> body_has_moving_call(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)) == false
+                and region_used_outside_borrow(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), term_sir_helpers@sir_term_root_node(term).name, false) == false
+    }
+}
+
+fn agg_child_is_make(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> boolean {
+    case idx < 0 of {
+        true -> false;
+        false -> {
+            c: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, idx));
+            c.kind == 6 and (c.name == "tuple_make" or c.name == "record_make")
+        }
+    }
+}
+
+// What survives a let into its body: only the RHS's RESULT aggregate. A make handed to a
+// callee needs no room reserved here -- emit_rest_args and emit_simple_gpr_stage_one copy
+// it into the region before the pointer leaves the frame, so the slab is dead once the
+// call is staged and the body may reuse it. That promotion is what makes reuse safe:
+// Silica moves rather than borrows, so without it a callee keeps a pointer into a frame
+// slot the next sibling then overwrites -- two adjacent `m <- insert(m, k, (v, s))` lets
+// shared one offset and the second value tuple replaced the first entry's.
+// See trials/standard_data_structures/wbt_core/wbt_map_insert_tuple_value,
+// wbt_delete_payload_shapes and wbt_map_tuple_value_escapes_frame.
+fn agg_persist_bytes_let(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, let_idx: int64) -> int64 {
+    case let_idx < 0 of {
+        true -> 0;
+        false -> {
+            ln: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, let_idx));
+            // Free at last use: if the binding is never read in the body, its region
+            // dies with the RHS and the body can reuse the space. A make handed to a
+            // callee no longer needs pinning here: emit_rest_args and
+            // emit_simple_gpr_stage_one copy it into the region before the pointer
+            // leaves the frame, so the slab is dead once the call is staged.
+            case agg_name_is_read(term_sir_helpers@sir_term_at(term, ln.right_expr), ln.name) of {
+                false -> 0;
+                true -> agg_persist_bytes(term, ln.inner)
+            }
+        }
+    }
+}
+
+fn agg_persist_bytes(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> int64 {
+    case agg_child_is_make(term, idx) of {
+        true -> {
+            own: int64 <- term_aggregate_helpers@agg_shell_bytes(term_sir_helpers@sir_term_at(term, idx));
+            case own < 16 of { true -> 16; false -> (own + 15) / 16 * 16 }
+        };
+        false -> 0
+    }
+}
+
+// nested makes sit above their parent's shell.
+fn agg_subtree_bytes(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64) -> int64 {
+    case idx < 0 of {
+        true -> 0;
+        false -> {
+            n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, idx));
+            own: int64 <- term_aggregate_helpers@agg_shell_bytes(term_sir_helpers@sir_term_at(term, idx));
+            a: int64 <- agg_subtree_bytes(term, n.inner);
+            b: int64 <- agg_subtree_bytes(term, n.right_expr);
+            // Only case branches share: exactly one runs. Make ELEMENTS cannot --
+            // a nested aggregate whose pointer is stored into the parent shell stays
+            // live with the parent, and is not always heap-promoted first. Sharing
+            // there corrupted 16 trials (rec_call_field, tuple3_nested_destr, ...).
+            in_chain: boolean <- n.kind == 6 and (n.name == "tuple_make" or n.name == "record_make");
+            share: boolean <- n.kind == 7 or (in_chain and agg_child_is_make(term, n.inner));
+            case share of {
+                true -> own + (case a > b of { true -> a; false -> b });
+                false -> case n.kind == 2 of {
+                    true -> {
+                        pb: int64 <- agg_persist_bytes_let(term, idx);
+                        tot: int64 <- pb + b;
+                        own + (case a > tot of { true -> a; false -> tot })
+                    };
+                    false -> own + a + b
+                }
+            }
+        }
+    }
+}
+
+// Offset of `target`'s region, walking from the function body root. Returns -1 if
+// the target is not in this subtree. Cost is O(nodes) per query: the descent
+// visits each node once and the agg_subtree_bytes calls are on disjoint subtrees
+// along a single path.
+fn agg_offset_for(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64, target: int64, base: int64) -> int64 {
+    case idx < 0 of {
+        true -> 0 - 1;
+        false -> case idx == target of {
+            true -> base;
+            false -> {
+                n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, idx));
+                own: int64 <- term_aggregate_helpers@agg_shell_bytes(term_sir_helpers@sir_term_at(term, idx));
+                cb: int64 <- base + own;
+                l: int64 <- agg_offset_for(term, n.inner, target, cb);
+                case l >= 0 of {
+                    true -> l;
+                    false -> {
+                        in_chain_r: boolean <- n.kind == 6 and (n.name == "tuple_make" or n.name == "record_make");
+                        share_r: boolean <- n.kind == 7 or (in_chain_r and agg_child_is_make(term, n.inner));
+                        rb: int64 <- case share_r of {
+                            true -> cb;
+                            false -> case n.kind == 2 of {
+                                true -> cb + agg_persist_bytes_let(term, idx);
+                                false -> cb + agg_subtree_bytes(term, n.inner)
+                            }
+                        };
+                        agg_offset_for(term, n.right_expr, target, rb)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Region for THIS make, derived from its SIR node index rather than from mutable
+// context. Sibling makes (e.g. two child specs passed to one call) share an
+// outer_reg, so a context-derived base handed them the same address and they
+// overwrote each other -- phase_a/phase_e supervisor faults. Node indices are
+// unique, so prefix-summing make sizes below this node gives every make a
+// distinct, non-overlapping region that still fits the agg_region_bytes total.
+fn frame_region_for(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, outer_reg: string) -> string {
+    // Regions own the shallow end of the frame spill area, [0 .. _aggb], indexed
+    // by SIR node so siblings never alias. Spill slots start below _aggb, so the
+    // two allocators cannot overlap -- a short-circuit slot landed on a tuple's
+    // element 0 when they shared the same offset space.
+    broot: string <- var@find_sp_binding(outer_reg, "_broot");
+    br: int64 <- case length_bytes(broot) > 0 of { true -> string_parse@string_to_int64(broot); false -> 0 - 1 };
+    raw: int64 <- agg_offset_for(term, br, term.root, 0);
+    prefix: int64 <- case raw >= 0 of { true -> raw; false -> 0 };
+    own: int64 <- term_aggregate_helpers@agg_shell_bytes(term);
+    need: int64 <- case own < 16 of { true -> 16; false -> (own + 15) / 16 * 16 };
+    concat("[X29, #-", concat(atom_table@int64_to_decimal_string(prefix + need), "]"))
+}
+
+fn next_frame_region(outer_reg: string, nbytes: int64) -> string {
+    off: int64 <- max_frame_spill_offset_from(outer_reg, 0);
+    need: int64 <- case nbytes < 16 of { true -> 16; false -> (nbytes + 15) / 16 * 16 };
+    concat("[X29, #-", concat(atom_table@int64_to_decimal_string(off + need), "]"))
+}
+
+fn agg_area_bytes(outer_reg: string) -> int64 {
+    s: string <- var@find_sp_binding(outer_reg, "_aggb");
+    raw: int64 <- case length_bytes(s) > 0 of { true -> string_parse@string_to_int64(s); false -> 0 };
+    // Guard: type_interner_parse_ordered_map reserves 592 bytes yet this read
+    // returned 7864320, producing a spill slot at [X29,#-7864336] -- outside the
+    // frame and too large for a MOV immediate, so the file would not assemble.
+    // A value far beyond any real frame is a bad read, not a big function; ignoring
+    // it keeps slots inside the frame. The underlying parse still needs root-causing.
+    case raw < 0 or raw > 262144 of {
+        true -> 0;
+        false -> raw
+    }
+}
+
 fn next_frame_spill_slot(outer_reg: string) -> string {
     // enclosing_sp_binding re-appends the parent's [X29,#-N] on every nested
     // let, so a binding-count n jumped 1,2,4,6. STUR [x29,#-96] then landed
     // on the callee-saved save area (caller's X21). Address from the deepest
     // offset already used. See trials/codegen_regressions/frame_spill_x21.silica.
-    off: int64 <- max_frame_spill_offset_from(outer_reg, 0);
+    raw: int64 <- max_frame_spill_offset_from(outer_reg, 0);
+    ab: int64 <- agg_area_bytes(outer_reg);
+    off: int64 <- case raw > ab of { true -> raw; false -> ab };
     n: int64 <- off / 16 + 1;
     concat("[X29, #-", concat(atom_table@int64_to_decimal_string(n * 16), "]"))
 }
@@ -525,7 +874,7 @@ fn mov_spill_from_rhs(rhs_reg: string, spill_reg: string) -> string {
 // Total stack bytes to deallocate for tuple-constructed call arguments.
 // tuple_make allocates on SP; callers must restore SP after the call returns.
 
-fn is_aggregate_make(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+fn is_aggregate_make(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     case term_sir_helpers@sir_term_root_node(t).kind == 6 of {
         false -> false;
         true -> term_sir_helpers@sir_term_root_node(t).name == "tuple_make" or term_sir_helpers@sir_term_root_node(t).name == "record_make"

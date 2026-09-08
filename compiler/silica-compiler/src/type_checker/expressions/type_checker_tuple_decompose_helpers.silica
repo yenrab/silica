@@ -889,25 +889,195 @@ fn normalize_type_equal_text(s: string) -> string {
     normalize_mem_normal_alias(case_unwrap_atom_union_parens(s))
 }
 
-fn types_equal_surface(a: string, b: string) -> bool {
-    // Exact match first (no allocation). Huge surfaces skip O(n) mem(normal) rewriting;
-    // callers should prefer type_checker_core@context_surfaces_equal / type ids.
+// ---------------------------------------------------------------------------
+// Allocation-free normalized type comparison.
+//
+// normalize_type_equal_text builds its result with repeated concat, so it costs
+// O(len^2) bump-allocated bytes that are never freed; the structural signatures
+// compared here run to ~6.6KB, which is where the multi-gigabyte compile peaks
+// came from. The functions below decide normalize(a) == normalize(b) by walking
+// both surfaces as *streams* instead of materializing either one: spaces are
+// skipped in flight, "mem(normal)" is rewritten to "normal" in flight, and the
+// optional atom-union parens are handled by adjusting the walk bounds.
+//
+// Only single-byte substrings are taken, and those come from the shared 1-char
+// table, so the whole comparison allocates nothing.
+//
+// A stream cursor packs (source index, pending) into one int64 as index * 8 +
+// pending, where pending is how many characters of "normal" are still owed from
+// an in-flight mem(normal) rewrite (0 when not rewriting, at most 5).
+// ---------------------------------------------------------------------------
+
+fn ne_skip_spaces(s: string, i: int64, hi: int64) -> int64 {
+    case i >= hi of {
+        true -> hi;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> ne_skip_spaces(s, i + 1, hi);
+            false -> i
+        }
+    }
+}
+
+// Matches pat against s starting at i, skipping spaces in s. Returns the index
+// just past the match, or -1 when pat does not match there.
+fn ne_match_end(s: string, i: int64, hi: int64, pat: string, p: int64) -> int64 {
+    case p >= len(pat) of {
+        true -> i;
+        false -> {
+            j: int64 <- ne_skip_spaces(s, i, hi);
+            case j >= hi of {
+                true -> 0 - 1;
+                false -> case substring(s, j, j + 1) == substring(pat, p, p + 1) of {
+                    true -> ne_match_end(s, j + 1, hi, pat, p + 1);
+                    false -> 0 - 1
+                }
+            }
+        }
+    }
+}
+
+fn ne_last_ns(s: string, j: int64) -> int64 {
+    case j < 0 of {
+        true -> 0 - 1;
+        false -> case substring(s, j, j + 1) == " " of {
+            true -> ne_last_ns(s, j - 1);
+            false -> j
+        }
+    }
+}
+
+// Mirrors case_unwrap_atom_union_parens: "( :a | :b )" drops its outer parens,
+// but only when the space-stripped inner text is non-empty and starts with ':'.
+fn ne_unwraps(s: string, f: int64, l: int64) -> boolean {
+    case f < l and substring(s, f, f + 1) == "(" and substring(s, l, l + 1) == ")" of {
+        false -> false;
+        true -> {
+            f2: int64 <- ne_skip_spaces(s, f + 1, l);
+            f2 < l and substring(s, f2, f2 + 1) == ":"
+        }
+    }
+}
+
+fn ne_lo(s: string) -> int64 {
+    n: int64 <- len(s);
+    f: int64 <- ne_skip_spaces(s, 0, n);
+    case f >= n of {
+        true -> 0;
+        false -> case ne_unwraps(s, f, ne_last_ns(s, n - 1)) of {
+            true -> f + 1;
+            false -> f
+        }
+    }
+}
+
+fn ne_hi(s: string) -> int64 {
+    n: int64 <- len(s);
+    f: int64 <- ne_skip_spaces(s, 0, n);
+    case f >= n of {
+        true -> 0;
+        false -> {
+            l: int64 <- ne_last_ns(s, n - 1);
+            case ne_unwraps(s, f, l) of {
+                true -> l;
+                false -> l + 1
+            }
+        }
+    }
+}
+
+// Current normalized character under the cursor, or "" once the stream is spent.
+fn ne_cur(s: string, st: int64, hi: int64) -> string {
+    k: int64 <- st % 8;
+    case k > 0 of {
+        true -> substring("normal", 6 - k, 7 - k);
+        false -> {
+            j: int64 <- ne_skip_spaces(s, st / 8, hi);
+            case j >= hi of {
+                true -> "";
+                false -> case ne_match_end(s, j, hi, "mem(normal)", 0) >= 0 of {
+                    true -> "n";
+                    false -> substring(s, j, j + 1)
+                }
+            }
+        }
+    }
+}
+
+fn ne_next(s: string, st: int64, hi: int64) -> int64 {
+    k: int64 <- st % 8;
+    case k > 0 of {
+        true -> st - 1;
+        false -> {
+            j: int64 <- ne_skip_spaces(s, st / 8, hi);
+            case j >= hi of {
+                true -> hi * 8;
+                false -> {
+                    e: int64 <- ne_match_end(s, j, hi, "mem(normal)", 0);
+                    case e >= 0 of {
+                        true -> e * 8 + 5;
+                        false -> (j + 1) * 8
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn ne_walk(a: string, sa: int64, ha: int64, b: string, sb: int64, hb: int64) -> boolean {
+    ca: string <- ne_cur(a, sa, ha);
+    case ca == ne_cur(b, sb, hb) of {
+        false -> false;
+        true -> case len(ca) == 0 of {
+            true -> true;
+            false -> ne_walk(a, ne_next(a, sa, ha), ha, b, ne_next(b, sb, hb), hb)
+        }
+    }
+}
+
+// True when normalize_type_equal_text(a) == normalize_type_equal_text(b).
+fn norm_eq(a: string, b: string) -> boolean {
+    ne_walk(a, ne_lo(a) * 8, ne_hi(a), b, ne_lo(b) * 8, ne_hi(b))
+}
+
+fn ne_find(s: string, i: int64, hi: int64, pat: string) -> boolean {
+    case i >= hi of {
+        true -> false;
+        false -> case ne_match_end(s, i, hi, pat, 0) >= 0 of {
+            true -> true;
+            false -> ne_find(s, i + 1, hi, pat)
+        }
+    }
+}
+
+// ref_fits_ref_optional_slot needs "ref?" on the expected side and
+// needs_recursive_compare needs "rec" or "ref?" on one side, so when neither
+// marker appears anywhere both fallbacks are false by construction and the
+// normalized surfaces are never needed. This over-approximates (it matches the
+// markers as bare text), which can only cost an extra slow path, never change
+// an answer.
+fn ne_needs_fallback(a: string, b: string) -> boolean {
+    ne_find(a, ne_lo(a), ne_hi(a), "rec") or ne_find(b, ne_lo(b), ne_hi(b), "rec")
+        or ne_find(a, ne_lo(a), ne_hi(a), "ref?") or ne_find(b, ne_lo(b), ne_hi(b), "ref?")
+}
+
+fn types_equal_surface(a: string, b: string) -> boolean {
+    // Identical surfaces normalize identically, so the common case never walks.
     case a == b of {
         true -> true;
-        false -> case len(a) > 512 or len(b) > 512 of {
-            true -> case type_checker_recursive_tuples@ref_fits_ref_optional_slot(a, b) of {
-                true -> true;
-                false -> case type_checker_recursive_tuples@needs_recursive_compare(a, b) of {
-                    true -> type_checker_recursive_tuples@recursive_types_equal(a, b);
-                    false -> false
-                }
-            };
-            false -> do
-                na: string <- normalize_type_equal_text(a);
-                nb: string <- normalize_type_equal_text(b);
-                case na == nb of {
-                    true -> true;
-                    false -> case type_checker_recursive_tuples@ref_fits_ref_optional_slot(na, nb) of {
+        // norm_eq answers the normalized comparison without building either
+        // normalized string. This replaces a len > 512 shortcut that skipped
+        // normalization entirely for large surfaces, so big and small types now
+        // take the same normalized semantics instead of diverging.
+        false -> case norm_eq(a, b) of {
+            true -> true;
+            // Only the ref?/rec fallbacks still need materialized surfaces, and
+            // ne_needs_fallback proves when they cannot possibly apply.
+            false -> case ne_needs_fallback(a, b) of {
+                false -> false;
+                true -> {
+                    na: string <- normalize_type_equal_text(a);
+                    nb: string <- normalize_type_equal_text(b);
+                    case type_checker_recursive_tuples@ref_fits_ref_optional_slot(na, nb) of {
                         true -> true;
                         false -> case type_checker_recursive_tuples@needs_recursive_compare(na, nb) of {
                             true -> type_checker_recursive_tuples@recursive_types_equal(na, nb);
@@ -915,12 +1085,10 @@ fn types_equal_surface(a: string, b: string) -> bool {
                         }
                     }
                 }
-            end
+            }
         }
     }
 }
-
-// Replace each "mem(normal)" with "normal" without per-character concat on the common path.
 fn normalize_mem_normal_alias(s: string) -> string {
     normalize_mem_normal_alias_from(s, 0, "")
 }

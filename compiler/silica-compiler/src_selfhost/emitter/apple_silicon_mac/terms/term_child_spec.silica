@@ -19,10 +19,12 @@
 
 use prims_record;
 use term_sir_helpers;
+use var;
+use atom_table;
 
 export is_child_spec_record_type/1;
 export is_supervisor_reply_record_type/1;
-export emit_child_spec_hidden_trampoline_store/2;
+export emit_child_spec_hidden_trampoline_store/3;
 export child_spec_field_abi_offset/1;
 
 fn first_at_in_fn_label(s: string, i: int64) -> int64 {
@@ -101,7 +103,7 @@ fn child_spec_agent_type_atom(term: { nodes: List[{ kind: int64, type_name: stri
     }
 }
 
-fn is_child_spec_record_type(R: string) -> bool {
+fn is_child_spec_record_type(R: string) -> boolean {
     length_bytes(prims_record@find_field_type_in_record(R, "id")) > 0
         and length_bytes(prims_record@find_field_type_in_record(R, "agent_type")) > 0
         and (length_bytes(prims_record@find_field_type_in_record(R, "start")) > 0
@@ -111,7 +113,7 @@ fn is_child_spec_record_type(R: string) -> bool {
         and length_bytes(prims_record@find_field_type_in_record(R, "shutdown")) > 0
 }
 
-fn is_supervisor_reply_record_type(R: string) -> bool {
+fn is_supervisor_reply_record_type(R: string) -> boolean {
     length_bytes(prims_record@find_field_type_in_record(R, "tag")) > 0
         and length_bytes(prims_record@find_field_type_in_record(R, "child")) > 0
         and length_bytes(prims_record@find_field_type_in_record(R, "status")) > 0
@@ -121,7 +123,32 @@ fn is_supervisor_reply_record_type(R: string) -> bool {
         and length_bytes(prims_record@find_field_type_in_record(R, "error")) > 0
 }
 
-fn emit_child_spec_hidden_trampoline_store(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, R: string) -> string {
+// The child_spec hidden trampoline field sits at offset 56 of the record. That
+// record now lives in a fixed-frame region, so the old hardcoded "[SP, #56]"
+// wrote into whatever happened to be at SP -- nested :supervisor children lost
+// their trampoline symbol and failed to start. Addressing is inlined here rather
+// than reusing term_aggregate_helpers, which imports this module (cycle).
+fn hidden_field_store(store_base: string, reg: string) -> string {
+    fb: int64 <- var@parse_x29_neg_offset_bytes(store_base);
+    case fb > 0 of {
+        true -> {
+            d: int64 <- fb - 56;
+            case d <= 255 and d >= 0 of {
+                true -> concat("    STR ", concat(reg, concat(", [X29, #-", concat(atom_table@int64_to_decimal_string(d), "]"))));
+                false -> {
+                    setup: string <- case fb > 4095 of {
+                        true -> concat("    MOV X16, #", concat(atom_table@int64_to_decimal_string(fb), "\n    SUB X16, X29, X16\n"));
+                        false -> concat("    SUB X16, X29, #", concat(atom_table@int64_to_decimal_string(fb), "\n"))
+                    };
+                    concat(setup, concat("    STR ", concat(reg, ", [X16, #56]")))
+                }
+            }
+        };
+        false -> concat("    STR ", concat(reg, ", [SP, #56]"))
+    }
+}
+
+fn emit_child_spec_hidden_trampoline_store(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, R: string, store_base: string) -> string {
     case is_child_spec_record_type(R) of {
         false -> "";
         true -> {
@@ -129,13 +156,13 @@ fn emit_child_spec_hidden_trampoline_store(term: { nodes: List[{ kind: int64, ty
             // Do not infer role from child record shape or behavior naming.
             agent_atom: string <- child_spec_agent_type_atom(term);
             case agent_atom == ":supervisor" of {
-                false -> "    STR XZR, [SP, #56]";
+                false -> hidden_field_store(store_base, "XZR");
                 true -> {
                     label: string <- child_spec_start_fn_label(term);
                     sym: string <- child_spec_supervisor_trampoline_symbol_from_label(label);
                     case length_bytes(sym) == 0 of {
-                        true -> "    STR XZR, [SP, #56]";
-                        false -> concat(concat(concat(concat("    ADRP X9, ", sym), "@PAGE\n    ADD X9, X9, "), sym), "@PAGEOFF\n    STR X9, [SP, #56]")
+                        true -> hidden_field_store(store_base, "XZR");
+                        false -> concat(concat(concat(concat(concat("    ADRP X9, ", sym), "@PAGE\n    ADD X9, X9, "), sym), "@PAGEOFF\n"), hidden_field_store(store_base, "X9"))
                     }
                 }
             }

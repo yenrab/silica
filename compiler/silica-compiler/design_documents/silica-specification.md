@@ -1807,7 +1807,7 @@ required {
 }
 
 provided {
-    fn is_larger_than(s: Shape, other: Shape) -> bool {
+    fn is_larger_than(s: Shape, other: Shape) -> boolean {
         shape@area(s) > shape@area(other)
     }
 }
@@ -1828,7 +1828,7 @@ use shape;
 
 export largest/2;
 
-fn largest(s1: Shape, s2: Shape) -> bool {
+fn largest(s1: Shape, s2: Shape) -> boolean {
     shape@is_larger_than(s1, s2)
 }
 ```
@@ -1867,23 +1867,23 @@ export equals/2;
 export less_than/2;
 
 required {
-    fn equals(a: Comparable, b: Comparable) -> bool;
-    fn less_than(a: Comparable, b: Comparable) -> bool;
+    fn equals(a: Comparable, b: Comparable) -> boolean;
+    fn less_than(a: Comparable, b: Comparable) -> boolean;
 }
 
-impl fn equals(a: { name: string, age: int64 }, b: { name: string, age: int64 }) -> bool {
+impl fn equals(a: { name: string, age: int64 }, b: { name: string, age: int64 }) -> boolean {
     a.name == b.name and a.age == b.age
 }
 
-impl fn less_than(a: { name: string, age: int64 }, b: { name: string, age: int64 }) -> bool {
+impl fn less_than(a: { name: string, age: int64 }, b: { name: string, age: int64 }) -> boolean {
     a.age < b.age
 }
 
-impl fn equals(a: int64, b: int64) -> bool {
+impl fn equals(a: int64, b: int64) -> boolean {
     a == b
 }
 
-impl fn less_than(a: int64, b: int64) -> bool {
+impl fn less_than(a: int64, b: int64) -> boolean {
     a < b
 }
 ```
@@ -3013,7 +3013,17 @@ type char
 ```
 
 #### 4.1.6 String Type
-The `string` type represents UTF-8 encoded strings.
+The `string` type represents an arbitrary sequence of bytes: a byte buffer. Any
+byte value may appear at any position, including `0x00` (NUL) and bytes that do
+not form valid UTF-8.
+
+A string carries its length explicitly. It is **not** terminated by a sentinel
+byte, so `0x00` is ordinary data rather than an end marker: `"a\x00b"` is a
+three-byte string, and `length_bytes("\x00")` is `1`.
+
+Strings are commonly used to hold UTF-8 text, and the character-oriented
+operations in §5.3 interpret the bytes as UTF-8, but the type itself imposes no
+encoding constraint.
 
 ```
 type string
@@ -3459,7 +3469,16 @@ length_bytes(s: string) -> int64
 length_chars(s: string) -> int64
 ```
 
-These are the only user-available functions for finding the length of strings. `length_bytes` returns the byte length (UTF-8 encoded size); `length_chars` returns the character count (number of Unicode scalar values).
+These are the only user-available functions for finding the length of strings.
+
+`length_bytes` returns the exact number of bytes in the string, counting every
+byte, including `0x00`.
+
+`length_chars` interprets those bytes as UTF-8 and returns the character count.
+Bytes that are not part of a well-formed UTF-8 sequence are counted one byte per
+character, so `length_chars` is defined for every string and never fails. For a
+string that is valid UTF-8 this is the number of Unicode scalar values; for a
+string of arbitrary bytes it degrades to the byte count.
 
 #### 5.3.2 String Manipulation
 ```
@@ -3468,7 +3487,17 @@ substring(s: string, start: int64, end: int64) -> string
 substring_until_char(s: string, start: int64, char: char) -> string
 ```
 
-Concatenate strings and extract substrings. `substring` uses **character-based** indices (UTF-8 code points), not byte offsets. E.g. `substring("Hi🙂!", 2, 3)` returns `"🙂"`.
+Concatenate strings and extract substrings. `substring` uses **character-based**
+indices (UTF-8 code points), not byte offsets. E.g. `substring("Hi🙂!", 2, 3)` returns
+`"🙂"`.
+
+Positions are counted exactly as `length_chars` counts them: each well-formed
+UTF-8 sequence is one position, and each byte that is not part of a well-formed
+sequence is one position. Indices are therefore byte offsets for input that is
+not valid UTF-8.
+
+`concat` and `substring` preserve bytes exactly, including `0x00`; neither
+truncates at a NUL byte.
 
 #### 5.3.3 String Predicates
 ```
@@ -4026,10 +4055,10 @@ export trait Comparable;
 export equals/2;
 
 required {
-    fn equals(a: Comparable, b: Comparable) -> bool;
+    fn equals(a: Comparable, b: Comparable) -> boolean;
 }
 
-impl fn equals(a: int64, b: int64) -> bool {
+impl fn equals(a: int64, b: int64) -> boolean {
     a == b
 }
 ```
@@ -4043,7 +4072,7 @@ fn describe(value: int64) -> string {
     display@to_string(value)
 }
 
-fn compare_values(a: int64, b: int64) -> bool {
+fn compare_values(a: int64, b: int64) -> boolean {
     comparable@equals(a, b)
 }
 ```
@@ -4254,15 +4283,15 @@ export equals/2;
 export less_than/2;
 
 required {
-    fn equals(a: Comparable, b: Comparable) -> bool;
-    fn less_than(a: Comparable, b: Comparable) -> bool;
+    fn equals(a: Comparable, b: Comparable) -> boolean;
+    fn less_than(a: Comparable, b: Comparable) -> boolean;
 }
 
-impl fn equals(a: {name: string, age: int64}, b: {name: string, age: int64}) -> bool {
+impl fn equals(a: {name: string, age: int64}, b: {name: string, age: int64}) -> boolean {
     a.name == b.name and a.age == b.age
 }
 
-impl fn less_than(a: {name: string, age: int64}, b: {name: string, age: int64}) -> bool {
+impl fn less_than(a: {name: string, age: int64}, b: {name: string, age: int64}) -> boolean {
     a.age < b.age
 }
 ```
@@ -5748,7 +5777,7 @@ When a function requires multiple trait constraints, all constraints must be sat
 use display;
 use comparable;
 
-fn print_and_compare(x: Display, y: Comparable) -> bool {
+fn print_and_compare(x: Display, y: Comparable) -> boolean {
     str: string <- display@show(x);
     print_string(str);
     comparable@equals(y, y)
@@ -8568,7 +8597,7 @@ signal_handler(signo, siginfo, ucontext):
     1. Identify the current OS thread.
     2. Read TLS:
          current_actor  → actor_ref or null
-         in_mutator     → bool
+         in_mutator     → boolean
     3. Check containment gate (§15.4.4):
          if in_mutator == true
          and current_actor != null
@@ -8590,7 +8619,7 @@ Each OS thread that executes actor mutator code maintains:
 | Variable | Type | Meaning |
 |----------|------|---------|
 | `current_actor` | `actor_ref` or null | The actor currently executing on this thread, or null if not in an actor |
-| `in_mutator` | `bool` | True only when the thread is executing user (mutator) code inside the behavior function |
+| `in_mutator` | `boolean` | True only when the thread is executing user (mutator) code inside the behavior function |
 
 `in_mutator` is set to `true` immediately before calling the behavior function and cleared immediately after the call returns or before calling any trusted runtime function.
 
@@ -11551,18 +11580,18 @@ export is_some/1;
 export is_none/1;
 
 required {
-    fn is_some(o: OptionLike) -> bool;
-    fn is_none(o: OptionLike) -> bool;
+    fn is_some(o: OptionLike) -> boolean;
+    fn is_none(o: OptionLike) -> boolean;
 }
 
 // Example: one element type; the library may repeat the same pattern for other `T` as separate impl fn
-impl fn is_some(o: Some(int) | None) -> bool {
+impl fn is_some(o: Some(int) | None) -> boolean {
     case o of {
         Some(_: int) -> true;
         None -> false
     }
 }
-impl fn is_none(o: Some(int) | None) -> bool {
+impl fn is_none(o: Some(int) | None) -> boolean {
     case o of {
         Some(_: int) -> false;
         None -> true
@@ -11596,17 +11625,17 @@ export is_ok/1;
 export is_error/1;
 
 required {
-    fn is_ok(r: ResultLike) -> bool;
-    fn is_error(r: ResultLike) -> bool;
+    fn is_ok(r: ResultLike) -> boolean;
+    fn is_error(r: ResultLike) -> boolean;
 }
 
-impl fn is_ok(r: Ok(int) | Error(string)) -> bool {
+impl fn is_ok(r: Ok(int) | Error(string)) -> boolean {
     case r of {
         Ok(_: int) -> true;
         Error(_: string) -> false
     }
 }
-impl fn is_error(r: Ok(int) | Error(string)) -> bool {
+impl fn is_error(r: Ok(int) | Error(string)) -> boolean {
     case r of {
         Ok(_: int) -> false;
         Error(_: string) -> true
@@ -14241,8 +14270,9 @@ String operations are pure functions (no effects required).
 
 #### 22.7.1 String Length
 ```
-length_bytes(s: string) -> int64            // byte length (UTF-8 encoded size)
-length_chars(s: string) -> int64           // character count (Unicode scalar values)
+length_bytes(s: string) -> int64           // exact byte count, including 0x00
+length_chars(s: string) -> int64           // UTF-8 characters; a byte outside a
+                                           // well-formed sequence counts as one
 ```
 
 These are the only user-available functions for finding the length of strings.
@@ -14250,7 +14280,9 @@ These are the only user-available functions for finding the length of strings.
 #### 22.7.2 String Manipulation
 ```
 concat(a: string, b: string) -> string
-substring(s: string, start: int64, end: int64) -> string   // character-based indices
+substring(s: string, start: int64, end: int64) -> string   // character-based indices;
+                                                           // byte offsets when not
+                                                           // valid UTF-8 (see 5.3.2)
 substring_until_char(s: string, start: int64, char: char) -> string
 ```
 

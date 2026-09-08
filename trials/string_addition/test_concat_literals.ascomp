@@ -31,6 +31,7 @@ main:     STP X29, X30, [SP, #-16]!
     MOV X0, #1
     ADRP X1, L_str_2@PAGE
     ADD X1, X1, L_str_2@PAGEOFF
+    LDR X1, [X1, #8]
     MOV X2, #0
 
     STP X19, X20, [SP, #-16]!
@@ -82,75 +83,49 @@ L_pa_oob:
     RET
 
 L_ps_helper:
-    MOV X9, X0
-    MOV X2, #0
-L_ps_loop:
-    LDRB W1, [X0]
-    CBZ W1, L_ps_do_write
-    ADD X2, X2, #1
-    ADD X0, X0, #1
-    B L_ps_loop
-L_ps_do_write:
+    LDR X9, [X0]
+    MOV X10, #-1
+    CMP X9, X10
+    B.NE L_ps_bad
+    LDR X1, [X0, #8]
+    LDR X2, [X0, #16]
     MOV X0, #1
-    MOV X1, X9
     STP X19, X20, [SP, #-16]!
     MOV X16, #4
     SVC #0x80
     LDP X19, X20, [SP], #16
     RET
+L_ps_bad:
+    BRK #1
 L_concat_helper:
     STP X19, X20, [SP, #-64]!
     STP X21, X22, [SP, #16]
     STP X23, X30, [SP, #32]
     MOV X19, X0
     MOV X20, X1
-    ADRP X1, L_sc_len_key@PAGE
-    ADD X1, X1, L_sc_len_key@PAGEOFF
-    LDR X2, [X1]
-    CMP X2, X19
-    B.NE L_sc_strlen1
-    ADRP X1, L_sc_len_val@PAGE
-    ADD X1, X1, L_sc_len_val@PAGEOFF
-    LDR X21, [X1]
-    B L_sc_have_len1
-L_sc_strlen1:
-    MOV X0, X19
-    MOV X21, #0
-L_sc_len1:
-    LDRB W9, [X0]
-    CBZ W9, L_sc_have_len1
-    ADD X21, X21, #1
-    ADD X0, X0, #1
-    B L_sc_len1
-L_sc_have_len1:
-    ADRP X1, L_sc_len_key@PAGE
-    ADD X1, X1, L_sc_len_key@PAGEOFF
-    LDR X2, [X1]
-    CMP X2, X20
-    B.NE L_sc_strlen2
-    ADRP X1, L_sc_len_val@PAGE
-    ADD X1, X1, L_sc_len_val@PAGEOFF
-    LDR X22, [X1]
-    B L_sc_have_len2
-L_sc_strlen2:
-    MOV X0, X20
-    MOV X22, #0
-L_sc_len2:
-    LDRB W9, [X0]
-    CBZ W9, L_sc_have_len2
-    ADD X22, X22, #1
-    ADD X0, X0, #1
-    B L_sc_len2
-L_sc_have_len2:
+    LDR X9, [X19]
+    MOV X10, #-1
+    CMP X9, X10
+    B.NE L_sc_bad
+    LDR X21, [X19, #16]
+    LDR X9, [X20]
+    CMP X9, X10
+    B.NE L_sc_bad
+    LDR X22, [X20, #16]
     CBZ X21, L_sc_ret2
     CBZ X22, L_sc_ret1
     ADD X0, X21, X22
-    ADD X0, X0, #1
+    ADD X0, X0, #25
     BL L_sc_bump_alloc
     CBZ X0, L_sc_ret
     MOV X23, X0
-    MOV X9, X23
-    MOV X10, X19
+    MOV X9, #-1
+    STR X9, [X23]
+    ADD X9, X23, #24
+    STR X9, [X23, #8]
+    ADD X10, X21, X22
+    STR X10, [X23, #16]
+    LDR X10, [X19, #8]
     MOV X11, X21
 L_sc_cp1:
     CBZ X11, L_sc_cp1_done
@@ -161,7 +136,7 @@ L_sc_cp1:
     SUB X11, X11, #1
     B L_sc_cp1
 L_sc_cp1_done:
-    MOV X10, X20
+    LDR X10, [X20, #8]
     MOV X11, X22
 L_sc_cp2:
     CBZ X11, L_sc_cp2_done
@@ -174,36 +149,19 @@ L_sc_cp2:
 L_sc_cp2_done:
     STRB WZR, [X9]
     MOV X0, X23
-    ADD X2, X21, X22
-    ADRP X1, L_sc_len_key@PAGE
-    ADD X1, X1, L_sc_len_key@PAGEOFF
-    STR X23, [X1]
-    ADRP X1, L_sc_len_val@PAGE
-    ADD X1, X1, L_sc_len_val@PAGEOFF
-    STR X2, [X1]
     B L_sc_ret
 L_sc_ret2:
     MOV X0, X20
-    ADRP X1, L_sc_len_key@PAGE
-    ADD X1, X1, L_sc_len_key@PAGEOFF
-    STR X20, [X1]
-    ADRP X1, L_sc_len_val@PAGE
-    ADD X1, X1, L_sc_len_val@PAGEOFF
-    STR X22, [X1]
     B L_sc_ret
 L_sc_ret1:
     MOV X0, X19
-    ADRP X1, L_sc_len_key@PAGE
-    ADD X1, X1, L_sc_len_key@PAGEOFF
-    STR X19, [X1]
-    ADRP X1, L_sc_len_val@PAGE
-    ADD X1, X1, L_sc_len_val@PAGEOFF
-    STR X21, [X1]
 L_sc_ret:
     LDP X23, X30, [SP, #32]
     LDP X21, X22, [SP, #16]
     LDP X19, X20, [SP], #64
     RET
+L_sc_bad:
+    BRK #1
 L_sc_bump_alloc:
     STP X19, X30, [SP, #-32]!
     STP X20, X21, [SP, #16]
@@ -226,9 +184,10 @@ L_sc_bump_alloc:
     LDP X19, X30, [SP], #32
     RET
 L_sc_bump_new:
-    MOVZ X1, #0x40, LSL #16
-    CMP X19, X1
-    CSEL X1, X19, X1, HI
+    ADD X1, X19, #16
+    MOVZ X2, #0x40, LSL #16
+    CMP X1, X2
+    CSEL X1, X1, X2, HI
     MOV X21, X1
     MOV X0, #0
     MOV X2, #3
@@ -240,17 +199,118 @@ L_sc_bump_new:
     SVC #0x80
     CMN X0, #1
     B.EQ L_sc_bump_fail
-    ADD X1, X0, X19
-    STR X1, [X20]
+    ADRP X2, L_sc_arena_head@PAGE
+    ADD X2, X2, L_sc_arena_head@PAGEOFF
+    LDR X3, [X2]
+    STR X3, [X0]
+    STR X21, [X0, #8]
+    STR X0, [X2]
+    ADD X1, X0, #16
+    ADD X3, X1, X19
+    STR X3, [X20]
     ADRP X2, L_sc_arena_end@PAGE
     ADD X2, X2, L_sc_arena_end@PAGEOFF
     ADD X3, X0, X21
     STR X3, [X2]
+    MOV X0, X1
     LDP X20, X21, [SP, #16]
     LDP X19, X30, [SP], #32
     RET
 L_sc_bump_fail:
     MOV X0, #0
+    LDP X20, X21, [SP, #16]
+    LDP X19, X30, [SP], #32
+    RET
+L_sc_arena_mark:
+    ADRP X16, L_sc_arena_ptr@PAGE
+    ADD X16, X16, L_sc_arena_ptr@PAGEOFF
+    LDR X16, [X16]
+    ADRP X17, L_sc_arena_head@PAGE
+    ADD X17, X17, L_sc_arena_head@PAGEOFF
+    LDR X17, [X17]
+    RET
+L_sc_arena_release_to:
+    STP X29, X30, [SP, #-16]!
+    STP X0, X1, [SP, #-16]!
+    STP X2, X3, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X16
+    MOV X20, X17
+    ADRP X3, L_sc_arena_head@PAGE
+    ADD X3, X3, L_sc_arena_head@PAGEOFF
+    LDR X2, [X3]
+L_sc_rt_loop:
+    CMP X2, X20
+    B.EQ L_sc_rt_done
+    CBZ X2, L_sc_rt_done
+    LDR X0, [X2]
+    STR X0, [X3]
+    LDR X1, [X2, #8]
+    MOV X0, X2
+    MOVZ X16, #73
+    MOVK X16, #0x200, LSL #16
+    SVC #0x80
+    ADRP X3, L_sc_arena_head@PAGE
+    ADD X3, X3, L_sc_arena_head@PAGEOFF
+    LDR X2, [X3]
+    B L_sc_rt_loop
+L_sc_rt_done:
+    ADRP X0, L_sc_arena_ptr@PAGE
+    ADD X0, X0, L_sc_arena_ptr@PAGEOFF
+    STR X19, [X0]
+    CBZ X20, L_sc_rt_noend
+    LDR X1, [X20, #8]
+    ADD X1, X20, X1
+    ADRP X0, L_sc_arena_end@PAGE
+    ADD X0, X0, L_sc_arena_end@PAGEOFF
+    STR X1, [X0]
+    B L_sc_rt_caches
+L_sc_rt_noend:
+    ADRP X0, L_sc_arena_end@PAGE
+    ADD X0, X0, L_sc_arena_end@PAGEOFF
+    STR XZR, [X0]
+L_sc_rt_caches:
+    ADRP X0, L_sc_len_key@PAGE
+    ADD X0, X0, L_sc_len_key@PAGEOFF
+    STR XZR, [X0]
+    ADRP X0, L_sc_len_val@PAGE
+    ADD X0, X0, L_sc_len_val@PAGEOFF
+    STR XZR, [X0]
+    LDP X19, X20, [SP], #16
+    LDP X2, X3, [SP], #16
+    LDP X0, X1, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+L_sc_arena_release:
+    STP X19, X30, [SP, #-32]!
+    STP X20, X21, [SP, #16]
+    ADRP X20, L_sc_arena_head@PAGE
+    ADD X20, X20, L_sc_arena_head@PAGEOFF
+    LDR X19, [X20]
+L_sc_rel_loop:
+    CBZ X19, L_sc_rel_done
+    LDR X21, [X19]
+    LDR X1, [X19, #8]
+    MOV X0, X19
+    MOVZ X16, #73
+    MOVK X16, #0x200, LSL #16
+    SVC #0x80
+    MOV X19, X21
+    B L_sc_rel_loop
+L_sc_rel_done:
+    STR XZR, [X20]
+    ADRP X1, L_sc_arena_ptr@PAGE
+    ADD X1, X1, L_sc_arena_ptr@PAGEOFF
+    STR XZR, [X1]
+    ADRP X1, L_sc_arena_end@PAGE
+    ADD X1, X1, L_sc_arena_end@PAGEOFF
+    STR XZR, [X1]
+    ADRP X1, L_sc_len_key@PAGE
+    ADD X1, X1, L_sc_len_key@PAGEOFF
+    STR XZR, [X1]
+    ADRP X1, L_sc_len_val@PAGE
+    ADD X1, X1, L_sc_len_val@PAGEOFF
+    STR XZR, [X1]
     LDP X20, X21, [SP, #16]
     LDP X19, X30, [SP], #32
     RET
@@ -264,9 +324,10 @@ L_sc_arena_ptr:
     .space 8
 L_sc_arena_end:
     .space 8
+L_sc_arena_head:
+    .space 8
     .section __TEXT,__text,regular,pure_instructions
     .p2align 2
-
 .section __TEXT,__rodata
 .align	8
 atom_0:
@@ -365,18 +426,38 @@ L_pa_table:
     .quad atom_22
     .quad 10
 
-.section __TEXT,__rodata
-.align	8
+.section __DATA,__const
+.p2align 3
+    .p2align 3
 L_str_0:
+    .quad -1
+    .quad L_str_0_d
+    .quad 5
+L_str_0_d:
     .ascii "Hello"
     .byte 0
+    .p2align 3
 L_str_1:
+    .quad -1
+    .quad L_str_1_d
+    .quad 6
+L_str_1_d:
     .ascii " World"
     .byte 0
+    .p2align 3
 L_str_2:
+    .quad -1
+    .quad L_str_2_d
+    .quad 0
+L_str_2_d:
     .ascii ""
     .byte 0
+    .p2align 3
 L_str_3:
+    .quad -1
+    .quad L_str_3_d
+    .quad 1
+L_str_3_d:
     .ascii "\n"
     .byte 0
 

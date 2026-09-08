@@ -31,6 +31,13 @@ use var;
 export tuple_flat_memref/2;
 export emit_flat_float32_boxed_pair/3;
 export emit_reg_to_flat_qwords_memcpy_loop/5;
+export agg_shell_bytes/1;
+export agg_promote_bytes/1;
+export let_tail_aggregate_promote_bytes/1;
+export aggregate_callee_return_promote_bytes/1;
+export emit_sub_from_fp/2;
+export agg_addr_prefix/2;
+export tuple_flat_memref_at/2;
 export tuple_make_rec_flat_outer_alloc_bytes/2;
 export tuple_make_rec_flat_nested_trim_bytes/2;
 export flat_record_sum_nested_reserved_in_outer/1;
@@ -48,12 +55,11 @@ export emit_inline_record_field_copy_words/5;
 export aggregate_return_heap_promote_x0/1;
 export tuple_elem_sret_reclaim/2;
 export tuple_elem_heap_promote/2;
+export arg_aggregate_heap_promote/2;
 export tuple_elem_var_aggregate_promote_bytes/2;
 export let_stack_agg_escapes_via_tuple/1;
 export let_early_heap_promote_asm/2;
 export call_tuple_args_dealloc_bytes/1;
-export compute_inner_adj_bindings_record/5;
-export compute_inner_adj_bindings/5;
 export flat_tuple_total_alloc/1;
 export agg_alloc_inner/1;
 export flat_record_sum_nested_inners/1;
@@ -77,16 +83,75 @@ fn tuple_flat_memref(store_base: string, offset: int64) -> string {
     }
 }
 
+// AArch64 unscaled load/store immediates are limited to [-256, 255], so a frame
+// region deeper than that cannot be reached as [X29, #-d] (we saw [X29, #-288]
+// rejected by the assembler). For those, materialise the region base in X16
+// (IP0, caller-saved and safe to clobber immediately before the access) and use a
+// positive scaled offset, which reaches 32760. agg_addr_prefix supplies the SUB;
+// every site that builds an instruction from tuple_flat_memref must prepend it.
+// dest = X29 - n, valid for any n. SUB's immediate stops at 4095, so a deeper
+// frame needs the displacement in a register first (phase_d supervisors reached
+// 5040 bytes). No trailing newline: callers concatenate one.
+fn emit_sub_from_fp(dest: string, n: int64) -> string {
+    case n > 4095 of {
+        true -> concat("    MOV X17, #", concat(atom_table@int64_to_decimal_string(n), concat("\n    SUB ", concat(dest, ", X29, X17"))));
+        false -> concat("    SUB ", concat(dest, concat(", X29, #", atom_table@int64_to_decimal_string(n))))
+    }
+}
+
+fn agg_far_region(store_base: string, offset: int64) -> boolean {
+    fb: int64 <- var@parse_x29_neg_offset_bytes(store_base);
+    case fb > 0 of {
+        true -> fb - offset > 255;
+        false -> false
+    }
+}
+
+fn agg_addr_prefix(store_base: string, offset: int64) -> string {
+    case agg_far_region(store_base, offset) of {
+        true -> {
+            // SUB's immediate is [0, 4095]; a frame deeper than that needs the
+            // displacement in a register first (MOV covers 0..65535).
+            fb2: int64 <- var@parse_x29_neg_offset_bytes(store_base);
+            case fb2 > 4095 of {
+                true -> concat("    MOV X16, #", concat(atom_table@int64_to_decimal_string(fb2), "\n    SUB X16, X29, X16\n"));
+                false -> concat("    SUB X16, X29, #", concat(atom_table@int64_to_decimal_string(fb2), "\n"))
+            }
+        };
+        false -> ""
+    }
+}
+
 fn tuple_flat_memref_at(store_base: string, offset: int64) -> string {
+    case agg_far_region(store_base, offset) of {
+        true -> concat("[X16, #", concat(atom_table@int64_to_decimal_string(offset), "]"));
+        false -> tuple_flat_memref_near(store_base, offset)
+    }
+}
+
+fn tuple_flat_memref_near(store_base: string, offset: int64) -> string {
     case length_bytes(store_base) > 0 of {
         true -> {
-            p: string <- concat("[", store_base);
-            q: string <- concat(p, ", #");
-            r: string <- concat(q, atom_table@int64_to_decimal_string(offset));
-            concat(r, "]")
+            // A store_base that is itself a frame memref ("[X29, #-96]") names an
+            // aggregate region allocated in the fixed frame rather than by moving SP.
+            // Element k of that region is at X29-(base-k), so the address is stable
+            // across calls and needs no displacement correction. int64_to_decimal_string
+            // renders the sign, so offset > base (shouldn't happen) still formats.
+            fb: int64 <- var@parse_x29_neg_offset_bytes(store_base);
+            case fb > 0 of {
+                true -> concat("[X29, #", concat(atom_table@int64_to_decimal_string(offset - fb), "]"));
+                false -> tuple_flat_memref_reg(store_base, offset)
+            }
         };
         false -> concat(concat("[SP, #", atom_table@int64_to_decimal_string(offset)), "]")
     }
+}
+
+fn tuple_flat_memref_reg(store_base: string, offset: int64) -> string {
+    p: string <- concat("[", store_base);
+    q: string <- concat(p, ", #");
+    r: string <- concat(q, atom_table@int64_to_decimal_string(offset));
+    concat(r, "]")
 }
 
 // Multi-element tuples box float32: pointer slot at byte_cursor, value at byte_cursor+8 (consumer does LDR/LDR).
@@ -95,11 +160,18 @@ fn emit_flat_float32_boxed_pair(store_base: string, byte_cursor: int64, float_re
     val_off: int64 <- byte_cursor + 8;
     ptr_mr: string <- tuple_flat_memref(store_base, byte_cursor);
     val_mr: string <- tuple_flat_memref(store_base, val_off);
-    add_ptr: string <- case length_bytes(store_base) > 0 of {
-        true -> concat(concat(concat(concat(concat(concat("    ADD X10, ", store_base), ", #"), atom_table@int64_to_decimal_string(val_off)), "\n    STR X10, "), ptr_mr), "\n");
-        false -> concat(concat(concat(concat("    ADD X10, SP, #", atom_table@int64_to_decimal_string(val_off)), "\n    STR X10, "), ptr_mr), "\n")
+    // A frame-region base is a memref ("[X29, #-96]"), not a register, so the old
+    // "ADD X10, <base>, #n" form would emit garbage. Compute the element address
+    // from X29 directly in that case.
+    fb_f: int64 <- var@parse_x29_neg_offset_bytes(store_base);
+    add_ptr: string <- case fb_f > 0 of {
+        true -> concat(emit_sub_from_fp("X10", fb_f - val_off), concat("\n", concat(agg_addr_prefix(store_base, byte_cursor), concat("    STR X10, ", concat(ptr_mr, "\n")))));
+        false -> case length_bytes(store_base) > 0 of {
+            true -> concat(concat(concat(concat(concat(concat("    ADD X10, ", store_base), ", #"), atom_table@int64_to_decimal_string(val_off)), "\n    STR X10, "), ptr_mr), "\n");
+            false -> concat(concat(concat(concat("    ADD X10, SP, #", atom_table@int64_to_decimal_string(val_off)), "\n    STR X10, "), ptr_mr), "\n")
+        }
     };
-    concat(add_ptr, concat(concat(concat(concat("    STR ", float_reg), ", "), val_mr), "\n"))
+    concat(add_ptr, concat(agg_addr_prefix(store_base, val_off), concat(concat(concat(concat("    STR ", float_reg), ", "), val_mr), "\n")))
 }
 
 // Copy qword-aligned scalar fields from a stack record at src_reg into the flat tuple buffer (supervisor init:
@@ -113,7 +185,7 @@ fn emit_reg_to_flat_qwords_memcpy_loop(i: int64, qwords: int64, src_reg: string,
             ld0: string <- concat("    LDR X12, [", src_reg);
             ld1: string <- concat(ld0, ", #");
             ld2: string <- concat(ld1, atom_table@int64_to_decimal_string(off));
-            ld3: string <- concat(ld2, "]\n    STR X12, ");
+            ld3: string <- concat(ld2, concat("]\n", concat(agg_addr_prefix(store_base, dest_base_off + off), "    STR X12, ")));
             ld4: string <- concat(ld3, tuple_flat_memref(store_base, dest_base_off + off));
             ldr: string <- concat(ld4, "\n");
             concat(ldr, emit_reg_to_flat_qwords_memcpy_loop(i + 1, qwords, src_reg, store_base, dest_base_off))
@@ -127,14 +199,14 @@ fn emit_reg_to_flat_qwords_memcpy_loop(i: int64, qwords: int64, src_reg: string,
 // store_base: empty -> stack; non-empty -> sret / reply buffer register.
 
 // Retired: nested elements are heap pointers; do not widen the outer tuple SUB for rec_flat.
-fn tuple_make_memcpy_record_flat_head(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+fn tuple_make_memcpy_record_flat_head(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     false
 }
 
 
 // True when emit_flat_tuple_stores uses memcpy for a scalar record at idx 0 (rec_flat tuple head).
 
-fn tuple_make_scalar_rec_flat_first(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, count: int64) -> bool {
+fn tuple_make_scalar_rec_flat_first(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, count: int64) -> boolean {
     case count < 2 of {
         true -> false;
         false -> case term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "tuple_make" of {
@@ -207,11 +279,11 @@ fn flat_record_sum_nested_reserved_in_outer(term: { nodes: List[{ kind: int64, t
 // An inline-struct (record) return is different: the callee heap-promotes, SP does not move, and the
 // result is memcpy'd into bytes the outer SUB reserved. Those still count.
 // See trials/codegen_regressions/rec_tuple_call_field.silica.
-fn record_field_call_reclaims_own_sret(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+fn record_field_call_reclaims_own_sret(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     (term_sir_helpers@sir_term_root_node(elem).kind == 4 or term_sir_helpers@sir_term_root_node(elem).kind == 5) and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(elem).type_name)
 }
 
-fn record_field_inline_pointer_value(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fty: string) -> bool {
+fn record_field_inline_pointer_value(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fty: string) -> boolean {
     case reg_conventions@is_inline_struct_type(fty) of {
         false -> false;
         true -> case term_sir_helpers@sir_term_root_node(elem).kind == 1 of {
@@ -246,7 +318,7 @@ fn branch_tail_user_call_sret_stack_bytes(rhs: { nodes: List[{ kind: int64, type
     // `true -> { a <- …; b <- …; f(x) }` pushes the same slab as a bare `true -> f(x)`,
     // so walk the let spine to the tail before deciding (see read_hex_digits in the lexer).
     tail: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- branch_tail_strip_lets(rhs);
-    tail_is_bound: bool <- term_sir_helpers@sir_term_root_node(rhs).kind == 2 or length_bytes(bound_name) > 0;
+    tail_is_bound: boolean <- term_sir_helpers@sir_term_root_node(rhs).kind == 2 or length_bytes(bound_name) > 0;
     case term_sir_helpers@sir_term_root_node(tail).kind == 4 and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(tail).type_name) of {
         false -> 0;
         true -> case length_bytes(var@find_sp_binding(outer_reg, "_callee_sret")) > 0 and tail_is_bound == false of {
@@ -266,7 +338,7 @@ fn deepest_let_chain_leaf(term: { nodes: List[{ kind: int64, type_name: string, 
     }
 }
 
-fn let_chain_has_later_record_make_rhs(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+fn let_chain_has_later_record_make_rhs(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     case term_sir_helpers@sir_term_root_node(term).kind == 2 of {
         false -> false;
         true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_make" of {
@@ -280,7 +352,7 @@ fn let_chain_has_later_record_make_rhs(term: { nodes: List[{ kind: int64, type_n
 // base_stack ADD would double-pop (#48 duplicate). Omitting it entirely leaves SP 16 B low before callee LDP — use +16 fixup.
 // Uses tuple_make_memcpy_record_flat_head (defined above).
 
-fn let_suppress_base_stack_overlay_rec_flat(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, base_stack: int64) -> bool {
+fn let_suppress_base_stack_overlay_rec_flat(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, base_stack: int64) -> boolean {
     case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 2 and base_stack > 0 of {
         false -> false;
         true -> {
@@ -377,7 +449,7 @@ fn record_proj_chain_base_term(term: { nodes: List[{ kind: int64, type_name: str
 // True when the chain roots at a value that must be materialized in a register rather than at a
 // variable whose stack slot the projection can address directly.
 
-fn record_proj_chain_base_is_value(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+fn record_proj_chain_base_is_value(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     case term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "record_proj" of {
         false -> false;
         true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 of {
@@ -406,8 +478,9 @@ fn emit_inline_record_field_copy_words(src_reg: string, store_base: string, dest
         true -> "";
         false -> {
             off: int64 <- word_idx * 8;
+            dst_pfx: string <- agg_addr_prefix(store_base, dest_off + off);
             dst: string <- tuple_flat_memref(store_base, dest_off + off);
-            one: string <- concat(concat(concat(concat("    LDR X10, [", src_reg), concat(", #", atom_table@int64_to_decimal_string(off))), "]\n    STR X10, "), concat(dst, "\n"));
+            one: string <- concat(concat(concat(concat(concat(dst_pfx, "    LDR X10, ["), src_reg), concat(", #", atom_table@int64_to_decimal_string(off))), "]\n    STR X10, "), concat(dst, "\n"));
             concat(one, emit_inline_record_field_copy_words(src_reg, store_base, dest_off, word_idx + 1, words))
         }
     }
@@ -441,6 +514,25 @@ fn tuple_elem_sret_reclaim(reg: string, nbytes: int64) -> string {
     }
 }
 
+// Promote a frame aggregate held in `reg` to the region, preserving X0-X7: on the
+// direct argument path the earlier arguments of this same call are already sitting
+// in them, and region_alloc clobbers them. The promoted pointer is parked in X16
+// (IP0, caller-saved scratch) across the restore, then moved back into `reg`, so
+// this is correct even when `reg` is itself one of X0-X7.
+fn arg_aggregate_heap_promote(reg: string, nbytes: int64) -> string {
+    case nbytes <= 0 of {
+        true -> "";
+        false -> {
+            save: string <- "    STP X0, X1, [SP, #-16]!\n    STP X2, X3, [SP, #-16]!\n    STP X4, X5, [SP, #-16]!\n    STP X6, X7, [SP, #-16]!\n";
+            restore: string <- "    LDP X6, X7, [SP], #16\n    LDP X4, X5, [SP], #16\n    LDP X2, X3, [SP], #16\n    LDP X0, X1, [SP], #16\n";
+            to_x0: string <- concat("    MOV X0, ", concat(reg, "\n"));
+            park: string <- "    MOV X16, X0\n";
+            back: string <- concat("    MOV ", concat(reg, ", X16\n"));
+            concat(save, concat(to_x0, concat(aggregate_return_heap_promote_x0(nbytes), concat(park, concat(restore, back)))))
+        }
+    }
+}
+
 fn tuple_elem_heap_promote(reg: string, nbytes: int64) -> string {
     case nbytes <= 0 of {
         true -> "";
@@ -456,7 +548,7 @@ fn tuple_elem_var_aggregate_promote_bytes(elem: { nodes: List[{ kind: int64, typ
     0
 }
 
-fn flat_tuple_spine_packs_var(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name: string) -> bool {
+fn flat_tuple_spine_packs_var(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name: string) -> boolean {
     n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(t);
     case n.kind == 6 and n.name == "tuple_make" of {
         true -> {
@@ -474,7 +566,7 @@ fn flat_tuple_spine_packs_var(t: { nodes: List[{ kind: int64, type_name: string,
     }
 }
 
-fn expr_tuple_packs_var(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name: string) -> bool {
+fn expr_tuple_packs_var(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name: string) -> boolean {
     n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- term_sir_helpers@sir_term_root_node(t);
     case n.kind == 6 and n.name == "tuple_make" of {
         true -> flat_tuple_spine_packs_var(t, name);
@@ -496,7 +588,7 @@ fn expr_tuple_packs_var(t: { nodes: List[{ kind: int64, type_name: string, value
 
 // Retired: early let-promote hung selfhost typecheck (dangling nested fields after let-end).
 // Pack nested record_make literals instead (see extract_function / tup_let_rec).
-fn let_stack_agg_escapes_via_tuple(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+fn let_stack_agg_escapes_via_tuple(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     false
 }
 
@@ -547,100 +639,6 @@ fn call_tuple_args_dealloc_bytes(term: { nodes: List[{ kind: int64, type_name: s
 }
 
 
-// For each tuple-typed element in a tuple_make chain, compute the inner adj value and
-// encode as |_adj.{idx}={adj}| bindings.  adj_i = suffix_alloc_after_i + elem_i_nested.
-
-fn compute_inner_adj_bindings_record(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64, count: int64, cumulative_alloc: int64, total_nested: int64) -> string {
-    case idx < count - 1 and term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "record_make" of {
-        true -> {
-            elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner);
-            eit: bool <- term_sir_helpers@sir_term_root_node(elem).kind == 6 and (term_sir_helpers@sir_term_root_node(elem).name == "tuple_make" or term_sir_helpers@sir_term_root_node(elem).name == "record_make");
-            eta: int64 <- case eit of {
-                true -> case term_sir_helpers@sir_term_root_node(elem).name == "tuple_make" of {
-                    true -> flat_tuple_total_alloc(elem);
-                    false -> flat_record_total_alloc(elem)
-                };
-                false -> 0
-            };
-            nc: int64 <- cumulative_alloc + eta;
-            binding: string <- case eit of {
-                true -> case term_sir_helpers@sir_term_root_node(elem).name == "tuple_make" of {
-                    true -> {
-                        sa: int64 <- total_nested - nc;
-                        ec: int64 <- prims_tuple@count_flat_elements(elem);
-                        en: int64 <- flat_tuple_nested_alloc(elem, ec, 0);
-                        ia: int64 <- sa + en;
-                        concat("|_adj.", concat(atom_table@int64_to_decimal_string(idx), concat("=", atom_table@int64_to_decimal_string(ia))))
-                    };
-                    false -> {
-                        sa2: int64 <- total_nested - nc;
-                        ec2: int64 <- prims_record@count_record_fields(term_sir_helpers@sir_term_root_node(elem).type_name);
-                        en2: int64 <- flat_record_sum_nested_inners(elem);
-                        ia2: int64 <- sa2 + en2;
-                        concat("|_adj.", concat(atom_table@int64_to_decimal_string(idx), concat("=", atom_table@int64_to_decimal_string(ia2))))
-                    }
-                };
-                false -> ""
-            };
-            rest: string <- compute_inner_adj_bindings_record(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), idx + 1, count, nc, total_nested);
-            concat(binding, rest)
-        };
-        false -> {
-            eit: bool <- term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "record_make";
-            eta: int64 <- case eit of { true -> flat_record_total_alloc(term); false -> 0 };
-            nc: int64 <- cumulative_alloc + eta;
-            case eit of {
-                true -> {
-                    sa: int64 <- total_nested - nc;
-                    ec: int64 <- prims_record@count_record_fields(term_sir_helpers@sir_term_root_node(term).type_name);
-                    en: int64 <- flat_record_sum_nested_inners(term);
-                    ia: int64 <- sa + en;
-                    concat("|_adj.", concat(atom_table@int64_to_decimal_string(idx), concat("=", atom_table@int64_to_decimal_string(ia))))
-                };
-                false -> ""
-            }
-        }
-    }
-}
-
-
-fn compute_inner_adj_bindings(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, idx: int64, count: int64, cumulative_alloc: int64, total_nested: int64) -> string {
-    case idx < count - 1 and term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "tuple_make" of {
-        true -> {
-            elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner);
-            eit: bool <- term_sir_helpers@sir_term_root_node(elem).kind == 6 and term_sir_helpers@sir_term_root_node(elem).name == "tuple_make";
-            eta: int64 <- case eit of { true -> flat_tuple_total_alloc(elem); false -> 0 };
-            nc: int64 <- cumulative_alloc + eta;
-            binding: string <- case eit of {
-                true -> {
-                    sa: int64 <- total_nested - nc;
-                    ec: int64 <- prims_tuple@count_flat_elements(elem);
-                    en: int64 <- flat_tuple_nested_alloc(elem, ec, 0);
-                    ia: int64 <- sa + en;
-                    concat("|_adj.", concat(atom_table@int64_to_decimal_string(idx), concat("=", atom_table@int64_to_decimal_string(ia))))
-                };
-                false -> ""
-            };
-            rest: string <- compute_inner_adj_bindings(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), idx + 1, count, nc, total_nested);
-            concat(binding, rest)
-        };
-        false -> {
-            eit: bool <- term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "tuple_make";
-            eta: int64 <- case eit of { true -> flat_tuple_total_alloc(term); false -> 0 };
-            nc: int64 <- cumulative_alloc + eta;
-            case eit of {
-                true -> {
-                    sa: int64 <- total_nested - nc;
-                    ec: int64 <- prims_tuple@count_flat_elements(term);
-                    en: int64 <- flat_tuple_nested_alloc(term, ec, 0);
-                    ia: int64 <- sa + en;
-                    concat("|_adj.", concat(atom_table@int64_to_decimal_string(idx), concat("=", atom_table@int64_to_decimal_string(ia))))
-                };
-                false -> ""
-            }
-        }
-    }
-}
 
 // [SP,#off] or [Xn,#off] when store_base is non-empty (actor behavior sret buffer in X20).
 
@@ -663,6 +661,21 @@ fn flat_tuple_total_alloc(term: { nodes: List[{ kind: int64, type_name: string, 
 
 // True when emit_flat_tuple_stores memcpy-copies idx-0 record_make into the tuple outer slab (`rec_flat`, arity ≥ 2).
 
+
+// Bytes THIS make needs for its own shell, excluding nested aggregate makes --
+// each of those is assigned its own region. agg_alloc_inner returns the TOTAL
+// including nested, so using it per-make double counted every nesting level and
+// inflated frames (which pushes offsets out of encodable range and makes actor
+// stacks grow sooner than they need to).
+fn agg_shell_bytes(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
+    case term_sir_helpers@sir_term_root_node(t).kind == 6 and term_sir_helpers@sir_term_root_node(t).name == "tuple_make" of {
+        true -> tuple_make_rec_flat_outer_alloc_bytes(t, prims_tuple@count_flat_elements(t));
+        false -> case term_sir_helpers@sir_term_root_node(t).kind == 6 and term_sir_helpers@sir_term_root_node(t).name == "record_make" of {
+            true -> term_record_layout@record_make_stack_alloc_size(term_sir_helpers@sir_term_root_node(t).type_name) + flat_record_sum_nested_reserved_in_outer(t);
+            false -> 0
+        }
+    }
+}
 
 // True when emit_flat_tuple_stores memcpy-copies idx-0 record_make into the tuple outer slab (`rec_flat`, arity ≥ 2).
 
@@ -694,7 +707,7 @@ fn flat_record_sum_nested_inners(term: { nodes: List[{ kind: int64, type_name: s
                 // its words inside the shell (its value-flat size recurses), so counting it again over-stated
                 // the slab and the branch popped SP past the saved registers. This must stay in step with
                 // inline_nested_rec in emit_flat_record_stores -- the two decide the same thing.
-                inner_inline_rec: bool <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_make";
+                inner_inline_rec: boolean <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_make";
                 here: int64 <- case (term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make" and prims_tuple@count_flat_elements(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) == 2) or inner_inline_rec of {
                     true -> 0;
                     false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 4 or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 5 of {
@@ -729,7 +742,7 @@ fn flat_record_sum_nested_inners(term: { nodes: List[{ kind: int64, type_name: s
 // it is memcpy'd out of the returned pointer into space the outer SUB already reserved -- so it is
 // counted once up front, for every field, via flat_record_sum_nested_reserved_in_outer at the
 // emit_flat_record_stores call. Counting it here as well would shift the fields after it twice.
-fn record_field_nested_return_bytes(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fty: string, elem_is_agg: bool) -> int64 {
+fn record_field_nested_return_bytes(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fty: string, elem_is_agg: boolean) -> int64 {
     case elem_is_agg of {
         true -> agg_alloc_inner(elem);
         false -> 0
@@ -783,10 +796,32 @@ fn flat_tuple_nested_alloc(term: { nodes: List[{ kind: int64, type_name: string,
 // its dealloc, and the counterpart of flat_tuple_dealloc_size for tuples.
 // See trials/codegen_regressions/rec_call_field_direct.silica.
 fn flat_record_dealloc_size(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
-    flat_record_total_alloc(term)
+    // Same rule as flat_tuple_dealloc_size: a record_make lives in a frame region
+    // and pushed nothing, so popping for it leaves SP high. zero_loc() emitted an
+    // unpaired "ADD SP, SP, #16", which made LDP restore a bogus X29/X30 and RET
+    // jump into hyperspace -- arg_clobber hung rather than returning a value.
+    case term_sir_helpers@sir_term_root_node(term).kind == 6 and (term_sir_helpers@sir_term_root_node(term).name == "record_make" or term_sir_helpers@sir_term_root_node(term).name == "tuple_make") of {
+        true -> 0;
+        false -> flat_record_total_alloc(term)
+    }
 }
 
+// Aggregate makes allocate in the fixed frame (see emit_tuple_make_stack), so
+// there is no SP slab to pop. Every caller of this function is emitting an
+// "ADD SP" for a make's slab; sizing a region or a heap-promote copy uses
+// flat_tuple_total_alloc / flat_record_total_alloc instead.
 fn flat_tuple_dealloc_size(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
+    // Only an aggregate MAKE moved to a frame region -- it has no SP slab to pop.
+    // Other aggregates reaching here (notably a tuple-returning user call) still
+    // own a real caller sret slab on SP and must still be popped; returning 0 for
+    // those left the slab live and broke compiler_addition/repro_letcall.
+    case term_sir_helpers@sir_term_root_node(term).kind == 6 and (term_sir_helpers@sir_term_root_node(term).name == "tuple_make" or term_sir_helpers@sir_term_root_node(term).name == "record_make") of {
+        true -> 0;
+        false -> agg_promote_bytes(term)
+    }
+}
+
+fn agg_promote_bytes(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
     case term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "record_make" of {
         true -> flat_record_total_alloc(term);
         false -> flat_tuple_total_alloc(term)
@@ -817,8 +852,21 @@ fn flat_tuple_dealloc_size(term: { nodes: List[{ kind: int64, type_name: string,
 // Whether a term is a checked-int64 prim, which owns its own stack slab: see the 0 case in
 // aggregate_callee_return_stack_bytes for why nobody else may pop it. Exported so the epilogue can ask
 // the same question about a function's return-position tail without importing the prim module.
-fn term_is_checked_int64_prim(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+fn term_is_checked_int64_prim(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     term_sir_helpers@sir_term_root_node(term).kind == 6 and prims_checked_int64@is_checked_int64_prim(term_sir_helpers@sir_term_root_node(term).name)
+}
+
+// Promote size counterpart of aggregate_callee_return_stack_bytes: a make in a
+// frame region pops 0 bytes but still needs its real size copied to the heap
+// before the pointer leaves the frame.
+fn aggregate_callee_return_promote_bytes(rhs: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
+    case reg_conventions@is_aggregate_struct_or_tuple_return_type(term_sir_helpers@sir_term_root_node(rhs).type_name) of {
+        false -> 0;
+        true -> case term_sir_helpers@sir_term_root_node(rhs).kind == 6 and (term_sir_helpers@sir_term_root_node(rhs).name == "tuple_make" or term_sir_helpers@sir_term_root_node(rhs).name == "record_make") of {
+            true -> agg_promote_bytes(rhs);
+            false -> 0
+        }
+    }
 }
 
 fn aggregate_callee_return_stack_bytes(rhs: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
@@ -855,6 +903,20 @@ fn list_cons_join_tail_head_op(arg2_asm: string, arg1_asm: string, op_asm: strin
         false -> {
             restore: string <- "    LDR X2, [SP], #16\n";
             concat(concat(concat(concat(arg2_asm, "\n"), save), concat(arg1_asm, "\n")), concat(restore, op_asm))
+        }
+    }
+}
+
+// Same let-spine walk as let_tail_aggregate_stack_bytes, but returning the REAL
+// aggregate size rather than the SP-pop size. A tail make now lives in a frame
+// region, so it pops 0 bytes -- but it must still be heap-promoted before return
+// or the caller gets a pointer into a dead frame (arg_clobber faulted this way).
+fn let_tail_aggregate_promote_bytes(tail: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
+    case term_sir_helpers@sir_term_root_node(tail).kind == 2 of {
+        true -> let_tail_aggregate_promote_bytes(term_sir_helpers@sir_term_at(tail, term_sir_helpers@sir_term_root_node(tail).right_expr));
+        false -> case term_sir_helpers@sir_term_root_node(tail).kind == 6 and (term_sir_helpers@sir_term_root_node(tail).name == "record_make" or term_sir_helpers@sir_term_root_node(tail).name == "tuple_make") of {
+            true -> agg_promote_bytes(tail);
+            false -> 0
         }
     }
 }

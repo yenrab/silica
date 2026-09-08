@@ -1,0 +1,60 @@
+// Trial: a region MOVED INTO a function and RETURNED by it is still live in the
+// caller, and must NOT be released by the callee.
+//
+// silica-specification §3.247: ownership transfers on pass, and "The function
+// must return the handle to the caller. This ensures exactly one handle exists
+// per region at any time."
+//
+// §6603 (Region Return Lifetime Extension) states the release rule directly: "A
+// region is *not* deallocated when a region reference is returned. When a
+// sequence, block, or function returns a value of type region(L, Space), the
+// region's lifetime extends to the caller's scope."
+//
+// hand_back() allocates into the moved-in region and returns the handle. The
+// caller then reads a cell allocated BEFORE the call: if the callee released the
+// region on the way out, that read is a use-after-free and the sum is wrong (or
+// the program faults). This is the direction that catches an over-eager release,
+// the dangerous one -- a leak here only costs memory, a premature free corrupts.
+//
+// Want 0.
+
+// NOTE: the lifetime is written L1, not a generic R -- the type checker compares
+// type surfaces literally and does not unify lifetime variables (E2003 otherwise).
+fn hand_back(r: region(L1, normal), n: int64) -> region(L1, normal) {
+    sequence proc[mem(normal)]
+        extra: ref(L1, normal, int64) <- alloc_ref(r, n);
+        pad: buf(L1, normal, int64, 200000) <- alloc_buf(r, 200000)
+    produces
+        pure r
+    end
+}
+
+fn round_trip(n: int64) -> int64 {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        before: ref(L1, normal, int64) <- alloc_ref(r, n);
+        r2: region(L1, normal) <- hand_back(r, n);
+        after: ref(L1, normal, int64) <- alloc_ref(r2, n)
+    produces
+        // `before` was allocated prior to the move; reading it after the region
+        // came back proves the callee did not free what it was handed.
+        pure read_ref(before) + read_ref(after)
+    end
+}
+
+fn loop_round(i: int64, acc: int64) -> int64 {
+    case i <= 0 of {
+        true -> acc;
+        false -> loop_round(i - 1, acc + round_trip(i))
+    }
+}
+
+fn main() -> int64 {
+    sequence
+        total: int64 <- loop_round(2000, 0)
+    produces
+        // each round_trip(i) contributes 2*i, so the total is 2 * sum(1..2000)
+        pure case total == 4002000 of { true -> 0; false -> 1 }
+    end
+}

@@ -28,6 +28,8 @@ export build_string_literal_table/1;
 export string_literal_value_to_index/2;
 export emit_string_literal_rodata_section/1;
 export module_uses_string_literal_pool/1;
+export escape_raw_for_ascii/1;
+export raw_byte_length/1;
 
 struct ListStringLiteralValue {
     is_nil: bool,
@@ -339,6 +341,112 @@ fn escape_char_for_ascii(c: string) -> string {
     }
 }
 
+// --- byte-exact literal emission -------------------------------------------
+// Literals are emitted from their UNRESOLVED source text so the assembler
+// materializes bytes the compiler's own strings cannot hold (0x00 terminates
+// a C string in the bootstrap ABI). "\x00" -> .ascii "\000", length 1.
+
+fn oct_digit(n: int64) -> string {
+    case n of {
+        0 -> "0"; 1 -> "1"; 2 -> "2"; 3 -> "3";
+        4 -> "4"; 5 -> "5"; 6 -> "6"; _: int64 -> "7"
+    }
+}
+
+fn oct3(n: int64) -> string {
+    concat(concat(oct_digit(n / 64), oct_digit((n / 8) % 8)), oct_digit(n % 8))
+}
+
+fn hexv(c: string) -> int64 {
+    case c of {
+        "0" -> 0; "1" -> 1; "2" -> 2; "3" -> 3; "4" -> 4;
+        "5" -> 5; "6" -> 6; "7" -> 7; "8" -> 8; "9" -> 9;
+        "a" -> 10; "b" -> 11; "c" -> 12; "d" -> 13; "e" -> 14; "f" -> 15;
+        "A" -> 10; "B" -> 11; "C" -> 12; "D" -> 13; "E" -> 14; "F" -> 15;
+        _: string -> 0 - 1
+    }
+}
+
+fn raw_esc_acc(raw: string, pos: int64, acc: string) -> string {
+    case pos >= len(raw) of {
+        true -> acc;
+        false -> do
+            c: string <- substring(raw, pos, pos + 1);
+            case c == "\\" and pos + 1 < len(raw) of {
+                true -> do
+                    nx: string <- substring(raw, pos + 1, pos + 2);
+                    case nx of {
+                        "n" -> raw_esc_acc(raw, pos + 2, concat(acc, "\\n"));
+                        "t" -> raw_esc_acc(raw, pos + 2, concat(acc, "\\t"));
+                        "r" -> raw_esc_acc(raw, pos + 2, concat(acc, "\\r"));
+                        "e" -> raw_esc_acc(raw, pos + 2, concat(acc, "\\033"));
+                        "\\" -> raw_esc_acc(raw, pos + 2, concat(acc, "\\\\"));
+                        "\"" -> raw_esc_acc(raw, pos + 2, concat(acc, "\\\""));
+                        "'" -> raw_esc_acc(raw, pos + 2, concat(acc, "'"));
+                        "x" -> case pos + 3 < len(raw) of {
+                            true -> do
+                                hi: int64 <- hexv(substring(raw, pos + 2, pos + 3));
+                                lo: int64 <- hexv(substring(raw, pos + 3, pos + 4));
+                                case hi < 0 or lo < 0 of {
+                                    true -> raw_esc_acc(raw, pos + 2, concat(acc, "\\\\x"));
+                                    false -> raw_esc_acc(raw, pos + 4, concat(acc, concat("\\", oct3(hi * 16 + lo))))
+                                }
+                            end;
+                            false -> raw_esc_acc(raw, pos + 2, concat(acc, "\\\\x"))
+                        };
+                        _: string -> raw_esc_acc(raw, pos + 2, concat(acc, concat("\\\\", nx)))
+                    }
+                end;
+                false -> raw_esc_acc(raw, pos + 1, concat(acc, escape_char_for_ascii(c)))
+            }
+        end
+    }
+}
+
+fn raw_len_acc(raw: string, pos: int64, acc: int64) -> int64 {
+    case pos >= len(raw) of {
+        true -> acc;
+        false -> do
+            c: string <- substring(raw, pos, pos + 1);
+            case c == "\\" and pos + 1 < len(raw) of {
+                true -> do
+                    nx: string <- substring(raw, pos + 1, pos + 2);
+                    case nx of {
+                        "x" -> case pos + 3 < len(raw) of {
+                            true -> do
+                                hi: int64 <- hexv(substring(raw, pos + 2, pos + 3));
+                                lo: int64 <- hexv(substring(raw, pos + 3, pos + 4));
+                                case hi < 0 or lo < 0 of {
+                                    true -> raw_len_acc(raw, pos + 2, acc + 2);
+                                    false -> raw_len_acc(raw, pos + 4, acc + 1)
+                                }
+                            end;
+                            false -> raw_len_acc(raw, pos + 2, acc + 2)
+                        };
+                        "n" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        "t" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        "r" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        "e" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        "\\" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        "\"" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        "'" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        _: string -> raw_len_acc(raw, pos + 2, acc + 2)
+                    }
+                end;
+                false -> raw_len_acc(raw, pos + 1, acc + 1)
+            }
+        end
+    }
+}
+
+fn escape_raw_for_ascii(raw: string) -> string {
+    raw_esc_acc(raw, 0, "")
+}
+
+fn raw_byte_length(raw: string) -> int64 {
+    raw_len_acc(raw, 0, 0)
+}
+
 fn escape_string_for_ascii(content: string, pos: int64, acc: string) -> string {
     case pos >= len(content) of {
         true -> acc;
@@ -355,12 +463,22 @@ fn emit_string_literal_values_rodata(values: ListStringLiteralValue, index: int6
         true -> "";
         false -> do
             rest: string <- emit_string_literal_values_rodata(values.tail, index + 1);
-            label_colon: string <- concat(concat(concat("L_str_", atom_table@int64_to_decimal_string(index)), ":"), "\n");
+            idx_s: string <- atom_table@int64_to_decimal_string(index);
+            label: string <- concat("L_str_", idx_s);
+            data_label: string <- concat(label, "_d");
             indent: string <- concat(concat(concat(" ", " "), " "), " ");
-            escaped: string <- escape_string_for_ascii(values.head, 0, "");
+            escaped: string <- escape_raw_for_ascii(values.head);
+            len_s: string <- atom_table@int64_to_decimal_string(raw_byte_length(values.head));
+            align_line: string <- concat(indent, ".p2align 3\n");
+            label_colon: string <- concat(label, ":\n");
+            tag_line: string <- concat(indent, ".quad -1\n");
+            ptr_line: string <- concat(concat(indent, ".quad "), concat(data_label, "\n"));
+            len_line: string <- concat(concat(indent, ".quad "), concat(len_s, "\n"));
+            data_colon: string <- concat(data_label, ":\n");
             ascii_line: string <- concat(concat(concat(indent, ".ascii \""), escaped), "\"\n");
             null_line: string <- concat(indent, ".byte 0");
-            one: string <- concat(label_colon, concat(ascii_line, null_line));
+            hdr: string <- concat(align_line, concat(label_colon, concat(tag_line, concat(ptr_line, len_line))));
+            one: string <- concat(hdr, concat(data_colon, concat(ascii_line, null_line)));
             case len(rest) > 0 of {
                 true -> concat(concat(one, "\n"), rest);
                 false -> concat(one, "\n")
@@ -373,7 +491,7 @@ fn emit_string_literal_rodata_section(table: StringLiteralTable) -> string {
     case table.is_empty of {
         true -> "";
         false -> do
-            header: string <- ".section __TEXT,__rodata\n.align\t8\n";
+            header: string <- ".section __DATA,__const\n.p2align 3\n";
             in_order: ListStringLiteralValue <- reverse_str_values(table.values);
             body: string <- emit_string_literal_values_rodata(in_order, 0);
             concat(header, body)

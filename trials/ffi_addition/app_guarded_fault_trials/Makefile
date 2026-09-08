@@ -134,6 +134,13 @@ integrate: fixtures unguarded_probe
 		if python3 "$(FFI_TRIAL_DIR)/run_integration_expect_crash.py" "$(UNGUARDED_PROBE)"; then \
 			echo "  ✅✅ $(APP_LABEL)/unguarded_null_deref_abort crash probe OK"; \
 			ok=$$((ok + 1)); \
+		if python3 "$(FFI_TRIAL_DIR)/run_fault_report_expect.py" "$(UNGUARDED_PROBE)"; then \
+			echo "  ✅✅ $(APP_LABEL)/unguarded_null_deref_report OK (fault site + exit 70)"; \
+			ok=$$((ok + 1)); \
+		else \
+			echo "❌❌ $(APP_LABEL)/unguarded_null_deref_report failed"; \
+			ko=$$((ko + 1)); failed=1; \
+		fi; \
 		else \
 			echo "❌❌ $(APP_LABEL)/unguarded_null_deref_abort crash probe failed"; \
 			ko=$$((ko + 1)); failed=1; \

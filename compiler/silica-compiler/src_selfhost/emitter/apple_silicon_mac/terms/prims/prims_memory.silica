@@ -86,7 +86,7 @@ fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: stri
     { nodes: term.nodes, root: idx }
 }
 
-fn is_memory_prim(name: string) -> bool {
+fn is_memory_prim(name: string) -> boolean {
     name == "alloc_region" or name == "alloc_ref" or name == "alloc_rec" or name == "read_ref" or name == "write_ref" or name == "alloc_buf" or name == "buf_load" or name == "buf_store" or name == "read_buf" or name == "write_buf" or name == "fresh_lifetime" or name == "canonical_arena_lookup" or name == "canonical_arena_same" or name == "ref_eq" or name == "ref_in_region"
 }
 
@@ -128,7 +128,7 @@ fn emit_canonical_arena_same(dest: string) -> string {
 // Operands: X1 = space (unused; memory space would configure MAIR at runtime)
 fn emit_alloc_region(dest: string) -> string {
     mov_size: string <- "    MOV X0, #4128\n";
-    bl_malloc: string <- "    BL _silica_rt_region_alloc\n";
+    bl_malloc: string <- "    BL _silica_rt_raw_alloc\n";
     add_bump: string <- "    ADD X4, X0, #32\n";
     str_bump: string <- "    STR X4, [X0]\n";
     // 4128 > 4095: cannot use single ADD #imm; use reg + reg (Apple clang rejects ADD X4, X0, #4128).
@@ -164,11 +164,11 @@ fn emit_region_bump_check(bump_math: string) -> string {
     concat(attempt, concat(grow, concat(bump_math, "1:\n")))
 }
 
-fn memory_type_is_tuple(type_name: string) -> bool {
+fn memory_type_is_tuple(type_name: string) -> boolean {
     length_bytes(type_name) >= 2 and substring(type_name, 0, 1) == "("
 }
 
-fn memory_value_is_tuple_like(value: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+fn memory_value_is_tuple_like(value: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(value);
     case memory_type_is_tuple(node.type_name) of {
         true -> true;
@@ -341,7 +341,7 @@ fn bounds_len_from_prim_value(value: string) -> string {
     }
 }
 
-fn is_decimal_literal(s: string, i: int64) -> bool {
+fn is_decimal_literal(s: string, i: int64) -> boolean {
     case i >= length_bytes(s) of {
         true -> length_bytes(s) > 0;
         false -> case substring(s, i, i + 1) of {
@@ -377,7 +377,7 @@ fn emit_buf_bounds_check(term: { nodes: List[{ kind: int64, type_name: string, v
     }
 }
 
-fn memory_type_contains_from(h: string, needle: string, i: int64) -> bool {
+fn memory_type_contains_from(h: string, needle: string, i: int64) -> boolean {
     case length_bytes(needle) == 0 of {
         true -> true;
         false -> case i + length_bytes(needle) > length_bytes(h) of {
@@ -390,7 +390,7 @@ fn memory_type_contains_from(h: string, needle: string, i: int64) -> bool {
     }
 }
 
-fn memory_type_contains(h: string, needle: string) -> bool {
+fn memory_type_contains(h: string, needle: string) -> boolean {
     memory_type_contains_from(h, needle, 0)
 }
 
@@ -513,7 +513,7 @@ fn emit_alloc_rec(term: { nodes: List[{ kind: int64, type_name: string, value: s
 // program whose only allocation sat in a case arm reported no region use, the helpers were left
 // out, and the module failed to assemble on an undefined L_region_grow.
 // See trials/codegen_regressions/region_grow.silica.
-fn term_has_region_allocation(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+fn term_has_region_allocation(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     case term.root < 0 of {
         true -> false;
         false -> case sir_term_root_node(term).kind == 6 and (sir_term_root_node(term).name == "alloc_ref" or sir_term_root_node(term).name == "alloc_buf" or sir_term_root_node(term).name == "alloc_rec") of {
@@ -526,7 +526,7 @@ fn term_has_region_allocation(term: { nodes: List[{ kind: int64, type_name: stri
     }
 }
 
-fn region_allocation_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
+fn region_allocation_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> boolean {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_region_allocation(fns.head.body) of {
@@ -536,13 +536,13 @@ fn region_allocation_in_functions(fns: List[{ name: string, return_type: string,
     }
 }
 
-fn module_uses_region_allocation(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
+fn module_uses_region_allocation(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> boolean {
     region_allocation_in_functions(sir_module.functions)
 }
 
 // True when emitted code calls _silica_rt_region_alloc (alloc_region prim only).
 // Used to append the malloc stub; separate from module_uses_region_allocation (arena bump overflow).
-fn term_has_alloc_region(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+fn term_has_alloc_region(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     case term.root < 0 of {
         true -> false;
         false -> case sir_term_root_node(term).kind == 6 and sir_term_root_node(term).name == "alloc_region" of {
@@ -555,7 +555,7 @@ fn term_has_alloc_region(term: { nodes: List[{ kind: int64, type_name: string, v
     }
 }
 
-fn alloc_region_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> bool {
+fn alloc_region_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> boolean {
     case fns.is_nil of {
         true -> false;
         false -> case term_has_alloc_region(fns.head.body) of {
@@ -565,7 +565,7 @@ fn alloc_region_in_functions(fns: List[{ name: string, return_type: string, effe
     }
 }
 
-fn module_uses_alloc_region(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> bool {
+fn module_uses_alloc_region(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> boolean {
     alloc_region_in_functions(sir_module.functions)
 }
 
@@ -579,13 +579,22 @@ fn module_uses_alloc_region(sir_module: { module_name: string, used_modules: Lis
 // exactly the (16-byte rounded) request when that is larger, which is what makes a buffer bigger
 // than a block work at all. L_region_overflow remains for the one failure that is still fatal:
 // the allocator handing back nothing.
+// Region release (silica-specification 12.1.2): free a region and every extension
+// block chained off [base+16]. A region is a discrete malloc'd pool, so releasing
+// one is independent of every other region -- no arena rewind, no ordering
+// requirement. Safe because no pointer into a region may escape without the
+// region itself, so at scope exit nothing outside can reference it.
+fn emit_region_free_helper() -> string {
+    "    .globl _silica_rt_region_free\n_silica_rt_region_free:\n    CBZ X0, L_rf_null\n    STP X29, X30, [SP, #-16]!\n    STP X19, X20, [SP, #-16]!\n    MOV X19, X0\n    LDR X20, [X19, #16]\nL_rf_loop:\n    CBZ X20, L_rf_root\n    LDR X1, [X20, #16]\n    MOV X0, X20\n    MOV X20, X1\n    BL _free\n    B L_rf_loop\nL_rf_root:\n    STR XZR, [X19, #16]\n    MOV X0, X19\n    BL _free\n    LDP X19, X20, [SP], #16\n    LDP X29, X30, [SP], #16\nL_rf_null:\n    RET\n"
+}
+
 fn emit_region_grow_helper() -> string {
     save1: string <- "L_region_grow:\n    STP X29, X30, [SP, #-16]!\n    MOV X29, SP\n    STP X19, X20, [SP, #-16]!\n";
     save2: string <- "    STP X0, X1, [SP, #-16]!\n    STP X2, X3, [SP, #-16]!\n    STP X4, X5, [SP, #-16]!\n    STP X6, X7, [SP, #-16]!\n";
     save3: string <- "    STP X8, X9, [SP, #-16]!\n    STP X10, X11, [SP, #-16]!\n    STP X12, X13, [SP, #-16]!\n    STP X14, X15, [SP, #-16]!\n";
     save4: string <- "    STP X16, X17, [SP, #-16]!\n    STR X18, [SP, #-16]!\n";
     size: string <- "    MOV X19, X1\n    SUB X20, X5, X3\n    ADD X20, X20, #15\n    BIC X20, X20, #15\n    MOV X9, #4096\n    CMP X20, X9\n    B.HS 1f\n    MOV X20, X9\n1:\n";
-    alloc: string <- "    ADD X0, X20, #32\n    BL _silica_rt_region_alloc\n    CBZ X0, L_region_overflow\n";
+    alloc: string <- "    ADD X0, X20, #32\n    BL _silica_rt_raw_alloc\n    CBZ X0, L_region_overflow\n";
     span: string <- "    ADD X1, X0, #32\n    ADD X2, X1, X20\n    STR X2, [X0, #24]\n";
     chain: string <- "    LDR X3, [X19, #16]\n    STR X3, [X0, #16]\n    STR X0, [X19, #16]\n";
     publish: string <- "    STR X1, [X19]\n    STR X2, [X19, #8]\n";

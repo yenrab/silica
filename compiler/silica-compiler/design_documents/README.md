@@ -33,6 +33,12 @@ Use the entries below for **quick navigation**. Each item links to a file in thi
 
 ---
 
+## [ports/linux_aarch64_port_checklist.md](./ports/linux_aarch64_port_checklist.md)
+
+**Hosted port checklist** for **64-bit Raspberry Pi OS / Debian AArch64**: emit-target naming, the Darwin-ism inventory (syscall convention, `X8` hazard, symbol decoration, relocation syntax, sections, entry point and stack), the per-target golden-file split, Pi bootstrap steps, and verification gates through self-host.
+
+---
+
 ## [actor_growable_stack_design.md](./actor_growable_stack_design.md)
 
 Actor memory architecture: **growable per-actor stacks**, lazy page migration, isolation vs. the older per-actor heap sketch, NUMA-oriented behavior, and cleanup on actor termination.

@@ -59,7 +59,7 @@ main_driver_read_lines:
     LDR X21, [X20, #8]   // data
     LDR X22, [X20, #16]  // length
     // mmap
-    ADD X1, X22, #1
+    ADD X1, X22, #25
     MOV X0, #0
     MOV X2, #3
     MOV X3, #0x1002
@@ -72,7 +72,12 @@ main_driver_read_lines:
     CMN X0, #1
     B.EQ rl_fail
     MOV X19, X0
-    MOV X9, X19
+    // build the SilicaString descriptor in place: tag / data / length
+    MOV X9, #-1
+    STR X9, [X19]
+    ADD X9, X19, #24
+    STR X9, [X19, #8]
+    STR X22, [X19, #16]
     MOV X10, X21
     MOV X11, X22
 rl_cp:

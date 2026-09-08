@@ -2486,12 +2486,102 @@ _silica_rt_region_alloc:                ; @silica_rt_region_alloc
 	ldp	x20, x19, [sp], #32
 	ret
 LBBra_fallback:
-	mov	x0, x19
+	add	x0, x19, #16
 	bl	_malloc
+	cbz	x0, LBBra_oom
+	adrp	x8, _silica_rt_region_list@PAGE
+	add	x8, x8, _silica_rt_region_list@PAGEOFF
+	ldr	x9, [x8]
+	str	x9, [x0]
+	str	x19, [x0, #8]
+	str	x0, [x8]
+	add	x0, x0, #16
+LBBra_oom:
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
 	ret
 	.cfi_endproc
+	.globl	_silica_rt_raw_alloc
+_silica_rt_raw_alloc:
+; X0=size. malloc with a [next][size] header, NOT linked into the global region
+; list. Region memory must be freeable by its owner; anything on that list can
+; only be freed by unwinding to a mark, which is scope-shaped and unsound here.
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	mov	x19, x0
+	add	x0, x19, #16
+	bl	_malloc
+	cbz	x0, LBBrw_oom
+	str	xzr, [x0]
+	str	x19, [x0, #8]
+	add	x0, x0, #16
+LBBrw_oom:
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.globl	_silica_rt_region_destroy
+_silica_rt_region_destroy:
+; X0=region handle. Frees every extension block on the [r+16] chain, then the
+; region header. Blocks come from _silica_rt_raw_alloc, so each malloc base is
+; payload-16. Null handle is a no-op so a moved-out region is safe to skip.
+	cbz	x0, LBBrd_ret
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	str	x21, [sp, #-16]!
+	mov	x19, x0
+	ldr	x20, [x19, #16]
+LBBrd_loop:
+	cbz	x20, LBBrd_hdr
+	ldr	x21, [x20, #16]
+	sub	x0, x20, #16
+	bl	_free
+	mov	x20, x21
+	b	LBBrd_loop
+LBBrd_hdr:
+	sub	x0, x19, #16
+	bl	_free
+	ldr	x21, [sp], #16
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+LBBrd_ret:
+	ret
+	.globl	_silica_rt_region_mark
+_silica_rt_region_mark:
+	adrp	x16, _silica_rt_region_list@PAGE
+	add	x16, x16, _silica_rt_region_list@PAGEOFF
+	ldr	x16, [x16]
+	ret
+	.globl	_silica_rt_region_release_to
+_silica_rt_region_release_to:
+	stp	x29, x30, [sp, #-16]!
+	stp	x0, x1, [sp, #-16]!
+	stp	x19, x20, [sp, #-16]!
+	stp	x21, x22, [sp, #-16]!
+	mov	x21, x16
+	adrp	x19, _silica_rt_region_list@PAGE
+	add	x19, x19, _silica_rt_region_list@PAGEOFF
+	ldr	x20, [x19]
+Lrrt_loop:
+	cmp	x20, x21
+	b.eq	Lrrt_done
+	cbz	x20, Lrrt_done
+	ldr	x1, [x20]
+	str	x1, [x19]
+	mov	x0, x20
+	mov	x20, x1
+	bl	_free
+	b	Lrrt_loop
+Lrrt_done:
+	str	x21, [x19]
+	ldp	x21, x22, [sp], #16
+	ldp	x19, x20, [sp], #16
+	ldp	x0, x1, [sp], #16
+	ldp	x29, x30, [sp], #16
+	ret
+	.globl	_silica_rt_region_list
+	.comm	_silica_rt_region_list,8,3
                                         ; -- End function
 	.globl	_silica_rt_actor_supervision_ingress_enqueue ; Phase B — synthetic exit / trial hook; bounded queue
 	.p2align	2
@@ -3242,6 +3332,13 @@ Lcs_f1_loop:
 	strb	w9, [x10]
 	add	x26, x26, #1
 	b	Lcs_f1_loop
+Lcs_fault_site:
+	add	x0, x19, x26
+	sub	x1, x27, x26
+	bl	_silica_rt_fault_site_snprint
+	cmp	x0, #0
+	b.le	Lcs_end_banner
+	add	x26, x26, x0
 Lcs_end_banner:
 ; Write L_phase_f_end banner char by char.
 Lcs_end_a:

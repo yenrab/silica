@@ -20,8 +20,12 @@ BINARIES_DIR := $(abspath $(THIS_DIR)../../../binaries)
 SILICA_COMPILER ?= $(BINARIES_DIR)/seed-compiler
 SILICA_LINK_SH := $(abspath $(THIS_DIR)../trials/silica_link.sh)
 STDLIB_DS := $(abspath $(THIS_DIR)../stdlib/data_structures)
-BOOTSTRAP_DIR := $(abspath $(THIS_DIR)../../silica-bootstrap-compiler)
-RUNTIME_LIB := $(BOOTSTRAP_DIR)/target/release/libsilica_compiler.a
+# POLICY: src_selfhost links NO Rust libraries. The bootstrap crate's staticlib
+# (libsilica_compiler.a) used to be linked here and supplied the whole runtime.
+# It is deliberately gone so a Rust dependency cannot creep back in silently:
+# if the link fails with undefined _silica_* symbols, implement them in
+# silica_rt_shim.s (assembled by clang, like main_entry_alias.s) -- do not
+# re-add an archive. Assembler and linker are clang only.
 
 EXECUTABLE := silica-compiler
 
@@ -277,23 +281,21 @@ objects: assembly
 	$(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,objects)
 
 # Stage 3: link entry point `main` with all module objects + runtime.
-# Always link bootstrap libsilica_compiler.a for DeviceIO helpers (_silica_*_path).
+# No Rust archive is linked (see POLICY above); DeviceIO helpers come from
+# silica_rt_shim.s. deviceio_link_thunks.s covers seeds that emit them as calls.
 # deviceio_link_thunks.s covers seeds that still emit DeviceIO as module_user calls.
 # main_entry_alias.s provides _main for Apple ld (asm emits `main` without underscore).
 executables: objects
 	@cd "$(THIS_DIR)" && \
 	if [ ! -f main.o ]; then echo "FAIL: main.o missing"; $(REPORT_COMPILE_TIME); exit 1; fi; \
-	if [ ! -f "$(RUNTIME_LIB)" ]; then \
-		echo "Building Silica runtime library (bootstrap)..."; \
-		(cd "$(BOOTSTRAP_DIR)" && cargo build --release --no-default-features) || { $(REPORT_COMPILE_TIME); exit 1; }; \
-	fi; \
 	$(ASSEMBLER) $(ASFLAGS_macos) -c deviceio_link_thunks.s -o deviceio_link_thunks.o || { $(REPORT_COMPILE_TIME); exit 1; }; \
 	$(ASSEMBLER) $(ASFLAGS_macos) -c main_entry_alias.s -o main_entry_alias.o || { $(REPORT_COMPILE_TIME); exit 1; }; \
+	$(ASSEMBLER) $(ASFLAGS_macos) -c silica_rt_shim.s -o silica_rt_shim.o || { $(REPORT_COMPILE_TIME); exit 1; }; \
 	objs=$$(find . -type f -name '*.o' ! -path './_wd_probe/*' | sed 's|^\./||' | sort | tr '\n' ' '); \
 	link_archives=""; \
 	if [ -x "$(SILICA_LINK_SH)" ]; then link_archives=$$("$(SILICA_LINK_SH)" .); fi; \
 	echo "Linking: $(EXECUTABLE)"; \
-	if ! $(LINKER_CLANG) $$objs "$(RUNTIME_LIB)" $$link_archives $(LDFLAGS_STACK) -o $(EXECUTABLE); then \
+	if ! $(LINKER_CLANG) $$objs $$link_archives $(LDFLAGS_STACK) -o $(EXECUTABLE); then \
 		echo "FAIL: linker failed"; \
 		$(REPORT_COMPILE_TIME); \
 		exit 1; \

@@ -1,0 +1,39 @@
+// Trial: a region that GREW must have its whole extension chain freed at scope exit.
+//
+// A region is a 4128-byte pool; an allocation that does not fit triggers
+// L_region_grow, which mallocs another block and links it onto the chain at
+// [base+16]. Each buffer below is 200000 * 8 = 1.6 MB, far over the 4096
+// growth threshold, so each forces a fresh extension block -- the region ends up
+// with a chain of several blocks rather than a single one.
+//
+// grow_and_drop returns only int64, so per silica-specification 12.1.2 nothing
+// escapes and the region plus every block on its chain must be released at scope
+// exit. Freeing only the root (not walking [base+16]) leaks the extensions, which
+// this loop accumulates. Phase A, single scope, per 12.1.4. Want 0.
+
+fn grow_and_drop(n: int64) -> int64 {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        b1: buf(L1, normal, int64, 200000) <- alloc_buf(r, 200000);
+        b2: buf(L1, normal, int64, 200000) <- alloc_buf(r, 200000);
+        b3: buf(L1, normal, int64, 200000) <- alloc_buf(r, 200000)
+    produces
+        pure n
+    end
+}
+
+fn loop_grow(i: int64, acc: int64) -> int64 {
+    case i <= 0 of {
+        true -> acc;
+        false -> loop_grow(i - 1, acc + grow_and_drop(1))
+    }
+}
+
+fn main() -> int64 {
+    sequence
+        total: int64 <- loop_grow(2000, 0)
+    produces
+        pure case total == 2000 of { true -> 0; false -> 1 }
+    end
+}

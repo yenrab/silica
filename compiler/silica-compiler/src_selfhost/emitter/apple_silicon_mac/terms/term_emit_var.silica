@@ -27,7 +27,7 @@ use term_user_call_abi;
 
 export emit_var_term/4;
 
-fn emit_var_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: bool }) -> string {
+fn emit_var_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: boolean }) -> string {
     case term_user_call_abi@is_inline_float_var(term_sir_helpers@sir_term_root_node(term).name, dest) of {
                     true -> {
                         float_val: string <- substring(term_sir_helpers@sir_term_root_node(term).name, 1, length_bytes(term_sir_helpers@sir_term_root_node(term).name));
@@ -46,20 +46,15 @@ fn emit_var_term(term: { nodes: List[{ kind: int64, type_name: string, value: st
                                 false -> case reg_conventions@is_inline_struct_type(term_sir_helpers@sir_term_root_node(term).type_name) and bound.bound_reg == "X0" and dest != "X0" of {
                                     // When a record_make is bound to X0 (MOV X0, SP) but is passed as a non-first
                                     // arg (dest != X0), the first-arg computation may have clobbered X0 before this
-                                    // arg is computed. Use the _va.name SP offset instead to get the struct pointer.
+                                    // arg is computed. Recover the struct pointer from the _va.name region base.
                                     true -> {
+                                        // _va.<name> now names the aggregate's fixed-frame region, so the
+                                        // struct pointer is X29 - base. (It used to be a numeric SP offset;
+                                        // parsing the memref as an int yielded garbage.)
                                         va_fix: string <- var@find_sp_binding(bound.outer_reg, concat("_va.", bound.bound_name));
-                                        adj_fix: string <- var@find_sp_binding(bound.outer_reg, "_adj");
-                                        va_int_fix: int64 <- case length_bytes(va_fix) > 0 of { true -> string_parse@string_to_int64(va_fix); false -> -1 };
-                                        adj_int_fix: int64 <- case length_bytes(adj_fix) > 0 of { true -> string_parse@string_to_int64(adj_fix); false -> 0 };
-                                        case va_int_fix >= 0 of {
-                                            true -> {
-                                                off_fix: int64 <- va_int_fix + adj_int_fix;
-                                                case off_fix == 0 of {
-                                                    true -> concat(concat("    MOV ", dest), ", SP\n");
-                                                    false -> concat("    ADD ", concat(dest, concat(", SP, #", concat(atom_table@int64_to_decimal_string(off_fix), "\n"))))
-                                                }
-                                            };
+                                        va_fb_fix: int64 <- var@parse_x29_neg_offset_bytes(va_fix);
+                                        case va_fb_fix > 0 of {
+                                            true -> concat(var@fp_ptr_to_region(dest, va_fb_fix), "\n");
                                             false -> var@emit_var_reg_outer(term, dest, bound.bound_reg, bound.outer_reg)
                                         }
                                     };

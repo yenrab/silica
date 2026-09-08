@@ -27,6 +27,8 @@ export build_string_literal_table/1;
 export string_literal_value_to_index/2;
 export emit_string_literal_rodata_section/1;
 export module_uses_string_literal_pool/1;
+export escape_raw_for_ascii/1;
+export raw_byte_length/1;
 
 // Local SIRTerm arena helpers (sir_ast node accessors are not exported).
 fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
@@ -308,6 +310,113 @@ fn escape_char_for_ascii(c: string) -> string {
     }
 }
 
+// --- byte-exact literal emission -------------------------------------------
+// The compiler cannot hold every byte in its own strings (0x00 terminates a
+// C string in the bootstrap ABI), so literals are emitted from their
+// UNRESOLVED source text: the assembler materializes the byte, not us.
+// "\x00" -> .ascii "\000" with length 1. See spec 4.1.6.
+
+fn oct_digit(n: int64) -> string {
+    case n of {
+        0 -> "0"; 1 -> "1"; 2 -> "2"; 3 -> "3";
+        4 -> "4"; 5 -> "5"; 6 -> "6"; _: int64 -> "7"
+    }
+}
+
+fn oct3(n: int64) -> string {
+    concat(concat(oct_digit(n / 64), oct_digit((n / 8) % 8)), oct_digit(n % 8))
+}
+
+fn hexv(c: string) -> int64 {
+    case c of {
+        "0" -> 0; "1" -> 1; "2" -> 2; "3" -> 3; "4" -> 4;
+        "5" -> 5; "6" -> 6; "7" -> 7; "8" -> 8; "9" -> 9;
+        "a" -> 10; "b" -> 11; "c" -> 12; "d" -> 13; "e" -> 14; "f" -> 15;
+        "A" -> 10; "B" -> 11; "C" -> 12; "D" -> 13; "E" -> 14; "F" -> 15;
+        _: string -> 0 - 1
+    }
+}
+
+fn raw_esc_acc(raw: string, pos: int64, acc: string) -> string {
+    case pos >= length_chars(raw) of {
+        true -> acc;
+        false -> {
+            c: string <- substring(raw, pos, pos + 1);
+            case c == "\\" and pos + 1 < length_chars(raw) of {
+                true -> {
+                    nx: string <- substring(raw, pos + 1, pos + 2);
+                    case nx of {
+                        "n" -> raw_esc_acc(raw, pos + 2, concat(acc, "\\n"));
+                        "t" -> raw_esc_acc(raw, pos + 2, concat(acc, "\\t"));
+                        "r" -> raw_esc_acc(raw, pos + 2, concat(acc, "\\r"));
+                        "e" -> raw_esc_acc(raw, pos + 2, concat(acc, "\\033"));
+                        "\\" -> raw_esc_acc(raw, pos + 2, concat(acc, "\\\\"));
+                        "\"" -> raw_esc_acc(raw, pos + 2, concat(acc, "\\\""));
+                        "'" -> raw_esc_acc(raw, pos + 2, concat(acc, "'"));
+                        "x" -> case pos + 3 < length_chars(raw) of {
+                            true -> {
+                                hi: int64 <- hexv(substring(raw, pos + 2, pos + 3));
+                                lo: int64 <- hexv(substring(raw, pos + 3, pos + 4));
+                                case hi < 0 or lo < 0 of {
+                                    true -> raw_esc_acc(raw, pos + 2, concat(acc, "\\\\x"));
+                                    false -> raw_esc_acc(raw, pos + 4, concat(acc, concat("\\", oct3(hi * 16 + lo))))
+                                }
+                            };
+                            false -> raw_esc_acc(raw, pos + 2, concat(acc, "\\\\x"))
+                        };
+                        _: string -> raw_esc_acc(raw, pos + 2, concat(acc, concat("\\\\", nx)))
+                    }
+                };
+                false -> raw_esc_acc(raw, pos + 1, concat(acc, escape_char_for_ascii(c)))
+            }
+        }
+    }
+}
+
+fn raw_len_acc(raw: string, pos: int64, acc: int64) -> int64 {
+    case pos >= length_chars(raw) of {
+        true -> acc;
+        false -> {
+            c: string <- substring(raw, pos, pos + 1);
+            case c == "\\" and pos + 1 < length_chars(raw) of {
+                true -> {
+                    nx: string <- substring(raw, pos + 1, pos + 2);
+                    case nx of {
+                        "x" -> case pos + 3 < length_chars(raw) of {
+                            true -> {
+                                hi: int64 <- hexv(substring(raw, pos + 2, pos + 3));
+                                lo: int64 <- hexv(substring(raw, pos + 3, pos + 4));
+                                case hi < 0 or lo < 0 of {
+                                    true -> raw_len_acc(raw, pos + 2, acc + 2);
+                                    false -> raw_len_acc(raw, pos + 4, acc + 1)
+                                }
+                            };
+                            false -> raw_len_acc(raw, pos + 2, acc + 2)
+                        };
+                        "n" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        "t" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        "r" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        "e" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        "\\" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        "\"" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        "'" -> raw_len_acc(raw, pos + 2, acc + 1);
+                        _: string -> raw_len_acc(raw, pos + 2, acc + 2)
+                    }
+                };
+                false -> raw_len_acc(raw, pos + 1, acc + length_bytes(c))
+            }
+        }
+    }
+}
+
+fn escape_raw_for_ascii(raw: string) -> string {
+    raw_esc_acc(raw, 0, "")
+}
+
+fn raw_byte_length(raw: string) -> int64 {
+    raw_len_acc(raw, 0, 0)
+}
+
 fn escape_string_for_ascii(content: string, pos: int64, acc: string) -> string {
     case pos >= length_bytes(content) of {
         true -> acc;
@@ -319,35 +428,46 @@ fn escape_string_for_ascii(content: string, pos: int64, acc: string) -> string {
     }
 }
 
-fn emit_string_literal_values_rodata_cons(head: string, tail: List[string, mem(normal)], index: int64) -> string {
-    rest: string <- emit_string_literal_values_rodata(tail, index + 1);
-    label_colon: string <- concat(concat(concat("L_str_", atom_table@int64_to_decimal_string(index)), ":"), "\n");
-    indent: string <- concat(concat(concat(" ", " "), " "), " ");
-    escaped: string <- escape_string_for_ascii(head, 0, "");
-    ascii_line: string <- concat(concat(concat(indent, ".ascii \""), escaped), "\"\n");
-    null_line: string <- concat(indent, ".byte 0");
-    one: string <- concat(label_colon, concat(ascii_line, null_line));
-    case length_bytes(rest) > 0 of {
-        true -> concat(concat(one, "\n"), rest);
-        false -> concat(one, "\n")
+// Accumulator, not a right fold. The previous form recursed on the tail BEFORE concatenating,
+// so depth grew with the number of literals: emitting data_structures/string_escapes.silica
+// (~305 literals) parked the compiler on a ~255-frame stack, faulting and longjmp-ing forever
+// at 100% CPU with a 6.2G footprint -- `sample` showed _longjmp as top-of-stack in every
+// sample. Accumulating forward is a tail call (see recursion_support@emit_tail_call), so the
+// stack stays constant. Output is byte-identical: every entry contributed `one + "\n"` before
+// and still does, in the same order.
+fn emit_string_literal_values_rodata_acc(values: List[string, mem(normal)], index: int64, acc: string) -> string {
+    case values of {
+        []: List[string, mem(normal)] -> acc;
+        [head: string, tail: List[string, mem(normal)]] -> {
+            idx_s: string <- atom_table@int64_to_decimal_string(index);
+            label: string <- concat("L_str_", idx_s);
+            data_label: string <- concat(label, "_d");
+            indent: string <- concat(concat(concat(" ", " "), " "), " ");
+            escaped: string <- escape_raw_for_ascii(head);
+            len_s: string <- atom_table@int64_to_decimal_string(raw_byte_length(head));
+            align_line: string <- concat(indent, ".p2align 3\n");
+            label_colon: string <- concat(label, ":\n");
+            tag_line: string <- concat(indent, ".quad -1\n");
+            ptr_line: string <- concat(concat(indent, ".quad "), concat(data_label, "\n"));
+            len_line: string <- concat(concat(indent, ".quad "), concat(len_s, "\n"));
+            data_colon: string <- concat(data_label, ":\n");
+            ascii_line: string <- concat(concat(concat(indent, ".ascii \""), escaped), "\"\n");
+            null_line: string <- concat(indent, ".byte 0");
+            hdr: string <- concat(align_line, concat(label_colon, concat(tag_line, concat(ptr_line, len_line))));
+            one: string <- concat(hdr, concat(data_colon, concat(ascii_line, null_line)));
+            emit_string_literal_values_rodata_acc(tail, index + 1, concat(acc, concat(one, "\n")))
+        };
+        _: List[string, mem(normal)] -> acc
     }
 }
 
 fn emit_string_literal_values_rodata(values: List[string, mem(normal)], index: int64) -> string {
-    sequence
-        result: string <- case values of {
-            []: List[string, mem(normal)] -> "";
-            [head: string, tail: List[string, mem(normal)]] -> emit_string_literal_values_rodata_cons(head, tail, index);
-            _: List[string, mem(normal)] -> ""
-        }
-    produces
-        pure result
-    end
+    emit_string_literal_values_rodata_acc(values, index, "")
 }
 
 fn emit_string_literal_rodata_section_nonempty(table: { is_empty: boolean, values: List[string, mem(normal)] }) -> string {
     sequence
-        header: string <- ".section __TEXT,__rodata\n.align\t8\n";
+        header: string <- ".section __DATA,__const\n.p2align 3\n";
         in_order: List[string, mem(normal)] <- reverse_str_values(table.values);
         body: string <- emit_string_literal_values_rodata(in_order, 0);
         result: string <- concat(header, body)

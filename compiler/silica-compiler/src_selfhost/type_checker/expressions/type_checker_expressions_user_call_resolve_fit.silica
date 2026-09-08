@@ -41,19 +41,28 @@ export trait_concrete_for_call_site/4;
 // its own module -- E2003 naming two records that differ only in KeyType/ValueType. Bind the
 // placeholders instead; bindings are fresh per call site, so KeyType may be int64 here and
 // string elsewhere.
-fn placeholder_schema_matches_formal(actual: string, formal: string) -> bool {
+// surface_contains_placeholder builds a fresh type interner and parses the whole surface into a
+// DAG, so it must never sit on the hot path: every placeholder name ends in "Type", and a
+// substring test rejects the overwhelming majority of formals for the cost of a scan. Profiling
+// the selfhost compiling its own source showed this call at 94% of samples before the guard.
+fn placeholder_schema_matches_formal(actual: string, formal: string) -> boolean {
+    case contains(formal, "Type") of {
+        false -> false;
+        true -> placeholder_schema_matches_formal_slow(actual, formal)
+    }
+}
+
+fn placeholder_schema_matches_formal_slow(actual: string, formal: string) -> boolean {
     case type_interner@surface_contains_placeholder(formal) of {
         false -> false;
         true -> type_interner@surface_matches_schema(actual, formal)
     }
 }
 
-fn call_site_actual_matches_formal(inferred: string, formal: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
+fn call_site_actual_matches_formal(inferred: string, formal: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> boolean {
     fin: string <- type_checker_traits@trim_type_text(inferred);
     fdecl: string <- type_checker_traits@trim_type_text(formal);
     case fin == fdecl of {
-        true -> true;
-        false -> case placeholder_schema_matches_formal(fin, fdecl) of {
         true -> true;
         false -> case call_site_record_types_compatible(fin, fdecl, world) of {
             true -> true;
@@ -67,7 +76,10 @@ fn call_site_actual_matches_formal(inferred: string, formal: string, world: List
                             true -> true;
                             false -> case type_checker_lists@formal_type_accepts_actual(fin, fdecl, world) of {
                                 true -> true;
-                                false -> type_checker_traits@actual_type_satisfies_trait_expectation(fin, fdecl, world)
+                                false -> case type_checker_traits@actual_type_satisfies_trait_expectation(fin, fdecl, world) of {
+                                    true -> true;
+                                    false -> placeholder_schema_matches_formal(fin, fdecl)
+                                }
                             }
                         }
                     }
@@ -75,10 +87,9 @@ fn call_site_actual_matches_formal(inferred: string, formal: string, world: List
             }
         }
     }
-    }
 }
 
-fn call_site_record_types_compatible(actual: string, formal: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
+fn call_site_record_types_compatible(actual: string, formal: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> boolean {
     case type_checker_record_types@record_type_starts(actual) of {
         false -> false;
         true -> case type_checker_record_types@record_type_starts(formal) of {
@@ -98,7 +109,7 @@ fn call_site_record_types_compatible(actual: string, formal: string, world: List
     }
 }
 
-fn call_site_record_fields_match_loop(rem: string, actual: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
+fn call_site_record_fields_match_loop(rem: string, actual: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> boolean {
     case len(rem) == 0 of {
         true -> true;
         false -> {
@@ -133,7 +144,7 @@ fn replace_int64_with_int32_in_type_text_loop(s: string, i: int64, out: string) 
     }
 }
 
-fn struct_literal_inferred_matches_impl_record(actual: string, impl_param: string) -> bool {
+fn struct_literal_inferred_matches_impl_record(actual: string, impl_param: string) -> boolean {
     a: string <- type_checker_traits@trim_type_text(actual);
     p: string <- type_checker_traits@trim_type_text(impl_param);
     case len(a) > 0 of {
@@ -148,7 +159,7 @@ fn struct_literal_inferred_matches_impl_record(actual: string, impl_param: strin
     }
 }
 
-fn dispatch_actual_fits_impl_parameter(actual: string, impl_param: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> bool {
+fn dispatch_actual_fits_impl_parameter(actual: string, impl_param: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> boolean {
     case call_site_actual_matches_formal(actual, impl_param, world) of {
         true -> true;
         false -> {
@@ -233,7 +244,7 @@ fn specialize_trait_formal_from_actual(actual: string, formal: string, world: Li
             case at == ft of {
                 true -> formal;
                 false -> {
-                    (is_trait: bool, trait_prog: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) <- type_checker_traits@find_program_declaring_trait(world, ft);
+                    (is_trait: boolean, trait_prog: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) <- type_checker_traits@find_program_declaring_trait(world, ft);
                     case is_trait of {
                         false -> formal;
                         true -> {
@@ -285,7 +296,7 @@ fn recv_type_for_trait_link_mangle(recv_inferred: string, callee_decls: List[{ t
     }
 }
 
-fn is_integer_type_name_fit(t: string) -> bool {
+fn is_integer_type_name_fit(t: string) -> boolean {
     t == "int8" or t == "int16" or t == "int32" or t == "int64" or t == "uint8" or t == "uint16" or t == "uint32" or t == "uint64"
 }
 
@@ -330,9 +341,9 @@ fn infer_trait_concrete_for_int_literal(trait_prog: { declarations: List[{ tag: 
 // §10.1.2: an integer literal is unsized `int`, so it may select any integer implementation;
 // with exactly one viable it needs no annotation. Falls back to the actual, so non-trait formals
 // and unresolved cases behave exactly as before.
-fn trait_concrete_for_call_site(lit_int: bool, actual: string, formal: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> string {
+fn trait_concrete_for_call_site(lit_int: boolean, actual: string, formal: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> string {
     ft: string <- type_checker_traits@trim_type_text(formal);
-    (is_trait: bool, trait_prog: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) <- type_checker_traits@find_program_declaring_trait(world, ft);
+    (is_trait: boolean, trait_prog: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) <- type_checker_traits@find_program_declaring_trait(world, ft);
     case is_trait of {
         false -> actual;
         true -> {

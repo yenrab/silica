@@ -1,0 +1,107 @@
+// A tuple value built inside a helper is MOVED into insert, which stores the pointer in
+// the node. The helper then returns, so the tuple must not live in the helper's frame.
+// Companion to wbt_map_insert_tuple_value, which covers sibling reuse within one frame.
+
+use wbt_map;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn cmp_pair(a: (int64, string), b: (int64, string)) -> :less | :equal | :greater {
+    (a0: int64, _: string) <- a;
+    (b0: int64, _: string) <- b;
+    cmp_i64(a0, b0)
+}
+
+// Builds the value tuple in ITS OWN frame and hands it to insert, then returns.
+fn add_pair(
+    m: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn((int64, string), (int64, string)) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    k: int64,
+    n: int64
+) -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn((int64, string), (int64, string)) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    sequence
+        r: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn((int64, string), (int64, string)) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(m, k, (n, "v"))
+    produces
+        pure r.map
+    end
+}
+
+fn pair_eq(a: (int64, string), b: (int64, string)) -> boolean {
+    (a0: int64, a1: string) <- a;
+    (b0: int64, b1: string) <- b;
+    case a0 == b0 of { false -> false; true -> a1 == b1 }
+}
+
+fn main() -> int64 {
+    sequence
+        e: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn((int64, string), (int64, string)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: cmp_i64, compare_value: cmp_pair });
+        m1: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn((int64, string), (int64, string)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- add_pair(e, 1, 10);
+        m2: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn((int64, string), (int64, string)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- add_pair(m1, 2, 20);
+        g1: { status: :not_found | :found, value: (int64, string) } <- wbt_map@get(m2, 1, (0, ""));
+        g2: { status: :not_found | :found, value: (int64, string) } <- wbt_map@get(m2, 2, (0, ""))
+    produces
+        pure case g1.status of {
+            :not_found -> 1;
+            :found -> case pair_eq(g1.value, (10, "v")) of {
+                false -> 2;
+                true -> case g2.status of {
+                    :not_found -> 3;
+                    :found -> case pair_eq(g2.value, (20, "v")) of { false -> 4; true -> 0 }
+                }
+            }
+        }
+    end
+}
