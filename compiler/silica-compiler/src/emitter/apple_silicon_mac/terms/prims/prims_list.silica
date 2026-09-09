@@ -317,37 +317,6 @@ fn emit_list_head(term: SIRTerm, dest: string) -> string {
 
 // X9 = list handle, X10 = index.  L_list_at_helper returns element address in X0 via a register
 // chunk-walk (no per-step handle allocation). Element produced like list_head. Out of range aborts.
-// Heap-promote an aggregate element returned by list_at: L_list_at_helper leaves an interior
-// pointer into the list's chunk in X0. Returning that pointer by value (aggregate return) would
-// alias the list storage and escape the frame, so copy nbytes to a fresh region block (X0 = copy).
-// Same rule the call-return path follows; local copy avoids a cycle with term_emitter.
-fn list_at_copy_words(word_idx: int64, words: int64) -> string {
-    case word_idx >= words of {
-        true -> "";
-        false -> do
-            off: int64 <- word_idx * 8;
-            pair: string <- concat(concat(concat(concat("    LDR X3, [X1, #", atom_table@int64_to_decimal_string(off)), "]\n    STR X3, [X4, #"), atom_table@int64_to_decimal_string(off)), "]\n");
-            concat(pair, list_at_copy_words(word_idx + 1, words))
-        end
-    }
-}
-
-fn list_at_heap_promote(nbytes: int64) -> string {
-    case nbytes <= 0 of {
-        true -> "";
-        false -> do
-            words: int64 <- nbytes / 8;
-            case words <= 0 of {
-                true -> "";
-                false -> do
-                    copy_asm: string <- list_at_copy_words(0, words);
-                    concat(concat(concat(concat("    SUB SP, SP, #16\n    STR X0, [SP, #8]\n    MOV X0, #", atom_table@int64_to_decimal_string(nbytes)), "\n    BL _silica_rt_region_alloc\n    MOV X4, X0\n    LDR X1, [SP, #8]\n"), copy_asm), "    MOV X0, X4\n    ADD SP, SP, #16\n")
-                end
-            }
-        end
-    }
-}
-
 fn emit_list_at(term: SIRTerm, dest: string) -> string {
     em: string <- list_elem_type_from_list_t(term.inner.type_name);
     et: string <- case len(em) == 0 of { true -> "int64"; false -> em };
@@ -356,7 +325,7 @@ fn emit_list_at(term: SIRTerm, dest: string) -> string {
     setup: string <- concat("    MOV X0, X9\n    MOV X1, X10\n    MOV X2, #", concat(atom_table@int64_to_decimal_string(es), concat("\n    MOV X3, #", concat(atom_table@int64_to_decimal_string(cd), "\n"))));
     bl: string <- "    BL L_list_at_helper\n    MOV X10, X0\n";
     case reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name) of {
-        true -> concat(concat(setup, bl), concat(list_at_heap_promote(es), concat(concat("    MOV ", dest), ", X0\n")));
+        true -> concat(concat(setup, bl), concat(concat("    MOV ", dest), ", X10\n"));
         false -> do
             ed: string <- case reg_conventions@is_narrow_type(term.type_name) of {
                 true -> case len(dest) > 0 of {

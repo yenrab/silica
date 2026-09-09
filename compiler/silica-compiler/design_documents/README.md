@@ -15,6 +15,12 @@ Use the entries below for **quick navigation**. Each item links to a file in thi
 
 ---
 
+## [HIGH_PRIORITY_compiler_defects_addendum_2026-09-09.md](./HIGH_PRIORITY_compiler_defects_addendum_2026-09-09.md)
+
+**Addendum to the defect list**: a parenthesised right operand reads the left operand's value in place of the first parameter (`20 + (x + 1)` returns 41 for x = 5), and `float32` comparisons with compound expressions on both sides compare the wrong registers. Both with probe tables; fold into the main list when it is next edited.
+
+---
+
 ## [silica-specification.md](./silica-specification.md)
 
 **Authoritative Silica language specification** (large document): syntax, types, effects, regions, actors, diagnostics, compiler interface, and normative semantics for the language as currently defined.
