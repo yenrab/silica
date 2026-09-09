@@ -1,0 +1,438 @@
+// Trial-only int64 helpers for brodal_okasaki_core: constructors, streams, pop-order hashes,
+// sorted oracle, and result checks. cmp_i64 stays the first function: the emitter numbers its
+// :less/:equal/:greater atoms in first-use order and the core's compare unit expects that order.
+// Fold-style callbacks must be local to the module that passes them, so hashes live here.
+
+use brodal_okasaki;
+
+export cmp_i64/2;
+export new_min/0;
+export new_max/0;
+export push_seq/4;
+export push_lcg/4;
+export push_mod/4;
+export pop_all_hash/1;
+export pop_all_count/1;
+export sorted_hash_seq/3;
+export sorted_hash_lcg/3;
+export sorted_hash_mod/3;
+export hash_step/2;
+export peek_is/2;
+export peek_missing/1;
+export valid_with_count/2;
+export error_code_of/1;
+export pops_sorted/2;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn new_min() -> {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    brodal_okasaki@empty({ compare_item: cmp_i64 }, false)
+}
+
+fn new_max() -> {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    brodal_okasaki@empty({ compare_item: cmp_i64 }, true)
+}
+
+fn hash_step(acc: int64, x: int64) -> int64 {
+    acc * 31 + x + 7
+}
+
+// Pushes lo, lo + step, ... while below hi (step may be negative with lo > hi).
+fn push_seq(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, lo: int64, hi: int64, step: int64) -> {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    case step > 0 of {
+        true -> case lo >= hi of {
+            true -> heap;
+            false -> push_seq(brodal_okasaki@push(heap, lo), lo + step, hi, step)
+        };
+        false -> case lo <= hi of {
+            true -> heap;
+            false -> push_seq(brodal_okasaki@push(heap, lo), lo + step, hi, step)
+        }
+    }
+}
+
+fn lcg_next(x: int64) -> int64 {
+    ((x * 1103515245 + 12345) / 65536) - (((x * 1103515245 + 12345) / 65536) / 1000) * 1000
+}
+
+// Pushes n pseudo-random values in [0, 1000) from seed.
+fn push_lcg(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, seed: int64, n: int64, i: int64) -> {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    case i >= n of {
+        true -> heap;
+        false -> push_lcg(brodal_okasaki@push(heap, lcg_next(seed)), lcg_next(seed), n, i + 1)
+    }
+}
+
+// Pushes i mod m for i in [0, n): many duplicates.
+fn push_mod(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, n: int64, m: int64, i: int64) -> {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    case i >= n of {
+        true -> heap;
+        false -> push_mod(brodal_okasaki@push(heap, i - (i / m) * m), n, m, i + 1)
+    }
+}
+
+fn pop_all_go(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, acc: int64) -> int64 {
+    p: {
+        heap: {
+            root: ref?(L, normal, rec),
+            count: int64,
+            max_oriented: boolean,
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        },
+        status: :not_found | :found,
+        value: int64
+    } <- brodal_okasaki@pop(heap, 0);
+    case p.status of {
+        :not_found -> acc;
+        :found -> pop_all_go(p.heap, hash_step(acc, p.value))
+    }
+}
+
+// Hash of the full pop sequence; the heap is unchanged (persistent).
+fn pop_all_hash(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> int64 {
+    pop_all_go(heap, 0)
+}
+
+fn pop_count_go(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, acc: int64) -> int64 {
+    p: {
+        heap: {
+            root: ref?(L, normal, rec),
+            count: int64,
+            max_oriented: boolean,
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        },
+        status: :not_found | :found,
+        value: int64
+    } <- brodal_okasaki@pop(heap, 0);
+    case p.status of {
+        :not_found -> acc;
+        :found -> pop_count_go(p.heap, acc + 1)
+    }
+}
+
+fn pop_all_count(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> int64 {
+    pop_count_go(heap, 0)
+}
+
+// Sorted-list oracle over plain lists (insertion sort), hashed with hash_step.
+fn insert_sorted(xs: List[int64, mem(normal)], x: int64, descending: boolean) -> List[int64, mem(normal)] {
+    case xs of {
+        []: List[int64, mem(normal)] -> {
+            sequence proc[mem(normal)]
+                out: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+            produces
+                pure out
+            end
+        };
+        [h: int64, t: List[int64, mem(normal)]] -> {
+            goes_first: boolean <- case descending of {
+                false -> x <= h;
+                true -> x >= h
+            };
+            case goes_first of {
+                true -> {
+                    sequence proc[mem(normal)]
+                        out: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+                    produces
+                        pure out
+                    end
+                };
+                false -> {
+                    sequence proc[mem(normal)]
+                        inner: List[int64, mem(normal)] <- insert_sorted(t, x, descending);
+                        out: List[int64, mem(normal)] <- prepend[int64, mem(normal)](h, inner)
+                    produces
+                        pure out
+                    end
+                }
+            }
+        }
+    }
+}
+
+fn hash_list(xs: List[int64, mem(normal)], acc: int64) -> int64 {
+    case xs of {
+        []: List[int64, mem(normal)] -> acc;
+        [h: int64, t: List[int64, mem(normal)]] -> hash_list(t, hash_step(acc, h))
+    }
+}
+
+fn empty_i64() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure out
+    end
+}
+
+fn sorted_seq_go(xs: List[int64, mem(normal)], lo: int64, hi: int64, step: int64, descending: boolean) -> List[int64, mem(normal)] {
+    stop: boolean <- case step > 0 of {
+        true -> lo >= hi;
+        false -> lo <= hi
+    };
+    case stop of {
+        true -> xs;
+        false -> sorted_seq_go(insert_sorted(xs, lo, descending), lo + step, hi, step, descending)
+    }
+}
+
+fn sorted_hash_seq(lo: int64, hi: int64, step: int64) -> int64 {
+    hash_list(sorted_seq_go(empty_i64(), lo, hi, step, false), 0)
+}
+
+fn sorted_lcg_go(xs: List[int64, mem(normal)], seed: int64, n: int64, i: int64) -> List[int64, mem(normal)] {
+    case i >= n of {
+        true -> xs;
+        false -> sorted_lcg_go(insert_sorted(xs, lcg_next(seed), false), lcg_next(seed), n, i + 1)
+    }
+}
+
+fn sorted_hash_lcg(seed: int64, n: int64, descending: boolean) -> int64 {
+    case descending of {
+        false -> hash_list(sorted_lcg_go(empty_i64(), seed, n, 0), 0);
+        true -> hash_list(sorted_lcg_desc_go(empty_i64(), seed, n, 0), 0)
+    }
+}
+
+fn sorted_lcg_desc_go(xs: List[int64, mem(normal)], seed: int64, n: int64, i: int64) -> List[int64, mem(normal)] {
+    case i >= n of {
+        true -> xs;
+        false -> sorted_lcg_desc_go(insert_sorted(xs, lcg_next(seed), true), lcg_next(seed), n, i + 1)
+    }
+}
+
+fn sorted_mod_go(xs: List[int64, mem(normal)], n: int64, m: int64, i: int64) -> List[int64, mem(normal)] {
+    case i >= n of {
+        true -> xs;
+        false -> sorted_mod_go(insert_sorted(xs, i - (i / m) * m, false), n, m, i + 1)
+    }
+}
+
+fn sorted_hash_mod(n: int64, m: int64, _: int64) -> int64 {
+    hash_list(sorted_mod_go(empty_i64(), n, m, 0), 0)
+}
+
+fn peek_is(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, expected: int64) -> boolean {
+    res: { status: :not_found | :found, value: int64 } <- brodal_okasaki@peek(heap, 0);
+    case res.status of {
+        :found -> res.value == expected;
+        :not_found -> false
+    }
+}
+
+fn peek_missing(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> boolean {
+    res: { status: :not_found | :found, value: int64 } <- brodal_okasaki@peek(heap, 0);
+    case res.status of {
+        :not_found -> true;
+        :found -> false
+    }
+}
+
+fn valid_with_count(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, n: int64) -> boolean {
+    v: { valid: boolean, error: atom, logical_count: int64 } <- brodal_okasaki@validate(heap);
+    case v.valid of {
+        false -> false;
+        true -> v.logical_count == n and brodal_okasaki@size(heap) == n
+    }
+}
+
+fn error_code_of(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> int64 {
+    v: { valid: boolean, error: atom, logical_count: int64 } <- brodal_okasaki@validate(heap);
+    brodal_okasaki@validate_error_code(v.error)
+}
+
+// Pops everything, checking the heap stays valid and the sequence is monotone in the heap's
+// orientation; returns the popped count == n.
+fn pops_sorted_go(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, remaining: int64, prev: int64, have_prev: boolean) -> boolean {
+    p: {
+        heap: {
+            root: ref?(L, normal, rec),
+            count: int64,
+            max_oriented: boolean,
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        },
+        status: :not_found | :found,
+        value: int64
+    } <- brodal_okasaki@pop(heap, 0);
+    case p.status of {
+        :not_found -> remaining == 0;
+        :found -> {
+            in_order: boolean <- case have_prev of {
+                false -> true;
+                true -> case brodal_okasaki@is_max_oriented(heap) of {
+                    false -> prev <= p.value;
+                    true -> prev >= p.value
+                }
+            };
+            case in_order and valid_with_count(p.heap, remaining - 1) of {
+                false -> false;
+                true -> pops_sorted_go(p.heap, remaining - 1, p.value, true)
+            }
+        }
+    }
+}
+
+fn pops_sorted(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, n: int64) -> boolean {
+    pops_sorted_go(heap, n, 0, false)
+}

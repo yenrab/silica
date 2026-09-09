@@ -1,0 +1,161 @@
+// Layer 2 §15 step 9 (design §8): the reverse orientation appends in O(1) by prepending. The new
+// item takes logical index `count`, existing logical indexes keep their values, get/set translate
+// through physical_index = count - 1 - logical_index, and orientation :front declines append.
+
+use skew_ral;
+use ral_trial_i64;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+
+// Append i for i in [k, n); after each append logical indexes 0..i all still read their index.
+fn grow(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    k: int64,
+    n: int64
+) -> boolean {
+    case k >= n of {
+        true -> true;
+        false -> grow_step(ral, k, n)
+    }
+}
+
+fn grow_step(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    k: int64,
+    n: int64
+) -> boolean {
+    sequence
+        app: {
+            list: {
+                count: int64,
+                reversed: boolean,
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+                region: region(L, normal),
+                specialization_key: int64
+            },
+            appended: boolean
+        } <- skew_ral@append(ral, k);
+        size_ok: boolean <- skew_ral@size(app.list) == k + 1;
+        stable_ok: boolean <- ral_trial_i64@gets_match(app.list, k + 1);
+        newest_physical: boolean <- ral_trial_i64@lookup_is(app.list, 0, k);
+        mapping_ok: boolean <- skew_ral@logical_to_physical(app.list, 0) == k;
+        old_stable: boolean <- ral_trial_i64@gets_match(ral, k)
+    produces
+        pure case app.appended and size_ok and stable_ok and newest_physical and mapping_ok and old_stable of {
+            false -> false;
+            true -> grow(app.list, k + 1, n)
+        }
+    end
+}
+
+fn set_logical() -> boolean {
+    sequence
+        r: {
+            count: int64,
+            reversed: boolean,
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+            region: region(L, normal),
+            specialization_key: int64
+        } <- ral_trial_i64@seq_reverse(10);
+        s: {
+            list: {
+                count: int64,
+                reversed: boolean,
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+                region: region(L, normal),
+                specialization_key: int64
+            },
+            updated: boolean
+        } <- skew_ral@set(r, 3, 33);
+        got_new: boolean <- ral_trial_i64@get_is(s.list, 3, 33);
+        got_phys: boolean <- ral_trial_i64@lookup_is(s.list, 6, 33);
+        got_old: boolean <- ral_trial_i64@get_is(r, 3, 3);
+        neighbours: boolean <- ral_trial_i64@get_is(s.list, 2, 2)
+            and ral_trial_i64@get_is(s.list, 4, 4);
+        bad_neg: boolean <- ral_trial_i64@get_missing(r, -1);
+        bad_past: boolean <- ral_trial_i64@get_missing(r, 10);
+        bad_set: {
+            list: {
+                count: int64,
+                reversed: boolean,
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+                region: region(L, normal),
+                specialization_key: int64
+            },
+            updated: boolean
+        } <- skew_ral@set(r, 10, 99);
+        bad_set_ok: boolean <- case bad_set.updated of {
+            true -> false;
+            false -> true
+        };
+        order_ok: boolean <- ral_trial_i64@hash_of(r) == ral_trial_i64@range_hash(0, 10);
+        valid_ok: boolean <- ral_trial_i64@valid_with_count(s.list, 10)
+    produces
+        pure s.updated and got_new and got_phys and got_old and neighbours and bad_neg and bad_past
+            and bad_set_ok and order_ok and valid_ok
+    end
+}
+
+fn front_declines() -> boolean {
+    sequence
+        f: {
+            count: int64,
+            reversed: boolean,
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+            region: region(L, normal),
+            specialization_key: int64
+        } <- ral_trial_i64@seq_front(4);
+        app: {
+            list: {
+                count: int64,
+                reversed: boolean,
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+                region: region(L, normal),
+                specialization_key: int64
+            },
+            appended: boolean
+        } <- skew_ral@append(f, 4);
+        flag_ok: boolean <- case app.appended of {
+            true -> false;
+            false -> true
+        };
+        front_maps: boolean <- skew_ral@logical_to_physical(f, 2) == 2
+    produces
+        pure flag_ok and skew_ral@size(app.list) == 4 and front_maps and ral_trial_i64@gets_match(f, 4)
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        grow_ok: boolean <- grow(ral_trial_i64@new_reverse(), 0, 20);
+        set_ok: boolean <- set_logical();
+        front_ok: boolean <- front_declines()
+    produces
+        pure pick(grow_ok, 1, pick(set_ok, 2, pick(front_ok, 3, 0)))
+    end
+}

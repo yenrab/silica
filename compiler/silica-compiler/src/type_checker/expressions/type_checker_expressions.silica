@@ -4910,7 +4910,24 @@ fn check_list_primitive_resolved(expr: Expr, expected_type: int64, elem_res: str
                             end
                         }
                     end;
-                    false -> case expr.name == "head" of {
+                    false -> case expr.name == "list_nth" of {
+                        true -> do
+                            ac: int64 <- type_checker_lists@count_call_args_list(expr);
+                            case ac == 2 of {
+                                false -> type_checker_core@type_check_err("E2005", expr.location, "list_at expects 2 arguments", "list");
+                                true -> do
+                                    r1: TypeCheckResult <- check_expr_surface_type(expr.inner, list_t, context, world);
+                                    case r1.is_ok of {
+                                        false -> r1;
+                                        true -> do
+                                            r2: TypeCheckResult <- check_expr_surface_type(call_second_arg_expr(expr), "int64", context, world);
+                                            case r2.is_ok of { false -> r2; true -> type_checker_core@type_check_ok() }
+                                        end
+                                    }
+                                end
+                            }
+                        end;
+                        false -> case expr.name == "head" of {
                         true -> do
                             ac: int64 <- type_checker_lists@count_call_args_list(expr);
                             case ac == 1 of {
@@ -4940,6 +4957,7 @@ fn check_list_primitive_resolved(expr: Expr, expected_type: int64, elem_res: str
                         end;
                         false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown list primitive: ", expr.name), "list")
                     }
+                    }
                 }
             }
         }
@@ -4957,6 +4975,13 @@ fn list_primitive_collectable_context_type(expr: Expr, expected_type: int64, con
 }
 
 fn check_list_primitive_call(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    case expr.name == "list_nth" of {
+        true -> do
+            lt: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+            el: string <- type_checker_lists@list_element_type_from_list_type(lt);
+            check_list_primitive_resolved(expr, expected_type, el, lt, context, world)
+        end;
+        false -> do
     (elem: string, space: string) <- type_checker_lists@parse_generic_ts(expr.value);
     case len(elem) == 0 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("list primitive ", expr.name), " requires [T, S], [T], or [Collectable, S] with a typed binding"), "list");
@@ -4967,6 +4992,9 @@ fn check_list_primitive_call(expr: Expr, expected_type: int64, context: TypeCont
                 false -> type_checker_core@type_check_err("E2016", expr.location, concat(concat("cannot resolve List[Collectable, Space] for ", expr.name), " without a concrete List type in context"), "list");
                 true -> check_list_primitive_resolved(expr, expected_type, elem_res, list_t, context, world)
             }
+        end
+    }
+
         end
     }
 }

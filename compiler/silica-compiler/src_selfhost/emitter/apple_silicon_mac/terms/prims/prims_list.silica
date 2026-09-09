@@ -32,6 +32,7 @@
 // elements once written are immutable.  Handles are immutable once created.
 
 use reg_conventions;
+use term_aggregate_helpers;
 use var;
 use prims_tuple;
 use prims_record;
@@ -41,6 +42,8 @@ export is_list_prim/1;
 export emit_prim_op/2;
 export module_uses_list_prims/1;
 export emit_list_helpers/0;
+export emit_list_at_helper/0;
+export module_uses_list_at/1;
 export emit_region_alloc_stub/0;
 export list_element_payload_bytes/1;
 export chunk_elem_slot_bytes/1;
@@ -51,10 +54,11 @@ export chunk_data_bytes_from_list_t/1;
 
 // Local SIRTerm arena helpers (sir_ast node accessors are not exported).
 fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
-    case nodes.is_nil of {
-        true -> 0;
-        false -> 1 + sir_term_nodes_len(nodes.tail)
-    }
+    sequence proc[mem(normal)]
+        result: int64 <- length[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](nodes)
+    produces
+        pure result
+    end
 }
 
 fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
@@ -67,15 +71,20 @@ fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, valu
     }
 }
 
+
 fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
     case idx < 0 of {
         true -> { kind: -1, type_name: "", value: "", name: "", inner: -1, right_expr: -1 };
         false -> {
             n: int64 <- sir_term_nodes_len(nodes);
-            sir_term_node_at_from_head(nodes, n - 1 - idx)
+            case idx >= n of {
+                true -> { kind: -1, type_name: "", value: "", name: "", inner: -1, right_expr: -1 };
+                false -> list_nth(nodes, n - 1 - idx)
+            }
         }
     }
 }
+
 
 fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
     case term.root < 0 of {
@@ -89,7 +98,7 @@ fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: stri
 }
 
 fn is_list_prim(name: string) -> boolean {
-    name == "list_nil" or name == "list_cons" or name == "list_length" or name == "list_head" or name == "list_remove_head"
+    name == "list_nil" or name == "list_cons" or name == "list_length" or name == "list_head" or name == "list_remove_head" or name == "list_at"
 }
 
 fn term_has_list_prim(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
@@ -131,6 +140,61 @@ fn term_has_list_prim(term: { nodes: List[{ kind: int64, type_name: string, valu
         }
     }
 }
+
+// L_list_at_helper is emitted only for modules that actually use list_at, so adding the
+// builtin leaves every other list-using module byte-identical. Cloned verbatim from
+// term_has_list_prim / list_prim_in_functions so the record element types match exactly.
+fn term_has_list_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
+    case term.root < 0 of {
+        true -> false;
+        false -> case sir_term_root_node(term).kind of {
+            6 -> case sir_term_root_node(term).name == "list_at" of {
+                true -> true;
+                false -> case term_has_list_at(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                    true -> true;
+                    false -> term_has_list_at(sir_term_at(term, sir_term_root_node(term).right_expr))
+                }
+            };
+            2 -> case term_has_list_at(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_list_at(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            3 -> case term_has_list_at(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_list_at(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            4 -> case term_has_list_at(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_list_at(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            5 -> case term_has_list_at(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_list_at(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            7 -> case term_has_list_at(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_list_at(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            8 -> case term_has_list_at(sir_term_at(term, sir_term_root_node(term).inner)) of {
+                true -> true;
+                false -> term_has_list_at(sir_term_at(term, sir_term_root_node(term).right_expr))
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+
+fn list_at_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> boolean {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_list_at(fns.head.body) of {
+            true -> true;
+            false -> list_at_in_functions(fns.tail)
+        }
+    }
+}
+
 
 fn list_prim_in_functions(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> boolean {
     case fns.is_nil of {
@@ -197,6 +261,10 @@ fn module_uses_list_prims(sir_module: { module_name: string, used_modules: List[
         true -> true;
         false -> list_cons_pattern_in_functions(sir_module.functions)
     }
+}
+
+fn module_uses_list_at(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> boolean {
+    list_at_in_functions(sir_module.functions)
 }
 
 // Comma at depth 0; depth increases for [, (, {; decreases for ], ), }.
@@ -372,6 +440,44 @@ fn emit_list_head(term: { nodes: List[{ kind: int64, type_name: string, value: s
     }
 }
 
+// X9 = list handle, X10 = index.  L_list_at_helper walks chunks in registers and returns the
+// element address in X0 -- no handle is allocated per step, unlike a .tail walk. Out of range
+// aborts, like a buf bounds failure. The element is then produced exactly as list_head does.
+fn emit_list_at(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
+    em: string <- list_elem_type_from_list_t(sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name);
+    et: string <- case length_bytes(em) == 0 of { true -> "int64"; false -> em };
+    es: int64 <- chunk_elem_slot_bytes(et);
+    cd: int64 <- chunk_data_bytes(et);
+    setup: string <- concat("    MOV X0, X9\n    MOV X1, X10\n    MOV X2, #", concat(atom_table@int64_to_decimal_string(es), concat("\n    MOV X3, #", concat(atom_table@int64_to_decimal_string(cd), "\n"))));
+    bl: string <- "    BL L_list_at_helper\n    MOV X10, X0\n";
+    case reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(term).type_name) of {
+        true -> concat(concat(setup, bl), concat(term_aggregate_helpers@aggregate_return_heap_promote_x0(es), concat(concat("    MOV ", dest), ", X0\n")));
+        false -> {
+            ed: string <- case reg_conventions@is_narrow_type(sir_term_root_node(term).type_name) of {
+                true -> case length_bytes(dest) > 0 of {
+                    true -> case substring(dest, 0, 1) == "X" of {
+                        true -> concat("W", substring(dest, 1, length_bytes(dest)));
+                        false -> dest
+                    };
+                    false -> dest
+                };
+                false -> dest
+            };
+            ld: string <- case reg_conventions@is_narrow_type(sir_term_root_node(term).type_name) of {
+                true -> case sir_term_root_node(term).type_name of {
+                    "int8" -> concat(concat("    LDRSB ", ed), ", [X10]\n");
+                    "uint8" -> concat(concat("    LDRB ", ed), ", [X10]\n");
+                    "int16" -> concat(concat("    LDRSH ", ed), ", [X10]\n");
+                    "uint16" -> concat(concat("    LDRH ", ed), ", [X10]\n");
+                    _: string -> concat(concat("    LDR ", ed), ", [X10]\n")
+                };
+                false -> concat(concat("    LDR ", dest), ", [X10]\n")
+            };
+            concat(concat(setup, bl), ld)
+        }
+    }
+}
+
 // X9 = list handle.  Produce tail handle via helper.
 fn emit_list_remove_head(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
     em: string <- list_elem_type_from_list_t(sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name);
@@ -411,6 +517,7 @@ fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: str
         "list_nil" -> emit_list_nil(dest);
         "list_cons" -> emit_list_cons(term, dest);
         "list_length" -> emit_list_length(term, dest);
+        "list_at" -> emit_list_at(term, dest);
         "list_head" -> emit_list_head(term, dest);
         "list_remove_head" -> emit_list_remove_head(term, dest);
         _: string -> concat(concat("    ; unsupported list prim: ", sir_term_root_node(term).name), "\n")
@@ -568,6 +675,21 @@ fn emit_list_tail_helper() -> string {
     ))
 }
 
+// Module-level helper: L_list_at_helper
+// X0 = handle, X1 = index, X2 = elem_slot_bytes, X3 = chunk_data_bytes -> X0 = element address.
+// Same chunk arithmetic as L_list_tail_helper (cursor advances by the slot size; a chunk's
+// successor pointer sits at chunk + chunk_data_bytes), but held in registers: a walk of k
+// steps allocates nothing. Out of range (or nil) aborts.
+fn emit_list_at_helper() -> string {
+    concat(
+    "L_list_at_helper:\n    CBZ X0, L_lat_oob\n    LDR X4, [X0]\n    CMP X1, X4\n    B.HS L_lat_oob\n",
+    concat(
+    "    LDR X5, [X0, #8]\n    LDR X6, [X0, #16]\nL_lat_loop:\n    CBZ X1, L_lat_done\n    ADD X6, X6, X2\n    CMP X6, X3\n    B.LT L_lat_step\n",
+    concat(
+    "    LDR X5, [X5, X3]\n    MOV X6, #0\nL_lat_step:\n    SUB X1, X1, #1\n    B L_lat_loop\n",
+    "L_lat_done:\n    ADD X0, X5, X6\n    RET\nL_lat_oob:\n    BL _abort\n"
+    )))
+}
 fn emit_list_helpers() -> string {
     concat(emit_list_prepend_helper(), concat("\n", concat(emit_list_tail_helper(), concat("\n", emit_list_length_helper()))))
 }

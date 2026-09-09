@@ -1427,7 +1427,7 @@ This is the **first** self-host source change after the parallel tree exists. Ke
 
 **§11 exit gate:** `src_selfhost/` has zero `type` aliases and zero `bst` uses; emitter pools there are WBT-backed; Phase 0 inventory recorded; remaining class-A items (including the named-struct dialect rewrite) are fixed or explicitly listed as §12 inputs. Frozen `src/` and `silica-bootstrap-compiler` remain untouched; default build still bootstrap → `src/`.
 
-**§11 status:** In progress (2026-07-17) — parallel tree **re-frozen** from `src/` (includes block-comment lexer in the seed host); Step 2 (BST → WBT) restored after re-copy; Steps 3–4 open.
+**§11 status:** Complete (2026-09-08 audit) — `src_selfhost/` has zero `type` aliases, zero named `struct` declarations and zero `bst` uses; the seed (`binaries/seed-compiler`) compiles and links the full 331-unit `src_selfhost/silica.config.compiler`. Residual: `string_literal_pool.silica` still deduplicates by linear scan (bootstrap-plan Step 3.3); the Step 0.2 W-id comments survive in `src_selfhost/` as history.
 
 **§11 delivered (so far):**
 
@@ -1435,10 +1435,7 @@ This is the **first** self-host source change after the parallel tree exists. Ke
 2. `data_structures/compiler_maps.silica` + crafted emitter-pool migration (`atom_table`, `int64_literal_pool`, `float32_literal_pool`, `float64_literal_pool`, `int_rodata`) onto WBT `OrderedMap` via `compiler_maps`; `data_structures/bst.silica` removed from the parallel tree only.
 3. Grep gate: zero `use bst` / `bst@` / `BstNode` under `src_selfhost/`.
 
-**§11 open:**
-
-- Step 3: remove `type` aliases (crafted).
-- Step 4 / §12 inputs: named-struct dialect rewrite and remaining class-A W-ids (still deferred; no batch rewrite).
+**§11 open:** none. (Step 3 alias removal and Step 4 / §12 dialect rewrite both landed; see §12 status.)
 
 ## 12. Build flip and ABI hardening (parallel path only)
 
@@ -1446,7 +1443,7 @@ This is the **first** self-host source change after the parallel tree exists. Ke
 
 **Dependencies:** §11 exit gate (self-hostable **parallel** tree: no aliases, no `bst`) plus the dialect rewrite below.
 
-**Host rule:** `assembly-selfhost` / `build-selfhost` compile `src_selfhost/` with **`../src/silica-compiler`** (seed built from frozen `src/`, optionally refreshed from a DeviceIO staging overlay for file intrinsics). The host keeps **E1047 on**. Success means the parallel **source** is seed-legal — not that the host was weakened to accept boot-era named structs.
+**Host rule (as implemented):** `make -C src_selfhost build` (aliases `build-selfhost` / `assembly-selfhost`) compiles `src_selfhost/` with **`binaries/seed-compiler`** — a *published* seed generation built from frozen `src/`, never a path into `src/` and never `binaries/silica-compiler` (which tracks the newest build and may be a selfhost that cannot yet build itself; `check-seed` enforces this). The host keeps **E1047 on**. `src/Makefile` still passes `HOST_COMPILER=…`, which `src_selfhost/Makefile` ignores. The DeviceIO staging overlay (`src_staging_deviceio/`) no longer exists; DeviceIO is resolved at link by `silica_rt_shim.s` / `deviceio_link_thunks.s`.
 
 **Scope:**
 
@@ -1473,7 +1470,7 @@ This is the **first** self-host source change after the parallel tree exists. Ke
 
 **§12 exit gate:** `make build-selfhost` / `assembly-selfhost` produces a self-host binary from `src_selfhost/` without `silica-boot` on that path’s compile critical path (runtime `.a` may remain temporarily); full `src_selfhost/silica.config.compiler` batch compiles under the seed with **E1047 on** and **zero** named struct / `type` alias declarations in the parallel tree. Default `make` / integrate still uses bootstrap → frozen `src/`.
 
-**§12 status:** Reset (2026-07-17) — prior batch dialect waves discarded with the `src_selfhost/` re-copy. Dual-build / DeviceIO infrastructure may still exist on disk; dialect rewrite of the parallel tree has **not** been re-started. Do not treat “staging seed with E1047 disabled” as progress toward the exit gate.
+**§12 status:** Exit gate met (2026-09-02, commit `ccdb0610` "selfhost compiler passes all CI trials"; audited 2026-09-08). Waves A–C are complete; the 331-unit batch compiles under the seed with E1047 on and zero named structs / aliases; the link is Rust-free (no `libsilica_compiler.a`). The resulting selfhost binary (`binaries/silica-compiler`) is what every `trials/*/` suite now runs on. What §12 did **not** deliver, and §13 now owns: the selfhost compiling *itself* (last unit `emitter_core.silica`, memory wall being broken by the `list_nth` builtin), generation 2, differential, and fixpoint.
 
 **Dialect rewrite progress:**
 
@@ -1481,16 +1478,11 @@ This is the **first** self-host source change after the parallel tree exists. Ke
 | ---- | ------ | ----- |
 | Plan / host rules | Done | §11 hard constraints + crafted-edit discipline; `src_selfhost/README.md` |
 | Emitter WBT (§11 Step 2) | Done | Zero `use bst` under `src_selfhost/`; pools via `compiler_maps` / WBT |
-| Wave A/B | Not started | Parallel tree still has boot-era named `struct` / `type` (faithful re-copy). Crafted only. |
-| Wave C `Expr` / `SIRTerm` | Not started | Still boot-era named recursive structs. |
-| Wave D residuals | Not started | Blocked on A–C. |
+| Wave A/B | Done | `rg '^\s*struct\s+\w+' src_selfhost` → 0; `rg '^\s*type\s+\w+\s*=' src_selfhost` → 0 |
+| Wave C `Expr` / `SIRTerm` | Done | Index arenas `{ nodes: List[<inline node>, mem(normal)], root: int64 }` in `parser/parser_ast.silica` and `sir_generator/sir_ast.silica`; `root = -1` replaces the cyclic dummy |
+| Wave D residuals | Done for batch-green | ~23 historical `bootstrap` workaround comments remain in `src_selfhost/` (W02, W04, W15 among them); reclassify as historical or delete |
 
-**§12 open (blocks exit gate):**
-
-1. Finish §11 Steps 3–4 (alias ban; class-A list) under crafted-edit rules.
-2. **Waves A–C:** remove named `struct` declarations; migrate ListX → `List`, records → inline, `Expr`/`SIRTerm` → arena — **crafted, no batch rewriters**.
-3. **Wave D:** remaining class-A compile failures under the strict seed.
-4. `make -C src_selfhost build-selfhost` with `HOST_COMPILER=../src/silica-compiler` (E1047 on) until green.
+**§12 open:** none for the exit gate. Housekeeping carried into §13: delete the orphan `src_selfhost/btree_set_nodeid.silica` (excluded from the build by `topo_silica_config.sh`), reclassify the residual workaround comments, and either wire or delete `HOST_COMPILER` in `src/Makefile`.
 
 ## 13. Remaining keyed lookups + cutover / fixed-point / bootstrap retirement
 
@@ -1506,7 +1498,7 @@ This is the **first** self-host source change after the parallel tree exists. Ke
 
 **§13 exit gate:** Phase 6.1 fixed-point integrate passes on the parallel tree; `make integrate` includes the self-host trial; after cutover, production compiler source has zero `type` aliases, no `bst` dependency, and builds/maintains itself without `silica-bootstrap-compiler` on the default path. Blocks §14 onward until this gate passes.
 
-**§13 status:** Planned — blocked on §12.
+**§13 status:** In progress (2026-09-08). Self-host integrate is de facto in place (all trials run on the selfhost binary), but: Phase 4 keyed-lookup migration is not started (symbol, effect, module and FFI environments are still `List[<inline record>, mem(normal)]`); there is no `trials/self_host_addition/`; the selfhost has not been shown to compile 100 % of `src_selfhost/` (`emitter_core.silica` outstanding; `list_nth` landed in both trees to break its memory wall, confirming build pending); no generation-2 build, differential or fixpoint exists; cutover and bootstrap removal not done. The step order is the seven-step ladder recorded in the bootstrap-retirement plan's status snapshot (liveness → memory → probe harness → per-unit sweep → gen 2 [pause] → differential → fixpoint). Also on this path: `src_selfhost/fix_seed_emission.py` must be retired before any fixpoint claim, and defect A5 in `../HIGH_PRIORITY_compiler_defects_and_diagnostic_gaps_2026-09-08.md` (provided trait methods across the exit-75 restart) affects the compiler's own build.
 
 ## 14. WBT join/split/concat reopen (from §8A.9)
 
@@ -1553,10 +1545,65 @@ Required trials:
 - bulk-build sequence equivalence to the abstract list.
 
 Do not add lazy thunks. Both the forest spine and consumer-facing use are strict.
+
+**§15 status (2026-09-08):** Implemented ahead of §13 at Lee's direction (the §8A exit-gate note that
+§15 waits for §13 was set aside for this section only; §13 remains open). Landed in
+`stdlib/data_structures/` as twelve units following the thin-dispatcher split
+(`tutorials_and_howtos/thin_dispatchers_for_compile_ram.md`):
+
+| Unit | Role | `use`s |
+|---|---|---|
+| `skew_ral_weights` | weight arithmetic, checked link weight, skew-form test | — |
+| `skew_ral_node` | cell encoding `(item, left, right)`, allocation in the canonical arena, arena membership | — |
+| `skew_ral_tree_read` | in-tree lookup, forward/reverse folds, range folds | weights, node |
+| `skew_ral_tree_write` | path-copying update | weights, node |
+| `skew_ral_forest` | digit spine: empty, prepend (one link), head, tail | weights, node |
+| `skew_ral_index` | forest lookup and persistent update | tree_read, tree_write |
+| `skew_ral_traverse` | forest folds and `O(log n + k)` range folds | tree_read |
+| `skew_ral_build` | `from_list` (both orientations) and `filled` by O(1) prepends | forest |
+| `skew_ral_validate` | full validation, preflight, error atoms and their codes | weights, node |
+| `skew_ral_dispatch_access` | thin dispatcher: prepend/head/tail/lookup/update on the record | forest, index |
+| `skew_ral_dispatch_bulk` | thin dispatcher: bulk build, folds, ranges, validate | build, traverse, validate |
+| `skew_ral` | facade: constructor, orientation adapter (`get`/`set`/`append`), public core surface | the two dispatchers only |
+
+Representation (inline at every boundary): `{ count, reversed: boolean, compare_item, forest:
+List[(weight, tree)], region, specialization_key }`; cells are `(ItemType, ref?, ref?)` and only
+digits carry weights (design §3). Arena key 81 via `canonical_arena_lookup` until the consumer
+families register specializations.
+
+Two deviations forced by the bootstrap compiler, both recorded in the facade header:
+
+1. The record carries `compare_item` although the core never calls it: the checker resolves a
+   bare `ItemType` formal at a qualified call only from a comparator witness on the first argument
+   (`type_checker_collections@assoc_type_from_record_witness`). `Tree` supplies its own
+   `compare_item` (tree_trait.md §2); dense graphs pass a cell comparator.
+2. Orientation is `reversed: boolean`, not `:front | :reverse`: atom constants are numbered per
+   compilation unit (`emitter/.../atoms/const_atoms.silica`), so a non-seeded atom built in one
+   unit and cased in another does not match. For the same reason every validation and preflight
+   error atom is created and decoded inside `skew_ral_validate` only.
+
+Acceptance trials in `trials/ordered_data_structures/skew_ral_core/` (all exit 0; helper
+`lib/ral_trial_i64`): `ral_encoding_roundtrip`, `ral_prepend_head_tail` (lengths 0–20),
+`ral_lookup_boundaries` (lengths 1–17, every index), `ral_update_persistence`,
+`ral_append_convention`, `ral_bulk_build`, `ral_fold_range` (every window of a 20-item sequence,
+both orientations), `ral_validate_invariants` (nine malformed fixtures), `ral_weight_overflow`,
+`ral_generic_payloads` (string and tuple items), `ral_persistence_fanout`.
+
+Known gap: folding with a tuple-typed callback parameter is not exercised. The bootstrap emitter
+miscompiles any function whose tuple parameter follows a scalar one (`step(5, (3, 10))` returns 13);
+a repro is staged outside the tree and the fold-over-tuple checks return to `ral_generic_payloads`
+once the emitter is fixed. Nothing in `src/` or `src_selfhost/` was changed for §15.
+
+**Gate:** `make integrate` in `skew_ral_core/` and `make gate-stdlib` at the trial root — see the
+line below.
+**Gate result (2026-09-08):** `skew_ral_core/` `make integrate` → `.integrate_counts` `12 0`, 12 of 12 `.ascomp` matched; root `make gate-stdlib` → 16 matched, 0 differed (the four WBT goldens unchanged). The full trial-root `make integrate` fan-out was not rerun; other leaves do not link the new units.
+
 ## 16. Brodal–Okasaki bootstrapped queue core
 
 **Dependencies:** canonical arenas, exact ordering identity, recursive tuples, immutable Silica `List`, checked arithmetic.
 **Downstream consumers:** `Heap` and `PriorityQueue`.
+
+**§16 status:** Implementation on disk, unrecorded and uncommitted (2026-09-08 audit): 11 `stdlib/data_structures/brodal_okasaki*.silica` units and 14 trials under `trials/ordered_data_structures/brodal_okasaki_core/` exist as untracked files and were being edited during the audit; that leaf has no `.integrate_counts`, so no gate run is recorded, and the ledger row still says "planned". Whoever owns this work should add a dated status block here in the §15 style (units, dispatcher split, trials, gate result) before it is committed.
 
 Implement in this order:
 
@@ -2110,11 +2157,11 @@ Sections §6–§37 are the authoritative serial queue. Complete each section in
 3. WBT core (§8 / §8A) — finish §8A.11; §§8A.1–8A.10 accepted.
 4. `wbt_map` and `OrderedMap` (§9). **(complete)**
 5. `wbt_set` and `OrderedSet` (§10). **(complete)**
-6. Self-host source prerequisites on `src_selfhost/` only: crafted BST → WBT, then alias ban (§11). **(Steps 1–2 done 2026-07-17; Steps 3–4 open; no batch rewrites)**
-7. Additive build-selfhost / ABI hardening on the parallel tree (§12); default still bootstrap → `src/`.
-8. Remaining keyed lookups + fixed-point + cutover / bootstrap retirement (§13).
+6. Self-host source prerequisites on `src_selfhost/` only: crafted BST → WBT, then alias ban (§11). **(complete)**
+7. Additive build-selfhost / ABI hardening on the parallel tree (§12). **(exit gate met 2026-09-02; the selfhost binary runs all trials; bootstrap now builds only the seed)**
+8. Remaining keyed lookups + fixed-point + cutover / bootstrap retirement (§13). **(in progress — selfhost self-compile of `emitter_core.silica`, then gen 2 → differential → fixpoint; Phase 4 lookups not started)**
 9. Join/split reopen checkpoint (§14).
-10. Skew binary random-access-list core (§15).
+10. Skew binary random-access-list core (§15). **(implemented 2026-09-08 ahead of §13 at Lee's direction; see §15 status)**
 11. Brodal–Okasaki core (§16).
 12. Persistent binary-tree core (§17).
 13. Generic live WBT graph core (§18).

@@ -1,0 +1,60 @@
+// Layer 2 §16 (common_contract.md §4): comparator atoms other than :less, :equal, :greater are
+// reported as :invalid_comparator_result at the comparison that produced them and never taken as
+// an ordering branch, in both orientations; valid atoms pass through unchanged.
+
+use bo_trial_atom_cmp;
+
+fn cmp_i64_atom(a: int64, b: int64) -> atom {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn cmp_bad_pair(a: int64, b: int64) -> atom {
+    case a == 7 and b == 9 of {
+        true -> :ok;
+        false -> cmp_i64_atom(a, b)
+    }
+}
+
+fn cmp_always_bad(_: int64, _: int64) -> atom {
+    :not_found
+}
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+
+fn is_invalid(status: int64) -> boolean {
+    status == -1
+}
+
+fn is_above(status: int64) -> boolean {
+    status == 1
+}
+
+fn is_below(status: int64) -> boolean {
+    status == 0
+}
+
+fn main() -> int64 {
+    sequence
+        good_less: boolean <- is_above(bo_trial_atom_cmp@le_status(cmp_i64_atom, false, 1, 2));
+        good_greater: boolean <- is_below(bo_trial_atom_cmp@le_status(cmp_i64_atom, false, 3, 2));
+        good_equal: boolean <- is_above(bo_trial_atom_cmp@le_status(cmp_i64_atom, false, 2, 2));
+        max_flip: boolean <- is_below(bo_trial_atom_cmp@le_status(cmp_i64_atom, true, 1, 2)) and is_above(bo_trial_atom_cmp@le_status(cmp_i64_atom, true, 3, 2));
+        bad_pair: boolean <- is_invalid(bo_trial_atom_cmp@le_status(cmp_bad_pair, false, 7, 9));
+        bad_pair_max: boolean <- is_invalid(bo_trial_atom_cmp@le_status(cmp_bad_pair, true, 7, 9));
+        bad_pair_other: boolean <- is_above(bo_trial_atom_cmp@le_status(cmp_bad_pair, false, 7, 8));
+        always_bad: boolean <- is_invalid(bo_trial_atom_cmp@le_status(cmp_always_bad, false, 1, 2)) and is_invalid(bo_trial_atom_cmp@compare_valid(cmp_always_bad, 5, 5))
+    produces
+        pure pick(good_less, 1, pick(good_greater, 2, pick(good_equal, 3, pick(max_flip, 4, pick(bad_pair, 5, pick(bad_pair_max, 6, pick(bad_pair_other, 7, pick(always_bad, 8, 0))))))))
+    end
+}

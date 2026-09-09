@@ -206,6 +206,8 @@ Create `src/emitter/linux_x86_64/` by copying the Apple tree's structure and fun
 
 ### Phase 5 — Fixpoint and publication
 
+> **Note (2026-09-08):** no fixpoint has been demonstrated on macOS either. On macOS the seed-built selfhost runs all trials, but the selfhost compiling all of `src_selfhost/`, a generation-2 build, a differential and a fixpoint are still open (see the status snapshot in `Phase1_TODOs/bootstrap_retirement_and_self_host_plan.md`). Step 5.1 here is therefore the first fixpoint run for *any* target unless macOS gets there first, and the macOS procedure should be reused verbatim when it exists.
+
 **Step 5.1 — Generation 2.** Rebuild `src_selfhost` with the Phase 4 selfhost as the seed. The `.sams` set must be byte-identical to generation 1's. A difference means host-dependent output (uninitialized memory, address-dependent ordering); fix it before continuing.
 
 **Step 5.2 — Resource fit.** Record peak RSS on the largest unit. If above 2 GB, file it as a compiler memory issue, separate from the port.

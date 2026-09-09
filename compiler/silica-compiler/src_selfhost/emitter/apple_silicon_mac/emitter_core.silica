@@ -73,10 +73,11 @@ export emit_actor_runtime_module_with_atom_table/1;
 
 // Local SIRTerm arena helpers (sir_ast node accessors are not exported).
 fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
-    case nodes.is_nil of {
-        true -> 0;
-        false -> 1 + sir_term_nodes_len(nodes.tail)
-    }
+    sequence proc[mem(normal)]
+        result: int64 <- length[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)](nodes)
+    produces
+        pure result
+    end
 }
 
 fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
@@ -89,15 +90,20 @@ fn sir_term_node_at_from_head(nodes: List[{ kind: int64, type_name: string, valu
     }
 }
 
+
 fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], idx: int64) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
     case idx < 0 of {
         true -> { kind: -1, type_name: "", value: "", name: "", inner: -1, right_expr: -1 };
         false -> {
             n: int64 <- sir_term_nodes_len(nodes);
-            sir_term_node_at_from_head(nodes, n - 1 - idx)
+            case idx >= n of {
+                true -> { kind: -1, type_name: "", value: "", name: "", inner: -1, right_expr: -1 };
+                false -> list_nth(nodes, n - 1 - idx)
+            }
         }
     }
 }
+
 
 fn sir_term_root_node(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } {
     case term.root < 0 of {
@@ -333,6 +339,12 @@ fn emit_module_with_atom_and_debug(sir_module: { module_name: string, used_modul
             true -> concat("\n", prims_list@emit_list_helpers());
             false -> ""
         };
+        // L_list_at_helper is appended only for modules that use list_at, so every other
+        // list-using module stays byte-identical to its pre-list_at golden.
+        list_at_helper_asm: string <- case prims_list@module_uses_list_at(sir_module) of {
+            true -> concat("\n", prims_list@emit_list_at_helper());
+            false -> ""
+        };
         needs_actor_runtime: boolean <- module_needs_actor_runtime(sir_module);
         actor_rt_helper_asm: string <- "";
         needs_alloc_region_stub: boolean <- prims_memory@module_uses_alloc_region(sir_module);
@@ -375,7 +387,8 @@ fn emit_module_with_atom_and_debug(sir_module: { module_name: string, used_modul
         fwh_11pred: string <- concat(fwh_11cmp, string_pred_helpers);
         fwh_11a: string <- concat(fwh_11pred, ffi_helpers);
         fwh_11b: string <- concat(fwh_11a, list_helpers_asm);
-        fwh_11c: string <- concat(fwh_11b, actor_rt_helper_asm);
+        fwh_11b2: string <- concat(fwh_11b, list_at_helper_asm);
+        fwh_11c: string <- concat(fwh_11b2, actor_rt_helper_asm);
         fwh_11d: string <- concat(fwh_11c, region_alloc_stub_asm);
         funcs_with_helper: string <- concat(fwh_11d, region_helpers);
         atom_rodata_str: string <- atom_rodata@emit_atom_rodata_section(table);
@@ -2199,6 +2212,82 @@ fn module_emits_region_runtime(sir_module: { module_name: string, used_modules: 
     module_needs_actor_runtime(sir_module) or prims_memory@module_uses_alloc_region(sir_module) or prims_memory@module_uses_region_allocation(sir_module) or module_needs_region_alloc_for_aggregate_copy(sir_module)
 }
 
+fn esf_tuple_ret_promote(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, kind5_tail_returns_directly: boolean) -> string {
+    case kind5_tail_returns_directly of {
+            true -> "";
+            false -> case reg_conventions@is_tuple_type(fn_val.return_type) of {
+                true -> case use_actor_reply_sret_buffer(fn_val) of {
+                    true -> "";
+                    false -> case tuple_callee_skips_tuple_ret_dealloc(fn_val.body) of {
+                        true -> "";
+                        false -> {
+                            tc: int64 <- prims_tuple@count_type_elements(fn_val.return_type);
+                            ts: int64 <- prims_tuple@flat_alloc_size(tc);
+                            term_aggregate_helpers@aggregate_return_heap_promote_x0(ts)
+                        }
+                    }
+                };
+                false -> case reg_conventions@is_inline_struct_type(fn_val.return_type) of {
+                    true -> case use_actor_reply_sret_buffer(fn_val) of {
+                        true -> "";
+                        false -> case record_callee_skips_ret_promote_dealloc(fn_val.body) of {
+                            true -> "";
+                            false -> {
+                                rs: int64 <- term_record_layout@record_make_stack_alloc_size(fn_val.return_type);
+                                term_aggregate_helpers@aggregate_return_heap_promote_x0(rs)
+                            }
+                        }
+                    };
+                    false -> ""
+                }
+            }
+        }
+}
+
+fn esf_tuple_ret_dealloc(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, kind5_tail_returns_directly: boolean) -> string {
+    case kind5_tail_returns_directly of {
+            true -> "";
+            false -> case reg_conventions@is_tuple_type(fn_val.return_type) of {
+                true -> case use_actor_reply_sret_buffer(fn_val) of {
+                    true -> "";
+                    false -> case tuple_callee_skips_tuple_ret_dealloc(fn_val.body) of {
+                        true -> "";
+                        false -> {
+                            tc: int64 <- prims_tuple@count_type_elements(fn_val.return_type);
+                            // The return type describes only the outer shell, but a direct `(…)` body also
+                            // pushes slabs for any nested aggregate literals it builds. Pop what the body
+                            // actually allocated; other bodies keep the type-based size they already used.
+                            ts: int64 <- case sir_term_root_node(fn_val.body).kind == 6 and sir_term_root_node(fn_val.body).name == "tuple_make" of {
+                                true -> term_aggregate_helpers@flat_tuple_dealloc_size(fn_val.body);
+                                false -> prims_tuple@flat_alloc_size(tc)
+                            };
+                            concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(ts), "\n"))
+                        }
+                    }
+                };
+                false -> case reg_conventions@is_inline_struct_type(fn_val.return_type) of {
+                    true -> case use_actor_reply_sret_buffer(fn_val) of {
+                        true -> "";
+                        false -> case record_callee_skips_ret_promote_dealloc(fn_val.body) of {
+                            true -> "";
+                            false -> {
+                                // Pop what a direct `{...}` body actually pushed, not just the shell the return
+                                // type describes; see flat_record_dealloc_size. Other bodies keep the
+                                // type-based size they already used, exactly as the tuple path above does.
+                                rs: int64 <- case sir_term_root_node(fn_val.body).kind == 6 and sir_term_root_node(fn_val.body).name == "record_make" of {
+                                    true -> term_aggregate_helpers@flat_record_dealloc_size(fn_val.body);
+                                    false -> term_record_layout@record_make_stack_alloc_size(fn_val.return_type)
+                                };
+                                concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(rs), "\n"))
+                            }
+                        }
+                    };
+                    false -> ""
+                }
+            }
+        }
+}
+
 fn emit_sir_function(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, all_functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], ctx: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }, debug: boolean, module_name: string, foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] }, arena_ok: boolean, region_ok: boolean) -> string {
     entry_label: string <- module_linkage@asm_symbol_for_definition(ctx.module_name, fn_val.name);
         eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
@@ -2406,76 +2495,8 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
                 }
             }
         };
-        tuple_ret_promote: string <- case kind5_tail_returns_directly of {
-            true -> "";
-            false -> case reg_conventions@is_tuple_type(fn_val.return_type) of {
-                true -> case use_actor_reply_sret_buffer(fn_val) of {
-                    true -> "";
-                    false -> case tuple_callee_skips_tuple_ret_dealloc(fn_val.body) of {
-                        true -> "";
-                        false -> {
-                            tc: int64 <- prims_tuple@count_type_elements(fn_val.return_type);
-                            ts: int64 <- prims_tuple@flat_alloc_size(tc);
-                            term_aggregate_helpers@aggregate_return_heap_promote_x0(ts)
-                        }
-                    }
-                };
-                false -> case reg_conventions@is_inline_struct_type(fn_val.return_type) of {
-                    true -> case use_actor_reply_sret_buffer(fn_val) of {
-                        true -> "";
-                        false -> case record_callee_skips_ret_promote_dealloc(fn_val.body) of {
-                            true -> "";
-                            false -> {
-                                rs: int64 <- term_record_layout@record_make_stack_alloc_size(fn_val.return_type);
-                                term_aggregate_helpers@aggregate_return_heap_promote_x0(rs)
-                            }
-                        }
-                    };
-                    false -> ""
-                }
-            }
-        };
-        tuple_ret_dealloc: string <- case kind5_tail_returns_directly of {
-            true -> "";
-            false -> case reg_conventions@is_tuple_type(fn_val.return_type) of {
-                true -> case use_actor_reply_sret_buffer(fn_val) of {
-                    true -> "";
-                    false -> case tuple_callee_skips_tuple_ret_dealloc(fn_val.body) of {
-                        true -> "";
-                        false -> {
-                            tc: int64 <- prims_tuple@count_type_elements(fn_val.return_type);
-                            // The return type describes only the outer shell, but a direct `(…)` body also
-                            // pushes slabs for any nested aggregate literals it builds. Pop what the body
-                            // actually allocated; other bodies keep the type-based size they already used.
-                            ts: int64 <- case sir_term_root_node(fn_val.body).kind == 6 and sir_term_root_node(fn_val.body).name == "tuple_make" of {
-                                true -> term_aggregate_helpers@flat_tuple_dealloc_size(fn_val.body);
-                                false -> prims_tuple@flat_alloc_size(tc)
-                            };
-                            concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(ts), "\n"))
-                        }
-                    }
-                };
-                false -> case reg_conventions@is_inline_struct_type(fn_val.return_type) of {
-                    true -> case use_actor_reply_sret_buffer(fn_val) of {
-                        true -> "";
-                        false -> case record_callee_skips_ret_promote_dealloc(fn_val.body) of {
-                            true -> "";
-                            false -> {
-                                // Pop what a direct `{...}` body actually pushed, not just the shell the return
-                                // type describes; see flat_record_dealloc_size. Other bodies keep the
-                                // type-based size they already used, exactly as the tuple path above does.
-                                rs: int64 <- case sir_term_root_node(fn_val.body).kind == 6 and sir_term_root_node(fn_val.body).name == "record_make" of {
-                                    true -> term_aggregate_helpers@flat_record_dealloc_size(fn_val.body);
-                                    false -> term_record_layout@record_make_stack_alloc_size(fn_val.return_type)
-                                };
-                                concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(rs), "\n"))
-                            }
-                        }
-                    };
-                    false -> ""
-                }
-            }
-        };
+        tuple_ret_promote: string <- esf_tuple_ret_promote(fn_val, kind5_tail_returns_directly);
+        tuple_ret_dealloc: string <- esf_tuple_ret_dealloc(fn_val, kind5_tail_returns_directly);
 
         // Owned region handle: park it at the deepest frame slot on entry, while the
         // argument register still holds it, and destroy from there in the epilogue.

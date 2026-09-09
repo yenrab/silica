@@ -9,6 +9,12 @@ Use the entries below for **quick navigation**. Each item links to a file in thi
 
 ---
 
+## [HIGH_PRIORITY_compiler_defects_and_diagnostic_gaps_2026-09-08.md](./HIGH_PRIORITY_compiler_defects_and_diagnostic_gaps_2026-09-08.md)
+
+**Open, high-priority defect list** found while generating the `train_*` trial pairs: silent miscompilations (second float parameter lost, returned closure loses its capture, record actor state faults, tuple-after-scalar parameter clobber, provided trait methods unresolved after the exit-75 restart) and the mistakes the compiler currently accepts without a diagnostic. Each item has a minimal reproduction and none is pinned by an installed trial.
+
+---
+
 ## [silica-specification.md](./silica-specification.md)
 
 **Authoritative Silica language specification** (large document): syntax, types, effects, regions, actors, diagnostics, compiler interface, and normative semantics for the language as currently defined.

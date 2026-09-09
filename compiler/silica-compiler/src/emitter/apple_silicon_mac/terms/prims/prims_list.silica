@@ -48,7 +48,7 @@ export chunk_elem_slot_bytes/1;
 export chunk_data_bytes/1;
 
 fn is_list_prim(name: string) -> bool {
-    name == "list_nil" or name == "list_cons" or name == "list_length" or name == "list_head" or name == "list_remove_head"
+    name == "list_nil" or name == "list_cons" or name == "list_length" or name == "list_head" or name == "list_remove_head" or name == "list_nth"
 }
 
 fn term_has_list_prim(term: SIRTerm) -> bool {
@@ -315,6 +315,82 @@ fn emit_list_head(term: SIRTerm, dest: string) -> string {
     }
 }
 
+// X9 = list handle, X10 = index.  L_list_at_helper returns element address in X0 via a register
+// chunk-walk (no per-step handle allocation). Element produced like list_head. Out of range aborts.
+// Heap-promote an aggregate element returned by list_at: L_list_at_helper leaves an interior
+// pointer into the list's chunk in X0. Returning that pointer by value (aggregate return) would
+// alias the list storage and escape the frame, so copy nbytes to a fresh region block (X0 = copy).
+// Same rule the call-return path follows; local copy avoids a cycle with term_emitter.
+fn list_at_copy_words(word_idx: int64, words: int64) -> string {
+    case word_idx >= words of {
+        true -> "";
+        false -> do
+            off: int64 <- word_idx * 8;
+            pair: string <- concat(concat(concat(concat("    LDR X3, [X1, #", atom_table@int64_to_decimal_string(off)), "]\n    STR X3, [X4, #"), atom_table@int64_to_decimal_string(off)), "]\n");
+            concat(pair, list_at_copy_words(word_idx + 1, words))
+        end
+    }
+}
+
+fn list_at_heap_promote(nbytes: int64) -> string {
+    case nbytes <= 0 of {
+        true -> "";
+        false -> do
+            words: int64 <- nbytes / 8;
+            case words <= 0 of {
+                true -> "";
+                false -> do
+                    copy_asm: string <- list_at_copy_words(0, words);
+                    concat(concat(concat(concat("    SUB SP, SP, #16\n    STR X0, [SP, #8]\n    MOV X0, #", atom_table@int64_to_decimal_string(nbytes)), "\n    BL _silica_rt_region_alloc\n    MOV X4, X0\n    LDR X1, [SP, #8]\n"), copy_asm), "    MOV X0, X4\n    ADD SP, SP, #16\n")
+                end
+            }
+        end
+    }
+}
+
+fn emit_list_at(term: SIRTerm, dest: string) -> string {
+    em: string <- list_elem_type_from_list_t(term.inner.type_name);
+    et: string <- case len(em) == 0 of { true -> "int64"; false -> em };
+    es: int64 <- chunk_elem_slot_bytes(et);
+    cd: int64 <- chunk_data_bytes(et);
+    setup: string <- concat("    MOV X0, X9\n    MOV X1, X10\n    MOV X2, #", concat(atom_table@int64_to_decimal_string(es), concat("\n    MOV X3, #", concat(atom_table@int64_to_decimal_string(cd), "\n"))));
+    bl: string <- "    BL L_list_at_helper\n    MOV X10, X0\n";
+    case reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name) of {
+        true -> concat(concat(setup, bl), concat(list_at_heap_promote(es), concat(concat("    MOV ", dest), ", X0\n")));
+        false -> do
+            ed: string <- case reg_conventions@is_narrow_type(term.type_name) of {
+                true -> case len(dest) > 0 of {
+                    true -> case substring(dest, 0, 1) == "X" of { true -> concat("W", substring(dest, 1, len(dest))); false -> dest };
+                    false -> dest
+                };
+                false -> dest
+            };
+            ld: string <- case reg_conventions@is_narrow_type(term.type_name) of {
+                true -> case term.type_name of {
+                    "int8" -> concat(concat("    LDRSB ", ed), ", [X10]\n");
+                    "uint8" -> concat(concat("    LDRB ", ed), ", [X10]\n");
+                    "int16" -> concat(concat("    LDRSH ", ed), ", [X10]\n");
+                    "uint16" -> concat(concat("    LDRH ", ed), ", [X10]\n");
+                    _: string -> concat(concat("    LDR ", ed), ", [X10]\n")
+                };
+                false -> concat(concat("    LDR ", dest), ", [X10]\n")
+            };
+            concat(concat(setup, bl), ld)
+        end
+    }
+}
+
+fn emit_list_at_helper() -> string {
+    concat(
+    "L_list_at_helper:\n    CBZ X0, L_lat_oob\n    LDR X4, [X0]\n    CMP X1, X4\n    B.HS L_lat_oob\n",
+    concat(
+    "    LDR X5, [X0, #8]\n    LDR X6, [X0, #16]\nL_lat_loop:\n    CBZ X1, L_lat_done\n    ADD X6, X6, X2\n    CMP X6, X3\n    B.LT L_lat_step\n",
+    concat(
+    "    LDR X5, [X5, X3]\n    MOV X6, #0\nL_lat_step:\n    SUB X1, X1, #1\n    B L_lat_loop\n",
+    "L_lat_done:\n    ADD X0, X5, X6\n    RET\nL_lat_oob:\n    BL _abort\n"
+    )))
+}
+
 // X9 = list handle.  Produce tail handle via helper.
 fn emit_list_remove_head(term: SIRTerm, dest: string) -> string {
     em: string <- list_elem_type_from_list_t(term.inner.type_name);
@@ -356,6 +432,7 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "list_length" -> emit_list_length(term, dest);
         "list_head" -> emit_list_head(term, dest);
         "list_remove_head" -> emit_list_remove_head(term, dest);
+        "list_nth" -> emit_list_at(term, dest);
         _: string -> concat(concat("    ; unsupported list prim: ", term.name), "\n")
     }
 }
@@ -512,7 +589,7 @@ fn emit_list_tail_helper() -> string {
 }
 
 fn emit_list_helpers() -> string {
-    concat(emit_list_prepend_helper(), concat("\n", concat(emit_list_tail_helper(), concat("\n", emit_list_length_helper()))))
+    concat(emit_list_prepend_helper(), concat("\n", concat(emit_list_tail_helper(), concat("\n", concat(emit_list_length_helper(), concat("\n", emit_list_at_helper()))))))
 }
 
 // Lightweight _silica_rt_region_alloc that just forwards to _malloc.

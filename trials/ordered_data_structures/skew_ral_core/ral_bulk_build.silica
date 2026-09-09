@@ -1,0 +1,157 @@
+// Layer 2 §15 step 7 (design §9): from_list under both orientations reads back as the abstract
+// list; filled(n, v) has n copies; negative n and weight overflow fail before publication.
+
+use skew_ral;
+use ral_trial_i64;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+
+fn from_front() -> boolean {
+    sequence proc[mem(normal)]
+        items: List[int64, mem(normal)] <- [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        built: {
+            list: {
+                count: int64,
+                reversed: boolean,
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+                region: region(L, normal),
+                specialization_key: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- skew_ral@from_list({ compare_item: cmp_i64 }, false, items);
+        order_ok: boolean <- ral_trial_i64@hash_of(built.list) == ral_trial_i64@range_hash(1, 13);
+        phys_ok: boolean <- ral_trial_i64@lookup_is(built.list, 0, 1)
+            and ral_trial_i64@lookup_is(built.list, 11, 12);
+        logical_ok: boolean <- ral_trial_i64@get_is(built.list, 0, 1)
+            and ral_trial_i64@get_is(built.list, 11, 12)
+    produces
+        pure built.valid and skew_ral@size(built.list) == 12 and order_ok and phys_ok and logical_ok
+            and ral_trial_i64@valid_with_count(built.list, 12)
+    end
+}
+
+fn from_reverse() -> boolean {
+    sequence proc[mem(normal)]
+        items: List[int64, mem(normal)] <- [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        built: {
+            list: {
+                count: int64,
+                reversed: boolean,
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+                region: region(L, normal),
+                specialization_key: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- skew_ral@from_list({ compare_item: cmp_i64 }, true, items);
+        order_ok: boolean <- ral_trial_i64@hash_of(built.list) == ral_trial_i64@range_hash(1, 13);
+        phys_ok: boolean <- ral_trial_i64@lookup_is(built.list, 0, 12)
+            and ral_trial_i64@lookup_is(built.list, 11, 1);
+        logical_ok: boolean <- ral_trial_i64@get_is(built.list, 0, 1)
+            and ral_trial_i64@get_is(built.list, 11, 12)
+    produces
+        pure built.valid and skew_ral@size(built.list) == 12 and order_ok and phys_ok and logical_ok
+            and ral_trial_i64@valid_with_count(built.list, 12)
+    end
+}
+
+fn from_none() -> boolean {
+    sequence proc[mem(normal)]
+        items: List[int64, mem(normal)] <- empty[int64, mem(normal)]();
+        built: {
+            list: {
+                count: int64,
+                reversed: boolean,
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+                region: region(L, normal),
+                specialization_key: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- skew_ral@from_list({ compare_item: cmp_i64 }, false, items)
+    produces
+        pure built.valid and skew_ral@size(built.list) == 0 and ral_trial_i64@valid_with_count(built.list, 0)
+    end
+}
+
+fn filled_ok() -> boolean {
+    sequence
+        built: {
+            list: {
+                count: int64,
+                reversed: boolean,
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+                region: region(L, normal),
+                specialization_key: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- skew_ral@filled({ compare_item: cmp_i64 }, false, 5, 9);
+        sum_ok: boolean <- ral_trial_i64@sum_of(built.list) == 45;
+        at_ok: boolean <- ral_trial_i64@lookup_is(built.list, 4, 9)
+    produces
+        pure built.valid and skew_ral@size(built.list) == 5 and sum_ok and at_ok
+            and ral_trial_i64@valid_with_count(built.list, 5)
+    end
+}
+
+fn filled_rejects(n: int64, code: int64) -> boolean {
+    sequence
+        built: {
+            list: {
+                count: int64,
+                reversed: boolean,
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+                region: region(L, normal),
+                specialization_key: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- skew_ral@filled({ compare_item: cmp_i64 }, false, n, 9);
+        invalid: boolean <- case built.valid of {
+            true -> false;
+            false -> true
+        }
+    produces
+        pure invalid and skew_ral@validate_error_code(built.error) == code and skew_ral@size(built.list) == 0
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        front_ok: boolean <- from_front();
+        reverse_ok: boolean <- from_reverse();
+        none_ok: boolean <- from_none();
+        fill_ok: boolean <- filled_ok();
+        neg_ok: boolean <- filled_rejects(-1, 1);
+        overflow_ok: boolean <- filled_rejects(4611686018427387904, 8);
+        zero_ok: boolean <- case filled_rejects(0, 0) of {
+            true -> false;
+            false -> true
+        }
+    produces
+        pure pick(front_ok, 1, pick(reverse_ok, 2, pick(none_ok, 3, pick(fill_ok, 4,
+            pick(neg_ok, 5, pick(overflow_ok, 6, pick(zero_ok, 7, 0)))))))
+    end
+}

@@ -124,19 +124,21 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 | Sec | Summary | Kind | Artifact |
 |---|---|---|---|
 | 1 | Abstract immutable sequence | I | Design §1 |
-| 2 | Skew weights and digit invariant | I | Design §2 |
-| 3 | Tree + forest spine encoding | T | `skew_ral_core/` → `ral_encoding_roundtrip` (planned) |
-| 4 | Prepend | T | `skew_ral_core/` → `ral_prepend_head_tail` (planned) |
-| 5 | Head and tail | T | `skew_ral_core/` → `ral_prepend_head_tail` (planned) |
-| 6 | Logarithmic lookup | T | `skew_ral_core/` → `ral_lookup_boundaries` (planned) |
-| 7 | Persistent update at index | T | `skew_ral_core/` → `ral_update_persistence` (planned) |
-| 8 | Append convention for tree/dense consumers | T | `skew_ral_core/` → `ral_append_convention` (planned) |
-| 9 | Bulk construction | T | `skew_ral_core/` → `ral_bulk_build` (planned) |
-| 10 | Fold and range traversal | T | `skew_ral_core/` → `ral_fold_range` (planned) |
-| 11 | Forest invariants | T | `skew_ral_core/` → `ral_validate_invariants` (planned) |
-| 12 | Validation | T | `skew_ral_core/` → `ral_validate_invariants` (planned) |
-| 13 | Complexity | I | Design §13 bounds |
+| 2 | Skew weights and digit invariant | I | Design §2; `skew_ral_core/` → `ral_weight_overflow` (skew-form and link-weight table) (**§15 pass**) |
+| 3 | Tree + forest spine encoding | T | `stdlib/data_structures/skew_ral_node.silica`, `skew_ral_forest.silica`; `skew_ral_core/` → `ral_encoding_roundtrip` (**§15 pass**) |
+| 4 | Prepend | T | `skew_ral_core/` → `ral_prepend_head_tail`, `ral_persistence_fanout` (**§15 pass**) |
+| 5 | Head and tail | T | `skew_ral_core/` → `ral_prepend_head_tail` (lengths 0–20, empty head/tail `:not_found`) (**§15 pass**) |
+| 6 | Logarithmic lookup | T | `skew_ral_core/` → `ral_lookup_boundaries` (first/middle/last/negative/past-end, lengths 1–17) (**§15 pass**) |
+| 7 | Persistent update at index | T | `skew_ral_core/` → `ral_update_persistence`, `ral_persistence_fanout` (**§15 pass**) |
+| 8 | Append convention for tree/dense consumers | T | `skew_ral_core/` → `ral_append_convention` (`reversed = true`: append, `get`/`set`, `logical_to_physical`; `reversed = false` declines) (**§15 pass**) |
+| 9 | Bulk construction | T | `skew_ral_core/` → `ral_bulk_build` (`from_list` both orientations, `filled`, negative count, weight-overflow preflight) (**§15 pass**) |
+| 10 | Fold and range traversal | T | `skew_ral_core/` → `ral_fold_range` (`fold_logical`/`fold_physical`, every `(start, count)` window of 20 items in both orientations, invalid ranges) (**§15 pass**) |
+| 11 | Forest invariants | T | `skew_ral_core/` → `ral_validate_invariants` (size, rank/order/duplicate digit, missing tree, shape, arena, repeated child) (**§15 pass**) |
+| 12 | Validation | T | `stdlib/data_structures/skew_ral_validate.silica`; `ral_validate_invariants`, `valid_with_count` in every positive trial (**§15 pass**) |
+| 13 | Complexity | I | Design §13 bounds; `ral_fold_range` counts visits per window |
 | 14 | Exclusions (no finger-tree RAL variant) | O | Design §14 explicit exclusions |
+
+Genericity: `ral_generic_payloads` (string and tuple items through build/head/lookup/update/get/set/fold-of-strings). Fold with a tuple-typed callback parameter is a known bootstrap-emitter defect (plan §15 status); its repro is staged, not wired.
 
 ---
 

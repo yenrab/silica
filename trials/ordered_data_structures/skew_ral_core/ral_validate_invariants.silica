@@ -1,0 +1,267 @@
+// Layer 2 §15 step 10 (design §11–§12): malformed fixtures built directly against the
+// representation hit each validation error in preorder; well-formed forests validate with the
+// logical count. Error codes: 1 negative_count, 2 size_mismatch, 3 rank_violation,
+// 4 missing_tree, 5 shape_violation, 6 wrong_arena, 7 repeated_child.
+
+use skew_ral;
+use ral_trial_i64;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+
+fn arena() -> region(L, normal) {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        key: int64 <- skew_ral@arena_key();
+        r: region(L, normal) <- canonical_arena_lookup(key)
+    produces
+        pure r
+    end
+}
+
+// Allocators return (region, ref) pairs: a bare reference return would outlive its region (E2100).
+fn cell(
+    r: region(L, normal),
+    v: int64,
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> (region(L, normal), ref?(L, normal, rec)) {
+    sequence proc[mem(normal)]
+        c: ref(L, normal, (int64, ref?(L, normal, rec), ref?(L, normal, rec))) <- alloc_rec(r, (v, left, right))
+    produces
+        pure (r, c)
+    end
+}
+
+fn leaf(r: region(L, normal), v: int64) -> (region(L, normal), ref?(L, normal, rec)) {
+    cell(r, v, :none, :none)
+}
+
+fn no_digits() -> List[(int64, ref?(L, normal, rec)), mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[(int64, ref?(L, normal, rec)), mem(normal)] <- empty[(int64, ref?(L, normal, rec)), mem(normal)]()
+    produces
+        pure out
+    end
+}
+
+fn digit(
+    w: int64,
+    t: ref?(L, normal, rec),
+    rest: List[(int64, ref?(L, normal, rec)), mem(normal)]
+) -> List[(int64, ref?(L, normal, rec)), mem(normal)] {
+    sequence proc[mem(normal)]
+        d: (int64, ref?(L, normal, rec)) <- (w, t);
+        out: List[(int64, ref?(L, normal, rec)), mem(normal)] <- prepend[(int64, ref?(L, normal, rec)), mem(normal)](d, rest)
+    produces
+        pure out
+    end
+}
+
+fn code_of(
+    r: region(L, normal),
+    count: int64,
+    forest: List[(int64, ref?(L, normal, rec)), mem(normal)]
+) -> int64 {
+    sequence
+        ral: {
+            count: int64,
+            reversed: boolean,
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+            region: region(L, normal),
+            specialization_key: int64
+        } <- {
+            count: count,
+            reversed: false,
+            compare_item: cmp_i64,
+            forest: forest,
+            region: r,
+            specialization_key: 0
+        }
+    produces
+        pure ral_trial_i64@error_code_of(ral)
+    end
+}
+
+fn valid_cases(r: region(L, normal)) -> boolean {
+    sequence
+        l1_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 1);
+        (_: region(L, normal), l1: ref?(L, normal, rec)) <- l1_p;
+        l2_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 2);
+        (_: region(L, normal), l2: ref?(L, normal, rec)) <- l2_p;
+        l11_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 11);
+        (_: region(L, normal), l11: ref?(L, normal, rec)) <- l11_p;
+        l12_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 12);
+        (_: region(L, normal), l12: ref?(L, normal, rec)) <- l12_p;
+        n3_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 10, l11, l12);
+        (_: region(L, normal), n3: ref?(L, normal, rec)) <- n3_p;
+        l21_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 21);
+        (_: region(L, normal), l21: ref?(L, normal, rec)) <- l21_p;
+        l22_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 22);
+        (_: region(L, normal), l22: ref?(L, normal, rec)) <- l22_p;
+        n3b_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 20, l21, l22);
+        (_: region(L, normal), n3b: ref?(L, normal, rec)) <- n3b_p;
+        ok0: boolean <- code_of(r, 0, no_digits()) == 0;
+        ok1: boolean <- code_of(r, 1, digit(1, l1, no_digits())) == 0;
+        ok2: boolean <- code_of(r, 2, digit(1, l1, digit(1, l2, no_digits()))) == 0;
+        ok4: boolean <- code_of(r, 4, digit(1, l1, digit(3, n3, no_digits()))) == 0;
+        ok6: boolean <- code_of(r, 6, digit(3, n3, digit(3, n3b, no_digits()))) == 0
+    produces
+        pure ok0 and ok1 and ok2 and ok4 and ok6
+    end
+}
+
+fn valid_ten(r: region(L, normal)) -> boolean {
+    sequence
+        l11_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 11);
+        (_: region(L, normal), l11: ref?(L, normal, rec)) <- l11_p;
+        l12_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 12);
+        (_: region(L, normal), l12: ref?(L, normal, rec)) <- l12_p;
+        n3_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 10, l11, l12);
+        (_: region(L, normal), n3: ref?(L, normal, rec)) <- n3_p;
+        l32_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 32);
+        (_: region(L, normal), l32: ref?(L, normal, rec)) <- l32_p;
+        l33_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 33);
+        (_: region(L, normal), l33: ref?(L, normal, rec)) <- l33_p;
+        n31_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 31, l32, l33);
+        (_: region(L, normal), n31: ref?(L, normal, rec)) <- n31_p;
+        l35_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 35);
+        (_: region(L, normal), l35: ref?(L, normal, rec)) <- l35_p;
+        l36_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 36);
+        (_: region(L, normal), l36: ref?(L, normal, rec)) <- l36_p;
+        n34_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 34, l35, l36);
+        (_: region(L, normal), n34: ref?(L, normal, rec)) <- n34_p;
+        n7_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 30, n31, n34);
+        (_: region(L, normal), n7: ref?(L, normal, rec)) <- n7_p;
+        ok10: boolean <- code_of(r, 10, digit(3, n3, digit(7, n7, no_digits()))) == 0
+    produces
+        pure ok10
+    end
+}
+
+fn count_cases(r: region(L, normal)) -> boolean {
+    sequence
+        l1_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 1);
+        (_: region(L, normal), l1: ref?(L, normal, rec)) <- l1_p;
+        negative: boolean <- code_of(r, -1, no_digits()) == 1;
+        size_short: boolean <- code_of(r, 2, digit(1, l1, no_digits())) == 2;
+        size_long: boolean <- code_of(r, 0, digit(1, l1, no_digits())) == 2
+    produces
+        pure negative and size_short and size_long
+    end
+}
+
+fn digit_cases(r: region(L, normal)) -> boolean {
+    sequence
+        l1_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 1);
+        (_: region(L, normal), l1: ref?(L, normal, rec)) <- l1_p;
+        l2_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 2);
+        (_: region(L, normal), l2: ref?(L, normal, rec)) <- l2_p;
+        l3_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 3);
+        (_: region(L, normal), l3: ref?(L, normal, rec)) <- l3_p;
+        l11_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 11);
+        (_: region(L, normal), l11: ref?(L, normal, rec)) <- l11_p;
+        l12_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 12);
+        (_: region(L, normal), l12: ref?(L, normal, rec)) <- l12_p;
+        n3_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 10, l11, l12);
+        (_: region(L, normal), n3: ref?(L, normal, rec)) <- n3_p;
+        l21_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 21);
+        (_: region(L, normal), l21: ref?(L, normal, rec)) <- l21_p;
+        l22_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 22);
+        (_: region(L, normal), l22: ref?(L, normal, rec)) <- l22_p;
+        n3b_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 20, l21, l22);
+        (_: region(L, normal), n3b: ref?(L, normal, rec)) <- n3b_p;
+        bad_weight: boolean <- code_of(r, 2, digit(2, l1, no_digits())) == 3;
+        zero_weight: boolean <- code_of(r, 0, digit(0, l1, no_digits())) == 3;
+        dup_late: boolean <- code_of(r, 7, digit(1, l1, digit(3, n3, digit(3, n3b, no_digits())))) == 3;
+        decreasing: boolean <- code_of(r, 4, digit(3, n3, digit(1, l1, no_digits()))) == 3;
+        triple: boolean <- code_of(r, 3, digit(1, l1, digit(1, l2, digit(1, l3, no_digits())))) == 3;
+        missing: boolean <- code_of(r, 1, digit(1, :none, no_digits())) == 4
+    produces
+        pure bad_weight and zero_weight and dup_late and decreasing and triple and missing
+    end
+}
+
+fn shape_cases(r: region(L, normal)) -> boolean {
+    sequence
+        l1_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 1);
+        (_: region(L, normal), l1: ref?(L, normal, rec)) <- l1_p;
+        l11_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 11);
+        (_: region(L, normal), l11: ref?(L, normal, rec)) <- l11_p;
+        l12_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 12);
+        (_: region(L, normal), l12: ref?(L, normal, rec)) <- l12_p;
+        n3_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 10, l11, l12);
+        (_: region(L, normal), n3: ref?(L, normal, rec)) <- n3_p;
+        half_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 60, l1, :none);
+        (_: region(L, normal), half: ref?(L, normal, rec)) <- half_p;
+        leaf_as_node: boolean <- code_of(r, 3, digit(3, l1, no_digits())) == 5;
+        node_as_leaf: boolean <- code_of(r, 1, digit(1, n3, no_digits())) == 5;
+        half_node: boolean <- code_of(r, 3, digit(3, half, no_digits())) == 5
+    produces
+        pure leaf_as_node and node_as_leaf and half_node
+    end
+}
+
+fn arena_case(r: region(L, normal), alien: region(L, normal)) -> boolean {
+    sequence
+        alien_leaf_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(alien, 9);
+        (_: region(L, normal), alien_leaf: ref?(L, normal, rec)) <- alien_leaf_p;
+        wrong_arena: boolean <- code_of(r, 1, digit(1, alien_leaf, no_digits())) == 6
+    produces
+        pure wrong_arena
+    end
+}
+
+fn repeat_cases(r: region(L, normal)) -> boolean {
+    sequence
+        l1_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 1);
+        (_: region(L, normal), l1: ref?(L, normal, rec)) <- l1_p;
+        l11_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 11);
+        (_: region(L, normal), l11: ref?(L, normal, rec)) <- l11_p;
+        l12_p: (region(L, normal), ref?(L, normal, rec)) <- leaf(r, 12);
+        (_: region(L, normal), l12: ref?(L, normal, rec)) <- l12_p;
+        n3_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 10, l11, l12);
+        (_: region(L, normal), n3: ref?(L, normal, rec)) <- n3_p;
+        shared_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 40, l1, l1);
+        (_: region(L, normal), shared: ref?(L, normal, rec)) <- shared_p;
+        deep_shared_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 50, n3, n3);
+        (_: region(L, normal), deep_shared: ref?(L, normal, rec)) <- deep_shared_p;
+        repeated: boolean <- code_of(r, 3, digit(3, shared, no_digits())) == 7;
+        repeated_deep: boolean <- code_of(r, 7, digit(7, deep_shared, no_digits())) == 7;
+        preorder_first: boolean <- code_of(r, 5, digit(2, l1, digit(3, shared, no_digits()))) == 3
+    produces
+        pure repeated and repeated_deep and preorder_first
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        alien: region(L, normal) <- alloc_region(normal);
+        r: region(L, normal) <- arena();
+        c1: boolean <- valid_cases(r);
+        c2: boolean <- valid_ten(r);
+        c3: boolean <- count_cases(r);
+        c4: boolean <- digit_cases(r);
+        c5: boolean <- shape_cases(r);
+        c6: boolean <- arena_case(r, alien);
+        c7: boolean <- repeat_cases(r)
+    produces
+        pure pick(c1, 1, pick(c2, 2, pick(c3, 3, pick(c4, 4, pick(c5, 5, pick(c6, 6, pick(c7, 7, 0)))))))
+    end
+}

@@ -1,0 +1,375 @@
+// Trial-only int64 helpers for skew_ral_core: sequence builders, order hashes, result checks.
+// Fold callbacks must be local to the module that passes them, so every fold-based check lives here.
+
+use skew_ral;
+
+export new_front/0;
+export new_reverse/0;
+export seq_front/1;
+export seq_reverse/1;
+export hash_of/1;
+export sum_of/1;
+export range_hash/2;
+export found_is/2;
+export lookup_is/3;
+export lookup_missing/2;
+export get_is/3;
+export get_missing/2;
+export head_is/2;
+export head_missing/1;
+export is_not_found/1;
+export indexes_match/2;
+export gets_match/2;
+export valid_with_count/2;
+export error_code_of/1;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn new_front() -> {
+    count: int64,
+    reversed: boolean,
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    skew_ral@empty({ compare_item: cmp_i64 }, false)
+}
+
+fn new_reverse() -> {
+    count: int64,
+    reversed: boolean,
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    skew_ral@empty({ compare_item: cmp_i64 }, true)
+}
+
+fn hash_step(acc: int64, x: int64) -> int64 {
+    acc * 31 + x + 7
+}
+
+fn sum_step(acc: int64, x: int64) -> int64 {
+    acc + x
+}
+
+fn seq_front_go(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    i: int64
+) -> {
+    count: int64,
+    reversed: boolean,
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    case i < 0 of {
+        true -> ral;
+        false -> seq_front_go(skew_ral@prepend(ral, i), i - 1)
+    }
+}
+
+// Orientation :front, physical index i holds i for i in [0, n): prepend n - 1 down to 0.
+fn seq_front(n: int64) -> {
+    count: int64,
+    reversed: boolean,
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    seq_front_go(new_front(), n - 1)
+}
+
+fn seq_reverse_go(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    i: int64,
+    n: int64
+) -> {
+    count: int64,
+    reversed: boolean,
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    case i >= n of {
+        true -> ral;
+        false -> {
+            app: {
+                list: {
+                    count: int64,
+                    reversed: boolean,
+                    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                    forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+                    region: region(L, normal),
+                    specialization_key: int64
+                },
+                appended: boolean
+            } <- skew_ral@append(ral, i);
+            seq_reverse_go(app.list, i + 1, n)
+        }
+    }
+}
+
+// Orientation :reverse, logical index i holds i for i in [0, n): append 0 up to n - 1.
+fn seq_reverse(n: int64) -> {
+    count: int64,
+    reversed: boolean,
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    seq_reverse_go(new_reverse(), 0, n)
+}
+
+fn hash_of(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    }
+) -> int64 {
+    skew_ral@fold_logical(ral, 0, hash_step)
+}
+
+fn sum_of(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    }
+) -> int64 {
+    skew_ral@fold_logical(ral, 0, sum_step)
+}
+
+fn range_hash_go(acc: int64, i: int64, hi: int64) -> int64 {
+    case i >= hi of {
+        true -> acc;
+        false -> range_hash_go(hash_step(acc, i), i + 1, hi)
+    }
+}
+
+// hash of lo, lo + 1, ..., hi - 1 in that order with the same step as hash_of.
+fn range_hash(lo: int64, hi: int64) -> int64 {
+    range_hash_go(0, lo, hi)
+}
+
+fn found_is(res: { status: :not_found | :found, value: int64 }, expected: int64) -> boolean {
+    case res.status of {
+        :found -> res.value == expected;
+        :not_found -> false
+    }
+}
+
+fn is_not_found(res: { status: :not_found | :found, value: int64 }) -> boolean {
+    case res.status of {
+        :not_found -> true;
+        :found -> false
+    }
+}
+
+
+// Nested qualified generic calls cannot resolve ItemType inside another qualified call's argument
+// list, so trials compare through these local wrappers.
+fn lookup_is(ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    }, i: int64, expected: int64) -> boolean {
+    found_is(skew_ral@lookup(ral, i, 0), expected)
+}
+
+fn lookup_missing(ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    }, i: int64) -> boolean {
+    is_not_found(skew_ral@lookup(ral, i, 0))
+}
+
+fn get_is(ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    }, i: int64, expected: int64) -> boolean {
+    found_is(skew_ral@get(ral, i, 0), expected)
+}
+
+fn get_missing(ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    }, i: int64) -> boolean {
+    is_not_found(skew_ral@get(ral, i, 0))
+}
+
+fn head_is(ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    }, expected: int64) -> boolean {
+    found_is(skew_ral@head(ral, 0), expected)
+}
+
+fn head_missing(ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    }) -> boolean {
+    is_not_found(skew_ral@head(ral, 0))
+}
+
+fn indexes_match_go(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    i: int64,
+    n: int64
+) -> boolean {
+    case i >= n of {
+        true -> true;
+        false -> case found_is(skew_ral@lookup(ral, i, 0), i) of {
+            false -> false;
+            true -> indexes_match_go(ral, i + 1, n)
+        }
+    }
+}
+
+// lookup(i) == i for every physical i in [0, n).
+fn indexes_match(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    n: int64
+) -> boolean {
+    indexes_match_go(ral, 0, n)
+}
+
+fn gets_match_go(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    i: int64,
+    n: int64
+) -> boolean {
+    case i >= n of {
+        true -> true;
+        false -> case found_is(skew_ral@get(ral, i, 0), i) of {
+            false -> false;
+            true -> gets_match_go(ral, i + 1, n)
+        }
+    }
+}
+
+// get(i) == i for every logical i in [0, n).
+fn gets_match(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    n: int64
+) -> boolean {
+    gets_match_go(ral, 0, n)
+}
+
+fn valid_with_count(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    n: int64
+) -> boolean {
+    v: { valid: boolean, error: atom, logical_count: int64 } <- skew_ral@validate(ral);
+    case v.valid of {
+        false -> false;
+        true -> v.logical_count == n
+    }
+}
+
+fn error_code_of(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    }
+) -> int64 {
+    v: { valid: boolean, error: atom, logical_count: int64 } <- skew_ral@validate(ral);
+    skew_ral@validate_error_code(v.error)
+}

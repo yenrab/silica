@@ -17,6 +17,7 @@
 
 // List/struct/field-access SIR lowering (open recursion callbacks).
 
+use collection_constructor_calls;
 use list_terms;
 use sir_ast;
 use struct_terms;
@@ -182,9 +183,29 @@ fn lower_field_access_expr(context: { env: List[{ name: string, type_name: strin
 }
 
 fn build_list_primitive_from_expr(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, expected_type: string, in_body: boolean, bound_name: string, bound_type: string, lower_expected: fn({ env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, lower_in_body: fn({ env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, string, string, string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    (elem: string, space: string) <- type_checker_lists@parse_generic_ts(type_checker_expressions_helpers@expr_value(expr));
-    list_t: string <- type_checker_lists@format_list_type_from_parts(elem, space);
-    case type_checker_expressions_helpers@expr_name(expr) == "empty" of {
+    (elem0: string, space: string) <- type_checker_lists@parse_generic_ts(type_checker_expressions_helpers@expr_value(expr));
+    list_t0: string <- type_checker_lists@format_list_type_from_parts(elem0, space);
+    list_t: string <- case type_checker_expressions_helpers@expr_name(expr) == "list_nth" of {
+        true -> collection_constructor_calls@env_lookup_type_name(context.env, type_checker_expressions_helpers@expr_name(type_checker_expressions_helpers@expr_child_inner(expr)));
+        false -> list_t0
+    };
+    elem: string <- case type_checker_expressions_helpers@expr_name(expr) == "list_nth" of {
+        true -> type_checker_lists@list_element_type_from_list_type(list_t);
+        false -> elem0
+    };
+    case type_checker_expressions_helpers@expr_name(expr) == "list_at" or type_checker_expressions_helpers@expr_name(expr) == "list_nth" of {
+            true -> {
+                a: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case in_body of {
+                    true -> lower_in_body(context, type_checker_expressions_helpers@expr_child_inner(expr), bound_name, bound_type, list_t);
+                    false -> lower_expected(context, type_checker_expressions_helpers@expr_child_inner(expr), list_t)
+                };
+                i: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case in_body of {
+                    true -> lower_in_body(context, terms_helpers@region_call_second_arg(expr), bound_name, bound_type, "int64");
+                    false -> lower_expected(context, terms_helpers@region_call_second_arg(expr), "int64")
+                };
+                list_terms@build_list_at_prim(a, i, elem)
+            };
+            false -> case type_checker_expressions_helpers@expr_name(expr) == "empty" of {
         true -> list_terms@build_list_nil(elem, list_t);
         false -> case type_checker_expressions_helpers@expr_name(expr) == "prepend" of {
             true -> {
@@ -228,6 +249,7 @@ fn build_list_primitive_from_expr(context: { env: List[{ name: string, type_name
             }
         }
     }
+        }
 }
 
 // Convert { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } to SIR handle with expected type (for function body). Dispatches on kind.

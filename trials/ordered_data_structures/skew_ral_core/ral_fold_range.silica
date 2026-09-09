@@ -1,0 +1,139 @@
+// Layer 2 §15 step 8 (design §10): fold_logical visits logical order under both orientations;
+// fold_range visits exactly [start, start + count) and rejects invalid ranges without visiting.
+
+use skew_ral;
+use ral_trial_i64;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+
+fn hash_step(acc: int64, x: int64) -> int64 {
+    acc * 31 + x + 7
+}
+
+fn count_step(acc: int64, _: int64) -> int64 {
+    acc + 1
+}
+
+fn range_is(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    start: int64,
+    count: int64
+) -> boolean {
+    sequence
+        valid: boolean <- skew_ral@range_valid(ral, start, count);
+        h: int64 <- skew_ral@fold_range(ral, 0, hash_step, start, count);
+        c: int64 <- skew_ral@fold_range(ral, 0, count_step, start, count)
+    produces
+        pure valid and h == ral_trial_i64@range_hash(start, start + count) and c == count
+    end
+}
+
+fn range_invalid(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    start: int64,
+    count: int64
+) -> boolean {
+    sequence
+        c: int64 <- skew_ral@fold_range(ral, 0, count_step, start, count);
+        invalid: boolean <- case skew_ral@range_valid(ral, start, count) of {
+            true -> false;
+            false -> true
+        }
+    produces
+        pure invalid and c == 0
+    end
+}
+
+fn ranges_of(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    }
+) -> boolean {
+    range_is(ral, 5, 4) and range_is(ral, 0, 0) and range_is(ral, 18, 2) and range_is(ral, 0, 20)
+        and range_is(ral, 20, 0) and range_is(ral, 7, 1) and range_is(ral, 1, 15) and range_is(ral, 14, 6)
+        and range_invalid(ral, -1, 2) and range_invalid(ral, 5, -1) and range_invalid(ral, 18, 3)
+        and range_invalid(ral, 21, 0) and range_invalid(ral, 9223372036854775807, 1)
+}
+
+// Every (start, count) window inside [0, n) visits exactly the expected slice.
+fn all_windows(
+    ral: {
+        count: int64,
+        reversed: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    start: int64,
+    count: int64,
+    n: int64
+) -> boolean {
+    case start > n of {
+        true -> true;
+        false -> case start + count > n of {
+            true -> all_windows(ral, start + 1, 0, n);
+            false -> case range_is(ral, start, count) of {
+                false -> false;
+                true -> all_windows(ral, start, count + 1, n)
+            }
+        }
+    }
+}
+
+fn main() -> int64 {
+    sequence
+        f: {
+            count: int64,
+            reversed: boolean,
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+            region: region(L, normal),
+            specialization_key: int64
+        } <- ral_trial_i64@seq_front(20);
+        r: {
+            count: int64,
+            reversed: boolean,
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+            region: region(L, normal),
+            specialization_key: int64
+        } <- ral_trial_i64@seq_reverse(20);
+        f_logical: boolean <- skew_ral@fold_logical(f, 0, hash_step) == ral_trial_i64@range_hash(0, 20);
+        r_logical: boolean <- skew_ral@fold_logical(r, 0, hash_step) == ral_trial_i64@range_hash(0, 20);
+        f_physical: boolean <- skew_ral@fold_physical(f, 0, hash_step) == ral_trial_i64@range_hash(0, 20);
+        r_physical: boolean <- skew_ral@fold_physical(r, 0, count_step) == 20;
+        f_ranges: boolean <- ranges_of(f);
+        r_ranges: boolean <- ranges_of(r);
+        f_windows: boolean <- all_windows(f, 0, 0, 20);
+        r_windows: boolean <- all_windows(r, 0, 0, 20);
+        e_range: boolean <- range_is(ral_trial_i64@new_front(), 0, 0) and range_invalid(ral_trial_i64@new_reverse(), 0, 1)
+    produces
+        pure pick(f_logical, 1, pick(r_logical, 2, pick(f_physical, 3, pick(r_physical, 4, pick(f_ranges, 5,
+            pick(r_ranges, 6, pick(f_windows, 7, pick(r_windows, 8, pick(e_range, 9, 0)))))))))
+    end
+}

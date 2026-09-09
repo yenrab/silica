@@ -1,0 +1,251 @@
+// Layer 2 §16 step 12 (design §12, §13): malformed fixtures built directly from nodes and digits
+// hit each validation error; well-formed shapes validate with their logical count.
+// Codes: 0 ok, 1 negative_count, 2 size_mismatch, 3 heap_order_violation, 4 rank_violation,
+// 5 wrong_arena, 6 cycle, 7 missing_tree.
+
+use brodal_okasaki;
+use brodal_okasaki_node;
+use bo_trial_i64;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+
+fn no_tree() -> ref?(L, normal, rec) {
+    :none
+}
+
+fn no_digits() -> List[(int64, ref?(L, normal, rec)), mem(normal)] {
+    brodal_okasaki_node@empty_forest()
+}
+
+// A heap whose root is a fresh node (item, child_count, kids) with the recorded count.
+fn heap_with(base: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, item: int64, child_count: int64, kids: List[(int64, ref?(L, normal, rec)), mem(normal)], count: int64) -> {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    sequence
+        out: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } <- {
+            root: brodal_okasaki_node@alloc_node(base, item, child_count, kids),
+            count: count,
+            max_oriented: false,
+            compare_item: cmp_i64,
+            region: base.region,
+            specialization_key: 0,
+            compare_item_ordering_bundle: base.compare_item_ordering_bundle
+        }
+    produces
+        pure out
+    end
+}
+
+// Prepends a digit (rank, leaf item) to `rest`.
+fn leaf_digit(base: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, rank: int64, item: int64, rest: List[(int64, ref?(L, normal, rec)), mem(normal)]) -> List[(int64, ref?(L, normal, rec)), mem(normal)] {
+    brodal_okasaki_node@cons_digit(rank, brodal_okasaki_node@alloc_node(base, item, 0, no_digits()), rest)
+}
+
+// Prepends a digit (rank, node item with child_count and kids) to `rest`.
+fn node_digit(base: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, rank: int64, item: int64, child_count: int64, kids: List[(int64, ref?(L, normal, rec)), mem(normal)], rest: List[(int64, ref?(L, normal, rec)), mem(normal)]) -> List[(int64, ref?(L, normal, rec)), mem(normal)] {
+    brodal_okasaki_node@cons_digit(rank, brodal_okasaki_node@alloc_node(base, item, child_count, kids), rest)
+}
+
+fn code_of(heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> int64 {
+    bo_trial_i64@error_code_of(heap)
+}
+
+fn valid_shapes(base: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> boolean {
+    sequence
+        one_leaf: int64 <- code_of(heap_with(base, 1, 0, leaf_digit(base, 0, 5, no_digits()), 2));
+        rank1: int64 <- code_of(heap_with(base, 1, 0, node_digit(base, 1, 3, 1, leaf_digit(base, 0, 4, no_digits()), no_digits()), 3));
+        zero_then_one: int64 <- code_of(heap_with(base, 1, 0, leaf_digit(base, 0, 2, node_digit(base, 1, 3, 1, leaf_digit(base, 0, 4, no_digits()), no_digits())), 4));
+        leading_dup: int64 <- code_of(heap_with(base, 1, 0, leaf_digit(base, 0, 2, leaf_digit(base, 0, 9, node_digit(base, 1, 3, 1, leaf_digit(base, 0, 4, no_digits()), no_digits()))), 5));
+        nested_deferred: int64 <- code_of(heap_with(base, 1, 0, node_digit(base, 0, 6, 0, leaf_digit(base, 0, 8, no_digits()), no_digits()), 3));
+        type_a: int64 <- code_of(heap_with(base, 0, 0, node_digit(base, 1, 1, 2, leaf_digit(base, 0, 2, leaf_digit(base, 0, 3, no_digits())), no_digits()), 4))
+    produces
+        pure one_leaf == 0 and rank1 == 0 and zero_then_one == 0 and leading_dup == 0 and nested_deferred == 0 and type_a == 0
+    end
+}
+
+fn count_cases(base: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> boolean {
+    sequence
+        too_many: int64 <- code_of(heap_with(base, 1, 0, leaf_digit(base, 0, 5, no_digits()), 3));
+        too_few: int64 <- code_of(heap_with(base, 1, 0, leaf_digit(base, 0, 5, no_digits()), 1));
+        negative: int64 <- code_of(heap_with(base, 1, 0, no_digits(), -1));
+        empty_mismatch: int64 <- brodal_okasaki@validate_error_code(:ok)
+    produces
+        pure too_many == 2 and too_few == 2 and negative == 1 and empty_mismatch == 0
+    end
+}
+
+fn order_cases(base: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> boolean {
+    sequence
+        child_smaller: int64 <- code_of(heap_with(base, 5, 0, leaf_digit(base, 0, 1, no_digits()), 2));
+        deep_smaller: int64 <- code_of(heap_with(base, 1, 0, node_digit(base, 1, 3, 1, leaf_digit(base, 0, 2, no_digits()), no_digits()), 3));
+        equal_ok: int64 <- code_of(heap_with(base, 4, 0, leaf_digit(base, 0, 4, no_digits()), 2))
+    produces
+        pure child_smaller == 3 and deep_smaller == 3 and equal_ok == 0
+    end
+}
+
+fn rank_cases(base: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> boolean {
+    sequence
+        root_children: int64 <- code_of(heap_with(base, 1, 1, leaf_digit(base, 0, 5, no_digits()), 2));
+        deferred_decreasing: int64 <- code_of(heap_with(base, 1, 0, node_digit(base, 1, 2, 1, leaf_digit(base, 0, 3, no_digits()), leaf_digit(base, 0, 4, no_digits())), 4));
+        rank1_no_children: int64 <- code_of(heap_with(base, 1, 0, leaf_digit(base, 1, 2, no_digits()), 2));
+        rank2_missing_top: int64 <- code_of(heap_with(base, 1, 0, node_digit(base, 2, 2, 1, leaf_digit(base, 0, 3, no_digits()), no_digits()), 3));
+        three_zeros: int64 <- code_of(heap_with(base, 1, 0, node_digit(base, 2, 2, 4, leaf_digit(base, 0, 3, leaf_digit(base, 0, 4, leaf_digit(base, 0, 5, node_digit(base, 1, 6, 1, leaf_digit(base, 0, 7, no_digits()), no_digits())))), no_digits()), 7));
+        child_rank_too_big: int64 <- code_of(heap_with(base, 1, 0, node_digit(base, 1, 2, 1, leaf_digit(base, 1, 3, no_digits()), no_digits()), 3));
+        late_dup: int64 <- code_of(heap_with(base, 1, 0, leaf_digit(base, 0, 2, node_digit(base, 1, 3, 1, leaf_digit(base, 0, 4, no_digits()), node_digit(base, 1, 5, 1, leaf_digit(base, 0, 6, no_digits()), no_digits()))), 6))
+    produces
+        pure root_children == 4 and deferred_decreasing == 4 and rank1_no_children == 4 and rank2_missing_top == 4
+            and three_zeros == 4 and child_rank_too_big == 4 and late_dup == 4
+    end
+}
+
+fn arena_and_missing(base: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> boolean {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        alien_region: region(L, normal) <- alloc_region(normal);
+        alien: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } <- {
+            root: :none,
+            count: 0,
+            max_oriented: false,
+            compare_item: cmp_i64,
+            region: alien_region,
+            specialization_key: 0,
+            compare_item_ordering_bundle: base.compare_item_ordering_bundle
+        };
+        wrong_arena: int64 <- code_of(heap_with(base, 1, 0, leaf_digit(alien, 0, 5, no_digits()), 2));
+        missing: int64 <- code_of(heap_with(base, 1, 0, brodal_okasaki_node@cons_digit(0, no_tree(), no_digits()), 2))
+    produces
+        pure wrong_arena == 5 and missing == 7
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        base: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } <- bo_trial_i64@new_min();
+        built_ok: boolean <- bo_trial_i64@valid_with_count(bo_trial_i64@push_lcg(base, 3, 50, 0), 50);
+        c1: boolean <- valid_shapes(base);
+        c2: boolean <- count_cases(base);
+        c3: boolean <- order_cases(base);
+        c4: boolean <- rank_cases(base);
+        c5: boolean <- arena_and_missing(base)
+    produces
+        pure pick(built_ok, 1, pick(c1, 2, pick(c2, 3, pick(c3, 4, pick(c4, 5, pick(c5, 6, 0))))))
+    end
+}
