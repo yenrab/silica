@@ -53,16 +53,22 @@ objects: assembly
 
 # Stage 3: Link .o -> executable
 executables: objects
-	@cd "$(THIS_DIR)" && for o in *.o; do \
+	@cd "$(THIS_DIR)" && helper_objs=""; for h in *.sams; do \
+		[ -f "$$h" ] || continue; hb=$${h%.sams}; \
+		[ "$$hb" = "__silica_runtime" ] && continue; \
+		grep -qE '^\.global main$$' "$$h" || helper_objs="$$helper_objs $$hb.o"; \
+	done; \
+	for o in *.o; do \
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
 	[ "$$base" = "__silica_runtime" ] && continue; \
+	grep -qE '^\.global main$$' "$$base.sams" || continue; \
 	runtime_obj=""; \
 	[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $$helper_objs $$runtime_obj $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
 		else \
-			$(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base (clang)"; \
+			$(ASSEMBLER) $$o $$helper_objs $$runtime_obj -o $$base $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base (clang)"; \
 		fi; \
 	done
 
@@ -112,22 +118,28 @@ integrate:
 		ko=$$((ko + 1)); failed=1; break; \
 	fi; \
 	done; \
+	helper_objs=""; for h in *.sams; do \
+		[ -f "$$h" ] || continue; hb=$${h%.sams}; \
+		[ "$$hb" = "__silica_runtime" ] && continue; \
+		grep -qE '^\.global main$$' "$$h" || helper_objs="$$helper_objs $$hb.o"; \
+	done; \
 	for o in *.o; do \
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
 	[ "$$base" = "__silica_runtime" ] && continue; \
+	grep -qE '^\.global main$$' "$$base.sams" || continue; \
 	runtime_obj=""; \
 	[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		echo "Linking $$base..."; \
 		runtime_obj=""; \
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
-			if ! $(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld); then \
+			if ! $(RUST_LLD) -flavor darwin -o $$base $$o $$helper_objs $$runtime_obj $(LDFLAGS_rust-lld); then \
 			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
 		else \
-			if ! $(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang); then \
+			if ! $(ASSEMBLER) $$o $$helper_objs $$runtime_obj -o $$base $(LDFLAGS_clang); then \
 			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
@@ -137,7 +149,7 @@ integrate:
 		[ -f "$$exe" ] || continue; \
 		base=$${exe%.sams}; \
 	[ "$$base" = "__silica_runtime" ] && continue; \
-	[ "$$base" = "__silica_runtime" ] && continue; \
+	grep -qE '^\.global main$$' "$$exe" || continue; \
 		if [ ! -x "$$base" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$base missing executable (assemble/link failed earlier)"; \
 			ko=$$((ko + 1)); failed=1; \

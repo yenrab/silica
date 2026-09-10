@@ -204,10 +204,17 @@ fn contains_substr_idf_i(s: string, tok: string, i: int64) -> int64 {
 }
 
 fn contains_assoc_ph_idf_i(s: string) -> int64 {
-    // Was a substring probe for each placeholder name; now a DAG walk.
-    case type_interner@surface_contains_placeholder(s) of {
-        true -> 1;
-        false -> 0
+    // Was a substring probe for each placeholder name; now a DAG walk. The DAG walk builds a
+    // fresh interner and parses the whole surface (10 KB signatures in the compiler), and it ran
+    // for every import binding at the start of type checking (~2.6 GB transient on emitter_core).
+    // Every placeholder name ends in "Type", so a surface without that substring cannot contain
+    // one; probe that first (same pre-filter the call-site path already uses).
+    case contains_substr_idf_i(s, "Type", 0) of {
+        1 -> case type_interner@surface_contains_placeholder(s) of {
+            true -> 1;
+            false -> 0
+        };
+        _: int64 -> 0
     }
 }
 

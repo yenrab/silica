@@ -796,25 +796,34 @@ fn needs_second_param_x21_bl_survival(fn_val: SIRFunction) -> bool {
 }
 
 // Reply triple: legacy parser string (atom, R, S) or source form (:reply, R, S); two top-level commas after '('.
+// Counts commas at nesting depth 0 of a tuple type body. Brackets and braces nest too:
+// `(:reply, int64, List[int64, mem(normal)])` has two top-level commas, not three. Counting
+// the comma inside `List[...]` made behavior_return_uses_actor_sret_tuple reject any behaviour
+// whose reply or state is a List/record, so the reply tuple went to the SP-slab path whose
+// case-arm cleanup is skipped for behaviours: the slab was never popped and RET jumped to
+// garbage (trials/actors_addition/actor_list_state_stack).
 fn count_top_level_commas_tuple_ty(s: string, i: int64, depth: int64, count: int64) -> int64 {
     case i >= len(s) of {
         true -> count;
-        false -> case substring(s, i, i + 1) == "(" of {
-            true -> count_top_level_commas_tuple_ty(s, i + 1, depth + 1, count);
-            false -> case substring(s, i, i + 1) == ")" of {
-                true -> case depth == 0 of {
-                    true -> count;
-                    false -> count_top_level_commas_tuple_ty(s, i + 1, depth - 1, count)
-                };
-                false -> case substring(s, i, i + 1) == "," of {
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "[" or c == "{" of {
+                true -> count_top_level_commas_tuple_ty(s, i + 1, depth + 1, count);
+                false -> case c == ")" or c == "]" or c == "}" of {
                     true -> case depth == 0 of {
-                        true -> count_top_level_commas_tuple_ty(s, i + 1, depth, count + 1);
-                        false -> count_top_level_commas_tuple_ty(s, i + 1, depth, count)
+                        true -> count;
+                        false -> count_top_level_commas_tuple_ty(s, i + 1, depth - 1, count)
                     };
-                    false -> count_top_level_commas_tuple_ty(s, i + 1, depth, count)
+                    false -> case c == "," of {
+                        true -> case depth == 0 of {
+                            true -> count_top_level_commas_tuple_ty(s, i + 1, depth, count + 1);
+                            false -> count_top_level_commas_tuple_ty(s, i + 1, depth, count)
+                        };
+                        false -> count_top_level_commas_tuple_ty(s, i + 1, depth, count)
+                    }
                 }
             }
-        }
+        end
     }
 }
 

@@ -1,0 +1,401 @@
+// Layer 2 §16 step 12 — Brodal–Okasaki queue: full structural validation (leaf module).
+// Authority: brodal_okasaki_queue.md §12, §13; common_contract.md §12 (result shape).
+// Read-only, O(n). Walks the root with a node budget of count + 1 (a cycle or a shared node
+// exhausts it), checking arena membership, heap order (parent may sit above each child and each
+// deferred root), the child region against the digit rank (rank 0: no children; rank r: at least
+// one child, first positive child rank r - 1, positives non-increasing with only the final pair
+// equal, at most two rank-0 children), the deferred forest's skew-digit order, and finally that
+// the visited node count equals the recorded count. Error atoms are created and decoded here only.
+// Every exported function whose signature mentions ItemType takes the heap record first: the
+// compiler resolves ItemType at a qualified call from the record's compare_item witness.
+
+use brodal_okasaki_node;
+use brodal_okasaki_compare;
+use brodal_okasaki_link;
+
+export validate/1;
+export validate_error_code/1;
+
+fn result_ok(count: int64) -> { valid: boolean, error: atom, logical_count: int64 } {
+    { valid: true, error: :ok, logical_count: count }
+}
+
+fn result_err(error: atom, count: int64) -> { valid: boolean, error: atom, logical_count: int64 } {
+    { valid: false, error: error, logical_count: count }
+}
+
+// Walk state: (error, nodes visited so far). error = :ok while valid.
+fn state_ok(seen: int64) -> { error: atom, seen: int64 } {
+    { error: :ok, seen: seen }
+}
+
+fn state_err(error: atom, seen: int64) -> { error: atom, seen: int64 } {
+    { error: error, seen: seen }
+}
+
+fn digit_ok(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    parent: ItemType,
+    d: (int64, ref?(L, normal, rec)),
+    seen: int64,
+    budget: int64
+) -> { error: atom, seen: int64 } {
+    (rank: int64, tree: ref?(L, normal, rec)) <- d;
+    case tree of {
+        :none -> state_err(:missing_tree, seen);
+        node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), List[(int64, ref?(L, normal, rec)), mem(normal)])) -> node_ok(heap, parent, true, rank, node_ref, seen, budget)
+    }
+}
+
+// Children region walk state: digits still to read, the node's rank, the previous positive child
+// rank, zeros seen, whether a rank node_rank - 1 child was seen, nodes visited, and the budget.
+fn advance(
+    st: { remaining: int64, node_rank: int64, prev_positive: int64, zeros: int64, top_seen: boolean, seen: int64, budget: int64 },
+    prev_positive: int64,
+    zeros: int64,
+    top_seen: boolean,
+    seen: int64
+) -> { remaining: int64, node_rank: int64, prev_positive: int64, zeros: int64, top_seen: boolean, seen: int64, budget: int64 } {
+    {
+        remaining: st.remaining - 1,
+        node_rank: st.node_rank,
+        prev_positive: prev_positive,
+        zeros: zeros,
+        top_seen: top_seen,
+        seen: seen,
+        budget: st.budget
+    }
+}
+
+// Children region: every tree of rank r >= 1 has a child of rank r - 1; positives are
+// non-increasing with only the final pair equal; at most two rank-0 children.
+fn children_ok(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    parent: ItemType,
+    kids: List[(int64, ref?(L, normal, rec)), mem(normal)],
+    st: { remaining: int64, node_rank: int64, prev_positive: int64, zeros: int64, top_seen: boolean, seen: int64, budget: int64 }
+) -> { error: atom, seen: int64, deferred: List[(int64, ref?(L, normal, rec)), mem(normal)] } {
+    case st.remaining <= 0 of {
+        true -> case st.node_rank == 0 or st.top_seen of {
+            true -> { error: :ok, seen: st.seen, deferred: kids };
+            false -> { error: :rank_violation, seen: st.seen, deferred: kids }
+        };
+        false -> case kids of {
+            []: List[(int64, ref?(L, normal, rec)), mem(normal)] -> { error: :rank_violation, seen: st.seen, deferred: kids };
+            [d: (int64, ref?(L, normal, rec)), rest: List[(int64, ref?(L, normal, rec)), mem(normal)]] -> child_ok(heap, parent, d, rest, st)
+        }
+    }
+}
+
+fn child_shape_ok(
+    st: { remaining: int64, node_rank: int64, prev_positive: int64, zeros: int64, top_seen: boolean, seen: int64, budget: int64 },
+    rank: int64,
+    rest: List[(int64, ref?(L, normal, rec)), mem(normal)]
+) -> boolean {
+    case rank >= st.node_rank of {
+        true -> false;
+        false -> case rank == 0 of {
+            true -> st.zeros < 2;
+            false -> case st.prev_positive < 0 of {
+                true -> true;
+                false -> case rank < st.prev_positive of {
+                    true -> true;
+                    false -> rank == st.prev_positive and rest_has_no_positive(rest, st.remaining - 1)
+                }
+            }
+        }
+    }
+}
+
+fn child_ok(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    parent: ItemType,
+    d: (int64, ref?(L, normal, rec)),
+    rest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+    st: { remaining: int64, node_rank: int64, prev_positive: int64, zeros: int64, top_seen: boolean, seen: int64, budget: int64 }
+) -> { error: atom, seen: int64, deferred: List[(int64, ref?(L, normal, rec)), mem(normal)] } {
+    rank: int64 <- brodal_okasaki_link@digit_rank(d);
+    case child_shape_ok(st, rank, rest) of {
+        false -> { error: :rank_violation, seen: st.seen, deferred: rest };
+        true -> child_after_shape(heap, parent, d, rest, st, rank)
+    }
+}
+
+fn rest_has_no_positive(rest: List[(int64, ref?(L, normal, rec)), mem(normal)], remaining: int64) -> boolean {
+    case remaining <= 0 of {
+        true -> true;
+        false -> case rest of {
+            []: List[(int64, ref?(L, normal, rec)), mem(normal)] -> true;
+            [d: (int64, ref?(L, normal, rec)), rest2: List[(int64, ref?(L, normal, rec)), mem(normal)]] -> case brodal_okasaki_link@digit_rank(d) == 0 of {
+                true -> rest_has_no_positive(rest2, remaining - 1);
+                false -> false
+            }
+        }
+    }
+}
+
+fn child_after_shape(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    parent: ItemType,
+    d: (int64, ref?(L, normal, rec)),
+    rest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+    st: { remaining: int64, node_rank: int64, prev_positive: int64, zeros: int64, top_seen: boolean, seen: int64, budget: int64 },
+    rank: int64
+) -> { error: atom, seen: int64, deferred: List[(int64, ref?(L, normal, rec)), mem(normal)] } {
+    sub: { error: atom, seen: int64 } <- digit_ok(heap, parent, d, st.seen, st.budget);
+    top: boolean <- st.top_seen or (rank == st.node_rank - 1);
+    case sub.error of {
+        :ok -> case rank == 0 of {
+            true -> children_ok(heap, parent, rest, advance(st, st.prev_positive, st.zeros + 1, top, sub.seen));
+            false -> children_ok(heap, parent, rest, advance(st, rank, st.zeros, top, sub.seen))
+        };
+        bad: atom -> { error: bad, seen: sub.seen, deferred: rest }
+    }
+}
+
+// Deferred forest: increasing ranks, only the first two may be equal; every root is a nested
+// queue whose minimum may sit below `parent`.
+fn deferred_ok(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    parent: ItemType,
+    forest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+    prev_rank: int64,
+    position: int64,
+    seen: int64,
+    budget: int64
+) -> { error: atom, seen: int64 } {
+    case forest of {
+        []: List[(int64, ref?(L, normal, rec)), mem(normal)] -> state_ok(seen);
+        [d: (int64, ref?(L, normal, rec)), rest: List[(int64, ref?(L, normal, rec)), mem(normal)]] -> deferred_digit_ok(heap, parent, d, rest, prev_rank, position, seen, budget)
+    }
+}
+
+fn deferred_digit_ok(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    parent: ItemType,
+    d: (int64, ref?(L, normal, rec)),
+    rest: List[(int64, ref?(L, normal, rec)), mem(normal)],
+    prev_rank: int64,
+    position: int64,
+    seen: int64,
+    budget: int64
+) -> { error: atom, seen: int64 } {
+    rank: int64 <- brodal_okasaki_link@digit_rank(d);
+    order_ok: boolean <- case rank < 0 of {
+        true -> false;
+        false -> case position == 0 of {
+            true -> true;
+            false -> case position == 1 of {
+                true -> rank >= prev_rank;
+                false -> rank > prev_rank
+            }
+        }
+    };
+    case order_ok of {
+        false -> state_err(:rank_violation, seen);
+        true -> {
+            sub: { error: atom, seen: int64 } <- digit_ok(heap, parent, d, seen, budget);
+            case sub.error of {
+                :ok -> deferred_ok(heap, parent, rest, rank, position + 1, sub.seen, budget);
+                bad: atom -> sub
+            }
+        }
+    }
+}
+
+fn node_children_then_deferred(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    parts: { present: boolean, item: ItemType, child_count: int64, kids: List[(int64, ref?(L, normal, rec)), mem(normal)] },
+    rank: int64,
+    seen: int64,
+    budget: int64
+) -> { error: atom, seen: int64 } {
+    kids: { error: atom, seen: int64, deferred: List[(int64, ref?(L, normal, rec)), mem(normal)] } <-
+        children_ok(heap, parts.item, parts.kids, { remaining: parts.child_count, node_rank: rank, prev_positive: -1, zeros: 0, top_seen: false, seen: seen, budget: budget });
+    case kids.error of {
+        :ok -> deferred_ok(heap, parts.item, kids.deferred, -1, 0, kids.seen, budget);
+        bad: atom -> state_err(bad, kids.seen)
+    }
+}
+
+fn node_shape_ok(parts: { present: boolean, item: ItemType, child_count: int64, kids: List[(int64, ref?(L, normal, rec)), mem(normal)] }, rank: int64) -> boolean {
+    case rank == 0 of {
+        true -> parts.child_count == 0;
+        false -> parts.child_count >= 1 and parts.child_count <= rank + 1
+    }
+}
+
+fn node_after_read(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    parent: ItemType,
+    has_parent: boolean,
+    rank: int64,
+    parts: { present: boolean, item: ItemType, child_count: int64, kids: List[(int64, ref?(L, normal, rec)), mem(normal)] },
+    seen: int64,
+    budget: int64
+) -> { error: atom, seen: int64 } {
+    sequence
+        order_ok: boolean <- case has_parent of {
+            false -> true;
+            true -> brodal_okasaki_compare@le(heap, parent, parts.item)
+        }
+    produces
+        pure case order_ok of {
+            false -> state_err(:heap_order_violation, seen);
+            true -> case node_shape_ok(parts, rank) of {
+                false -> state_err(:rank_violation, seen);
+                true -> node_children_then_deferred(heap, parts, rank, seen + 1, budget)
+            }
+        }
+    end
+}
+
+fn node_ok(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    parent: ItemType,
+    has_parent: boolean,
+    rank: int64,
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), List[(int64, ref?(L, normal, rec)), mem(normal)])),
+    seen: int64,
+    budget: int64
+) -> { error: atom, seen: int64 } {
+    case seen >= budget of {
+        true -> state_err(:cycle, seen);
+        false -> case brodal_okasaki_node@in_arena(heap, node_ref) of {
+            false -> state_err(:wrong_arena, seen);
+            true -> node_after_read(heap, parent, has_parent, rank, brodal_okasaki_node@read_present(heap, node_ref), seen, budget)
+        }
+    }
+}
+
+fn validate_root(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), List[(int64, ref?(L, normal, rec)), mem(normal)]))
+) -> { valid: boolean, error: atom, logical_count: int64 } {
+    parts: { present: boolean, item: ItemType, child_count: int64, kids: List[(int64, ref?(L, normal, rec)), mem(normal)] } <- brodal_okasaki_node@read_present(heap, node_ref);
+    walked: { error: atom, seen: int64 } <- node_ok(heap, parts.item, false, 0, node_ref, 0, heap.count + 1);
+    case walked.error of {
+        :ok -> case walked.seen == heap.count of {
+            true -> result_ok(walked.seen);
+            false -> result_err(:size_mismatch, walked.seen)
+        };
+        bad: atom -> result_err(bad, walked.seen)
+    }
+}
+
+fn validate(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> { valid: boolean, error: atom, logical_count: int64 } {
+    case heap.count < 0 of {
+        true -> result_err(:negative_count, 0);
+        false -> case heap.root of {
+            :none -> case heap.count == 0 of {
+                true -> result_ok(0);
+                false -> result_err(:size_mismatch, 0)
+            };
+            node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), List[(int64, ref?(L, normal, rec)), mem(normal)])) -> validate_root(heap, node_ref)
+        }
+    }
+}
+
+fn validate_error_code(error: atom) -> int64 {
+    case error of {
+        :ok -> 0;
+        :negative_count -> 1;
+        :size_mismatch -> 2;
+        :heap_order_violation -> 3;
+        :rank_violation -> 4;
+        :wrong_arena -> 5;
+        :cycle -> 6;
+        :missing_tree -> 7;
+        _: atom -> 99
+    }
+}

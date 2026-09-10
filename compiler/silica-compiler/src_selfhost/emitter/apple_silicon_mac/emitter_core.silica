@@ -98,10 +98,7 @@ fn sir_term_node_at(nodes: List[{ kind: int64, type_name: string, value: string,
             n: int64 <- sir_term_nodes_len(nodes);
             case idx >= n of {
                 true -> { kind: -1, type_name: "", value: "", name: "", inner: -1, right_expr: -1 };
-                false -> {
-                    e: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- list_nth(nodes, n - 1 - idx);
-                    { kind: e.kind, type_name: e.type_name, value: e.value, name: e.name, inner: e.inner, right_expr: e.right_expr }
-                }
+                false -> list_nth(nodes, n - 1 - idx)
             }
         }
     }
@@ -880,22 +877,29 @@ fn needs_second_param_x21_bl_survival(fn_val: { name: string, return_type: strin
 }
 
 // Reply triple: legacy parser string (atom, R, S) or source form (:reply, R, S); two top-level commas after '('.
+// Counts commas at nesting depth 0 of a tuple type body. Brackets and braces nest too:
+// `(:reply, int64, List[int64, mem(normal)])` has two top-level commas, not three. Mirrors the
+// seed fix: counting the comma inside `List[...]` made behavior_return_uses_actor_sret_tuple reject
+// any behaviour whose reply or state is a List/record.
 fn count_top_level_commas_tuple_ty(s: string, i: int64, depth: int64, count: int64) -> int64 {
     case i >= length_bytes(s) of {
         true -> count;
-        false -> case substring(s, i, i + 1) == "(" of {
-            true -> count_top_level_commas_tuple_ty(s, i + 1, depth + 1, count);
-            false -> case substring(s, i, i + 1) == ")" of {
-                true -> case depth == 0 of {
-                    true -> count;
-                    false -> count_top_level_commas_tuple_ty(s, i + 1, depth - 1, count)
-                };
-                false -> case substring(s, i, i + 1) == "," of {
+        false -> {
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "[" or c == "{" of {
+                true -> count_top_level_commas_tuple_ty(s, i + 1, depth + 1, count);
+                false -> case c == ")" or c == "]" or c == "}" of {
                     true -> case depth == 0 of {
-                        true -> count_top_level_commas_tuple_ty(s, i + 1, depth, count + 1);
-                        false -> count_top_level_commas_tuple_ty(s, i + 1, depth, count)
+                        true -> count;
+                        false -> count_top_level_commas_tuple_ty(s, i + 1, depth - 1, count)
                     };
-                    false -> count_top_level_commas_tuple_ty(s, i + 1, depth, count)
+                    false -> case c == "," of {
+                        true -> case depth == 0 of {
+                            true -> count_top_level_commas_tuple_ty(s, i + 1, depth, count + 1);
+                            false -> count_top_level_commas_tuple_ty(s, i + 1, depth, count)
+                        };
+                        false -> count_top_level_commas_tuple_ty(s, i + 1, depth, count)
+                    }
                 }
             }
         }

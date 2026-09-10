@@ -107,9 +107,34 @@ fn unwrap_atom_option_parens_regcv(type_name: string) -> string {
     }
 }
 
+// True for a top-level comma (outside (), [], {}). A type body that starts with an atom AND has a
+// top-level comma is a tuple whose first element is an atom -- an actor reply `(:reply, T, S)` --
+// not an atom option `:a | :b`. Treating replies as atom options made is_tuple_type false for
+// every behaviour return, so the non-sret behaviour epilogue neither promoted nor popped its reply
+// slab and returned a stack pointer through a popped frame (train_actors_strreply, list-state
+// behaviours).
+fn has_top_level_comma_regcv(s: string, i: int64, depth: int64) -> bool {
+    case i >= len(s) of {
+        true -> false;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "[" or c == "{" of {
+                true -> has_top_level_comma_regcv(s, i + 1, depth + 1);
+                false -> case c == ")" or c == "]" or c == "}" of {
+                    true -> has_top_level_comma_regcv(s, i + 1, depth - 1);
+                    false -> case c == "," and depth == 0 of {
+                        true -> true;
+                        false -> has_top_level_comma_regcv(s, i + 1, depth)
+                    }
+                }
+            }
+        end
+    }
+}
+
 fn is_atom_option_type_regcv(type_name: string) -> bool {
     t: string <- unwrap_atom_option_parens_regcv(type_name);
-    len(t) > 0 and substring(t, 0, 1) == ":"
+    len(t) > 0 and substring(t, 0, 1) == ":" and has_top_level_comma_regcv(t, 0, 0) == false
 }
 
 fn is_atom_option_type(type_name: string) -> bool {

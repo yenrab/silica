@@ -1,0 +1,161 @@
+// Layer 2 §16 steps 1–2 — Brodal–Okasaki queue: flattened node encoding (leaf module).
+// Authority: design_documents/Phase1_TODOs/data_structure_designs/brodal_okasaki_queue.md §3, §5.
+// A node is (minimum, child_count, anchor, children_and_deferred). The list holds digits
+// (rank, tree): the first child_count digits are this skew-binomial tree's children, the rest is
+// the deferred primitive forest of the nested bootstrapped queue whose minimum this node holds.
+// Tree ranks live on the digits, so a node needs no rank field; the top-level root is a rank-0
+// node whose children_and_deferred is entirely deferred forest.
+// Deviations forced by the bootstrap compiler (see brodal_okasaki.silica header): child_count is
+// stored because the [BO96] type-B child boundary is not derivable in O(1); `anchor` is always
+// :none and exists only because alloc_rec requires a direct recursive slot in the tuple.
+// Every exported function whose signature mentions ItemType takes the heap record first: the
+// compiler resolves ItemType at a qualified call from the record's compare_item witness.
+
+export alloc_node/4;
+export alloc_cell/4;
+export read_present/2;
+export read_node/3;
+export in_arena/2;
+export empty_forest/0;
+export cons_digit/3;
+
+fn alloc_cell(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    child_count: int64,
+    kids: List[(int64, ref?(L, normal, rec)), mem(normal)]
+) -> (region(L, normal), ref?(L, normal, rec)) {
+    sequence proc[mem(normal)]
+        arena: region(L, normal) <- heap.region;
+        cell: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), List[(int64, ref?(L, normal, rec)), mem(normal)])) <- alloc_rec(arena, (item, child_count, :none, kids))
+    produces
+        pure (arena, cell)
+    end
+}
+
+fn alloc_node(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    child_count: int64,
+    kids: List[(int64, ref?(L, normal, rec)), mem(normal)]
+) -> ref?(L, normal, rec) {
+    alloc_pair: (region(L, normal), ref?(L, normal, rec)) <- alloc_cell(heap, item, child_count, kids);
+    (_: region(L, normal), cell: ref?(L, normal, rec)) <- alloc_pair;
+    cell
+}
+
+fn read_present(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), List[(int64, ref?(L, normal, rec)), mem(normal)]))
+) -> { present: boolean, item: ItemType, child_count: int64, kids: List[(int64, ref?(L, normal, rec)), mem(normal)] } {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), List[(int64, ref?(L, normal, rec)), mem(normal)]) <- read_ref(node_ref);
+        (item, child_count: int64, _: ref?(L, normal, rec), kids: List[(int64, ref?(L, normal, rec)), mem(normal)]) <- node
+    produces
+        pure { present: true, item: item, child_count: child_count, kids: kids }
+    end
+}
+
+fn empty_forest() -> List[(int64, ref?(L, normal, rec)), mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[(int64, ref?(L, normal, rec)), mem(normal)] <- empty[(int64, ref?(L, normal, rec)), mem(normal)]()
+    produces
+        pure out
+    end
+}
+
+fn read_absent(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    placeholder: ItemType
+) -> { present: boolean, item: ItemType, child_count: int64, kids: List[(int64, ref?(L, normal, rec)), mem(normal)] } {
+    sequence
+        none_kids: List[(int64, ref?(L, normal, rec)), mem(normal)] <- empty_forest()
+    produces
+        pure { present: false, item: placeholder, child_count: 0, kids: none_kids }
+    end
+}
+
+// Reads one node without allocating; `present = false` carries the placeholder and no digits.
+fn read_node(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    tree: ref?(L, normal, rec),
+    placeholder: ItemType
+) -> { present: boolean, item: ItemType, child_count: int64, kids: List[(int64, ref?(L, normal, rec)), mem(normal)] } {
+    case tree of {
+        :none -> read_absent(heap, placeholder);
+        node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), List[(int64, ref?(L, normal, rec)), mem(normal)])) -> read_present(heap, node_ref)
+    }
+}
+
+// Lives here so the L_region_contains helper is emitted (only allocating units get it).
+fn in_arena(
+    heap: {
+        root: ref?(L, normal, rec),
+        count: int64,
+        max_oriented: boolean,
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), List[(int64, ref?(L, normal, rec)), mem(normal)]))
+) -> boolean {
+    sequence
+        inside: boolean <- ref_in_region(node_ref, heap.region)
+    produces
+        pure inside
+    end
+}
+
+fn cons_digit(
+    rank: int64,
+    tree: ref?(L, normal, rec),
+    rest: List[(int64, ref?(L, normal, rec)), mem(normal)]
+) -> List[(int64, ref?(L, normal, rec)), mem(normal)] {
+    sequence proc[mem(normal)]
+        d: (int64, ref?(L, normal, rec)) <- (rank, tree);
+        out: List[(int64, ref?(L, normal, rec)), mem(normal)] <- prepend[(int64, ref?(L, normal, rec)), mem(normal)](d, rest)
+    produces
+        pure out
+    end
+}

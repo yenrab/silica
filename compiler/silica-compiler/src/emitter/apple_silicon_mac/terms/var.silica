@@ -33,6 +33,7 @@ export emit_ldr_mem_ref/2;
 export emit_str_mem_ref/2;
 export emit_var_with_sp_check/3;
 export find_sp_binding/2;
+export strip_sp_binding/2;
 export find_sp_binding_bare_or_percent_param/2;
 export base_reg_of/1;
 export is_memory_ref/1;
@@ -168,6 +169,27 @@ fn find_sp_binding_bare_or_percent_param(outer_reg: string, name: string) -> str
 }
 
 // Search only within haystack (single region). Used by find_sp_binding.
+// Remove every `|name=value` segment for `name` from outer_reg, keeping the base-register
+// prefix and all other bindings. Used to hide the actor-reply buffer (|_tuple_sret=X20) from a
+// NESTED aggregate make: only the root make may write into that buffer. A nested tuple_make that
+// saw the binding stored its elements into X20 (clobbering the outer reply's slots) and then
+// emit_flat_tuple_stores popped a nested slab that was never pushed (actor tuple reply trial).
+fn strip_sp_binding(outer_reg: string, var_name: string) -> string {
+    key: string <- concat("|", concat(var_name, "="));
+    pos: int64 <- find_str_at(outer_reg, key, 0);
+    case pos < 0 of {
+        true -> outer_reg;
+        false -> do
+            next_pipe: int64 <- find_pipe_from(outer_reg, pos + 1);
+            rest: string <- case next_pipe < 0 of {
+                true -> "";
+                false -> substring(outer_reg, next_pipe, len(outer_reg))
+            };
+            strip_sp_binding(concat(substring(outer_reg, 0, pos), rest), var_name)
+        end
+    }
+}
+
 fn find_sp_binding_in(outer_reg: string, var_name: string) -> string {
     key: string <- concat("|", concat(var_name, "="));
     pos: int64 <- find_str_at(outer_reg, key, 0);

@@ -81,6 +81,7 @@ export mk_undirected_graph/4;
 export mk_weighted_graph/5;
 export mk_priority_queue/4;
 export parse_type/2;
+export surface_equals_type_id/3;
 export print_type/2;
 export invalid_type_id/0;
 export phase1_roundtrip_smoke/0;
@@ -4269,7 +4270,13 @@ fn trim_right_type_text(s: string, end_i: int64) -> string {
         true -> "";
         false -> case substring(s, end_i - 1, end_i) == " " of {
             true -> trim_right_type_text(s, end_i - 1);
-            false -> substring(s, 0, end_i)
+            // No trailing space: return the string itself. This runs at EVERY parse_type_inner
+            // recursion level; the unconditional substring(s, 0, end_i) copied each (already
+            // stripped) sub-surface into the never-released arena once per level.
+            false -> case end_i == length_bytes(s) of {
+                true -> s;
+                false -> substring(s, 0, end_i)
+            }
         }
     }
 }
@@ -4291,27 +4298,33 @@ fn type_surface_has_space(s: string, i: int64) -> int64 {
     }
 }
 
+// Divide-and-conquer strip. The old loop did concat(acc, ch) once per character, so a 10 KB
+// surface copied ~50 MB into the concat arena (sum of growing prefixes) on every parse; the
+// arena is never released, and that was 7 GB of 4 MB chunks on emitter_core. Splitting
+// recursively and concatenating the halves copies O(n log n) bytes instead: ~140 KB.
 fn strip_type_spaces_from(s: string, i: int64, acc: string) -> string {
-    case i >= length_bytes(s) of {
+    concat(acc, strip_type_spaces_range(s, i, length_bytes(s)))
+}
+
+fn strip_type_spaces_range(s: string, lo: int64, hi: int64) -> string {
+    case hi - lo <= 48 of {
+        true -> strip_type_spaces_small(s, lo, hi, "");
+        false -> {
+            mid: int64 <- lo + (hi - lo) / 2;
+            concat(strip_type_spaces_range(s, lo, mid), strip_type_spaces_range(s, mid, hi))
+        }
+    }
+}
+
+fn strip_type_spaces_small(s: string, i: int64, hi: int64, acc: string) -> string {
+    case i >= hi of {
         true -> acc;
         false -> {
-            sequence
-                ch: string <- substring(s, i, i + 1);
-                next_i: int64 <- i + 1;
-                out: string <- case ch == " " of {
-                    true -> strip_type_spaces_from(s, next_i, acc);
-                    false -> {
-                        sequence
-                            new_acc: string <- concat(acc, ch);
-                            r: string <- strip_type_spaces_from(s, next_i, new_acc)
-                        produces
-                            pure r
-                        end
-                    }
-                }
-            produces
-                pure out
-            end
+            ch: string <- substring(s, i, i + 1);
+            case ch == " " of {
+                true -> strip_type_spaces_small(s, i + 1, hi, acc);
+                false -> strip_type_spaces_small(s, i + 1, hi, concat(acc, ch))
+            }
         }
     }
 }
@@ -4559,7 +4572,236 @@ fn parse_type(interner: {
     next_id: int64,
     seq_nil_id: int64
 }, id: int64, ok: boolean } {
-    parse_type_inner(interner, surface)
+    // Surface memo. Type checking the compiler re-parses the same 8-10 KB inline signatures
+    // hundreds of times each; every parse copied the surface (strip_type_spaces) and sliced it
+    // into the string arena, which held 7 GB of stripped surfaces on emitter_core. Composite
+    // surfaces (anything with a bracket, brace, paren or arrow) are memoised in `names` keyed by
+    // the RAW surface -> root node id, so a hit allocates nothing. Identifier surfaces are left
+    // alone: `names` maps identifier lexemes to lexeme indices for intern_name, and an identifier
+    // surface can never collide with a composite key. A hit returns exactly the id a re-parse into
+    // this interner would hash-cons to, so ids and goldens are unchanged.
+    case surface_is_composite(surface) of {
+        false -> parse_type_inner(interner, surface);
+        true -> parse_type_memo(interner, surface)
+    }
+}
+
+fn surface_is_composite(s: string) -> boolean {
+    contains_char_ti(s, "(") or contains_char_ti(s, "[") or contains_char_ti(s, "{") or contains_char_ti(s, "-")
+}
+
+fn contains_char_ti(s: string, c: string) -> boolean {
+    contains_char_ti_from(s, c, 0)
+}
+
+fn contains_char_ti_from(s: string, c: string, i: int64) -> boolean {
+    case i >= length_bytes(s) of {
+        true -> false;
+        false -> case substring(s, i, i + 1) == c of {
+            true -> true;
+            false -> contains_char_ti_from(s, c, i + 1)
+        }
+    }
+}
+
+fn parse_type_memo(interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, surface: string) -> { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } {
+    sequence
+        names0: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } <- repair_string_int_map(interner.names);
+        g: { status: :not_found | :found, value: int64 } <- OrderedMap@get(names0, surface, 0);
+        out: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- case g.status of {
+            :found -> { interner: { nodes: interner.nodes, by_key: interner.by_key, names: names0, name_lexemes: interner.name_lexemes, next_id: interner.next_id, seq_nil_id: interner.seq_nil_id }, id: g.value, ok: true };
+            :not_found -> parse_type_remember(parse_type_inner(interner, surface), surface)
+        }
+    produces
+        pure out
+    end
+}
+
+fn parse_type_remember(parsed: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean }, surface: string) -> { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } {
+    case parsed.ok of {
+        false -> parsed;
+        true -> {
+            sequence
+                names1: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } <- repair_string_int_map(parsed.interner.names);
+                r: { map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }, inserted: boolean, replaced: boolean } <- wbt_map@insert(names1, surface, parsed.id);
+                done: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- { interner: { nodes: parsed.interner.nodes, by_key: parsed.interner.by_key, names: r.map, name_lexemes: parsed.interner.name_lexemes, next_id: parsed.interner.next_id, seq_nil_id: parsed.interner.seq_nil_id }, id: parsed.id, ok: true }
+            produces
+                pure done
+            end
+        }
+    }
+}
+
+// Structural equality between a surface type string and an interned type id.
+// Parses `surface` into this interner (hash-consed) and compares the resulting id to
+// `expected_id`. Structurally-equal types dedupe to the same id, so this is whitespace-
+// and rendering-insensitive: "fn ( int64 ) -> int64" matches "(int64) -> int64". Mirrors
+// src/ check_actor_call_builtin, which uses types_equal_type_ids for the reply check.
+fn surface_equals_type_id(interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 }, surface: string, expected_id: int64) -> boolean {
+    pr: { interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 }, id: int64, ok: boolean } <- parse_type(interner, surface);
+    pr.ok and pr.id == expected_id
 }
 
 fn parse_type_inner(interner: {

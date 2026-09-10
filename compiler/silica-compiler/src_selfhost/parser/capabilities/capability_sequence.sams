@@ -1,0 +1,2760 @@
+.bss
+.balign 8
+.lcomm _silica_frame_depth, 8
+.lcomm _silica_frame_max, 8
+.lcomm _silica_fuel, 8
+.lcomm _silica_saved_pc, 8
+
+.text
+    ; use lexer_core, lexer_token_kind, constraint_core, capability_fn_decl
+.global capability_sequence_constraints
+.global capability_sequence_initial_roles
+.extern _silica_rt_ffi_guarded_enter
+.extern _silica_rt_ffi_guarded_exit
+.extern _silica_rt_ffi_guarded_setjmp
+.extern _silica_rt_ffi_guarded_fault_finish
+.extern _silica_rt_ffi_arena_bump
+
+    ; --- recursion phases (recursion_implementation.jsonld) ---
+    ; p1: explicit frame fields; p2: push/dispatch/pop; p3: fuel on back-edges
+    ; p4: PC/source map hooks; p5: tail BR (see emit_tail_call_body); p6: trampoline fallback
+
+    ; p4 observability: frame -> (fn id, source id) map; filter trampoline frames
+
+    ; p6 trampoline fallback (optional):
+    ; _silica_trampoline_dispatch: load target from frame / BR X8
+    ; never rely on unbounded native recursion for general calls
+
+
+
+capability_sequence_role_seq_sequence:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #70
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_role_seq_produces:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #71
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_role_seq_pure:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #72
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_role_seq_result:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #73
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_role_seq_end:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #74
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_role_left_brace:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #7
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_role_stmt_sep:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #55
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_role_bind_arrow:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #43
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_role_operand:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #12
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_role_op:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #13
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_role_call_lparen:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #15
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_role_call_rparen:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_role_call_name:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #14
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_single_role:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o1666|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_empty_list_int@PAGE
+    ADD X9, X9, constraint_core_empty_list_int@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ADRP X9, constraint_core_cons_int@PAGE
+    ADD X9, X9, constraint_core_cons_int@PAGEOFF
+    BLR X9
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_two_roles:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o1801|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ADRP X9, constraint_core_cons_int@PAGE
+    ADD X9, X9, constraint_core_cons_int@PAGEOFF
+    BLR X9
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_three_roles:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o1932|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_two_roles@PAGE
+    ADD X9, X9, capability_sequence_two_roles@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ADRP X9, constraint_core_cons_int@PAGE
+    ADD X9, X9, constraint_core_cons_int@PAGEOFF
+    BLR X9
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_four_roles:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o2075|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_three_roles@PAGE
+    ADD X9, X9, capability_sequence_three_roles@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ADRP X9, constraint_core_cons_int@PAGE
+    ADD X9, X9, constraint_core_cons_int@PAGEOFF
+    BLR X9
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_five_roles:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o2235|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_four_roles@PAGE
+    ADD X9, X9, capability_sequence_four_roles@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ADRP X9, constraint_core_cons_int@PAGE
+    ADD X9, X9, constraint_core_cons_int@PAGEOFF
+    BLR X9
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_six_roles:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o2408|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_five_roles@PAGE
+    ADD X9, X9, capability_sequence_five_roles@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ADRP X9, constraint_core_cons_int@PAGE
+    ADD X9, X9, constraint_core_cons_int@PAGEOFF
+    BLR X9
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_constraints:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #1024
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o2906|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_left_brace@PAGE
+    ADD X9, X9, capability_sequence_role_left_brace@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o2955|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_sequence@PAGE
+    ADD X9, X9, capability_sequence_role_seq_sequence@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o2943|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o2995|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_empty_list_int@PAGE
+    ADD X9, X9, constraint_core_empty_list_int@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #70
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X19, X0
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o3212|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_stmt_sep@PAGE
+    ADD X9, X9, capability_sequence_role_stmt_sep@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o3259|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_sequence@PAGE
+    ADD X9, X9, capability_sequence_role_seq_sequence@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o3247|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o3299|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_empty_list_int@PAGE
+    ADD X9, X9, constraint_core_empty_list_int@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #71
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X20, X0
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o3516|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_bind_arrow@PAGE
+    ADD X9, X9, capability_sequence_role_bind_arrow@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o3565|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_sequence@PAGE
+    ADD X9, X9, capability_sequence_role_seq_sequence@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o3553|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o3605|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_empty_list_int@PAGE
+    ADD X9, X9, constraint_core_empty_list_int@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #72
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X21, X0
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o3888|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_sequence@PAGE
+    ADD X9, X9, capability_sequence_role_seq_sequence@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o3937|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_produces@PAGE
+    ADD X9, X9, capability_sequence_role_seq_produces@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o3958|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_fn_decl_role_proc_keyword@PAGE
+    ADD X9, X9, capability_fn_decl_role_proc_keyword@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o3927|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_two_roles@PAGE
+    ADD X9, X9, capability_sequence_two_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4029|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_left_brace@PAGE
+    ADD X9, X9, capability_sequence_role_left_brace@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4048|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_stmt_sep@PAGE
+    ADD X9, X9, capability_sequence_role_stmt_sep@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4065|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_bind_arrow@PAGE
+    ADD X9, X9, capability_sequence_role_bind_arrow@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o4017|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_three_roles@PAGE
+    ADD X9, X9, capability_sequence_three_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #73
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X22, X0
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4540|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_produces@PAGE
+    ADD X9, X9, capability_sequence_role_seq_produces@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4591|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_pure@PAGE
+    ADD X9, X9, capability_sequence_role_seq_pure@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4579|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4637|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_sequence@PAGE
+    ADD X9, X9, capability_sequence_role_seq_sequence@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4658|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_fn_decl_role_right_bracket@PAGE
+    ADD X9, X9, capability_fn_decl_role_right_bracket@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4699|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_operand@PAGE
+    ADD X9, X9, capability_sequence_role_operand@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4715|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_call_rparen@PAGE
+    ADD X9, X9, capability_sequence_role_call_rparen@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4735|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4754|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_stmt_sep@PAGE
+    ADD X9, X9, capability_sequence_role_stmt_sep@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o4627|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_six_roles@PAGE
+    ADD X9, X9, capability_sequence_six_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #74
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X23, X0
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5030|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_pure@PAGE
+    ADD X9, X9, capability_sequence_role_seq_pure@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5077|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5096|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_operand@PAGE
+    ADD X9, X9, capability_sequence_role_operand@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5112|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_call_name@PAGE
+    ADD X9, X9, capability_sequence_role_call_name@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o5065|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_three_roles@PAGE
+    ADD X9, X9, capability_sequence_three_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5161|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_produces@PAGE
+    ADD X9, X9, capability_sequence_role_seq_produces@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5149|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #75
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X24, X0
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5411|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5460|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_end@PAGE
+    ADD X9, X9, capability_sequence_role_seq_end@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5448|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5507|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_pure@PAGE
+    ADD X9, X9, capability_sequence_role_seq_pure@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5495|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #76
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X25, X0
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5783|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5830|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_op@PAGE
+    ADD X9, X9, capability_sequence_role_op@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5841|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_call_lparen@PAGE
+    ADD X9, X9, capability_sequence_role_call_lparen@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o5820|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_two_roles@PAGE
+    ADD X9, X9, capability_sequence_two_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5892|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_pure@PAGE
+    ADD X9, X9, capability_sequence_role_seq_pure@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5880|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #77
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X26, X0
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o6210|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_operand@PAGE
+    ADD X9, X9, capability_sequence_role_operand@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o6256|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_end@PAGE
+    ADD X9, X9, capability_sequence_role_seq_end@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o6244|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o6303|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_op@PAGE
+    ADD X9, X9, capability_sequence_role_op@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o6314|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_call_lparen@PAGE
+    ADD X9, X9, capability_sequence_role_call_lparen@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o6334|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_pure@PAGE
+    ADD X9, X9, capability_sequence_role_seq_pure@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o6291|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_three_roles@PAGE
+    ADD X9, X9, capability_sequence_three_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #78
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X27, X0
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o6599|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_op@PAGE
+    ADD X9, X9, capability_sequence_role_op@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o6640|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_operand@PAGE
+    ADD X9, X9, capability_sequence_role_operand@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o6628|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o6687|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o6675|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #79
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X28, X0
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o6967|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_call_lparen@PAGE
+    ADD X9, X9, capability_sequence_role_call_lparen@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7017|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_operand@PAGE
+    ADD X9, X9, capability_sequence_role_operand@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7005|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7062|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7081|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_call_name@PAGE
+    ADD X9, X9, capability_sequence_role_call_name@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o7052|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_two_roles@PAGE
+    ADD X9, X9, capability_sequence_two_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #80
+    STR X9, [SP, #24]
+    MOV X0, SP
+    STR X0, [X29, #-16]
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7362|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_call_name@PAGE
+    ADD X9, X9, capability_sequence_role_call_name@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7410|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_call_lparen@PAGE
+    ADD X9, X9, capability_sequence_role_call_lparen@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7398|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7461|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_pure@PAGE
+    ADD X9, X9, capability_sequence_role_seq_pure@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7449|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #83
+    STR X9, [SP, #24]
+    MOV X0, SP
+    STR X0, [X29, #-32]
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7743|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_call_rparen@PAGE
+    ADD X9, X9, capability_sequence_role_call_rparen@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7791|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_end@PAGE
+    ADD X9, X9, capability_sequence_role_seq_end@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7807|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_produces@PAGE
+    ADD X9, X9, capability_sequence_role_seq_produces@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o7781|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_two_roles@PAGE
+    ADD X9, X9, capability_sequence_two_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7859|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_operand@PAGE
+    ADD X9, X9, capability_sequence_role_operand@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o7847|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #84
+    STR X9, [SP, #24]
+    MOV X0, SP
+    STR X0, [X29, #-48]
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8160|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_operand@PAGE
+    ADD X9, X9, capability_sequence_role_operand@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8204|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_op@PAGE
+    ADD X9, X9, capability_sequence_role_op@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8215|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_call_rparen@PAGE
+    ADD X9, X9, capability_sequence_role_call_rparen@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o8194|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_two_roles@PAGE
+    ADD X9, X9, capability_sequence_two_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8266|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_pure@PAGE
+    ADD X9, X9, capability_sequence_role_seq_pure@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8254|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #81
+    STR X9, [SP, #24]
+    MOV X0, SP
+    STR X0, [X29, #-64]
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8578|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_end@PAGE
+    ADD X9, X9, capability_sequence_role_seq_end@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8612|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_empty_list_int@PAGE
+    ADD X9, X9, constraint_core_empty_list_int@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8676|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8695|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_operand@PAGE
+    ADD X9, X9, capability_sequence_role_operand@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8711|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_call_rparen@PAGE
+    ADD X9, X9, capability_sequence_role_call_rparen@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o8664|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_three_roles@PAGE
+    ADD X9, X9, capability_sequence_three_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #82
+    STR X9, [SP, #24]
+    MOV X0, SP
+    STR X0, [X29, #-80]
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8916|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_operand@PAGE
+    ADD X9, X9, capability_sequence_role_operand@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8962|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_produces@PAGE
+    ADD X9, X9, capability_sequence_role_seq_produces@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o8950|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9012|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_bind_arrow@PAGE
+    ADD X9, X9, capability_sequence_role_bind_arrow@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9031|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_stmt_sep@PAGE
+    ADD X9, X9, capability_sequence_role_stmt_sep@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o9002|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_two_roles@PAGE
+    ADD X9, X9, capability_sequence_two_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #87
+    STR X9, [SP, #24]
+    MOV X0, SP
+    STR X0, [X29, #-96]
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9233|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_call_rparen@PAGE
+    ADD X9, X9, capability_sequence_role_call_rparen@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9283|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_produces@PAGE
+    ADD X9, X9, capability_sequence_role_seq_produces@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9271|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9335|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_operand@PAGE
+    ADD X9, X9, capability_sequence_role_operand@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9323|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #88
+    STR X9, [SP, #24]
+    MOV X0, SP
+    STR X0, [X29, #-112]
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9536|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9585|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_produces@PAGE
+    ADD X9, X9, capability_sequence_role_seq_produces@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9573|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9635|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_bind_arrow@PAGE
+    ADD X9, X9, capability_sequence_role_bind_arrow@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9654|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_stmt_sep@PAGE
+    ADD X9, X9, capability_sequence_role_stmt_sep@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o9625|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_two_roles@PAGE
+    ADD X9, X9, capability_sequence_two_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #89
+    STR X9, [SP, #24]
+    MOV X0, SP
+    STR X0, [X29, #-128]
+    LDR X16, [X29, #-80]
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o9895|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_empty_list_constraint@PAGE
+    ADD X9, X9, constraint_core_empty_list_constraint@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o9858|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    STR X0, [X29, #-144]
+    LDR X16, [X29, #-128]
+    STR X16, [SP, #-16]!
+    LDR X16, [X29, #-144]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o10102|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    STR X0, [X29, #-160]
+    LDR X16, [X29, #-112]
+    STR X16, [SP, #-16]!
+    LDR X16, [X29, #-160]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o10310|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    STR X0, [X29, #-176]
+    LDR X16, [X29, #-96]
+    STR X16, [SP, #-16]!
+    LDR X16, [X29, #-176]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o10518|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    STR X0, [X29, #-192]
+    LDR X16, [X29, #-64]
+    STR X16, [SP, #-16]!
+    LDR X16, [X29, #-192]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o10726|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    STR X0, [X29, #-208]
+    LDR X16, [X29, #-48]
+    STR X16, [SP, #-16]!
+    LDR X16, [X29, #-208]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o10935|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    STR X0, [X29, #-224]
+    LDR X16, [X29, #-32]
+    STR X16, [SP, #-16]!
+    LDR X16, [X29, #-224]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o11145|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    STR X0, [X29, #-240]
+    LDR X16, [X29, #-16]
+    STR X16, [SP, #-16]!
+    LDR X16, [X29, #-240]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o11355|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    STR X0, [X29, #-256]
+    MOV X16, X28
+    STR X16, [SP, #-16]!
+    LDR X16, [X29, #-256]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o11564|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    MOV X28, X0
+    MOV X16, X27
+    STR X16, [SP, #-16]!
+    MOV X16, X28
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o11771|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    MOV X27, X0
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    MOV X16, X27
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o11977|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    MOV X26, X0
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o12182|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    MOV X25, X0
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o12387|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    MOV X24, X0
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o12657|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_fn_decl_role_right_bracket@PAGE
+    ADD X9, X9, capability_fn_decl_role_right_bracket@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o12728|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_produces@PAGE
+    ADD X9, X9, capability_sequence_role_seq_produces@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o12716|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o12778|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_fn_decl_role_effect_name@PAGE
+    ADD X9, X9, capability_fn_decl_role_effect_name@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o12817|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_fn_decl_role_effect_param_rparen@PAGE
+    ADD X9, X9, capability_fn_decl_role_effect_param_rparen@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o12768|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_two_roles@PAGE
+    ADD X9, X9, capability_sequence_two_roles@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #85
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X25, X0
+    SUB SP, SP, #32
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o13113|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_fn_decl_role_proc_keyword@PAGE
+    ADD X9, X9, capability_fn_decl_role_proc_keyword@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o13183|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_fn_decl_role_left_bracket@PAGE
+    ADD X9, X9, capability_fn_decl_role_left_bracket@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o13171|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #8]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o13254|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_sequence@PAGE
+    ADD X9, X9, capability_sequence_role_seq_sequence@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o13242|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    MOV X9, #86
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X26, X0
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o13461|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    MOV X23, X0
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o13741|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o13704|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o13667|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    MOV X22, X0
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o13948|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    MOV X21, X0
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o14154|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+    MOV X20, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o14199|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_cons_constraint@PAGE
+    ADD X9, X9, constraint_core_cons_constraint@PAGEOFF
+    BLR X9
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    ADD SP, SP, #32
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #1024
+    LDP X29, X30, [SP], #16
+    RET
+
+capability_sequence_initial_roles:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14335|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, lexer_token_kind_token_kind_sequence_keyword@PAGE
+    ADD X9, X9, lexer_token_kind_token_kind_sequence_keyword@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o14316_br_0:
+    CMP W3, #1
+    B.NE L_case_o14316_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14415|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_sequence@PAGE
+    ADD X9, X9, capability_sequence_role_seq_sequence@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14403|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    B L_case_o14316_done
+L_case_o14316_br_1:
+    CMP W3, #0
+    B.NE L_case_o14316_fb
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14473|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, lexer_token_kind_token_kind_produces_keyword@PAGE
+    ADD X9, X9, lexer_token_kind_token_kind_produces_keyword@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o14454_br_0:
+    CMP W3, #1
+    B.NE L_case_o14454_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14557|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_produces@PAGE
+    ADD X9, X9, capability_sequence_role_seq_produces@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14545|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    B L_case_o14454_done
+L_case_o14454_br_1:
+    CMP W3, #0
+    B.NE L_case_o14454_fb
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14619|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, lexer_token_kind_token_kind_pure_keyword@PAGE
+    ADD X9, X9, lexer_token_kind_token_kind_pure_keyword@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o14600_br_0:
+    CMP W3, #1
+    B.NE L_case_o14600_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14703|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_pure@PAGE
+    ADD X9, X9, capability_sequence_role_seq_pure@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14691|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    B L_case_o14600_done
+L_case_o14600_br_1:
+    CMP W3, #0
+    B.NE L_case_o14600_fb
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14765|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, lexer_token_kind_token_kind_end_keyword@PAGE
+    ADD X9, X9, lexer_token_kind_token_kind_end_keyword@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o14746_br_0:
+    CMP W3, #1
+    B.NE L_case_o14746_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14852|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_end@PAGE
+    ADD X9, X9, capability_sequence_role_seq_end@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14840|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    B L_case_o14746_done
+L_case_o14746_br_1:
+    CMP W3, #0
+    B.NE L_case_o14746_fb
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14917|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, lexer_token_kind_token_kind_integer_literal@PAGE
+    ADD X9, X9, lexer_token_kind_token_kind_integer_literal@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o14898_br_0:
+    CMP W3, #1
+    B.NE L_case_o14898_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15012|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15000|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    B L_case_o14898_done
+L_case_o14898_br_1:
+    CMP W3, #0
+    B.NE L_case_o14898_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15070|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, lexer_token_kind_is_identifier_lexeme_token@PAGE
+    ADD X9, X9, lexer_token_kind_is_identifier_lexeme_token@PAGEOFF
+    BLR X9
+
+    MOV X3, X0
+L_case_o15065_br_0:
+    CMP W3, #1
+    B.NE L_case_o15065_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15179|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15167|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    B L_case_o15065_done
+L_case_o15065_br_1:
+    CMP W3, #0
+    B.NE L_case_o15065_fb
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15255|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, lexer_token_kind_token_kind_atom_literal@PAGE
+    ADD X9, X9, lexer_token_kind_token_kind_atom_literal@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o15236_br_0:
+    CMP W3, #1
+    B.NE L_case_o15236_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15355|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15343|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    B L_case_o15236_done
+L_case_o15236_br_1:
+    CMP W3, #0
+    B.NE L_case_o15236_fb
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15435|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, lexer_token_kind_token_kind_float_literal@PAGE
+    ADD X9, X9, lexer_token_kind_token_kind_float_literal@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o15416_br_0:
+    CMP W3, #1
+    B.NE L_case_o15416_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15540|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15528|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    B L_case_o15416_done
+L_case_o15416_br_1:
+    CMP W3, #0
+    B.NE L_case_o15416_fb
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15624|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, lexer_token_kind_token_kind_string_literal@PAGE
+    ADD X9, X9, lexer_token_kind_token_kind_string_literal@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o15605_br_0:
+    CMP W3, #1
+    B.NE L_case_o15605_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15734|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15722|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    B L_case_o15605_done
+L_case_o15605_br_1:
+    CMP W3, #0
+    B.NE L_case_o15605_fb
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15822|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, lexer_token_kind_token_kind_true_literal@PAGE
+    ADD X9, X9, lexer_token_kind_token_kind_true_literal@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o15803_br_0:
+    CMP W3, #1
+    B.NE L_case_o15803_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15934|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o15922|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    B L_case_o15803_done
+L_case_o15803_br_1:
+    CMP W3, #0
+    B.NE L_case_o15803_fb
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o16026|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, lexer_token_kind_token_kind_false_literal@PAGE
+    ADD X9, X9, lexer_token_kind_token_kind_false_literal@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o16007_br_0:
+    CMP W3, #1
+    B.NE L_case_o16007_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o16143|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o16131|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    B L_case_o16007_done
+L_case_o16007_br_1:
+    CMP W3, #0
+    B.NE L_case_o16007_fb
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o16239|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, lexer_token_kind_token_kind_left_paren@PAGE
+    ADD X9, X9, lexer_token_kind_token_kind_left_paren@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o16220_br_0:
+    CMP W3, #1
+    B.NE L_case_o16220_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o16357|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_role_seq_result@PAGE
+    ADD X9, X9, capability_sequence_role_seq_result@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o16345|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, capability_sequence_single_role@PAGE
+    ADD X9, X9, capability_sequence_single_role@PAGEOFF
+    BLR X9
+
+    B L_case_o16220_done
+L_case_o16220_br_1:
+    CMP W3, #0
+    B.NE L_case_o16220_fb
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o16438|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, constraint_core_empty_list_int@PAGE
+    ADD X9, X9, constraint_core_empty_list_int@PAGEOFF
+    BLR X9
+
+    B L_case_o16220_done
+L_case_o16220_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o16220_done
+L_case_o16220_done:
+
+    B L_case_o16007_done
+L_case_o16007_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o16007_done
+L_case_o16007_done:
+
+    B L_case_o15803_done
+L_case_o15803_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o15803_done
+L_case_o15803_done:
+
+    B L_case_o15605_done
+L_case_o15605_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o15605_done
+L_case_o15605_done:
+
+    B L_case_o15416_done
+L_case_o15416_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o15416_done
+L_case_o15416_done:
+
+    B L_case_o15236_done
+L_case_o15236_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o15236_done
+L_case_o15236_done:
+
+    B L_case_o15065_done
+L_case_o15065_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o15065_done
+L_case_o15065_done:
+
+    B L_case_o14898_done
+L_case_o14898_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o14898_done
+L_case_o14898_done:
+
+    B L_case_o14746_done
+L_case_o14746_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o14746_done
+L_case_o14746_done:
+
+    B L_case_o14600_done
+L_case_o14600_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o14600_done
+L_case_o14600_done:
+
+    B L_case_o14454_done
+L_case_o14454_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o14454_done
+L_case_o14454_done:
+
+    B L_case_o14316_done
+L_case_o14316_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o14316_done
+L_case_o14316_done:
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+L_pa_helper:
+    CMP X0, #0
+    B.lt L_pa_oob
+    CMP X0, #23
+    B.ge L_pa_oob
+    ADRP X9, L_pa_table@PAGE
+    ADD X9, X9, L_pa_table@PAGEOFF
+    LSL X10, X0, #4
+    ADD X9, X9, X10
+    LDR X1, [X9]
+    LDR X2, [X9, #8]
+    MOV X0, #1
+    MOV X16, #4
+    SVC #0x80
+    MOV X0, #0
+    RET
+L_pa_oob:
+    MOV X0, #0
+    RET
+
+.section __TEXT,__rodata
+.align	8
+atom_0:
+    .byte  0x3a, 0x65, 0x66, 0x66, 0x69, 0x63, 0x69, 0x65, 0x6e, 0x63, 0x79, 0
+atom_1:
+    .byte  0x3a, 0x70, 0x65, 0x72, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x6e, 0x63, 0x65, 0
+atom_2:
+    .byte  0x3a, 0x6f, 0x6b, 0
+atom_3:
+    .byte  0x3a, 0x6e, 0x6f, 0x72, 0x6d, 0x61, 0x6c, 0
+atom_4:
+    .byte  0x3a, 0x6c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x5f, 0x65, 0x72, 0x72, 0x6f, 0x72, 0
+atom_5:
+    .byte  0x3a, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x5f, 0x66, 0x61, 0x75, 0x6c, 0x74, 0
+atom_6:
+    .byte  0x3a, 0x65, 0x78, 0x70, 0x6c, 0x69, 0x63, 0x69, 0x74, 0
+atom_7:
+    .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0
+atom_8:
+    .byte  0x3a, 0x6e, 0x6f, 0x70, 0x72, 0x6f, 0x63, 0
+atom_9:
+    .byte  0x3a, 0x70, 0x65, 0x72, 0x6d, 0x61, 0x6e, 0x65, 0x6e, 0x74, 0
+atom_10:
+    .byte  0x3a, 0x74, 0x72, 0x61, 0x6e, 0x73, 0x69, 0x65, 0x6e, 0x74, 0
+atom_11:
+    .byte  0x3a, 0x74, 0x65, 0x6d, 0x70, 0x6f, 0x72, 0x61, 0x72, 0x79, 0
+atom_12:
+    .byte  0x3a, 0x6f, 0x6e, 0x65, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x6f, 0x6e, 0x65, 0
+atom_13:
+    .byte  0x3a, 0x6f, 0x6e, 0x65, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x61, 0x6c, 0x6c, 0
+atom_14:
+    .byte  0x3a, 0x72, 0x65, 0x73, 0x74, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x6f, 0x6e, 0x65, 0
+atom_15:
+    .byte  0x3a, 0x69, 0x6e, 0x73, 0x65, 0x72, 0x74, 0
+atom_16:
+    .byte  0x3a, 0x6c, 0x6f, 0x6f, 0x6b, 0x75, 0x70, 0
+atom_17:
+    .byte  0x3a, 0x64, 0x65, 0x6c, 0x65, 0x74, 0x65, 0
+atom_18:
+    .byte  0x3a, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
+atom_19:
+    .byte  0x3a, 0x6e, 0x6f, 0x74, 0x5f, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
+atom_20:
+    .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0x5f, 0x6f, 0x70, 0
+atom_21:
+    .byte  0x3a, 0x70, 0x6c, 0x61, 0x69, 0x6e, 0
+atom_22:
+    .byte  0x3a, 0x64, 0x61, 0x6e, 0x67, 0x65, 0x72, 0x6f, 0x75, 0x73, 0
+.section __DATA_CONST,__const
+.align	3
+L_pa_table:
+    .quad atom_0
+    .quad 11
+    .quad atom_1
+    .quad 12
+    .quad atom_2
+    .quad 3
+    .quad atom_3
+    .quad 7
+    .quad atom_4
+    .quad 15
+    .quad atom_5
+    .quad 13
+    .quad atom_6
+    .quad 9
+    .quad atom_7
+    .quad 8
+    .quad atom_8
+    .quad 7
+    .quad atom_9
+    .quad 10
+    .quad atom_10
+    .quad 10
+    .quad atom_11
+    .quad 10
+    .quad atom_12
+    .quad 12
+    .quad atom_13
+    .quad 12
+    .quad atom_14
+    .quad 13
+    .quad atom_15
+    .quad 7
+    .quad atom_16
+    .quad 7
+    .quad atom_17
+    .quad 7
+    .quad atom_18
+    .quad 6
+    .quad atom_19
+    .quad 10
+    .quad atom_20
+    .quad 11
+    .quad atom_21
+    .quad 6
+    .quad atom_22
+    .quad 10
+

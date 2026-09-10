@@ -1,0 +1,4794 @@
+.bss
+.balign 8
+.lcomm _silica_frame_depth, 8
+.lcomm _silica_frame_max, 8
+.lcomm _silica_fuel, 8
+.lcomm _silica_saved_pc, 8
+
+.text
+    ; use lexer_core
+.global parser_ast_empty_named_program_list
+.global parser_ast_cons_named_program
+.global parser_ast_find_named_program
+.global parser_ast_zero_location
+.global parser_ast_dummy_expr
+.global parser_ast_dummy_expr_node
+.global parser_ast_expr_nodes_len
+.global parser_ast_expr_node_at
+.global parser_ast_expr_node_at_known_len
+.global parser_ast_expr_root_kind
+.global parser_ast_expr_root_inner
+.global parser_ast_expr_root_right
+.global parser_ast_expr_root_name
+.global parser_ast_expr_root_value
+.global parser_ast_expr_root_node
+.global parser_ast_expr_at
+.global parser_ast_make_expr
+.global parser_ast_dummy_decl
+.global parser_ast_empty_list_decl
+.global parser_ast_cons_declaration
+.global parser_ast_nil_list_param
+.global parser_ast_cons_param
+.global parser_ast_list_param_reverse_with_acc
+.global parser_ast_build_infer_type_bucket
+.global parser_ast_param_list_normalize
+.global parser_ast_rebuild_param
+.global parser_ast_rebuild_effect_name
+.global parser_ast_rebuild_tuple_decompose_binding_list
+.global parser_ast_rebuild_effect_name_list
+.global parser_ast_rebuild_param_list_from_lambda_bindings
+.global parser_ast_declaration_from_lambda_lift
+.global parser_ast_append_param_list
+.global parser_ast_declaration_with_body
+.global parser_ast_rebuild_param_list
+.global parser_ast_dummy_effect_name
+.global parser_ast_empty_effect_name_list
+.global parser_ast_cons_effect_name
+.global parser_ast_nil_tuple_decompose_bindings
+.global parser_ast_cons_tuple_decompose_binding
+.global parser_ast_make_tuple_decompose_binding
+.global parser_ast_as_list_tuple_decompose_bindings
+.extern _silica_rt_ffi_guarded_enter
+.extern _silica_rt_ffi_guarded_exit
+.extern _silica_rt_ffi_guarded_setjmp
+.extern _silica_rt_ffi_guarded_fault_finish
+.extern _silica_rt_ffi_arena_bump
+
+    ; --- recursion phases (recursion_implementation.jsonld) ---
+    ; p1: explicit frame fields; p2: push/dispatch/pop; p3: fuel on back-edges
+    ; p4: PC/source map hooks; p5: tail BR (see emit_tail_call_body); p6: trampoline fallback
+
+    ; p4 observability: frame -> (fn id, source id) map; filter trampoline frames
+
+    ; p6 trampoline fallback (optional):
+    ; _silica_trampoline_dispatch: load target from frame / BR X8
+    ; never rely on unbounded native recursion for general calls
+
+
+
+parser_ast_zero_location:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    SUB SP, SP, #32
+    ADRP X9, L_str_0@PAGE
+    ADD X9, X9, L_str_0@PAGEOFF
+    STR X9, [SP, #0]
+    MOV X9, #0
+    STR X9, [SP, #8]
+    MOV X9, #0
+    STR X9, [SP, #16]
+    MOV X9, #0
+    STR X9, [SP, #24]
+    MOV X0, SP
+    MOV X19, X0
+    MOV X0, X19
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #32
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #32
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_nil_tuple_decompose_bindings:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #0
+    MOV X19, X0
+    MOV X0, X19
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_cons_tuple_decompose_binding:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X2, X20
+    STR X2, [SP, #-16]!
+    MOV X1, X19
+    LDR X2, [SP], #16
+    MOV X3, #32
+    MOV X4, #32
+    MOV X5, #1
+    BL L_list_prepend_helper
+    MOV X21, X0
+    MOV X0, X21
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_make_tuple_decompose_binding:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+
+    SUB SP, SP, #32
+    MOV X9, X19
+    STR X9, [SP, #0]
+    MOV X9, X20
+    STR X9, [SP, #8]
+    MOV X9, X2
+    STR X9, [SP, #16]
+    MOV X0, SP
+    MOV X21, X0
+    MOV X0, X21
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #32
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #32
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_as_list_tuple_decompose_bindings:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X0, X19
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_empty_expr_nodes:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #0
+    MOV X19, X0
+    MOV X0, X19
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_dummy_expr:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o18713|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_empty_expr_nodes@PAGE
+    ADD X9, X9, parser_ast_empty_expr_nodes@PAGEOFF
+    BLR X9
+    MOV X19, X0
+    SUB SP, SP, #16
+    MOV X9, X19
+    STR X9, [SP, #0]
+    MOV X9, #-1
+    STR X9, [SP, #8]
+    MOV X0, SP
+    MOV X20, X0
+    MOV X0, X20
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #16
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_nil_list_param:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #0
+    MOV X19, X0
+    MOV X0, X19
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_cons_param:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X2, X20
+    STR X2, [SP, #-16]!
+    MOV X1, X19
+    LDR X2, [SP], #16
+    MOV X3, #48
+    MOV X4, #48
+    MOV X5, #1
+    BL L_list_prepend_helper
+    MOV X21, X0
+    MOV X0, X21
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_list_param_reverse_with_acc:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o20926_br_0:
+    CMP W3, #1
+    B.NE L_case_o20926_br_1
+    MOV X0, X20
+    B L_case_o20926_done
+L_case_o20926_br_1:
+    CMP W3, #0
+    B.NE L_case_o20926_fb
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X16, X10
+
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o21145|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_cons_param@PAGE
+    ADD X9, X9, parser_ast_cons_param@PAGEOFF
+    BLR X9
+    MOV X21, X0
+    MOV X9, X19
+    MOV X0, X9
+    MOV X1, #48
+    MOV X2, #48
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o21186|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_list_param_reverse_with_acc@PAGE
+    ADD X9, X9, parser_ast_list_param_reverse_with_acc@PAGEOFF
+    BLR X9
+
+    B L_case_o20926_done
+L_case_o20926_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o20926_done
+L_case_o20926_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_build_infer_type_bucket:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    STP X0, X1, [SP, #-16]!
+    STP X2, X3, [SP, #-16]!
+    STP X4, X5, [SP, #-16]!
+    STP X6, X7, [SP, #-16]!
+    SUB SP, SP, #80
+    ADRP X9, L_str_1@PAGE
+    ADD X9, X9, L_str_1@PAGEOFF
+    STR X9, [SP, #32]
+    MOV X9, X19
+    STR X9, [SP, #40]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o21636|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_zero_location@PAGE
+    ADD X9, X9, parser_ast_zero_location@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [X9, #0]
+    STR X10, [SP, #48]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #56]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #64]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #72]
+
+    ADD X16, SP, #32
+    MOV X0, X16
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #80
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    MOV X0, X4
+    ADD SP, SP, #16
+    MOV X16, X0
+    ADD SP, SP, #80
+    LDP X6, X7, [SP], #16
+    LDP X4, X5, [SP], #16
+    LDP X2, X3, [SP], #16
+    LDP X0, X1, [SP], #16
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ADRP X9, parser_ast_cons_param@PAGE
+    ADD X9, X9, parser_ast_cons_param@PAGEOFF
+    BLR X9
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_param_list_normalize:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o21953_br_0:
+    CMP W3, #1
+    B.NE L_case_o21953_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o21988|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_nil_list_param@PAGE
+    ADD X9, X9, parser_ast_nil_list_param@PAGEOFF
+    BLR X9
+
+    B L_case_o21953_done
+L_case_o21953_br_1:
+    CMP W3, #0
+    B.NE L_case_o21953_fb
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X20, X0
+    MOV X9, X19
+    MOV X0, X9
+    MOV X1, #48
+    MOV X2, #48
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o22317|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_param_list_normalize@PAGE
+    ADD X9, X9, parser_ast_param_list_normalize@PAGEOFF
+    BLR X9
+    MOV X21, X0
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o22359|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_cons_param@PAGE
+    ADD X9, X9, parser_ast_cons_param@PAGEOFF
+    BLR X9
+
+    B L_case_o21953_done
+L_case_o21953_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o21953_done
+L_case_o21953_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_rebuild_param:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+
+    SUB SP, SP, #48
+    MOV X9, X19
+    STR X9, [SP, #0]
+    MOV X9, X20
+    STR X9, [SP, #8]
+    MOV X9, X2
+    LDR X10, [X9, #0]
+    STR X10, [SP, #16]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #24]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #32]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #40]
+
+    MOV X0, SP
+    MOV X21, X0
+    MOV X0, X21
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #48
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #48
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_rebuild_param_list:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X19, X0
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o23302_br_0:
+    CMP W3, #1
+    B.NE L_case_o23302_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o23339|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_nil_list_param@PAGE
+    ADD X9, X9, parser_ast_nil_list_param@PAGEOFF
+    BLR X9
+
+    B L_case_o23302_done
+L_case_o23302_br_1:
+    CMP W3, #0
+    B.NE L_case_o23302_fb
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    LDR X16, [X11, #0]
+    STR X16, [SP, #-16]!
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    LDR X16, [X11, #8]
+    STR X16, [SP, #-16]!
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    ADD X16, X11, #16
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o23385|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_rebuild_param@PAGE
+    ADD X9, X9, parser_ast_rebuild_param@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    MOV X1, #48
+    MOV X2, #48
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o23454|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_rebuild_param_list@PAGE
+    ADD X9, X9, parser_ast_rebuild_param_list@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o23374|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_cons_param@PAGE
+    ADD X9, X9, parser_ast_cons_param@PAGEOFF
+    BLR X9
+
+    B L_case_o23302_done
+L_case_o23302_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o23302_done
+L_case_o23302_done:
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_rebuild_effect_name:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+
+    SUB SP, SP, #48
+    MOV X9, X19
+    STR X9, [SP, #0]
+    MOV X9, X20
+    STR X9, [SP, #8]
+    MOV X9, X2
+    LDR X10, [X9, #0]
+    STR X10, [SP, #16]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #24]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #32]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #40]
+
+    MOV X0, SP
+    MOV X21, X0
+    MOV X0, X21
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #48
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #48
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_rebuild_tuple_decompose_binding_list:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X19, X0
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o24163_br_0:
+    CMP W3, #1
+    B.NE L_case_o24163_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o24200|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_nil_tuple_decompose_bindings@PAGE
+    ADD X9, X9, parser_ast_nil_tuple_decompose_bindings@PAGEOFF
+    BLR X9
+
+    B L_case_o24163_done
+L_case_o24163_br_1:
+    CMP W3, #0
+    B.NE L_case_o24163_fb
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    LDR X16, [X11, #0]
+    STR X16, [SP, #-16]!
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    LDR X16, [X11, #8]
+    STR X16, [SP, #-16]!
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    LDR X16, [X11, #16]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o24278|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_make_tuple_decompose_binding@PAGE
+    ADD X9, X9, parser_ast_make_tuple_decompose_binding@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    MOV X1, #32
+    MOV X2, #32
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o24357|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_rebuild_tuple_decompose_binding_list@PAGE
+    ADD X9, X9, parser_ast_rebuild_tuple_decompose_binding_list@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o24249|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_cons_tuple_decompose_binding@PAGE
+    ADD X9, X9, parser_ast_cons_tuple_decompose_binding@PAGEOFF
+    BLR X9
+
+    B L_case_o24163_done
+L_case_o24163_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o24163_done
+L_case_o24163_done:
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_rebuild_param_list_from_lambda_bindings:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X19, X0
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o24671_br_0:
+    CMP W3, #1
+    B.NE L_case_o24671_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o24713|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_nil_list_param@PAGE
+    ADD X9, X9, parser_ast_nil_list_param@PAGEOFF
+    BLR X9
+
+    B L_case_o24671_done
+L_case_o24671_br_1:
+    CMP W3, #0
+    B.NE L_case_o24671_fb
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    LDR X16, [X11, #0]
+    STR X16, [SP, #-16]!
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    LDR X16, [X11, #16]
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o24817|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_zero_location@PAGE
+    ADD X9, X9, parser_ast_zero_location@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o24759|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_rebuild_param@PAGE
+    ADD X9, X9, parser_ast_rebuild_param@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    MOV X1, #32
+    MOV X2, #32
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o24835|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_rebuild_param_list_from_lambda_bindings@PAGE
+    ADD X9, X9, parser_ast_rebuild_param_list_from_lambda_bindings@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o24748|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_cons_param@PAGE
+    ADD X9, X9, parser_ast_cons_param@PAGEOFF
+    BLR X9
+
+    B L_case_o24671_done
+L_case_o24671_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o24671_done
+L_case_o24671_done:
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_append_param_list:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o25316_br_0:
+    CMP W3, #1
+    B.NE L_case_o25316_br_1
+    MOV X0, X20
+    B L_case_o25316_done
+L_case_o25316_br_1:
+    CMP W3, #0
+    B.NE L_case_o25316_fb
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X16, X10
+
+    STR X16, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    MOV X1, #48
+    MOV X2, #48
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o25390|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_append_param_list@PAGE
+    ADD X9, X9, parser_ast_append_param_list@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o25371|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_cons_param@PAGE
+    ADD X9, X9, parser_ast_cons_param@PAGEOFF
+    BLR X9
+
+    B L_case_o25316_done
+L_case_o25316_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o25316_done
+L_case_o25316_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_dummy_expr_node:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o25945|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_nil_tuple_decompose_bindings@PAGE
+    ADD X9, X9, parser_ast_nil_tuple_decompose_bindings@PAGEOFF
+    BLR X9
+    MOV X19, X0
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o26129|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_empty_effect_name_list@PAGE
+    ADD X9, X9, parser_ast_empty_effect_name_list@PAGEOFF
+    BLR X9
+    MOV X20, X0
+    SUB SP, SP, #128
+    MOV X9, #-1
+    STR X9, [SP, #32]
+    ADRP X9, L_str_0@PAGE
+    ADD X9, X9, L_str_0@PAGEOFF
+    STR X9, [SP, #40]
+    ADRP X9, L_str_0@PAGE
+    ADD X9, X9, L_str_0@PAGEOFF
+    STR X9, [SP, #48]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o26598|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_zero_location@PAGE
+    ADD X9, X9, parser_ast_zero_location@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [X9, #0]
+    STR X10, [SP, #56]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #64]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #72]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #80]
+
+    MOV X9, #-1
+    STR X9, [SP, #88]
+    MOV X9, #-1
+    STR X9, [SP, #96]
+    MOV X9, X19
+    STR X9, [SP, #104]
+    MOV X9, X20
+    STR X9, [SP, #112]
+    ADD X0, SP, #32
+    MOV X21, X0
+    MOV X0, X21
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #128
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    LDR X3, [X1, #96]
+    STR X3, [X4, #96]
+    LDR X3, [X1, #104]
+    STR X3, [X4, #104]
+    LDR X3, [X1, #112]
+    STR X3, [X4, #112]
+    LDR X3, [X1, #120]
+    STR X3, [X4, #120]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #128
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_nodes_len:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X20, X0
+    MOV X0, X20
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_node_at_from_head:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o28690_br_0:
+    CMP W3, #1
+    B.NE L_case_o28690_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o28729|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_dummy_expr_node@PAGE
+    ADD X9, X9, parser_ast_dummy_expr_node@PAGEOFF
+    BLR X9
+
+    B L_case_o28690_done
+L_case_o28690_br_1:
+    CMP W3, #0
+    B.NE L_case_o28690_fb
+    MOV X9, X20
+    MOV X10, #0
+
+
+    CMP X9, X10
+    CSET X3, LE
+L_case_o28765_br_0:
+    CMP W3, #1
+    B.NE L_case_o28765_br_1
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+
+    B L_case_o28765_done
+L_case_o28765_br_1:
+    CMP W3, #0
+    B.NE L_case_o28765_fb
+    MOV X9, X19
+    MOV X0, X9
+    MOV X1, #96
+    MOV X2, #96
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    SUB X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o28837|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_node_at_from_head@PAGE
+    ADD X9, X9, parser_ast_expr_node_at_from_head@PAGEOFF
+    BLR X9
+
+    B L_case_o28765_done
+L_case_o28765_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o28765_done
+L_case_o28765_done:
+
+    B L_case_o28690_done
+L_case_o28690_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o28690_done
+L_case_o28690_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_node_at_known_len:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    STR X3, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #0
+
+
+    CMP X9, X10
+    CSET X3, LT
+    CBNZ X3, L_sc_o29938_done
+    LDR X3, [SP]
+    MOV X9, X21
+    MOV X10, X20
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_sc_o29938_done:
+    ADD SP, SP, #16
+
+L_case_o29925_br_0:
+    CMP W3, #1
+    B.NE L_case_o29925_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o29971|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_dummy_expr_node@PAGE
+    ADD X9, X9, parser_ast_dummy_expr_node@PAGEOFF
+    BLR X9
+
+    B L_case_o29925_done
+L_case_o29925_br_1:
+    CMP W3, #0
+    B.NE L_case_o29925_fb
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o30007_br_0:
+    CMP W3, #1
+    B.NE L_case_o30007_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o30050|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_dummy_expr_node@PAGE
+    ADD X9, X9, parser_ast_dummy_expr_node@PAGEOFF
+    BLR X9
+
+    B L_case_o30007_done
+L_case_o30007_br_1:
+    CMP W3, #0
+    B.NE L_case_o30007_fb
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    MOV X10, X21
+    STR X10, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    SUB X9, X9, X10
+    LDR X10, [SP], #16
+
+
+    SUB X10, X9, X10
+    LDR X9, [SP], #16
+    MOV X0, X9
+    MOV X1, X10
+    MOV X2, #96
+    MOV X3, #96
+    BL L_list_at_helper
+    MOV X10, X0
+    MOV X0, X10
+    MOV X22, X0
+    SUB SP, SP, #96
+    LDR X9, [X22, #0]
+    STR X9, [SP, #0]
+    LDR X9, [X22, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X22, #16]
+    STR X9, [SP, #16]
+    ADD X9, X22, #24
+
+    LDR X10, [X9, #0]
+    STR X10, [SP, #24]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #32]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #40]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #48]
+
+    LDR X9, [X22, #56]
+    STR X9, [SP, #56]
+    LDR X9, [X22, #64]
+    STR X9, [SP, #64]
+    LDR X9, [X22, #72]
+    STR X9, [SP, #72]
+    LDR X9, [X22, #80]
+    STR X9, [SP, #80]
+    MOV X0, SP
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #96
+
+    B L_case_o30007_done
+L_case_o30007_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o30007_done
+L_case_o30007_done:
+
+    B L_case_o29925_done
+L_case_o29925_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o29925_done
+L_case_o29925_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_node_at:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X9, X20
+    MOV X10, #0
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o31587_br_0:
+    CMP W3, #1
+    B.NE L_case_o31587_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o31621|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_dummy_expr_node@PAGE
+    ADD X9, X9, parser_ast_dummy_expr_node@PAGEOFF
+    BLR X9
+
+    B L_case_o31587_done
+L_case_o31587_br_1:
+    CMP W3, #0
+    B.NE L_case_o31587_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o31687|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_len@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_len@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o31657|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_node_at_known_len@PAGE
+    ADD X9, X9, parser_ast_expr_node_at_known_len@PAGEOFF
+    BLR X9
+
+    B L_case_o31587_done
+L_case_o31587_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o31587_done
+L_case_o31587_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_root_kind:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    LDR X9, [X19, #8]
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o32188_br_0:
+    CMP W3, #1
+    B.NE L_case_o32188_br_1
+    MOV X0, #-1
+    B L_case_o32188_done
+L_case_o32188_br_1:
+    CMP W3, #0
+    B.NE L_case_o32188_fb
+    LDR X16, [X19, #0]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o32275|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_len@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_len@PAGEOFF
+    BLR X9
+    MOV X20, X0
+    LDR X9, [X19, #8]
+    MOV X10, X20
+    CMP X9, X10
+    CSET X3, GE
+L_case_o32315_br_0:
+    CMP W3, #1
+    B.NE L_case_o32315_br_1
+    MOV X0, #-1
+    B L_case_o32315_done
+L_case_o32315_br_1:
+    CMP W3, #0
+    B.NE L_case_o32315_fb
+    LDR X9, [X19, #0]
+    STR X9, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+    SUB X9, X9, X10
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #8]
+    LDR X9, [SP], #16
+
+    SUB X10, X9, X10
+    LDR X9, [SP], #16
+    MOV X0, X9
+    MOV X1, X10
+    MOV X2, #96
+    MOV X3, #96
+    BL L_list_at_helper
+    MOV X10, X0
+    MOV X0, X10
+    MOV X21, X0
+    LDR X0, [X21, #0]
+    B L_case_o32315_done
+L_case_o32315_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o32315_done
+L_case_o32315_done:
+
+    B L_case_o32188_done
+L_case_o32188_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o32188_done
+L_case_o32188_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_root_inner:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    LDR X9, [X19, #8]
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o33391_br_0:
+    CMP W3, #1
+    B.NE L_case_o33391_br_1
+    MOV X0, #-1
+    B L_case_o33391_done
+L_case_o33391_br_1:
+    CMP W3, #0
+    B.NE L_case_o33391_fb
+    LDR X16, [X19, #0]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o33478|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_len@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_len@PAGEOFF
+    BLR X9
+    MOV X20, X0
+    LDR X9, [X19, #8]
+    MOV X10, X20
+    CMP X9, X10
+    CSET X3, GE
+L_case_o33518_br_0:
+    CMP W3, #1
+    B.NE L_case_o33518_br_1
+    MOV X0, #-1
+    B L_case_o33518_done
+L_case_o33518_br_1:
+    CMP W3, #0
+    B.NE L_case_o33518_fb
+    LDR X9, [X19, #0]
+    STR X9, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+    SUB X9, X9, X10
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #8]
+    LDR X9, [SP], #16
+
+    SUB X10, X9, X10
+    LDR X9, [SP], #16
+    MOV X0, X9
+    MOV X1, X10
+    MOV X2, #96
+    MOV X3, #96
+    BL L_list_at_helper
+    MOV X10, X0
+    MOV X0, X10
+    MOV X21, X0
+    LDR X0, [X21, #56]
+    B L_case_o33518_done
+L_case_o33518_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o33518_done
+L_case_o33518_done:
+
+    B L_case_o33391_done
+L_case_o33391_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o33391_done
+L_case_o33391_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_root_right:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    LDR X9, [X19, #8]
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o34595_br_0:
+    CMP W3, #1
+    B.NE L_case_o34595_br_1
+    MOV X0, #-1
+    B L_case_o34595_done
+L_case_o34595_br_1:
+    CMP W3, #0
+    B.NE L_case_o34595_fb
+    LDR X16, [X19, #0]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o34682|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_len@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_len@PAGEOFF
+    BLR X9
+    MOV X20, X0
+    LDR X9, [X19, #8]
+    MOV X10, X20
+    CMP X9, X10
+    CSET X3, GE
+L_case_o34722_br_0:
+    CMP W3, #1
+    B.NE L_case_o34722_br_1
+    MOV X0, #-1
+    B L_case_o34722_done
+L_case_o34722_br_1:
+    CMP W3, #0
+    B.NE L_case_o34722_fb
+    LDR X9, [X19, #0]
+    STR X9, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+    SUB X9, X9, X10
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #8]
+    LDR X9, [SP], #16
+
+    SUB X10, X9, X10
+    LDR X9, [SP], #16
+    MOV X0, X9
+    MOV X1, X10
+    MOV X2, #96
+    MOV X3, #96
+    BL L_list_at_helper
+    MOV X10, X0
+    MOV X0, X10
+    MOV X21, X0
+    LDR X0, [X21, #64]
+    B L_case_o34722_done
+L_case_o34722_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o34722_done
+L_case_o34722_done:
+
+    B L_case_o34595_done
+L_case_o34595_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o34595_done
+L_case_o34595_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_root_name:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    LDR X9, [X19, #8]
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o35804_br_0:
+    CMP W3, #1
+    B.NE L_case_o35804_br_1
+    ADRP X0, L_str_0@PAGE
+    ADD X0, X0, L_str_0@PAGEOFF
+    B L_case_o35804_done
+L_case_o35804_br_1:
+    CMP W3, #0
+    B.NE L_case_o35804_fb
+    LDR X16, [X19, #0]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o35891|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_len@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_len@PAGEOFF
+    BLR X9
+    MOV X20, X0
+    LDR X9, [X19, #8]
+    MOV X10, X20
+    CMP X9, X10
+    CSET X3, GE
+L_case_o35931_br_0:
+    CMP W3, #1
+    B.NE L_case_o35931_br_1
+    ADRP X0, L_str_0@PAGE
+    ADD X0, X0, L_str_0@PAGEOFF
+    B L_case_o35931_done
+L_case_o35931_br_1:
+    CMP W3, #0
+    B.NE L_case_o35931_fb
+    LDR X9, [X19, #0]
+    STR X9, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+    SUB X9, X9, X10
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #8]
+    LDR X9, [SP], #16
+
+    SUB X10, X9, X10
+    LDR X9, [SP], #16
+    MOV X0, X9
+    MOV X1, X10
+    MOV X2, #96
+    MOV X3, #96
+    BL L_list_at_helper
+    MOV X10, X0
+    MOV X0, X10
+    MOV X21, X0
+    LDR X0, [X21, #16]
+    B L_case_o35931_done
+L_case_o35931_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o35931_done
+L_case_o35931_done:
+
+    B L_case_o35804_done
+L_case_o35804_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o35804_done
+L_case_o35804_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_root_value:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    LDR X9, [X19, #8]
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o37008_br_0:
+    CMP W3, #1
+    B.NE L_case_o37008_br_1
+    ADRP X0, L_str_0@PAGE
+    ADD X0, X0, L_str_0@PAGEOFF
+    B L_case_o37008_done
+L_case_o37008_br_1:
+    CMP W3, #0
+    B.NE L_case_o37008_fb
+    LDR X16, [X19, #0]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o37095|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_len@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_len@PAGEOFF
+    BLR X9
+    MOV X20, X0
+    LDR X9, [X19, #8]
+    MOV X10, X20
+    CMP X9, X10
+    CSET X3, GE
+L_case_o37135_br_0:
+    CMP W3, #1
+    B.NE L_case_o37135_br_1
+    ADRP X0, L_str_0@PAGE
+    ADD X0, X0, L_str_0@PAGEOFF
+    B L_case_o37135_done
+L_case_o37135_br_1:
+    CMP W3, #0
+    B.NE L_case_o37135_fb
+    LDR X9, [X19, #0]
+    STR X9, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+    SUB X9, X9, X10
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #8]
+    LDR X9, [SP], #16
+
+    SUB X10, X9, X10
+    LDR X9, [SP], #16
+    MOV X0, X9
+    MOV X1, X10
+    MOV X2, #96
+    MOV X3, #96
+    BL L_list_at_helper
+    MOV X10, X0
+    MOV X0, X10
+    MOV X21, X0
+    LDR X0, [X21, #8]
+    B L_case_o37135_done
+L_case_o37135_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o37135_done
+L_case_o37135_done:
+
+    B L_case_o37008_done
+L_case_o37008_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o37008_done
+L_case_o37008_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_root_node:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    LDR X9, [X19, #8]
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o38586_br_0:
+    CMP W3, #1
+    B.NE L_case_o38586_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o38626|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_dummy_expr_node@PAGE
+    ADD X9, X9, parser_ast_dummy_expr_node@PAGEOFF
+    BLR X9
+
+    B L_case_o38586_done
+L_case_o38586_br_1:
+    CMP W3, #0
+    B.NE L_case_o38586_fb
+    LDR X16, [X19, #0]
+    STR X16, [SP, #-16]!
+    LDR X16, [X19, #8]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o38662|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_node_at@PAGE
+    ADD X9, X9, parser_ast_expr_node_at@PAGEOFF
+    BLR X9
+
+    B L_case_o38586_done
+L_case_o38586_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o38586_done
+L_case_o38586_done:
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_at:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X11, X0
+
+    SUB SP, SP, #16
+    LDR X9, [X11, #0]
+    STR X9, [SP, #0]
+    MOV X9, X1
+    STR X9, [SP, #8]
+    MOV X0, SP
+    MOV X19, X0
+    MOV X0, X19
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #16
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_nodes_reverse_acc:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o41386_br_0:
+    CMP W3, #1
+    B.NE L_case_o41386_br_1
+    MOV X0, X20
+    B L_case_o41386_done
+L_case_o41386_br_1:
+    CMP W3, #0
+    B.NE L_case_o41386_fb
+    MOV X2, X20
+    STR X2, [SP, #-16]!
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X1, X10
+
+    LDR X2, [SP], #16
+    MOV X3, #96
+    MOV X4, #96
+    MOV X5, #1
+    BL L_list_prepend_helper
+    MOV X21, X0
+    MOV X9, X19
+    MOV X0, X9
+    MOV X1, #96
+    MOV X2, #96
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o42312|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_reverse_acc@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_reverse_acc@PAGEOFF
+    BLR X9
+
+    B L_case_o41386_done
+L_case_o41386_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o41386_done
+L_case_o41386_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_nodes_reverse:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o43258|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_empty_expr_nodes@PAGE
+    ADD X9, X9, parser_ast_empty_expr_nodes@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ADRP X9, parser_ast_expr_nodes_reverse_acc@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_reverse_acc@PAGEOFF
+    BLR X9
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_nodes_append:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o44519_br_0:
+    CMP W3, #1
+    B.NE L_case_o44519_br_1
+    MOV X0, X20
+    B L_case_o44519_done
+L_case_o44519_br_1:
+    CMP W3, #0
+    B.NE L_case_o44519_fb
+    MOV X9, X19
+    MOV X0, X9
+    MOV X1, #96
+    MOV X2, #96
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o45417|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_append@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_append@PAGEOFF
+    BLR X9
+
+    MOV X2, X0
+    STR X2, [SP, #-16]!
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X1, X10
+
+    LDR X2, [SP], #16
+    MOV X3, #96
+    MOV X4, #96
+    MOV X5, #1
+    BL L_list_prepend_helper
+    MOV X21, X0
+    MOV X0, X21
+    B L_case_o44519_done
+L_case_o44519_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o44519_done
+L_case_o44519_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_remap_node:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    LDR X9, [X19, #56]
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o46344_br_0:
+    CMP W3, #1
+    B.NE L_case_o46344_br_1
+    MOV X0, #-1
+    B L_case_o46344_done
+L_case_o46344_br_1:
+    CMP W3, #0
+    B.NE L_case_o46344_fb
+    MOV X10, X20
+    STR X10, [SP, #-16]!
+    LDR X9, [X19, #56]
+    LDR X10, [SP], #16
+
+
+    ADD X0, X9, X10
+    B L_case_o46344_done
+L_case_o46344_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o46344_done
+L_case_o46344_done:
+    MOV X21, X0
+    LDR X9, [X19, #64]
+    MOV X10, #0
+    CMP X9, X10
+    CSET X3, LT
+L_case_o46432_br_0:
+    CMP W3, #1
+    B.NE L_case_o46432_br_1
+    MOV X0, #-1
+    B L_case_o46432_done
+L_case_o46432_br_1:
+    CMP W3, #0
+    B.NE L_case_o46432_fb
+    LDR X9, [X19, #64]
+    MOV X10, X20
+    ADD X0, X9, X10
+    B L_case_o46432_done
+L_case_o46432_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o46432_done
+L_case_o46432_done:
+    MOV X22, X0
+    SUB SP, SP, #96
+    LDR X9, [X19, #0]
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    ADD X9, X19, #24
+
+    LDR X10, [X9, #0]
+    STR X10, [SP, #24]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #32]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #40]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #48]
+
+    MOV X9, X21
+    STR X9, [SP, #56]
+    MOV X9, X22
+    STR X9, [SP, #64]
+    LDR X9, [X19, #72]
+    STR X9, [SP, #72]
+    LDR X9, [X19, #80]
+    STR X9, [SP, #80]
+    MOV X0, SP
+    MOV X23, X0
+    MOV X0, X23
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #96
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_expr_remap_nodes:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o47981_br_0:
+    CMP W3, #1
+    B.NE L_case_o47981_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o48020|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_empty_expr_nodes@PAGE
+    ADD X9, X9, parser_ast_empty_expr_nodes@PAGEOFF
+    BLR X9
+
+    B L_case_o47981_done
+L_case_o47981_br_1:
+    CMP W3, #0
+    B.NE L_case_o47981_fb
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X16, X10
+
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o48465|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_remap_node@PAGE
+    ADD X9, X9, parser_ast_expr_remap_node@PAGEOFF
+    BLR X9
+    MOV X21, X0
+    MOV X9, X19
+    MOV X0, X9
+    MOV X1, #96
+    MOV X2, #96
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o48921|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_remap_nodes@PAGE
+    ADD X9, X9, parser_ast_expr_remap_nodes@PAGEOFF
+    BLR X9
+
+    MOV X2, X0
+    STR X2, [SP, #-16]!
+    MOV X1, X21
+    LDR X2, [SP], #16
+    MOV X3, #96
+    MOV X4, #96
+    MOV X5, #1
+    BL L_list_prepend_helper
+
+    B L_case_o47981_done
+L_case_o47981_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o47981_done
+L_case_o47981_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_make_expr:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #384
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+    MOV X25, X6
+    MOV X26, X7
+
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o51414|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_empty_expr_nodes@PAGE
+    ADD X9, X9, parser_ast_empty_expr_nodes@PAGEOFF
+    BLR X9
+    MOV X27, X0
+    LDR X9, [X23, #8]
+    MOV X10, #0
+    CMP X9, X10
+    CSET X0, LT
+    MOV X28, X0
+    LDR X9, [X24, #8]
+    MOV X10, #0
+    CMP X9, X10
+    CSET X0, LT
+    STR X0, [X29, #-16]
+    MOV X3, X28
+L_case_o51953_br_0:
+    CMP W3, #1
+    B.NE L_case_o51953_br_1
+    MOV X0, X27
+    B L_case_o51953_done
+L_case_o51953_br_1:
+    CMP W3, #0
+    B.NE L_case_o51953_fb
+    LDR X0, [X23, #0]
+    B L_case_o51953_done
+L_case_o51953_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o51953_done
+L_case_o51953_done:
+    STR X0, [X29, #-32]
+    LDR X3, [X29, #-16]
+L_case_o52439_br_0:
+    CMP W3, #1
+    B.NE L_case_o52439_br_1
+    MOV X0, X27
+    B L_case_o52439_done
+L_case_o52439_br_1:
+    CMP W3, #0
+    B.NE L_case_o52439_fb
+    LDR X0, [X24, #0]
+    B L_case_o52439_done
+L_case_o52439_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o52439_done
+L_case_o52439_done:
+    STR X0, [X29, #-48]
+    MOV X3, X28
+L_case_o52530_br_0:
+    CMP W3, #1
+    B.NE L_case_o52530_br_1
+    MOV X0, #0
+    B L_case_o52530_done
+L_case_o52530_br_1:
+    CMP W3, #0
+    B.NE L_case_o52530_fb
+    LDR X16, [X29, #-32]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o52572|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_len@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_len@PAGEOFF
+    BLR X9
+
+    B L_case_o52530_done
+L_case_o52530_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o52530_done
+L_case_o52530_done:
+    STR X0, [X29, #-64]
+    LDR X3, [X29, #-16]
+L_case_o52630_br_0:
+    CMP W3, #1
+    B.NE L_case_o52630_br_1
+    MOV X0, #0
+    B L_case_o52630_done
+L_case_o52630_br_1:
+    CMP W3, #0
+    B.NE L_case_o52630_fb
+    LDR X16, [X29, #-48]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o52673|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_len@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_len@PAGEOFF
+    BLR X9
+
+    B L_case_o52630_done
+L_case_o52630_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o52630_done
+L_case_o52630_done:
+    STR X0, [X29, #-80]
+    LDR X16, [X29, #-32]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o53125|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_reverse@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_reverse@PAGEOFF
+    BLR X9
+    STR X0, [X29, #-96]
+    LDR X16, [X29, #-48]
+    STR X16, [SP, #-16]!
+    LDR X16, [X29, #-64]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o53584|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_remap_nodes@PAGE
+    ADD X9, X9, parser_ast_expr_remap_nodes@PAGEOFF
+    BLR X9
+    STR X0, [X29, #-112]
+    LDR X16, [X29, #-112]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o54047|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_reverse@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_reverse@PAGEOFF
+    BLR X9
+    STR X0, [X29, #-128]
+    LDR X16, [X29, #-96]
+    STR X16, [SP, #-16]!
+    LDR X16, [X29, #-128]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o54508|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_append@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_append@PAGEOFF
+    BLR X9
+    STR X0, [X29, #-144]
+    MOV X3, X28
+L_case_o54576_br_0:
+    CMP W3, #1
+    B.NE L_case_o54576_br_1
+    MOV X0, #-1
+    B L_case_o54576_done
+L_case_o54576_br_1:
+    CMP W3, #0
+    B.NE L_case_o54576_fb
+    LDR X0, [X23, #8]
+    B L_case_o54576_done
+L_case_o54576_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o54576_done
+L_case_o54576_done:
+    MOV X23, X0
+    LDR X3, [X29, #-16]
+L_case_o54661_br_0:
+    CMP W3, #1
+    B.NE L_case_o54661_br_1
+    MOV X0, #-1
+    B L_case_o54661_done
+L_case_o54661_br_1:
+    CMP W3, #0
+    B.NE L_case_o54661_fb
+    LDR X9, [X24, #8]
+    LDR X10, [X29, #-64]
+    ADD X0, X9, X10
+    B L_case_o54661_done
+L_case_o54661_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o54661_done
+L_case_o54661_done:
+    MOV X24, X0
+    SUB SP, SP, #96
+    MOV X9, X19
+    STR X9, [SP, #0]
+    MOV X9, X20
+    STR X9, [SP, #8]
+    MOV X9, X21
+    STR X9, [SP, #16]
+    MOV X9, X22
+    LDR X10, [X9, #0]
+    STR X10, [SP, #24]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #32]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #40]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #48]
+
+    MOV X9, X23
+    STR X9, [SP, #56]
+    MOV X9, X24
+    STR X9, [SP, #64]
+    MOV X9, X25
+    STR X9, [SP, #72]
+    MOV X9, X26
+    STR X9, [SP, #80]
+    MOV X0, SP
+    MOV X19, X0
+    LDR X16, [X29, #-144]
+    STR X16, [SP, #-16]!
+    MOV X2, X27
+    STR X2, [SP, #-16]!
+    MOV X1, X19
+    LDR X2, [SP], #16
+    MOV X3, #96
+    MOV X4, #96
+    MOV X5, #1
+    BL L_list_prepend_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o55741|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_append@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_append@PAGEOFF
+    BLR X9
+    MOV X19, X0
+    LDR X9, [X29, #-64]
+    LDR X10, [X29, #-80]
+    ADD X0, X9, X10
+    MOV X20, X0
+    SUB SP, SP, #16
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o56698|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_expr_nodes_reverse@PAGE
+    ADD X9, X9, parser_ast_expr_nodes_reverse@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #0]
+    MOV X9, X20
+    STR X9, [SP, #8]
+    MOV X0, SP
+    MOV X19, X0
+    MOV X0, X19
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #16
+
+    ADD SP, SP, #96
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #384
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_dummy_decl:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    SUB SP, SP, #208
+    MOV X9, #-1
+    STR X9, [SP, #80]
+    ADRP X9, L_str_0@PAGE
+    ADD X9, X9, L_str_0@PAGEOFF
+    STR X9, [SP, #88]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o58724|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_nil_list_param@PAGE
+    ADD X9, X9, parser_ast_nil_list_param@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #96]
+    ADRP X9, L_str_0@PAGE
+    ADD X9, X9, L_str_0@PAGEOFF
+    STR X9, [SP, #104]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o58786|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_zero_location@PAGE
+    ADD X9, X9, parser_ast_zero_location@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [X9, #0]
+    STR X10, [SP, #112]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #120]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #128]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #136]
+
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o58813|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_zero_location@PAGE
+    ADD X9, X9, parser_ast_zero_location@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [X9, #0]
+    STR X10, [SP, #144]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #152]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #160]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #168]
+
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o58836|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_dummy_expr@PAGE
+    ADD X9, X9, parser_ast_dummy_expr@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [X9, #0]
+    STR X10, [SP, #176]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #184]
+
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o58868|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_empty_effect_name_list@PAGE
+    ADD X9, X9, parser_ast_empty_effect_name_list@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #192]
+    ADD X0, SP, #80
+    MOV X19, X0
+    MOV X0, X19
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #208
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    LDR X3, [X1, #96]
+    STR X3, [X4, #96]
+    LDR X3, [X1, #104]
+    STR X3, [X4, #104]
+    LDR X3, [X1, #112]
+    STR X3, [X4, #112]
+    LDR X3, [X1, #120]
+    STR X3, [X4, #120]
+    LDR X3, [X1, #128]
+    STR X3, [X4, #128]
+    LDR X3, [X1, #136]
+    STR X3, [X4, #136]
+    LDR X3, [X1, #144]
+    STR X3, [X4, #144]
+    LDR X3, [X1, #152]
+    STR X3, [X4, #152]
+    LDR X3, [X1, #160]
+    STR X3, [X4, #160]
+    LDR X3, [X1, #168]
+    STR X3, [X4, #168]
+    LDR X3, [X1, #176]
+    STR X3, [X4, #176]
+    LDR X3, [X1, #184]
+    STR X3, [X4, #184]
+    LDR X3, [X1, #192]
+    STR X3, [X4, #192]
+    LDR X3, [X1, #200]
+    STR X3, [X4, #200]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #208
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_empty_list_decl:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #0
+    MOV X19, X0
+    MOV X0, X19
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_cons_declaration:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X2, X20
+    STR X2, [SP, #-16]!
+    MOV X1, X19
+    LDR X2, [SP], #16
+    MOV X3, #128
+    MOV X4, #128
+    MOV X5, #1
+    BL L_list_prepend_helper
+    MOV X21, X0
+    MOV X0, X21
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_dummy_effect_name:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    SUB SP, SP, #80
+    ADRP X9, L_str_0@PAGE
+    ADD X9, X9, L_str_0@PAGEOFF
+    STR X9, [SP, #32]
+    ADRP X9, L_str_0@PAGE
+    ADD X9, X9, L_str_0@PAGEOFF
+    STR X9, [SP, #40]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o67056|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_zero_location@PAGE
+    ADD X9, X9, parser_ast_zero_location@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [X9, #0]
+    STR X10, [SP, #48]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #56]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #64]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #72]
+
+    ADD X0, SP, #32
+    MOV X19, X0
+    MOV X0, X19
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #80
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #80
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_empty_effect_name_list:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #0
+    MOV X19, X0
+    MOV X0, X19
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_cons_effect_name:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X2, X20
+    STR X2, [SP, #-16]!
+    MOV X1, X19
+    LDR X2, [SP], #16
+    MOV X3, #48
+    MOV X4, #48
+    MOV X5, #1
+    BL L_list_prepend_helper
+    MOV X21, X0
+    MOV X0, X21
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_rebuild_effect_name_list:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X19, X0
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o68678_br_0:
+    CMP W3, #1
+    B.NE L_case_o68678_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o68715|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_empty_effect_name_list@PAGE
+    ADD X9, X9, parser_ast_empty_effect_name_list@PAGEOFF
+    BLR X9
+
+    B L_case_o68678_done
+L_case_o68678_br_1:
+    CMP W3, #0
+    B.NE L_case_o68678_fb
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    LDR X16, [X11, #0]
+    STR X16, [SP, #-16]!
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    LDR X16, [X11, #8]
+    STR X16, [SP, #-16]!
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    ADD X16, X11, #16
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o68775|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_rebuild_effect_name@PAGE
+    ADD X9, X9, parser_ast_rebuild_effect_name@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    MOV X1, #48
+    MOV X2, #48
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o68850|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_rebuild_effect_name_list@PAGE
+    ADD X9, X9, parser_ast_rebuild_effect_name_list@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o68758|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_cons_effect_name@PAGE
+    ADD X9, X9, parser_ast_cons_effect_name@PAGEOFF
+    BLR X9
+
+    B L_case_o68678_done
+L_case_o68678_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o68678_done
+L_case_o68678_done:
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_declaration_from_lambda_lift:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #32
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+    MOV X25, X6
+    MOV X26, X7
+
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o71021|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_rebuild_tuple_decompose_binding_list@PAGE
+    ADD X9, X9, parser_ast_rebuild_tuple_decompose_binding_list@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o70981|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_rebuild_param_list_from_lambda_bindings@PAGE
+    ADD X9, X9, parser_ast_rebuild_param_list_from_lambda_bindings@PAGEOFF
+    BLR X9
+    MOV X27, X0
+    MOV X16, X27
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o71226|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_append_param_list@PAGE
+    ADD X9, X9, parser_ast_append_param_list@PAGEOFF
+    BLR X9
+    MOV X28, X0
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o71416|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_rebuild_effect_name_list@PAGE
+    ADD X9, X9, parser_ast_rebuild_effect_name_list@PAGEOFF
+    BLR X9
+    MOV X20, X0
+    SUB SP, SP, #128
+    MOV X9, #0
+    STR X9, [SP, #0]
+    MOV X9, X19
+    STR X9, [SP, #8]
+    MOV X9, X28
+    STR X9, [SP, #16]
+    MOV X9, X22
+    STR X9, [SP, #24]
+    MOV X9, X23
+    LDR X10, [X9, #0]
+    STR X10, [SP, #32]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #40]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #48]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #56]
+
+    MOV X9, X24
+    LDR X10, [X9, #0]
+    STR X10, [SP, #64]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #72]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #80]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #88]
+
+    MOV X9, X25
+    LDR X10, [X9, #0]
+    STR X10, [SP, #96]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #104]
+
+    MOV X9, X20
+    STR X9, [SP, #112]
+    MOV X0, SP
+    MOV X19, X0
+    MOV X0, X19
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #128
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    LDR X3, [X1, #96]
+    STR X3, [X4, #96]
+    LDR X3, [X1, #104]
+    STR X3, [X4, #104]
+    LDR X3, [X1, #112]
+    STR X3, [X4, #112]
+    LDR X3, [X1, #120]
+    STR X3, [X4, #120]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #128
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #32
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_declaration_with_body:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    SUB SP, SP, #128
+    LDR X9, [X19, #0]
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X16, [X19, #16]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o75910|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_rebuild_param_list@PAGE
+    ADD X9, X9, parser_ast_rebuild_param_list@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    ADD X9, X19, #32
+
+    LDR X10, [X9, #0]
+    STR X10, [SP, #32]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #40]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #48]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #56]
+
+    ADD X9, X19, #64
+
+    LDR X10, [X9, #0]
+    STR X10, [SP, #64]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #72]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #80]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #88]
+
+    MOV X9, X20
+    LDR X10, [X9, #0]
+    STR X10, [SP, #96]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #104]
+
+    LDR X16, [X19, #112]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o76092|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_rebuild_effect_name_list@PAGE
+    ADD X9, X9, parser_ast_rebuild_effect_name_list@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #112]
+    MOV X0, SP
+    MOV X21, X0
+    MOV X0, X21
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #128
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    LDR X3, [X1, #96]
+    STR X3, [X4, #96]
+    LDR X3, [X1, #104]
+    STR X3, [X4, #104]
+    LDR X3, [X1, #112]
+    STR X3, [X4, #112]
+    LDR X3, [X1, #120]
+    STR X3, [X4, #120]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #128
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_empty_named_program_list:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #0
+    MOV X19, X0
+    MOV X0, X19
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_cons_named_program:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    SUB SP, SP, #48
+    MOV X9, X19
+    STR X9, [SP, #0]
+    MOV X9, X20
+    LDR X10, [X9, #0]
+    STR X10, [SP, #8]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #16]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #24]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #32]
+    LDR X10, [X9, #32]
+    STR X10, [SP, #40]
+
+    MOV X0, SP
+    MOV X22, X0
+    MOV X2, X21
+    STR X2, [SP, #-16]!
+    MOV X1, X22
+    LDR X2, [SP], #16
+    MOV X3, #48
+    MOV X4, #48
+    MOV X5, #1
+    BL L_list_prepend_helper
+    MOV X23, X0
+    MOV X0, X23
+    ADD SP, SP, #48
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_strings_equal_exact_at_i:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X9, X21
+    MOV X10, X22
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o86315_br_0:
+    CMP W3, #1
+    B.NE L_case_o86315_br_1
+    MOV X0, #1
+    B L_case_o86315_done
+L_case_o86315_br_1:
+    CMP W3, #0
+    B.NE L_case_o86315_fb
+    MOV X0, X19
+    MOV X1, X21
+    STP X0, X1, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X2, X9, X10
+    LDP X0, X1, [SP], #16
+    BL L_substring_helper
+    MOV X23, X0
+    MOV X0, X20
+    MOV X1, X21
+    STP X0, X1, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+    ADD X2, X9, X10
+    LDP X0, X1, [SP], #16
+    BL L_substring_helper
+    MOV X24, X0
+    MOV X9, X23
+    MOV X10, X24
+    STP X0, X1, [SP, #-16]!
+    MOV X0, X9
+    MOV X1, X10
+    BL L_string_cmp_helper
+    CMP W0, #0
+    CSET W12, EQ
+    LDP X0, X1, [SP], #16
+    MOV X3, X12
+
+L_case_o86482_br_0:
+    CMP W3, #0
+    B.NE L_case_o86482_br_1
+    MOV X0, #0
+    B L_case_o86482_done
+L_case_o86482_br_1:
+    CMP W3, #1
+    B.NE L_case_o86482_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o86553|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_strings_equal_exact_at_i@PAGE
+    ADD X9, X9, parser_ast_strings_equal_exact_at_i@PAGEOFF
+    BLR X9
+
+    B L_case_o86482_done
+L_case_o86482_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o86482_done
+L_case_o86482_done:
+
+    B L_case_o86315_done
+L_case_o86315_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o86315_done
+L_case_o86315_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_strings_equal_exact_i:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X0, X19
+    STR X0, [SP, #-16]!
+    BL L_length_bytes_helper
+    MOV X12, X0
+    LDR X0, [SP], #16
+    MOV X0, X12
+    MOV X21, X0
+    MOV X0, X20
+    STR X0, [SP, #-16]!
+    BL L_length_bytes_helper
+    MOV X12, X0
+    LDR X0, [SP], #16
+    MOV X0, X12
+    MOV X22, X0
+    MOV X9, X21
+    MOV X10, X22
+    CMP X9, X10
+    CSET X3, LT
+L_case_o86757_br_0:
+    CMP W3, #1
+    B.NE L_case_o86757_br_1
+    MOV X0, #0
+    B L_case_o86757_done
+L_case_o86757_br_1:
+    CMP W3, #0
+    B.NE L_case_o86757_fb
+    MOV X9, X22
+    MOV X10, X21
+    CMP X9, X10
+    CSET X3, LT
+L_case_o86811_br_0:
+    CMP W3, #1
+    B.NE L_case_o86811_br_1
+    MOV X0, #0
+    B L_case_o86811_done
+L_case_o86811_br_1:
+    CMP W3, #0
+    B.NE L_case_o86811_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o86873|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_strings_equal_exact_at_i@PAGE
+    ADD X9, X9, parser_ast_strings_equal_exact_at_i@PAGEOFF
+    BLR X9
+
+    B L_case_o86811_done
+L_case_o86811_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o86811_done
+L_case_o86811_done:
+
+    B L_case_o86757_done
+L_case_o86757_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o86757_done
+L_case_o86757_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+parser_ast_find_named_program:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X20
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o89111_br_0:
+    CMP W3, #1
+    B.NE L_case_o89111_br_1
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o90142|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_empty_list_decl@PAGE
+    ADD X9, X9, parser_ast_empty_list_decl@PAGEOFF
+    BLR X9
+    MOV X21, X0
+    SUB SP, SP, #16
+    MOV X9, #0
+    STR X9, [SP, #0]
+    SUB SP, SP, #80
+    MOV X9, X21
+    STR X9, [SP, #32]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o91272|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_zero_location@PAGE
+    ADD X9, X9, parser_ast_zero_location@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [X9, #0]
+    STR X10, [SP, #40]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #48]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #56]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #64]
+
+    ADD X9, SP, #32
+    MOV X0, X9
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #80
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    MOV X0, X4
+    ADD SP, SP, #16
+    MOV X9, X0
+    ADD SP, SP, #80
+    STR X9, [SP, #8]
+    MOV X0, SP
+    MOV X22, X0
+    MOV X0, X22
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #16
+
+    B L_case_o89111_done
+L_case_o89111_br_1:
+    CMP W3, #0
+    B.NE L_case_o89111_fb
+    MOV X10, #1
+
+
+    STR X10, [SP, #-16]!
+    MOV X9, X20
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    LDR X16, [X11, #0]
+    STR X16, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o91389|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_strings_equal_exact_i@PAGE
+    ADD X9, X9, parser_ast_strings_equal_exact_i@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o91384_br_0:
+    CMP W3, #1
+    B.NE L_case_o91384_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X0, X9
+    MOV X1, #48
+    MOV X2, #48
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o91470|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_find_named_program@PAGE
+    ADD X9, X9, parser_ast_find_named_program@PAGEOFF
+    BLR X9
+
+    B L_case_o91384_done
+L_case_o91384_br_1:
+    CMP W3, #0
+    B.NE L_case_o91384_fb
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X20
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    LDR X9, [X11, #8]
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o91529_br_0:
+    CMP W3, #1
+    B.NE L_case_o91529_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X0, X9
+    MOV X1, #48
+    MOV X2, #48
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o91687|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, parser_ast_find_named_program@PAGE
+    ADD X9, X9, parser_ast_find_named_program@PAGEOFF
+    BLR X9
+
+    B L_case_o91529_done
+L_case_o91529_br_1:
+    CMP W3, #0
+    B.NE L_case_o91529_fb
+    SUB SP, SP, #16
+    MOV X9, #1
+    STR X9, [SP, #0]
+    MOV X9, X20
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    MOV X0, X10
+    MOV X11, X0
+    ADD X9, X11, #8
+
+    STR X9, [SP, #8]
+    MOV X0, SP
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #16
+    B L_case_o91529_done
+L_case_o91529_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o91529_done
+L_case_o91529_done:
+
+    B L_case_o91384_done
+L_case_o91384_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o91384_done
+L_case_o91384_done:
+
+    B L_case_o89111_done
+L_case_o89111_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o89111_done
+L_case_o89111_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+L_pa_helper:
+    CMP X0, #0
+    B.lt L_pa_oob
+    CMP X0, #23
+    B.ge L_pa_oob
+    ADRP X9, L_pa_table@PAGE
+    ADD X9, X9, L_pa_table@PAGEOFF
+    LSL X10, X0, #4
+    ADD X9, X9, X10
+    LDR X1, [X9]
+    LDR X2, [X9, #8]
+    MOV X0, #1
+    MOV X16, #4
+    SVC #0x80
+    MOV X0, #0
+    RET
+L_pa_oob:
+    MOV X0, #0
+    RET
+
+L_substring_helper:
+    STP X19, X20, [SP, #-80]!
+    STP X21, X22, [SP, #16]
+    STP X23, X14, [SP, #32]
+    STP X15, X30, [SP, #48]
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    CMP X20, #0
+    CSEL X20, XZR, X20, LT
+    CMP X21, #0
+    CSEL X21, XZR, X21, LT
+    LDR X10, [X19]
+    MOV X9, #-1
+    CMP X10, X9
+    B.NE L_ss_bad
+    LDR X8, [X19, #8]
+    LDR X22, [X19, #16]
+    B L_ss_have_base
+L_ss_bad:
+    BRK #1
+L_ss_have_base:
+    CMP X20, X21
+    B.GE L_ss_empty
+    ADRP X1, L_ss_ascii_key@PAGE
+    ADD X1, X1, L_ss_ascii_key@PAGEOFF
+    LDR X2, [X1]
+    CMP X2, X19
+    B.NE L_ss_ascii_classify
+    ADRP X1, L_ss_ascii_flag@PAGE
+    ADD X1, X1, L_ss_ascii_flag@PAGEOFF
+    LDR X2, [X1]
+    CBNZ X2, L_ss_ascii_fast
+    B L_ss_utf8_slow
+L_ss_ascii_classify:
+    MOV X9, #0
+    MOV X14, #1
+L_ss_cls:
+    CMP X9, X22
+    B.GE L_ss_cls_done
+    LDRB W10, [X8, X9]
+    CMP W10, #0x80
+    CSEL X14, XZR, X14, HS
+    ADD X9, X9, #1
+    B L_ss_cls
+L_ss_cls_done:
+    ADRP X1, L_ss_ascii_key@PAGE
+    ADD X1, X1, L_ss_ascii_key@PAGEOFF
+    STR X19, [X1]
+    ADRP X1, L_ss_ascii_flag@PAGE
+    ADD X1, X1, L_ss_ascii_flag@PAGEOFF
+    STR X14, [X1]
+    ADRP X1, L_ss_cached_len@PAGE
+    ADD X1, X1, L_ss_cached_len@PAGEOFF
+    STR X22, [X1]
+    CBNZ X14, L_ss_ascii_fast
+    B L_ss_utf8_slow
+L_ss_ascii_fast:
+    CMP X20, X22
+    CSEL X23, X22, X20, HI
+    CMP X21, X22
+    CSEL X9, X22, X21, HI
+    CMP X23, X9
+    CSEL X23, X9, X23, HI
+    SUB X11, X9, X23
+    B L_ss_materialize
+L_ss_utf8_slow:
+    ADRP X1, L_ss_cur_key@PAGE
+    ADD X1, X1, L_ss_cur_key@PAGEOFF
+    LDR X2, [X1]
+    CMP X2, X19
+    B.NE L_ss_from_zero
+    ADRP X1, L_ss_cur_char@PAGE
+    ADD X1, X1, L_ss_cur_char@PAGEOFF
+    LDR X14, [X1]
+    ADRP X1, L_ss_cur_byte@PAGE
+    ADD X1, X1, L_ss_cur_byte@PAGEOFF
+    LDR X9, [X1]
+    CMP X9, X22
+    CSEL X9, X22, X9, HI
+    CMP X20, X14
+    B.LO L_ss_bwd
+    B L_ss_find_start
+L_ss_from_zero:
+    MOV X9, #0
+    MOV X14, #0
+    B L_ss_find_start
+L_ss_bwd:
+    CMP X14, X20
+    B.LE L_ss_start_found
+    CBZ X9, L_ss_start_found
+    SUB X9, X9, #1
+L_ss_bwd_cont:
+    LDRB W10, [X8, X9]
+    LSR W11, W10, #6
+    CMP W11, #2
+    B.NE L_ss_bwd_lead
+    CBZ X9, L_ss_bwd_lead
+    SUB X9, X9, #1
+    B L_ss_bwd_cont
+L_ss_bwd_lead:
+    SUB X14, X14, #1
+    B L_ss_bwd
+L_ss_find_start:
+    CMP X14, X20
+    B.GE L_ss_start_found
+    CMP X9, X22
+    B.GE L_ss_start_found
+    LDRB W10, [X8, X9]
+    CMP W10, #0x80
+    B.LO L_ss_adv1
+    CMP W10, #0xC2
+    B.LO L_ss_adv1
+    CMP W10, #0xE0
+    B.LO L_ss_adv2
+    CMP W10, #0xF0
+    B.LO L_ss_adv3
+    CMP W10, #0xF8
+    B.LO L_ss_adv4
+L_ss_adv1:
+    ADD X9, X9, #1
+    ADD X14, X14, #1
+    B L_ss_find_start
+L_ss_adv2:
+    SUB X18, X22, X9
+    MOV X17, #2
+    CMP X18, #2
+    CSEL X17, X18, X17, LO
+    ADD X9, X9, X17
+    ADD X14, X14, #1
+    B L_ss_find_start
+L_ss_adv3:
+    SUB X18, X22, X9
+    MOV X17, #3
+    CMP X18, #3
+    CSEL X17, X18, X17, LO
+    ADD X9, X9, X17
+    ADD X14, X14, #1
+    B L_ss_find_start
+L_ss_adv4:
+    SUB X18, X22, X9
+    MOV X17, #4
+    CMP X18, #4
+    CSEL X17, X18, X17, LO
+    ADD X9, X9, X17
+    ADD X14, X14, #1
+    B L_ss_find_start
+L_ss_start_found:
+    MOV X23, X9
+L_ss_find_end:
+    CMP X14, X21
+    B.GE L_ss_end_found
+    CMP X9, X22
+    B.GE L_ss_end_found
+    LDRB W10, [X8, X9]
+    CMP W10, #0x80
+    B.LO L_ss_eadv1
+    CMP W10, #0xC2
+    B.LO L_ss_eadv1
+    CMP W10, #0xE0
+    B.LO L_ss_eadv2
+    CMP W10, #0xF0
+    B.LO L_ss_eadv3
+    CMP W10, #0xF8
+    B.LO L_ss_eadv4
+L_ss_eadv1:
+    ADD X9, X9, #1
+    ADD X14, X14, #1
+    B L_ss_find_end
+L_ss_eadv2:
+    SUB X18, X22, X9
+    MOV X17, #2
+    CMP X18, #2
+    CSEL X17, X18, X17, LO
+    ADD X9, X9, X17
+    ADD X14, X14, #1
+    B L_ss_find_end
+L_ss_eadv3:
+    SUB X18, X22, X9
+    MOV X17, #3
+    CMP X18, #3
+    CSEL X17, X18, X17, LO
+    ADD X9, X9, X17
+    ADD X14, X14, #1
+    B L_ss_find_end
+L_ss_eadv4:
+    SUB X18, X22, X9
+    MOV X17, #4
+    CMP X18, #4
+    CSEL X17, X18, X17, LO
+    ADD X9, X9, X17
+    ADD X14, X14, #1
+    B L_ss_find_end
+L_ss_end_found:
+    CMP X23, X22
+    CSEL X23, X22, X23, GT
+    CMP X9, X23
+    CSEL X9, X23, X9, LO
+    CMP X9, X22
+    CSEL X9, X22, X9, GT
+    SUB X11, X9, X23
+    ADRP X1, L_ss_cur_key@PAGE
+    ADD X1, X1, L_ss_cur_key@PAGEOFF
+    STR X19, [X1]
+    ADRP X1, L_ss_cur_char@PAGE
+    ADD X1, X1, L_ss_cur_char@PAGEOFF
+    STR X14, [X1]
+    ADRP X1, L_ss_cur_byte@PAGE
+    ADD X1, X1, L_ss_cur_byte@PAGEOFF
+    STR X9, [X1]
+    B L_ss_materialize
+L_ss_materialize:
+    CBZ X11, L_ss_empty
+    CMP X11, #1
+    B.NE L_ss_heap
+    LDRB W13, [X8, X23]
+    ADRP X0, L_ss_1char_ready@PAGE
+    ADD X0, X0, L_ss_1char_ready@PAGEOFF
+    LDR X1, [X0]
+    CBNZ X1, L_ss_1char_ok
+    ADRP X2, L_ss_1char_table@PAGE
+    ADD X2, X2, L_ss_1char_table@PAGEOFF
+    MOV X3, #0
+    MOV X4, #-1
+L_ss_1char_init:
+    STR X4, [X2]
+    ADD X5, X2, #24
+    STR X5, [X2, #8]
+    MOV X6, #1
+    STR X6, [X2, #16]
+    STRB W3, [X2, #24]
+    STRB WZR, [X2, #25]
+    ADD X2, X2, #32
+    ADD X3, X3, #1
+    CMP X3, #256
+    B.LO L_ss_1char_init
+    MOV X1, #1
+    STR X1, [X0]
+L_ss_1char_ok:
+    ADRP X0, L_ss_1char_table@PAGE
+    ADD X0, X0, L_ss_1char_table@PAGEOFF
+    ADD X0, X0, X13, LSL #5
+    B L_ss_ret
+L_ss_empty:
+    ADRP X0, L_ss_empty_str@PAGE
+    ADD X0, X0, L_ss_empty_str@PAGEOFF
+    B L_ss_ret
+L_ss_heap:
+    ADD X0, X11, #25
+    BL L_ss_bump_alloc
+    CBZ X0, L_ss_ret
+    MOV X15, X0
+    MOV X9, #-1
+    STR X9, [X15]
+    ADD X9, X15, #24
+    STR X9, [X15, #8]
+    STR X11, [X15, #16]
+    ADD X10, X8, X23
+    MOV X12, X11
+L_ss_cp:
+    CBZ X12, L_ss_cp_done
+    LDRB W13, [X10]
+    STRB W13, [X9]
+    ADD X9, X9, #1
+    ADD X10, X10, #1
+    SUB X12, X12, #1
+    B L_ss_cp
+L_ss_cp_done:
+    STRB WZR, [X9]
+    MOV X0, X15
+L_ss_ret:
+    LDP X15, X30, [SP, #48]
+    LDP X23, X14, [SP, #32]
+    LDP X21, X22, [SP, #16]
+    LDP X19, X20, [SP], #80
+    RET
+L_ss_bump_alloc:
+    STP X19, X30, [SP, #-32]!
+    STP X20, X21, [SP, #16]
+    ADD X0, X0, #7
+    LSR X0, X0, #3
+    LSL X19, X0, #3
+    ADRP X20, L_ss_arena_ptr@PAGE
+    ADD X20, X20, L_ss_arena_ptr@PAGEOFF
+    LDR X21, [X20]
+    CBZ X21, L_ss_bump_new
+    ADRP X1, L_ss_arena_end@PAGE
+    ADD X1, X1, L_ss_arena_end@PAGEOFF
+    LDR X2, [X1]
+    ADD X3, X21, X19
+    CMP X3, X2
+    B.HI L_ss_bump_new
+    STR X3, [X20]
+    MOV X0, X21
+    LDP X20, X21, [SP, #16]
+    LDP X19, X30, [SP], #32
+    RET
+L_ss_bump_new:
+    ADD X1, X19, #16
+    MOVZ X2, #0x40, LSL #16
+    CMP X1, X2
+    CSEL X1, X1, X2, HI
+    MOV X21, X1
+    MOV X0, #0
+    MOV X2, #3
+    MOV X3, #0x1002
+    MOV X4, #-1
+    MOV X5, #0
+    MOVZ X16, #0xC5
+    MOVK X16, #0x200, LSL #16
+    SVC #0x80
+    CMN X0, #1
+    B.EQ L_ss_bump_fail
+    ADRP X2, L_ss_arena_head@PAGE
+    ADD X2, X2, L_ss_arena_head@PAGEOFF
+    LDR X3, [X2]
+    STR X3, [X0]
+    STR X21, [X0, #8]
+    STR X0, [X2]
+    ADD X1, X0, #16
+    ADD X3, X1, X19
+    STR X3, [X20]
+    ADRP X2, L_ss_arena_end@PAGE
+    ADD X2, X2, L_ss_arena_end@PAGEOFF
+    ADD X3, X0, X21
+    STR X3, [X2]
+    MOV X0, X1
+    LDP X20, X21, [SP, #16]
+    LDP X19, X30, [SP], #32
+    RET
+L_ss_bump_fail:
+    MOV X0, #0
+    LDP X20, X21, [SP, #16]
+    LDP X19, X30, [SP], #32
+    RET
+L_ss_arena_release:
+    STP X19, X30, [SP, #-32]!
+    STP X20, X21, [SP, #16]
+    ADRP X20, L_ss_arena_head@PAGE
+    ADD X20, X20, L_ss_arena_head@PAGEOFF
+    LDR X19, [X20]
+L_ss_rel_loop:
+    CBZ X19, L_ss_rel_done
+    LDR X21, [X19]
+    LDR X1, [X19, #8]
+    MOV X0, X19
+    MOVZ X16, #73
+    MOVK X16, #0x200, LSL #16
+    SVC #0x80
+    MOV X19, X21
+    B L_ss_rel_loop
+L_ss_rel_done:
+    STR XZR, [X20]
+    ADRP X1, L_ss_arena_ptr@PAGE
+    ADD X1, X1, L_ss_arena_ptr@PAGEOFF
+    STR XZR, [X1]
+    ADRP X1, L_ss_arena_end@PAGE
+    ADD X1, X1, L_ss_arena_end@PAGEOFF
+    STR XZR, [X1]
+    ADRP X1, L_ss_ascii_key@PAGE
+    ADD X1, X1, L_ss_ascii_key@PAGEOFF
+    STR XZR, [X1]
+    ADRP X1, L_ss_ascii_flag@PAGE
+    ADD X1, X1, L_ss_ascii_flag@PAGEOFF
+    STR XZR, [X1]
+    ADRP X1, L_ss_cached_len@PAGE
+    ADD X1, X1, L_ss_cached_len@PAGEOFF
+    STR XZR, [X1]
+    ADRP X1, L_ss_cur_key@PAGE
+    ADD X1, X1, L_ss_cur_key@PAGEOFF
+    STR XZR, [X1]
+    ADRP X1, L_ss_cur_char@PAGE
+    ADD X1, X1, L_ss_cur_char@PAGEOFF
+    STR XZR, [X1]
+    ADRP X1, L_ss_cur_byte@PAGE
+    ADD X1, X1, L_ss_cur_byte@PAGEOFF
+    STR XZR, [X1]
+    LDP X20, X21, [SP, #16]
+    LDP X19, X30, [SP], #32
+    RET
+    .section __DATA,__bss
+    .p2align 3
+L_ss_ascii_key:
+    .space 8
+L_ss_ascii_flag:
+    .space 8
+L_ss_cached_len:
+    .space 8
+L_ss_cur_key:
+    .space 8
+L_ss_cur_char:
+    .space 8
+L_ss_cur_byte:
+    .space 8
+L_ss_arena_ptr:
+    .space 8
+L_ss_arena_end:
+    .space 8
+L_ss_arena_head:
+    .space 8
+L_ss_1char_ready:
+    .space 8
+L_ss_1char_table:
+    .space 8192
+    .section __DATA,__data
+    .p2align 3
+L_ss_empty_str:
+    .quad -1
+    .quad L_ss_empty_bytes
+    .quad 0
+L_ss_empty_bytes:
+    .byte 0
+    .section __TEXT,__text,regular,pure_instructions
+    .p2align 2
+
+L_length_bytes_helper:
+    STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    MOV X19, X0
+    CBZ X19, Llb_z
+    LDR X1, [X19]
+    MOV X2, #-1
+    CMP X1, X2
+    B.NE Llb_bad
+    LDR X0, [X19, #16]
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+Llb_z:
+    MOV X0, #0
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+Llb_bad:
+    BRK #1
+
+L_string_cmp_helper:
+    STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    CBZ X19, Lcmp_anull
+    CBZ X20, Lcmp_gt
+    LDR X1, [X19]
+    MOV X2, #-1
+    CMP X1, X2
+    B.NE Lcmp_bad
+    LDR X21, [X19, #8]
+    LDR X22, [X19, #16]
+    LDR X1, [X20]
+    CMP X1, X2
+    B.NE Lcmp_bad
+    LDR X23, [X20, #8]
+    LDR X24, [X20, #16]
+Lcmp_n2_done:
+    MOV X25, X22
+    CMP X25, X24
+    B.LS Lcmp_minok
+    MOV X25, X24
+Lcmp_minok:
+    CBZ X25, Lcmp_len
+    MOV X26, X21
+    MOV X27, X23
+Lcmp_cloop:
+    LDRB W28, [X26], #1
+    LDRB W1, [X27], #1
+    CMP W28, W1
+    B.LO Lcmp_lt
+    B.HI Lcmp_gt
+    SUBS X25, X25, #1
+    B.NE Lcmp_cloop
+Lcmp_len:
+    CMP X22, X24
+    B.EQ Lcmp_eq
+    B.LO Lcmp_lt
+    B Lcmp_gt
+Lcmp_anull:
+    CBZ X20, Lcmp_eq
+Lcmp_lt:
+    MOV W0, #-1
+    B Lcmp_exit
+Lcmp_gt:
+    MOV W0, #1
+    B Lcmp_exit
+Lcmp_eq:
+    MOV W0, #0
+Lcmp_exit:
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+Lcmp_bad:
+    BRK #1
+
+L_list_prepend_helper:
+    STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X1, X2, [SP, #-16]!
+    STP X3, X4, [SP, #-16]!
+    STR X5, [SP, #-16]!
+    CBZ X2, L_lph_new_chunk
+    LDR X6, [X2, #16]
+    CBZ X6, L_lph_new_chunk
+    LDR X7, [X2, #8]
+    SUB X8, X6, X3
+    ADD X10, X7, X8
+    LDR X11, [SP]
+    CBZ X11, L_lph_room_scalar
+    MOV X12, #0
+L_lph_room_agg:
+    CMP X12, X3
+    B.GE L_lph_room_stored
+    LDR X13, [X1, X12]
+    STR X13, [X10, X12]
+    ADD X12, X12, #8
+    B L_lph_room_agg
+    B L_lph_room_stored
+L_lph_room_scalar:
+    CMP X3, #8
+    B.EQ L_lph_rs8
+    CMP X3, #4
+    B.EQ L_lph_rs4
+    CMP X3, #2
+    B.EQ L_lph_rs2
+    STRB W1, [X10]
+    B L_lph_room_stored
+L_lph_rs2:
+    STRH W1, [X10]
+    B L_lph_room_stored
+L_lph_rs4:
+    STR W1, [X10]
+    B L_lph_room_stored
+L_lph_rs8:
+    STR X1, [X10]
+L_lph_room_stored:
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDR X5, [SP], #16
+    LDP X3, X4, [SP], #16
+    LDP X1, X2, [SP], #16
+    LDR X6, [X2]
+    ADD X6, X6, #1
+    STR X6, [X0]
+    LDR X7, [X2, #8]
+    STR X7, [X0, #8]
+    LDR X8, [X2, #16]
+    SUB X8, X8, X3
+    STR X8, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+L_lph_new_chunk:
+    ADD X0, X4, #8
+    BL _silica_rt_region_alloc
+    MOV X6, X0
+    LDR X5, [SP]
+    LDP X3, X4, [SP, #16]
+    LDP X1, X2, [SP, #32]
+    SUB X8, X4, X3
+    ADD X10, X6, X8
+    CBZ X5, L_lph_new_scalar
+    MOV X12, #0
+L_lph_new_agg:
+    CMP X12, X3
+    B.GE L_lph_new_stored
+    LDR X13, [X1, X12]
+    STR X13, [X10, X12]
+    ADD X12, X12, #8
+    B L_lph_new_agg
+    B L_lph_new_stored
+L_lph_new_scalar:
+    CMP X3, #8
+    B.EQ L_lph_ns8
+    CMP X3, #4
+    B.EQ L_lph_ns4
+    CMP X3, #2
+    B.EQ L_lph_ns2
+    STRB W1, [X10]
+    B L_lph_new_stored
+L_lph_ns2:
+    STRH W1, [X10]
+    B L_lph_new_stored
+L_lph_ns4:
+    STR W1, [X10]
+    B L_lph_new_stored
+L_lph_ns8:
+    STR X1, [X10]
+L_lph_new_stored:
+    CBZ X2, L_lph_next_nil
+    LDR X9, [X2, #8]
+    STR X9, [X6, X4]
+    B L_lph_alloc_handle
+L_lph_next_nil:
+    STR XZR, [X6, X4]
+L_lph_alloc_handle:
+    STP X6, X8, [SP, #-16]!
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDP X6, X8, [SP], #16
+    LDR X5, [SP], #16
+    LDP X3, X4, [SP], #16
+    LDP X1, X2, [SP], #16
+    CBZ X2, L_lph_len1
+    LDR X9, [X2]
+    ADD X9, X9, #1
+    B L_lph_setlen
+L_lph_len1:
+    MOV X9, #1
+L_lph_setlen:
+    STR X9, [X0]
+    STR X6, [X0, #8]
+    STR X8, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+
+L_list_tail_helper:
+    STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    LDR X3, [X0]
+    LDR X4, [X0, #8]
+    LDR X5, [X0, #16]
+    ADD X6, X5, X1
+    CMP X6, X2
+    B.GE L_lth_next_chunk
+    SUB X3, X3, #1
+    CBZ X3, L_lth_nil
+    STP X3, X4, [SP, #-16]!
+    STP X6, XZR, [SP, #-16]!
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDP X6, XZR, [SP], #16
+    LDP X3, X4, [SP], #16
+    STR X3, [X0]
+    STR X4, [X0, #8]
+    STR X6, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+L_lth_next_chunk:
+    LDR X7, [X4, X2]
+    CBZ X7, L_lth_nil
+    SUB X3, X3, #1
+    CBZ X3, L_lth_nil
+    STP X3, X7, [SP, #-16]!
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDP X3, X7, [SP], #16
+    STR X3, [X0]
+    STR X7, [X0, #8]
+    STR XZR, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+L_lth_nil:
+    MOV X0, #0
+    LDP X29, X30, [SP], #16
+    RET
+
+L_list_length_helper:
+    CBZ X0, L_list_len_nil
+    LDR X0, [X0]
+    RET
+L_list_len_nil:
+    MOV X0, #0
+    RET
+
+L_list_at_helper:
+    CBZ X0, L_lat_oob
+    LDR X4, [X0]
+    CMP X1, X4
+    B.HS L_lat_oob
+    LDR X5, [X0, #8]
+    LDR X6, [X0, #16]
+L_lat_loop:
+    CBZ X1, L_lat_done
+    ADD X6, X6, X2
+    CMP X6, X3
+    B.LT L_lat_step
+    LDR X5, [X5, X3]
+    MOV X6, #0
+L_lat_step:
+    SUB X1, X1, #1
+    B L_lat_loop
+L_lat_done:
+    ADD X0, X5, X6
+    RET
+L_lat_oob:
+    BL _abort
+
+.section __TEXT,__rodata
+.align	8
+atom_0:
+    .byte  0x3a, 0x65, 0x66, 0x66, 0x69, 0x63, 0x69, 0x65, 0x6e, 0x63, 0x79, 0
+atom_1:
+    .byte  0x3a, 0x70, 0x65, 0x72, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x6e, 0x63, 0x65, 0
+atom_2:
+    .byte  0x3a, 0x6f, 0x6b, 0
+atom_3:
+    .byte  0x3a, 0x6e, 0x6f, 0x72, 0x6d, 0x61, 0x6c, 0
+atom_4:
+    .byte  0x3a, 0x6c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x5f, 0x65, 0x72, 0x72, 0x6f, 0x72, 0
+atom_5:
+    .byte  0x3a, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x5f, 0x66, 0x61, 0x75, 0x6c, 0x74, 0
+atom_6:
+    .byte  0x3a, 0x65, 0x78, 0x70, 0x6c, 0x69, 0x63, 0x69, 0x74, 0
+atom_7:
+    .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0
+atom_8:
+    .byte  0x3a, 0x6e, 0x6f, 0x70, 0x72, 0x6f, 0x63, 0
+atom_9:
+    .byte  0x3a, 0x70, 0x65, 0x72, 0x6d, 0x61, 0x6e, 0x65, 0x6e, 0x74, 0
+atom_10:
+    .byte  0x3a, 0x74, 0x72, 0x61, 0x6e, 0x73, 0x69, 0x65, 0x6e, 0x74, 0
+atom_11:
+    .byte  0x3a, 0x74, 0x65, 0x6d, 0x70, 0x6f, 0x72, 0x61, 0x72, 0x79, 0
+atom_12:
+    .byte  0x3a, 0x6f, 0x6e, 0x65, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x6f, 0x6e, 0x65, 0
+atom_13:
+    .byte  0x3a, 0x6f, 0x6e, 0x65, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x61, 0x6c, 0x6c, 0
+atom_14:
+    .byte  0x3a, 0x72, 0x65, 0x73, 0x74, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x6f, 0x6e, 0x65, 0
+atom_15:
+    .byte  0x3a, 0x69, 0x6e, 0x73, 0x65, 0x72, 0x74, 0
+atom_16:
+    .byte  0x3a, 0x6c, 0x6f, 0x6f, 0x6b, 0x75, 0x70, 0
+atom_17:
+    .byte  0x3a, 0x64, 0x65, 0x6c, 0x65, 0x74, 0x65, 0
+atom_18:
+    .byte  0x3a, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
+atom_19:
+    .byte  0x3a, 0x6e, 0x6f, 0x74, 0x5f, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
+atom_20:
+    .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0x5f, 0x6f, 0x70, 0
+atom_21:
+    .byte  0x3a, 0x70, 0x6c, 0x61, 0x69, 0x6e, 0
+atom_22:
+    .byte  0x3a, 0x64, 0x61, 0x6e, 0x67, 0x65, 0x72, 0x6f, 0x75, 0x73, 0
+.section __DATA_CONST,__const
+.align	3
+L_pa_table:
+    .quad atom_0
+    .quad 11
+    .quad atom_1
+    .quad 12
+    .quad atom_2
+    .quad 3
+    .quad atom_3
+    .quad 7
+    .quad atom_4
+    .quad 15
+    .quad atom_5
+    .quad 13
+    .quad atom_6
+    .quad 9
+    .quad atom_7
+    .quad 8
+    .quad atom_8
+    .quad 7
+    .quad atom_9
+    .quad 10
+    .quad atom_10
+    .quad 10
+    .quad atom_11
+    .quad 10
+    .quad atom_12
+    .quad 12
+    .quad atom_13
+    .quad 12
+    .quad atom_14
+    .quad 13
+    .quad atom_15
+    .quad 7
+    .quad atom_16
+    .quad 7
+    .quad atom_17
+    .quad 7
+    .quad atom_18
+    .quad 6
+    .quad atom_19
+    .quad 10
+    .quad atom_20
+    .quad 11
+    .quad atom_21
+    .quad 6
+    .quad atom_22
+    .quad 10
+
+.section __DATA,__const
+.p2align 3
+    .p2align 3
+L_str_0:
+    .quad -1
+    .quad L_str_0_d
+    .quad 0
+L_str_0_d:
+    .ascii ""
+    .byte 0
+    .p2align 3
+L_str_1:
+    .quad -1
+    .quad L_str_1_d
+    .quad 1
+L_str_1_d:
+    .ascii "_"
+    .byte 0
+
