@@ -79,7 +79,9 @@ clean:
 	rm -rf "$(THIS_DIR).cache/ifaces"; \
 	find "$(THIS_DIR)" -name '*.iface' -type f -delete 2>/dev/null || true; \
 	find "$(THIS_DIR)" \( -name '.integrate_log' -o -name '.integrate_report' -o -name '.integrate_status' \
-		-o -name '.integrate_start' -o -name '.integrate_results' -o -name '.integrate_skipped' \) -type f -delete 2>/dev/null || true; \
+		-o -name '.integrate_start' -o -name '.integrate_results' -o -name '.integrate_skipped' \
+		-o -name '.integrate_last_dot' \) -type f -delete 2>/dev/null || true; \
+	find "$(THIS_DIR)" -name '.integrate_running' -type d -prune -exec rm -rf {} + 2>/dev/null || true; \
 	exit $$failed
 
 help:
@@ -88,6 +90,7 @@ help:
 	@echo "  make integrate JOBS=N          cap the parallel pool"
 	@echo "  make integrate SDS_JOBS=N      cap ordered_data_structures separately (memory-bound)"
 	@echo "  make -C <suite> integrate      one suite; prints that suite's own report"
+	@echo "  make integrate INTEGRATE_WATCHDOG_MINUTES=N   kill running trials after N minutes without a result (default 15)"
 	@echo "  make integrate-ffi             ffi_addition success-path apps only"
 	@echo "  make clean                     clean every suite"
 	@echo "Suites: $(TRIAL_SUBDIRS)"

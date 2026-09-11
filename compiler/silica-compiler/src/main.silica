@@ -327,6 +327,22 @@ fn build_module_world(all: ListParsedFile, exclude_path: string) -> ListNamedPro
 }
 
 // Eager specialize of every config module — only for single-file / legacy callers.
+// Specialize only the iface stub programs (those not present in `parsed`, which are already
+// specialized); re-specializing a specialized program would duplicate its clones.
+fn specialize_iface_stub_world(world: ListNamedProgram, parsed: ListNamedProgram) -> ListNamedProgram {
+    case world.is_nil of {
+        true -> world;
+        false -> do
+            (pf: bool, _found: Program) <- parser_ast@find_named_program(world.head.module_name, parsed);
+            prog: Program <- case pf of {
+                true -> world.head.program;
+                false -> trait_specialization@specialize_program(world.head.program)
+            };
+            parser_ast@cons_named_program(world.head.module_name, prog, specialize_iface_stub_world(world.tail, parsed))
+        end
+    }
+}
+
 fn specialize_all_parsed(parsed: ListParsedFile) -> ListNamedProgram {
     case parsed.is_nil of {
         true -> type_checker_modules@empty_named_program_list();
@@ -1293,7 +1309,11 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
                                                                     // Same stub inject as TC: when a `use` dep was parse-skipped via iface,
                                                                     // specialized_all has no Program for it and overload/trait link mangling
                                                                     // would emit unmangled names (link failure). Stubs carry export trait + impls.
-                                                                    world_for_sir: ListNamedProgram <- module_iface@append_iface_stub_programs(specialized_all, dep_ifaces);
+                                                                    // The stubs carry the provided-method TEMPLATE and the impls, but not the
+                                                                    // per-receiver specializations that trait_specialization produces for parsed
+                                                                    // modules; without them the overload count for a provided method is 1 and
+                                                                    // the call is emitted with the bare, undefined symbol (defect A5).
+                                                                    world_for_sir: ListNamedProgram <- specialize_iface_stub_world(module_iface@append_iface_stub_programs(specialized_all, dep_ifaces), specialized_all);
                                                                     mangled_program: Program <- qualified_call_mangler@mangle_calls_in_program(specialized_program, world_for_sir);
                                                                     link_libs: ListSirString <- ffi_sidecar_loader@collect_program_link_libraries(program);
                                                                     sir_module: SIRModule <- sir_generator_core@emit_program_for_unit_with_link_libraries(mangled_program, tc_out.context, mod_name, link_libs);

@@ -112,8 +112,9 @@ fn build_user_call_from_expr_in_body(context: { env: List[{ name: string, type_n
                         user_calls@build_user_call_1(callee, tuple_arg, expected_type, recursion_terms@user_call_effect_value_fn(expr))
                     };
                     false -> {
-                        arg1_type: string <- terms_helpers@sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
-                        arg2_type: string <- terms_helpers@sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_right(expr));
+                        formal_tuple2: string <- terms_helpers@call_params_tuple_for_sir(context, type_checker_expressions_helpers@expr_name(expr));
+                        arg1_type: string <- terms_helpers@expected_or_inferred_call_arg_type(context, type_checker_expressions_helpers@expr_child_inner(expr), terms_helpers@tuple_first_element_type(formal_tuple2));
+                        arg2_type: string <- terms_helpers@expected_or_inferred_call_arg_type(context, type_checker_expressions_helpers@expr_child_right(expr), terms_helpers@tuple_rest_element_type(formal_tuple2));
                         arg1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- lower_in_body(context, type_checker_expressions_helpers@expr_child_inner(expr), bound_name, bound_type, arg1_type);
                         arg2: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- lower_in_body(context, type_checker_expressions_helpers@expr_child_right(expr), bound_name, bound_type, arg2_type);
                         user_calls@build_user_call_2(callee, arg1, arg2, expected_type, recursion_terms@user_call_effect_value_fn(expr))
@@ -124,6 +125,31 @@ fn build_user_call_from_expr_in_body(context: { env: List[{ name: string, type_n
     }
 }
 
+// Top-level twin of build_rest_chain_in_body_with_formals: numeric literal arguments take
+// the callee's formal type (defect A1; see terms_helpers@expected_or_inferred_call_arg_type).
+fn build_rest_chain_with_formals(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, curried: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, formal_types: string, lower_expected: fn({ env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, lower_in_body: fn({ env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, string, string, string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    formal_tuple: string <- case length_bytes(formal_types) > 0 and substring(formal_types, 0, 1) == "(" of {
+        true -> formal_types;
+        false -> case length_bytes(formal_types) > 0 of {
+            true -> concat("(", concat(formal_types, ")"));
+            false -> ""
+        }
+    };
+    formal_first: string <- terms_helpers@tuple_first_element_type(formal_tuple);
+    formal_rest: string <- terms_helpers@tuple_rest_element_type(formal_tuple);
+    case type_checker_expressions_helpers@expr_kind(curried) == 4 and type_checker_expressions_helpers@expr_name(curried) == "" of {
+        true -> {
+            arg_type: string <- terms_helpers@expected_or_inferred_call_arg_type(context, type_checker_expressions_helpers@expr_child_inner(curried), formal_first);
+            arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- lower_expected(context, type_checker_expressions_helpers@expr_child_inner(curried), arg_type);
+            rest: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- build_rest_chain_with_formals(context, type_checker_expressions_helpers@expr_child_right(curried), formal_rest, lower_expected, lower_in_body);
+            sir_ast@make_sir_term(6, "unit", "", "user_call_rest", arg, rest)
+        };
+        false -> {
+            arg_type: string <- terms_helpers@expected_or_inferred_call_arg_type(context, curried, formal_first);
+            lower_expected(context, curried, arg_type)
+        }
+    }
+}
 fn build_rest_chain(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, curried: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, lower_expected: fn({ env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, lower_in_body: fn({ env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, string, string, string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     case type_checker_expressions_helpers@expr_kind(curried) == 4 and type_checker_expressions_helpers@expr_name(curried) == "" of {
         true -> {
@@ -152,9 +178,10 @@ fn build_user_call_from_expr(context: { env: List[{ name: string, type_name: str
             };
             false -> case type_checker_expressions_helpers@expr_kind(type_checker_expressions_helpers@expr_child_right(expr)) == 4 and type_checker_expressions_helpers@expr_name(type_checker_expressions_helpers@expr_child_right(expr)) == "" of {
                 true -> {
-                    arg1_type: string <- terms_helpers@sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
+                    formal_tuple_top: string <- terms_helpers@call_params_tuple_for_sir(context, type_checker_expressions_helpers@expr_name(expr));
+                    arg1_type: string <- terms_helpers@expected_or_inferred_call_arg_type(context, type_checker_expressions_helpers@expr_child_inner(expr), terms_helpers@tuple_first_element_type(formal_tuple_top));
                     arg1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- lower_expected(context, type_checker_expressions_helpers@expr_child_inner(expr), arg1_type);
-                    rest: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- build_rest_chain(context, type_checker_expressions_helpers@expr_child_right(expr), lower_expected, lower_in_body);
+                    rest: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- build_rest_chain_with_formals(context, type_checker_expressions_helpers@expr_child_right(expr), terms_helpers@tuple_rest_element_type(formal_tuple_top), lower_expected, lower_in_body);
                     user_calls@build_user_call_with_rest(callee, arg1, rest, expected_type, recursion_terms@user_call_effect_value_fn(expr))
                 };
                 false -> case terms_helpers@user_call_expects_single_tuple_param(context, type_checker_expressions_helpers@expr_name(expr)) of {
@@ -170,8 +197,9 @@ fn build_user_call_from_expr(context: { env: List[{ name: string, type_name: str
                         user_calls@build_user_call_1(callee, tuple_arg, expected_type, recursion_terms@user_call_effect_value_fn(expr))
                     };
                     false -> {
-                        arg1_type: string <- terms_helpers@sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
-                        arg2_type: string <- terms_helpers@sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_right(expr));
+                        formal_tuple2: string <- terms_helpers@call_params_tuple_for_sir(context, type_checker_expressions_helpers@expr_name(expr));
+                        arg1_type: string <- terms_helpers@expected_or_inferred_call_arg_type(context, type_checker_expressions_helpers@expr_child_inner(expr), terms_helpers@tuple_first_element_type(formal_tuple2));
+                        arg2_type: string <- terms_helpers@expected_or_inferred_call_arg_type(context, type_checker_expressions_helpers@expr_child_right(expr), terms_helpers@tuple_rest_element_type(formal_tuple2));
                         arg1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- lower_expected(context, type_checker_expressions_helpers@expr_child_inner(expr), arg1_type);
                         arg2: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- lower_expected(context, type_checker_expressions_helpers@expr_child_right(expr), arg2_type);
                         user_calls@build_user_call_2(callee, arg1, arg2, expected_type, recursion_terms@user_call_effect_value_fn(expr))
@@ -201,7 +229,7 @@ fn build_user_call_from_expr_tail(context: { env: List[{ name: string, type_name
                     inferred1: string <- terms_helpers@sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
                     arg1_type: string <- terms_helpers@user_call_first_arg_expected_type(context, type_checker_expressions_helpers@expr_name(expr), inferred1);
                     arg1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- lower_expected(context, type_checker_expressions_helpers@expr_child_inner(expr), arg1_type);
-                    rest: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- build_rest_chain(context, type_checker_expressions_helpers@expr_child_right(expr), lower_expected, lower_in_body);
+                    rest: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- build_rest_chain_with_formals(context, type_checker_expressions_helpers@expr_child_right(expr), terms_helpers@tuple_rest_element_type(terms_helpers@call_params_tuple_for_sir(context, type_checker_expressions_helpers@expr_name(expr))), lower_expected, lower_in_body);
                     user_calls@build_tail_call_with_rest(callee, arg1, rest, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
                 };
                 false -> case terms_helpers@user_call_expects_single_tuple_param(context, type_checker_expressions_helpers@expr_name(expr)) of {
@@ -217,8 +245,9 @@ fn build_user_call_from_expr_tail(context: { env: List[{ name: string, type_name
                         user_calls@build_tail_call_1(callee, tuple_arg, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
                     };
                     false -> {
-                        arg1_type: string <- terms_helpers@sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
-                        arg2_type: string <- terms_helpers@sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_right(expr));
+                        formal_tuple2: string <- terms_helpers@call_params_tuple_for_sir(context, type_checker_expressions_helpers@expr_name(expr));
+                        arg1_type: string <- terms_helpers@expected_or_inferred_call_arg_type(context, type_checker_expressions_helpers@expr_child_inner(expr), terms_helpers@tuple_first_element_type(formal_tuple2));
+                        arg2_type: string <- terms_helpers@expected_or_inferred_call_arg_type(context, type_checker_expressions_helpers@expr_child_right(expr), terms_helpers@tuple_rest_element_type(formal_tuple2));
                         arg1: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- lower_expected(context, type_checker_expressions_helpers@expr_child_inner(expr), arg1_type);
                         arg2: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- lower_expected(context, type_checker_expressions_helpers@expr_child_right(expr), arg2_type);
                         user_calls@build_tail_call_2(callee, arg1, arg2, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))

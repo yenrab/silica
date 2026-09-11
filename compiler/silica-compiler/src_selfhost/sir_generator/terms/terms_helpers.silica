@@ -776,11 +776,27 @@ fn call_params_tuple_for_sir(context: { env: List[{ name: string, type_name: str
 
 fn expected_or_inferred_call_arg_type(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, formal_type: string) -> string {
     inferred: string <- sir_infer_expr_type(context, expr);
-    case length_bytes(inferred) > 0 of {
-        true -> inferred;
-        // Bare function identifiers are the important non-inferable case:
-        // retain the signature formal so they lower as function addresses.
-        false -> formal_type
+    // Numeric literal arguments take the callee's formal type: `addf(1.5, 2.25)` against
+    // `(x: float64, y: float64)` must lower as float64 constants, not the float32 that literal
+    // inference defaults to, or the caller loads S0/S1 while the callee reads D0/D1 (defect A1).
+    literal_takes_formal: boolean <- type_checker_expressions_helpers@expr_kind(expr) == 0 and formal_is_scalar_numeric_type(formal_type);
+    case literal_takes_formal of {
+        true -> formal_type;
+        false -> case length_bytes(inferred) > 0 of {
+            true -> inferred;
+            // Bare function identifiers are the important non-inferable case:
+            // retain the signature formal so they lower as function addresses.
+            false -> formal_type
+        }
+    }
+}
+
+fn formal_is_scalar_numeric_type(t: string) -> boolean {
+    case t of {
+        "int64" -> true; "int32" -> true; "int16" -> true; "int8" -> true;
+        "uint64" -> true; "uint32" -> true; "uint16" -> true; "uint8" -> true;
+        "float64" -> true; "float32" -> true; "float16" -> true;
+        _: string -> false
     }
 }
 

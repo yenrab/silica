@@ -56,7 +56,11 @@ def main() -> int:
         return 1
 
     marker_b = marker.encode("utf-8")
-    timeout_sec = float(os.environ.get("SILICA_INTEGRATION_MARKER_TIMEOUT_SEC", "30.0"))
+    # No run time limit of its own: a trial that never prints the marker is killed by the
+    # integrate watchdog (silica_compiler.mk), which signals this runner's process group.
+    # SILICA_INTEGRATION_MARKER_TIMEOUT_SEC may still set a limit for a manual run.
+    timeout_env = os.environ.get("SILICA_INTEGRATION_MARKER_TIMEOUT_SEC", "")
+    timeout_sec = float(timeout_env) if timeout_env else float("inf")
 
     master, slave = pty.openpty()
     stdin_r, stdin_w = os.pipe()
@@ -82,6 +86,18 @@ def main() -> int:
 
     os.close(stdin_r)
     os.close(slave)
+
+    # The trial runs in its own session (os.setsid above), so a signal to this runner's
+    # process group does not reach it: forward the watchdog's SIGTERM to the trial and
+    # exit; the makefile reports the trial as incomplete.
+    def forward_term(signum, frame):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, forward_term)
 
     exit_sent = False
     buf = b""

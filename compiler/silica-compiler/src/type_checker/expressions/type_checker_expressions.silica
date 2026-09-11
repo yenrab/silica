@@ -2573,11 +2573,14 @@ fn check_call_builtins_dispatch(expr: Expr, expected_type: int64, context: TypeC
                                                                                 type_checker_expressions_string_calls@check_concatenate_call(expr, expected_type, context, a1, a2)
                                                                             end;
                                                                                 false -> case expr.name == "concatenate" of {
-                                                                                true -> do
+                                                                                true -> case concatenate_has_two_args(expr) == false of {
+                                                                                true -> type_checker_core@type_check_err("E2005", expr.location, "concatenate argument count mismatch", "sect6");
+                                                                                false -> do
                                                                                     a1: TypeCheckResult <- check_expr(expr.inner, type_checker_core@context_tid_string(context), context, world);
                                                                                     a2: TypeCheckResult <- check_expr(expr.right_expr.inner, type_checker_core@context_tid_string(context), context, world);
                                                                                     type_checker_expressions_string_calls@check_concatenate_call(expr, expected_type, context, a1, a2)
-                                                                                end;
+                                                                                end
+                                                                                };
                                                                                 false -> case expr.name == "substring" of {
                                                                                     true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
                                                                                         true -> do
@@ -5220,5 +5223,21 @@ fn check_tuple_decompose_after_valid(expr: Expr, expected_type: int64, context: 
                 end
             }
         end
+    }
+}
+
+// Defect B11: `concatenate("a")` compiled. The two-argument shape is inner = arg1 and
+// right_expr = a kind-4 chain node holding arg2 with no further tail. Nested cases keep the
+// dummy right_expr from being dereferenced.
+fn concatenate_has_two_args(expr: Expr) -> bool {
+    case expr.inner.kind < 0 of {
+        true -> false;
+        false -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+            false -> false;
+            true -> case expr.right_expr.inner.kind < 0 of {
+                true -> false;
+                false -> expr.right_expr.right_expr.kind < 0
+            }
+        }
     }
 }

@@ -4092,17 +4092,20 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 true -> do
                                     // Left is var/call, right is prim. Arithmetic expects left in r1, right in r2.
                                     // Save left to stack; right to right_reg; restore left to left_reg.
-                                    temp_reg: string <- concat(reg_prefix, "0");
+                                    // Integer prims stage the left in left_reg (X9/W9), never in X0/W0: X0 still
+                                    // holds the first parameter, and the right prim reads its variables from the
+                                    // parameter registers -- `20 + (x + 1)` read x as 20 (defect A7).
+                                    temp_reg: string <- case is_string_prim or is_float64 or is_float32 or is_float16 of {
+                                        true -> concat(reg_prefix, "0");
+                                        false -> left_reg
+                                    };
                                     left_asm: string <- case debug of {
                                         true -> do term_to_asm_opt_bound_debug(term.inner, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                         false -> term_to_asm_opt_bound(term.inner, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                     };
                                     save_left: string <- case is_string_prim of {
                                         true -> "    STR X0, [SP, #-16]!\n";
-                                        false -> case is_float64 or is_float32 or is_float16 of {
-                                            true -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n");
-                                            false -> "    STR X0, [SP, #-16]!\n"
-                                        }
+                                        false -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n")
                                     };
                                     right_asm: string <- case is_string_prim of {
                                         true -> case debug of {
@@ -4185,12 +4188,6 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                         // Right-only call: emit left first, then right; spill left_reg across BLR (AAPCS64 volatiles). See factorial n * factorial(n-1).
                                         left_is_call: bool <- term.inner.kind == 4;
                                         right_is_call: bool <- term.right_expr.kind == 4;
-                                        // A let (2), case (3) or tail call (5) operand evaluates its own compares and
-                                        // bindings through X9/X10 (or D1/D2), exactly like a call clobbers X0: the operand
-                                        // already staged in the other register must be saved across it. `own + (case a > b of
-                                        // ...)` in term_reg_spill@agg_subtree_bytes came out as a + max(a, b) without this.
-                                        left_is_complex: bool <- term.inner.kind == 2 or term.inner.kind == 3 or term.inner.kind == 5;
-                                        right_is_complex: bool <- term.right_expr.kind == 2 or term.right_expr.kind == 3 or term.right_expr.kind == 5;
                                         save_x0_before_right_when_both_calls: string <- case left_is_call and right_is_call of {
                                             true -> case is_float64 or is_float32 or is_float16 of {
                                                 true -> "";
@@ -4218,21 +4215,21 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                             };
                                             false -> ""
                                         };
-                                        save_left_across_right_call: string <- case right_is_call or right_is_complex of {
+                                        save_left_across_right_call: string <- case right_is_call of {
                                             true -> case is_string_prim of {
                                                 true -> "    STR X0, [SP, #-16]!\n";
                                                 false -> concat(concat("    STR ", left_reg), ", [SP, #-16]!\n")
                                             };
                                             false -> ""
                                         };
-                                        restore_left_across_right_call: string <- case right_is_call or right_is_complex of {
+                                        restore_left_across_right_call: string <- case right_is_call of {
                                             true -> case is_string_prim of {
                                                 true -> "    LDR X0, [SP], #16\n";
                                                 false -> concat(concat("    LDR ", left_reg), ", [SP], #16\n")
                                             };
                                             false -> ""
                                         };
-                                        save_right: string <- case left_is_call or left_is_complex of {
+                                        save_right: string <- case left_is_call of {
                                             true -> case left_is_call and right_is_call of {
                                                 true -> "";
                                                 false -> case is_string_prim of {
@@ -4242,20 +4239,20 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                             };
                                             false -> ""
                                         };
-                                        restore_right: string <- case left_is_call or left_is_complex of {
+                                        restore_right: string <- case left_is_call of {
                                             true -> case is_string_prim of {
                                                 true -> "    LDR X1, [SP], #16\n";
                                                 false -> concat(concat("    LDR ", right_reg), ", [SP], #16\n")
                                             };
                                             false -> ""
                                         };
-                                        first_combined: string <- case left_is_call or left_is_complex of {
+                                        first_combined: string <- case left_is_call of {
                                             true -> do
                                                 fc0: string <- concat(save_x0_before_right_when_both_calls, second_with_id);
                                                 fc1: string <- concat(concat(concat(concat(concat(concat(fc0, "\n"), restore_x0_before_left_when_both_calls), "\n"), save_right_after_restore_x0_both_calls), "\n"), save_right);
                                                 concat(concat(concat(concat(fc1, l), "\n"), restore_right), "")
                                             end;
-                                            false -> case right_is_call or right_is_complex of {
+                                            false -> case right_is_call of {
                                                 true -> concat(concat(concat(concat(concat(concat(l, "\n"), save_left_across_right_call), second_with_id), "\n"), restore_left_across_right_call), "");
                                                 false -> concat(concat(second_with_id, "\n"), l)
                                             }
@@ -4298,7 +4295,25 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                             // it made `concat(concat(".quad ", label), concat(".quad ", len))` emit the right
                             // operand for both halves: every L_pa_table entry came out as the length twice with
                             // no atom label. Floats stay out: they need the right operand emitted first.
-                            false -> case right_is_prim and is_float64 == false and is_float32 == false and is_float16 == false of {
+                            false -> case (is_float64 or is_float32 or is_float16) and term.right_expr.kind != 4 of {
+                                true -> do
+                                    // Float prim on the left (defect A8): the left re-stages through S1/S2 (D1/D2),
+                                    // so the right operand is emitted first into right_reg and spilled across the
+                                    // left, then restored before the op. A right-hand call keeps the call path below.
+                                    right_f: string <- case debug of {
+                                        true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                        false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                                    };
+                                    save_rf: string <- concat(concat("    STR ", right_reg), ", [SP, #-16]!\n");
+                                    left_f: string <- case debug of {
+                                        true -> do term_to_asm_opt_bound_debug(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                        false -> term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                                    };
+                                    restore_rf: string <- concat(concat("    LDR ", right_reg), ", [SP], #16\n");
+                                    comb_f: string <- concat(concat(concat(concat(concat(concat(right_f, "\n"), save_rf), left_f), "\n"), restore_rf), "");
+                                    (comb_f, "")
+                                end;
+                                false -> case right_is_prim and is_float64 == false and is_float32 == false and is_float16 == false of {
                                 true -> do
                                     temp_reg2: string <- left_reg;
                                     left_2p: string <- case debug of {
@@ -4355,20 +4370,23 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                     }
                                 end
                             }
+                            }
                         };
                         false -> case right_is_prim of {
                             true -> do
-                                temp_reg: string <- concat(reg_prefix, "0");
+                                // Left is var/call/const, right is prim (bound_name != ""). Integer prims stage the
+                                // left in left_reg, never X0/W0, which still holds the first parameter (defect A7).
+                                temp_reg: string <- case is_string_prim or is_float64 or is_float32 or is_float16 of {
+                                    true -> concat(reg_prefix, "0");
+                                    false -> left_reg
+                                };
                                 l: string <- case debug of {
                                     true -> do term_to_asm_opt_bound_debug(term.inner, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                     false -> term_to_asm_opt_bound(term.inner, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                 };
                                 save: string <- case is_string_prim of {
                                     true -> "    STR X0, [SP, #-16]!\n";
-                                    false -> case is_float64 or is_float32 or is_float16 of {
-                                        true -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n");
-                                        false -> "    STR X0, [SP, #-16]!\n"
-                                    }
+                                    false -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n")
                                 };
                                 r: string <- case is_string_prim of {
                                     true -> case debug of {
@@ -4419,12 +4437,6 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 // When right operand is a call (kind 4), save/restore left_reg across it (AAPCS64: X9-X15 are caller-saved).
                                 left_is_call: bool <- term.inner.kind == 4;
                                 right_is_call: bool <- term.right_expr.kind == 4;
-                                // A let (2), case (3) or tail call (5) operand evaluates its own compares and
-                                // bindings through X9/X10 (or D1/D2), exactly like a call clobbers X0: the operand
-                                // already staged in the other register must be saved across it. `own + (case a > b of
-                                // ...)` in term_reg_spill@agg_subtree_bytes came out as a + max(a, b) without this.
-                                left_is_complex: bool <- term.inner.kind == 2 or term.inner.kind == 3 or term.inner.kind == 5;
-                                right_is_complex: bool <- term.right_expr.kind == 2 or term.right_expr.kind == 3 or term.right_expr.kind == 5;
                                 // A call anywhere inside the right operand clobbers the left operand's register,
                                 // not just a call at its root, and string concat is no exception: its left operand
                                 // sits in X0, which every call returns into. `concat(one, rest(tail))` --
@@ -4434,23 +4446,44 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 // empty L_pa_table and no function bodies.
                                 // See trials/codegen_regressions/concat_call_operand.silica.
                                 right_calls_here: bool <- term_subterm_has_user_call(term.right_expr);
-                                case right_calls_here or right_is_call or right_is_complex of {
+                                case right_calls_here or right_is_call of {
                                     true -> do
                                         save_left: string <- concat(concat("    STR ", left_reg), ", [SP, #-16]!\n");
                                         restore_left: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");
                                         combined: string <- concat(concat(concat(concat(concat(concat(l, "\n"), save_left), r), "\n"), restore_left), "");
                                         (combined, "")
                                     end;
-                                    false -> case (left_is_call or left_is_complex) and is_string_prim == false of {
+                                    false -> case left_is_call and is_string_prim == false of {
                                         true -> do
                                             save_right: string <- concat(concat("    STR ", right_reg), ", [SP, #-16]!\n");
                                             restore_right: string <- concat(concat("    LDR ", right_reg), ", [SP], #16\n");
                                             combined: string <- concat(concat(concat(concat(concat(concat(r, "\n"), save_right), l), "\n"), restore_right), "");
                                             (combined, "")
                                         end;
-                                        false -> case is_float32 or is_float64 or is_float16 or (is_string_prim and term.inner.kind == 0) of {
-                                            true -> (r, l);
-                                            false -> (l, r)
+                                        false -> case term.right_expr.kind == 6 and is_string_prim == false of {
+                                            true -> case is_float32 or is_float64 or is_float16 of {
+                                                true -> do
+                                                    // Both sides compound (defect A8): the right prim re-stages through
+                                                    // S1/S2 (D1/D2), so a left result kept in S1 is lost. Emit right first,
+                                                    // spill right_reg across the left, restore before the op.
+                                                    save_right: string <- concat(concat("    STR ", right_reg), ", [SP, #-16]!\n");
+                                                    restore_right: string <- concat(concat("    LDR ", right_reg), ", [SP], #16\n");
+                                                    combined: string <- concat(concat(concat(concat(concat(concat(r, "\n"), save_right), l), "\n"), restore_right), "");
+                                                    (combined, "")
+                                                end;
+                                                false -> do
+                                                    // Integer right prim re-stages through X9/X10 (defect A7): spill the
+                                                    // left result in left_reg across it.
+                                                    save_left: string <- concat(concat("    STR ", left_reg), ", [SP, #-16]!\n");
+                                                    restore_left: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                                    combined: string <- concat(concat(concat(concat(concat(concat(l, "\n"), save_left), r), "\n"), restore_left), "");
+                                                    (combined, "")
+                                                end
+                                            };
+                                            false -> case is_float32 or is_float64 or is_float16 or (is_string_prim and term.inner.kind == 0) of {
+                                                true -> (r, l);
+                                                false -> (l, r)
+                                            }
                                         }
                                     }
                                 }

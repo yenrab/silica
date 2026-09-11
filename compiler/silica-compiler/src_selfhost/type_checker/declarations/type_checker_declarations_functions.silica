@@ -254,7 +254,14 @@ fn check_body_after_params(decl: { tag: int64, name: string, parameters: List[{ 
             false -> context_with_params
         }
     };
-    ret_rec: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- validate_record_type_string(decl.return_type_name, decl.return_type_location);
+    main_sig: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- case decl.name == "main" and main_return_type_allowed(decl.return_type_name) == false of {
+        true -> type_checker_core@type_check_err("E2019", decl.return_type_location, concat("main must return an integer, float, or atom, got ", decl.return_type_name), "sect4");
+        false -> type_checker_core@type_check_ok()
+    };
+    ret_rec: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- case main_sig.is_ok of {
+        false -> main_sig;
+        true -> validate_record_type_string(decl.return_type_name, decl.return_type_location)
+    };
     case ret_rec.is_ok of {
         false -> ret_rec;
         true -> {
@@ -334,5 +341,17 @@ fn check_body_memory_region_return(decl: { tag: int64, name: string, parameters:
                 }
             }
         }
+    }
+}
+
+// Defect B10: main's exit status is its X0/return; only scalar numeric types and atom are
+// entry-point shapes (string, tuple, record, list and fn results were silently accepted).
+fn main_return_type_allowed(t: string) -> boolean {
+    case t of {
+        "int64" -> true; "int32" -> true; "int16" -> true; "int8" -> true;
+        "uint64" -> true; "uint32" -> true; "uint16" -> true; "uint8" -> true;
+        "float64" -> true; "float32" -> true; "float16" -> true;
+        "atom" -> true;
+        _: string -> false
     }
 }

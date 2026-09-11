@@ -36,6 +36,8 @@ use instantiated_fn_name;
 export slots_to_program/1;
 export validate_no_single_element_tuples/1;
 export validate_max_params/1;
+export validate_no_escaping_capturing_lambda/1;
+export validate_no_standalone_if/1;
 export validate_max_tuple_decompose_bindings/1;
 export validate_required_statement_terminators/1;
 export validate_uncategorized_syntax_defect/1;
@@ -2685,7 +2687,10 @@ fn extract_body(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
                     false -> case first.token.kind == lexer_token_kind@token_kind_sequence_keyword() or first.token.lexeme == "sequence" of {
                         true -> extract_sequence(trimmed);
                         false -> case first.token.kind == lexer_token_kind@token_kind_if_keyword() or first.token.lexeme == "if" of {
-                            true -> extract_if_expression(trimmed);
+                            true -> do
+                                (if_e: Expr, if_rest: ListTokenSlot) <- extract_if_expression(trimmed);
+                                (mark_standalone_if(if_e), if_rest)
+                            end;
                             false -> case first.token.kind == lexer_token_kind@token_kind_left_bracket() and (constraint_core@slot_role(first) == capability_list@role_list_lit_lbracket() or is_list_literal_lbracket_fallback(trimmed)) of {
                                 true -> extract_list_literal(trimmed);
                                 // Prefer lexeme "{" as well as lexer_token_kind@token_kind_left_brace() (TokenKinds field-access
@@ -5444,6 +5449,134 @@ fn validate_no_single_element_tuples(program: Program) -> ParseResult {
     }
 }
 
+// --- Escaping capturing lambdas (defect A2, interim diagnostic) --------------------------
+// Lambdas are lifted to top-level functions whose captured locals become trailing parameters;
+// there is no closure environment. A lambda that captures non-literal locals and is RETURNED
+// (the function's result is the lifted identifier) therefore loses its captures at the call
+// site. Until closure environments exist, reject that shape instead of miscompiling it.
+fn strip_spaces_ce(t: string, i: int64, acc: string) -> string {
+    case i >= len(t) of {
+        true -> acc;
+        false -> do
+            c: string <- substring(t, i, i + 1);
+            case c == " " of {
+                true -> strip_spaces_ce(t, i + 1, acc);
+                false -> strip_spaces_ce(t, i + 1, concat(acc, c))
+            }
+        end
+    }
+}
+
+fn fn_type_arity_text(t0: string) -> int64 {
+    t: string <- strip_spaces_ce(t0, 0, "");
+    open_i: int64 <- case len(t) >= 3 and substring(t, 0, 3) == "fn(" of { true -> 2; false -> case len(t) >= 1 and substring(t, 0, 1) == "(" of { true -> 0; false -> -1 } };
+    case open_i < 0 of {
+        true -> -1;
+        false -> fn_type_arity_scan(t, open_i + 1, 0, 0, open_i + 1)
+    }
+}
+
+fn fn_type_arity_scan(t: string, i: int64, depth: int64, commas: int64, start: int64) -> int64 {
+    case i >= len(t) of {
+        true -> -1;
+        false -> do
+            c: string <- substring(t, i, i + 1);
+            case c == ")" and depth == 0 of {
+                true -> case i == start of { true -> 0; false -> commas + 1 };
+                false -> case c == "(" or c == "[" or c == "{" of {
+                    true -> fn_type_arity_scan(t, i + 1, depth + 1, commas, start);
+                    false -> case c == ")" or c == "]" or c == "}" of {
+                        true -> fn_type_arity_scan(t, i + 1, depth - 1, commas, start);
+                        false -> case c == "," and depth == 0 of {
+                            true -> fn_type_arity_scan(t, i + 1, depth, commas + 1, start);
+                            false -> fn_type_arity_scan(t, i + 1, depth, commas, start)
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn body_tail_expr(expr: Expr) -> Expr {
+    case expr.kind == 6 or expr.kind == 10 of {
+        true -> body_tail_expr(expr.right_expr);
+        false -> case expr.kind == 2 of {
+            true -> body_tail_expr(expr.inner);
+            false -> expr
+        }
+    }
+}
+
+// The lifted-lambda identifier a let chain binds to `name`, or "" when `name` is not bound
+// to one (walks kind-6 lets and parenthesised bodies; the tail identifier may be the binding).
+fn let_bound_lifted_name(expr: Expr, name: string) -> string {
+    case expr.kind == 6 of {
+        true -> case expr.name == name and expr.inner.kind == 1 and name_has_lifted_lambda_sub(expr.inner.name) of {
+            true -> expr.inner.name;
+            false -> let_bound_lifted_name(expr.right_expr, name)
+        };
+        false -> case expr.kind == 10 of {
+            true -> let_bound_lifted_name(expr.right_expr, name);
+            false -> case expr.kind == 2 of {
+                true -> let_bound_lifted_name(expr.inner, name);
+                false -> ""
+            }
+        }
+    }
+}
+
+fn find_decl_param_count(decls: ListDeclaration, name: string) -> int64 {
+    case decls.is_nil of {
+        true -> -1;
+        false -> case decls.head.name == name of {
+            true -> list_param_len_ce(decls.head.parameters, 0);
+            false -> find_decl_param_count(decls.tail, name)
+        }
+    }
+}
+
+fn list_param_len_ce(ps: ListParam, acc: int64) -> int64 {
+    case ps.is_nil of {
+        true -> acc;
+        false -> list_param_len_ce(ps.tail, acc + 1)
+    }
+}
+
+fn decls_has_escaping_capturing_lambda(decls: ListDeclaration, all: ListDeclaration) -> (bool, SourceLocation) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> do
+            d: Declaration <- decls.head;
+            ret_arity: int64 <- case d.tag == 0 of { true -> fn_type_arity_text(d.return_type_name); false -> -1 };
+            tail: Expr <- body_tail_expr(d.body);
+            lifted_nm: string <- case ret_arity >= 0 and tail.kind == 1 of {
+                true -> case name_has_lifted_lambda_sub(tail.name) of {
+                    true -> tail.name;
+                    false -> let_bound_lifted_name(d.body, tail.name)
+                };
+                false -> ""
+            };
+            hit: bool <- case len(lifted_nm) > 0 of {
+                true -> find_decl_param_count(all, lifted_nm) > ret_arity;
+                false -> false
+            };
+            case hit of {
+                true -> (true, tail.location);
+                false -> decls_has_escaping_capturing_lambda(decls.tail, all)
+            }
+        end
+    }
+}
+
+fn validate_no_escaping_capturing_lambda(program: Program) -> ParseResult {
+    (found: bool, err_loc: SourceLocation) <- decls_has_escaping_capturing_lambda(program.declarations, program.declarations);
+    case found of {
+        true -> parser_core@parse_err("E1067", err_loc, "a function literal that captures local bindings cannot be returned from the function that owns them (closure environments are not supported yet); pass the values as parameters instead", "sect3.4");
+        false -> parser_core@parse_ok(program)
+    }
+}
+
 fn validate_required_statement_terminators(program: Program) -> ParseResult {
     (found: bool, err_loc: SourceLocation) <- decls_has_missing_statement_terminator(program.declarations);
     case found of {
@@ -5485,6 +5618,54 @@ fn decls_has_uncategorized_syntax_defect(decls: ListDeclaration) -> (bool, Sourc
                 false -> decls_has_uncategorized_syntax_defect(decls.tail)
             }
         end
+    }
+}
+
+// Defect B7: `if cond { a } else { b }` is only a case-arm guard (spec 3.3.5); as a standalone
+// expression it parsed and lowered. It is still parsed for recovery, then wrapped in a kind-994
+// marker that the validation below reports as E1066.
+fn mark_standalone_if(e: Expr) -> Expr {
+    dummy: Expr <- parser_ast@dummy_expr();
+    Expr { kind: 994, value: "E1066", name: "", location: e.location, inner: e, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() }
+}
+
+fn expr_has_standalone_if(expr: Expr) -> (bool, SourceLocation) {
+    case expr.kind == 994 of {
+        true -> (true, expr.location);
+        false -> case expr.kind == -1 of {
+            true -> (false, parser_ast@zero_location());
+            false -> case expr.kind == 12 of {
+            true -> expr_has_standalone_if(expr.inner);
+            false -> do
+                (inner_found: bool, inner_loc: SourceLocation) <- expr_has_standalone_if(expr.inner);
+                case inner_found of {
+                    true -> (true, inner_loc);
+                    false -> expr_has_standalone_if(expr.right_expr)
+                }
+            end
+            }
+        }
+    }
+}
+
+fn decls_has_standalone_if(decls: ListDeclaration) -> (bool, SourceLocation) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> do
+            (found: bool, loc: SourceLocation) <- expr_has_standalone_if(decls.head.body);
+            case found of {
+                true -> (true, loc);
+                false -> decls_has_standalone_if(decls.tail)
+            }
+        end
+    }
+}
+
+fn validate_no_standalone_if(program: Program) -> ParseResult {
+    (found: bool, err_loc: SourceLocation) <- decls_has_standalone_if(program.declarations);
+    case found of {
+        true -> parser_core@parse_err("E1066", err_loc, "'if' is only valid as a case-arm guard; use case ... of { ... } for branching", "sect3.3.5");
+        false -> parser_core@parse_ok(program)
     }
 }
 

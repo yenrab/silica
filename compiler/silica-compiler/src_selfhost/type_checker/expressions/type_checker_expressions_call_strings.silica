@@ -53,10 +53,14 @@ fn check_string_io(expr: { nodes: List[{ kind: int64, value: string, name: strin
                         type_checker_expressions_string_calls@check_append_file_call(expr, expected_type, context, af1, af2)
                     };
                     false -> case type_checker_expressions_helpers@expr_name(expr) == "concat" or type_checker_expressions_helpers@expr_name(expr) == "concatenate" of {
-                        true -> {
+                        true -> case concatenate_has_two_args(expr) == false of {
+                            // Defect B11: `concatenate("a")` compiled; the second argument is a kind-4 chain node.
+                            true -> type_checker_core@type_check_err("E2005", type_checker_expressions_helpers@expr_loc(expr), "concatenate argument count mismatch", "sect6");
+                            false -> {
                             (a1, _) <- check_surface(type_checker_expressions_helpers@expr_child_inner(expr), "string", context, world);
                             (a2, _) <- check_surface(type_checker_expressions_helpers@expr_child_inner(type_checker_expressions_helpers@expr_child_right(expr)), "string", context, world);
                             type_checker_expressions_string_calls@check_concatenate_call(expr, expected_type, context, a1, a2)
+                            }
                         };
                         false -> case type_checker_expressions_helpers@expr_name(expr) == "substring" of {
                             true -> case type_checker_expressions_helpers@expr_kind(type_checker_expressions_helpers@expr_child_right(expr)) == 4 and type_checker_expressions_helpers@expr_name(type_checker_expressions_helpers@expr_child_right(expr)) == "" of {
@@ -102,6 +106,20 @@ fn check_string_io(expr: { nodes: List[{ kind: int64, value: string, name: strin
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+// Two-argument shape: inner = arg1, right_expr = a kind-4 "" chain node holding arg2 with no tail.
+fn concatenate_has_two_args(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> boolean {
+    case type_checker_expressions_helpers@expr_kind(type_checker_expressions_helpers@expr_child_inner(expr)) < 0 of {
+        true -> false;
+        false -> case type_checker_expressions_helpers@expr_kind(type_checker_expressions_helpers@expr_child_right(expr)) == 4 and type_checker_expressions_helpers@expr_name(type_checker_expressions_helpers@expr_child_right(expr)) == "" of {
+            false -> false;
+            true -> case type_checker_expressions_helpers@expr_kind(type_checker_expressions_helpers@expr_child_inner(type_checker_expressions_helpers@expr_child_right(expr))) < 0 of {
+                true -> false;
+                false -> type_checker_expressions_helpers@expr_kind(type_checker_expressions_helpers@expr_child_right(type_checker_expressions_helpers@expr_child_right(expr))) < 0
             }
         }
     }

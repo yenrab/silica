@@ -13,7 +13,7 @@ def main() -> int:
     exe = sys.argv[1]
     cmd = exe if os.path.isabs(exe) else f"./{exe}"
     try:
-        result = subprocess.run([cmd], capture_output=True, text=True, timeout=10)
+        result = subprocess.run([cmd], capture_output=True, text=True, timeout=None)  # the integrate watchdog kills a hung probe
     except subprocess.TimeoutExpired:
         print(f"FAIL: {exe} timed out (expected crash)")
         return 1

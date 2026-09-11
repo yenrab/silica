@@ -20,7 +20,7 @@ def main() -> int:
         return 2
     exe = sys.argv[1]
     try:
-        r = subprocess.run([exe], capture_output=True, text=True, timeout=60)
+        r = subprocess.run([exe], capture_output=True, text=True, timeout=None)  # the integrate watchdog kills a hung probe
     except subprocess.TimeoutExpired:
         print(f"FAIL: {exe} timed out -- the fault path must never hang")
         return 1

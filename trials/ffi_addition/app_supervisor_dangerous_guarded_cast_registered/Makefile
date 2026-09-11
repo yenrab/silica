@@ -49,7 +49,7 @@ integrate-run: fixtures
 		echo "../../../compiler/silica-compiler/stdlib/Supervisor.silica"; \
 	} > silica.config
 	@$(ENSURE_SILICA_COMPILER)
-	@cd "$(APP_TRIAL_DIR)" && if ! { $(RUN_SILICA_COMPILER); }; then echo "❌❌ $(APP_LABEL): compilation failed"; printf '%d %d\n' 0 1 > .integrate_counts; exit 1; fi
+	@cd "$(APP_TRIAL_DIR)" && if ! { $(RUN_SILICA_COMPILER); }; then echo "❌❌ $(APP_LABEL): compilation failed"; $(INTEGRATE_DOT_FAIL); printf '%d %d\n' 0 1 > .integrate_counts; exit 1; fi
 	@failed=0; ok=0; ko=0; \
 	cd "$(APP_TRIAL_DIR)"; \
 	link_archives=$$("$(SILICA_LINK_SH)" .); \

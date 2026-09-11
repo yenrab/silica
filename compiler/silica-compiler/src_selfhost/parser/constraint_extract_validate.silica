@@ -24,6 +24,8 @@ use atom_table;
 export validate_max_params/1;
 export validate_no_single_element_tuples/1;
 export validate_required_statement_terminators/1;
+export validate_no_standalone_if/1;
+export validate_no_escaping_capturing_lambda/1;
 export validate_uncategorized_syntax_defect/1;
 export validate_no_illegal_trailing_semicolon/1;
 export validate_no_unused_scope_bindings/1;
@@ -674,6 +676,211 @@ fn validate_max_tuple_decompose_bindings(program: { declarations: List[{ tag: in
     (found: boolean, err_loc: { file: string, line: int64, column: int64, offset: int64 }, n: int64) <- decls_has_too_many_decompose_bindings(program.declarations);
     case found of {
         true -> parser_core@parse_err("E2012", err_loc, concat("tuple decomposition pattern has ", concat(atom_table@int64_to_decimal_string(n), " elements; the AArch64 register file supports at most 14 simultaneous bindings (X0-X15 excluding X8, X12)")), "sect4.2");
+        false -> parser_core@parse_ok(program)
+    }
+}
+
+
+// --- Defect B7: standalone `if` (kind-994 marker set by constraint_extract_expr) ---------
+fn expr_has_standalone_if(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> (boolean, { file: string, line: int64, column: int64, offset: int64 }) {
+    case expr.root < 0 of {
+        true -> (false, parser_ast@zero_location());
+        false -> case parser_ast@expr_root_kind(expr) == 994 of {
+            true -> (true, parser_ast@expr_root_node(expr).location);
+            false -> case parser_ast@expr_root_kind(expr) == -1 of {
+                true -> (false, parser_ast@zero_location());
+                false -> case parser_ast@expr_root_kind(expr) == 12 of {
+                    true -> case expr_child_is_absent(expr.root, parser_ast@expr_root_inner(expr)) == 1 of {
+                        true -> (false, parser_ast@zero_location());
+                        false -> expr_has_standalone_if(parser_ast@expr_at(expr, parser_ast@expr_root_inner(expr)))
+                    };
+                    false -> case expr_child_is_absent(expr.root, parser_ast@expr_root_inner(expr)) == 1 of {
+                        true -> case expr_child_is_absent(expr.root, parser_ast@expr_root_right(expr)) == 1 of {
+                            true -> (false, parser_ast@zero_location());
+                            false -> expr_has_standalone_if(parser_ast@expr_at(expr, parser_ast@expr_root_right(expr)))
+                        };
+                        false -> {
+                            (inner_found: boolean, inner_loc: { file: string, line: int64, column: int64, offset: int64 }) <- expr_has_standalone_if(parser_ast@expr_at(expr, parser_ast@expr_root_inner(expr)));
+                            case inner_found of {
+                                true -> (true, inner_loc);
+                                false -> case expr_child_is_absent(expr.root, parser_ast@expr_root_right(expr)) == 1 of {
+                                    true -> (false, parser_ast@zero_location());
+                                    false -> expr_has_standalone_if(parser_ast@expr_at(expr, parser_ast@expr_root_right(expr)))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn decls_has_standalone_if(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> (boolean, { file: string, line: int64, column: int64, offset: int64 }) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> {
+            (found: boolean, loc: { file: string, line: int64, column: int64, offset: int64 }) <- case decl_skips_body_walk(decls.head.tag, decls.head.body.root) == 1 of {
+                true -> (false, parser_ast@zero_location());
+                false -> expr_has_standalone_if(decls.head.body)
+            };
+            case found of {
+                true -> (true, loc);
+                false -> decls_has_standalone_if(decls.tail)
+            }
+        }
+    }
+}
+
+fn validate_no_standalone_if(program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) -> { is_ok: boolean, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    (found: boolean, err_loc: { file: string, line: int64, column: int64, offset: int64 }) <- decls_has_standalone_if(program.declarations);
+    case found of {
+        true -> parser_core@parse_err("E1066", err_loc, "'if' is only valid as a case-arm guard; use case ... of { ... } for branching", "sect3.3.5");
+        false -> parser_core@parse_ok(program)
+    }
+}
+
+// --- Defect A2 (interim): a lambda that captures locals cannot be returned ---------------
+// Lambdas are lifted to top-level functions whose captured locals become trailing parameters;
+// there is no closure environment, so a RETURNED capturing lambda loses its captures.
+fn strip_spaces_ce(t: string, i: int64, acc: string) -> string {
+    case i >= length_bytes(t) of {
+        true -> acc;
+        false -> {
+            c: string <- substring(t, i, i + 1);
+            case c == " " of {
+                true -> strip_spaces_ce(t, i + 1, acc);
+                false -> strip_spaces_ce(t, i + 1, concat(acc, c))
+            }
+        }
+    }
+}
+
+fn fn_type_arity_scan(t: string, i: int64, depth: int64, commas: int64, start: int64) -> int64 {
+    case i >= length_bytes(t) of {
+        true -> 0 - 1;
+        false -> {
+            c: string <- substring(t, i, i + 1);
+            case c == ")" and depth == 0 of {
+                true -> case i == start of { true -> 0; false -> commas + 1 };
+                false -> case c == "(" or c == "[" or c == "{" of {
+                    true -> fn_type_arity_scan(t, i + 1, depth + 1, commas, start);
+                    false -> case c == ")" or c == "]" or c == "}" of {
+                        true -> fn_type_arity_scan(t, i + 1, depth - 1, commas, start);
+                        false -> case c == "," and depth == 0 of {
+                            true -> fn_type_arity_scan(t, i + 1, depth, commas + 1, start);
+                            false -> fn_type_arity_scan(t, i + 1, depth, commas, start)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn fn_type_arity_text(t0: string) -> int64 {
+    t: string <- strip_spaces_ce(t0, 0, "");
+    open_i: int64 <- case length_bytes(t) >= 3 and substring(t, 0, 3) == "fn(" of { true -> 2; false -> case length_bytes(t) >= 1 and substring(t, 0, 1) == "(" of { true -> 0; false -> 0 - 1 } };
+    case open_i < 0 of {
+        true -> 0 - 1;
+        false -> fn_type_arity_scan(t, open_i + 1, 0, 0, open_i + 1)
+    }
+}
+
+fn name_has_lam_sub_at(m: string, i: int64) -> boolean {
+    case i + 6 > length_bytes(m) of {
+        true -> false;
+        false -> case substring(m, i, i + 6) == ".__lam" of {
+            true -> true;
+            false -> name_has_lam_sub_at(m, i + 1)
+        }
+    }
+}
+
+// The body's tail expression: follows lets (6), decompositions (10) and parentheses (2).
+fn body_tail_expr(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } {
+    case expr.root < 0 of {
+        true -> expr;
+        false -> case parser_ast@expr_root_kind(expr) == 6 or parser_ast@expr_root_kind(expr) == 10 of {
+            true -> body_tail_expr(parser_ast@expr_at(expr, parser_ast@expr_root_right(expr)));
+            false -> case parser_ast@expr_root_kind(expr) == 2 of {
+                true -> body_tail_expr(parser_ast@expr_at(expr, parser_ast@expr_root_inner(expr)));
+                false -> expr
+            }
+        }
+    }
+}
+
+// The lifted-lambda identifier a let chain binds to `name`, or "" when none does.
+fn let_bound_lifted_name(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, name: string) -> string {
+    case expr.root < 0 of {
+        true -> "";
+        false -> case parser_ast@expr_root_kind(expr) == 6 of {
+            true -> {
+                rhs: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@expr_at(expr, parser_ast@expr_root_inner(expr));
+                case parser_ast@expr_root_name(expr) == name and rhs.root >= 0 and parser_ast@expr_root_kind(rhs) == 1 and name_has_lam_sub_at(parser_ast@expr_root_name(rhs), 0) of {
+                    true -> parser_ast@expr_root_name(rhs);
+                    false -> let_bound_lifted_name(parser_ast@expr_at(expr, parser_ast@expr_root_right(expr)), name)
+                }
+            };
+            false -> case parser_ast@expr_root_kind(expr) == 10 of {
+                true -> let_bound_lifted_name(parser_ast@expr_at(expr, parser_ast@expr_root_right(expr)), name);
+                false -> case parser_ast@expr_root_kind(expr) == 2 of {
+                    true -> let_bound_lifted_name(parser_ast@expr_at(expr, parser_ast@expr_root_inner(expr)), name);
+                    false -> ""
+                }
+            }
+        }
+    }
+}
+
+fn list_param_len_ce(ps: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], acc: int64) -> int64 {
+    case ps.is_nil of {
+        true -> acc;
+        false -> list_param_len_ce(ps.tail, acc + 1)
+    }
+}
+
+fn find_decl_param_count(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], name: string) -> int64 {
+    case decls.is_nil of {
+        true -> 0 - 1;
+        false -> case decls.head.name == name of {
+            true -> list_param_len_ce(decls.head.parameters, 0);
+            false -> find_decl_param_count(decls.tail, name)
+        }
+    }
+}
+
+fn decls_has_escaping_capturing_lambda(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], all: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> (boolean, { file: string, line: int64, column: int64, offset: int64 }) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> {
+            ret_arity: int64 <- case decls.head.tag == 0 and decls.head.body.root >= 0 of { true -> fn_type_arity_text(decls.head.return_type_name); false -> 0 - 1 };
+            tail: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- case ret_arity >= 0 of { true -> body_tail_expr(decls.head.body); false -> parser_ast@dummy_expr() };
+            tail_is_ident: boolean <- ret_arity >= 0 and tail.root >= 0 and parser_ast@expr_root_kind(tail) == 1;
+            lifted_nm: string <- case tail_is_ident of {
+                true -> case name_has_lam_sub_at(parser_ast@expr_root_name(tail), 0) of {
+                    true -> parser_ast@expr_root_name(tail);
+                    false -> let_bound_lifted_name(decls.head.body, parser_ast@expr_root_name(tail))
+                };
+                false -> ""
+            };
+            hit: boolean <- case length_bytes(lifted_nm) > 0 of {
+                true -> find_decl_param_count(all, lifted_nm) > ret_arity;
+                false -> false
+            };
+            case hit of {
+                true -> (true, parser_ast@expr_root_node(tail).location);
+                false -> decls_has_escaping_capturing_lambda(decls.tail, all)
+            }
+        }
+    }
+}
+
+fn validate_no_escaping_capturing_lambda(program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) -> { is_ok: boolean, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    (found: boolean, err_loc: { file: string, line: int64, column: int64, offset: int64 }) <- decls_has_escaping_capturing_lambda(program.declarations, program.declarations);
+    case found of {
+        true -> parser_core@parse_err("E1067", err_loc, "a function literal that captures local bindings cannot be returned from the function that owns them (closure environments are not supported yet); pass the values as parameters instead", "sect3.4");
         false -> parser_core@parse_ok(program)
     }
 }

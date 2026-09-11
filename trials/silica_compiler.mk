@@ -56,7 +56,7 @@ assembly: ensure-silica-compiler
 clean: clean-silica-ifaces
 clean-silica-ifaces:
 	@find "$(CURDIR)" -name '*.iface' -type f -delete 2>/dev/null || true
-	@[ -n "$$SILICA_INTEGRATE_ACTIVE" ] || rm -f $(INTEGRATE_FILES)
+	@[ -n "$$SILICA_INTEGRATE_ACTIVE" ] || { rm -f $(INTEGRATE_FILES); rm -rf "$(INTEGRATE_RUNNING_DIR)"; }
 
 # So prerequisites like `integrate: $(SILICA_COMPILER)` create the binaries/ link if needed.
 $(SILICA_COMPILER):
@@ -172,7 +172,10 @@ INTEGRATE_JOBFLAGS = $(if $(filter -j% --jobserver%,$(MAKEFLAGS)),,-j$(INTEGRATE
 # ---- progress channel ---------------------------------------------------------------
 # The outermost `integrate` opens file descriptor 9 on its terminal and exports
 # SILICA_INTEGRATE_ROOT (its directory), SILICA_INTEGRATE_DOT_OK and SILICA_INTEGRATE_DOT_FAIL
-# (a green and a red dot when fd 9 is a terminal, `.` and `F` otherwise). Every check prints
+# (a full-block glyph U+2588 in the foreground colour when fd 9 is a terminal: blue (256-colour
+# index 33) for a pass, orange (208) for a failure -- a pair that stays distinct under red-green
+# and blue-yellow colour blindness; the background attribute is never set -- `.` and `F`
+# otherwise). Every check prints
 # one dot to fd 9 with a single write, so parallel suites never tear the line, and touches
 # the root's .integrate_last_dot for the watchdog. Nothing else reaches the terminal until
 # the root prints its report. Without the wrapper (fd 9 closed) the dots are silently dropped.
@@ -189,9 +192,9 @@ INTEGRATE_DOT_FAIL = { printf '%s' "$$SILICA_INTEGRATE_DOT_FAIL" >&9; touch "$$S
 #
 # $(call INTEGRATE_RUN_TRIAL,<label>,<sout path>,<command>): output then exit status into <sout path>.
 define INTEGRATE_RUN_TRIAL
-integrate_reg="$${SILICA_INTEGRATE_ROOT:-.}/.integrate_running/$$(printf '%s' "$(1)" | tr '/ ' '__')"; \
 integrate_killed=0; \
 perl -e 'setpgrp(0, 0); exec @ARGV or exit 127' $(3) > "$(2)" 2>&1 & integrate_pid=$$!; \
+integrate_reg="$${SILICA_INTEGRATE_ROOT:-.}/.integrate_running/$$integrate_pid"; \
 { printf '%s %s\n' "$$integrate_pid" "$(1)" > "$$integrate_reg"; } 2>/dev/null; \
 wait $$integrate_pid; integrate_rc=$$?; \
 printf '%s\n' "$$integrate_rc" >> "$(2)"; \
@@ -200,9 +203,9 @@ rm -f "$$integrate_reg" "$$integrate_reg.killed" 2>/dev/null
 endef
 # $(call INTEGRATE_EXEC_TRIAL,<label>,<command>): the command manages its own output.
 define INTEGRATE_EXEC_TRIAL
-integrate_reg="$${SILICA_INTEGRATE_ROOT:-.}/.integrate_running/$$(printf '%s' "$(1)" | tr '/ ' '__')"; \
 integrate_killed=0; \
 perl -e 'setpgrp(0, 0); exec @ARGV or exit 127' $(2) & integrate_pid=$$!; \
+integrate_reg="$${SILICA_INTEGRATE_ROOT:-.}/.integrate_running/$$integrate_pid"; \
 { printf '%s %s\n' "$$integrate_pid" "$(1)" > "$$integrate_reg"; } 2>/dev/null; \
 wait $$integrate_pid; integrate_rc=$$?; \
 if [ -f "$$integrate_reg.killed" ]; then integrate_killed=1; fi; \
@@ -230,10 +233,11 @@ else
 		export SILICA_INTEGRATE_ACTIVE=1; \
 		{ $(MAKE) --no-print-directory $(INTEGRATE_JOBFLAGS) -C "$(INTEGRATE_DIR)" -f "$(INTEGRATE_MAKEFILE)" integrate-run; \
 		  echo $$? > "$(INTEGRATE_DIR).integrate_status"; } 2>&1 | tee -a "$(INTEGRATE_DIR).integrate_log"; \
+		$(MAKE) --no-print-directory -C "$(INTEGRATE_DIR)" -f "$(INTEGRATE_MAKEFILE)" integrate-report; \
 	else \
 		exec 9>&1; \
 		export SILICA_INTEGRATE_ACTIVE=1 SILICA_INTEGRATE_ROOT="$(_INTEGRATE_DIR_NOSLASH)" SILICA_INTEGRATE_WATCHDOG_MINUTES="$(INTEGRATE_WATCHDOG_MINUTES)"; \
-		if [ -t 9 ]; then export SILICA_INTEGRATE_DOT_OK="$$(printf '\033[32m.\033[0m')" SILICA_INTEGRATE_DOT_FAIL="$$(printf '\033[31m.\033[0m')"; \
+		if [ -t 9 ]; then export SILICA_INTEGRATE_DOT_OK="$$(printf '\033[38;5;33m\342\226\210\033[0m')" SILICA_INTEGRATE_DOT_FAIL="$$(printf '\033[38;5;208m\342\226\210\033[0m')"; \
 		else export SILICA_INTEGRATE_DOT_OK="." SILICA_INTEGRATE_DOT_FAIL="F"; fi; \
 		rm -rf "$(INTEGRATE_RUNNING_DIR)"; mkdir -p "$(INTEGRATE_RUNNING_DIR)"; touch "$(INTEGRATE_DIR).integrate_last_dot"; \
 		( wd_secs=$$(( $(INTEGRATE_WATCHDOG_MINUTES) * 60 )); \
@@ -293,7 +297,10 @@ else elapsed=$$(printf '%ds' "$$el"); fi; \
 	printf 'elapsed: %s\n' "$$elapsed"; \
 	if [ "$$ko" -ne 0 ]; then \
 		printf 'failures:\n'; \
-		{ $(INTEGRATE_FAILURE_DETAILS); } | sed 's/^/    /'; \
+		details=$$({ $(INTEGRATE_FAILURE_DETAILS); }); \
+		if [ -n "$$details" ]; then printf '%s\n' "$$details" | sed 's/^/    /'; \
+		else printf '    (no ❌ line was printed; the run ended with status %s -- last %s lines of the log)\n' "$$st" "$(INTEGRATE_DETAIL_LINES)"; \
+			tail -n "$(INTEGRATE_DETAIL_LINES)" .integrate_log 2>/dev/null | sed 's/^/    /'; fi; \
 	fi; \
 	printf 'log: %s\n' "$(INTEGRATE_DIR).integrate_log"; \
 } > .integrate_report; \

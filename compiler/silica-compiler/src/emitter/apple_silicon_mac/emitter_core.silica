@@ -578,19 +578,36 @@ fn is_gpr64_param_type(ptype: string) -> bool {
     ptype == "int64" or ptype == "uint64" or var@type_name_is_function(ptype) or type_name_is_region_handle(ptype)
 }
 
-// Count int64/uint64 parameters (pipe-separated param_types).
+// A tuple or record parameter that FOLLOWS a scalar is a pointer in X1..X7 whose
+// destructuring stages through X0 (defect A4: `(acc: int64, x: (int64, int64))` read acc as
+// the tuple's first item). Counting it as a GPR64 parameter makes the ABI entry shadow fire,
+// which moves the scalar out of X0 before the body runs. The first parameter keeps the
+// dedicated aggregate-first (X11/X20) handling, so only index >= 1 is counted here.
+fn is_later_aggregate_ptr_param_type(ptype: string, idx: int64) -> bool {
+    idx >= 1 and (reg_conventions@is_tuple_type(ptype) or reg_conventions@is_inline_struct_type(ptype))
+}
+
+fn counts_as_gpr64_param_at(ptype: string, idx: int64) -> bool {
+    is_gpr64_param_type(ptype) or is_later_aggregate_ptr_param_type(ptype, idx)
+}
+
+// Count int64/uint64 parameters (pipe-separated param_types), plus aggregate pointers after index 0.
 fn count_gpr64_params_from(param_types: string, acc: int64) -> int64 {
+    count_gpr64_params_from_at(param_types, acc, 0)
+}
+
+fn count_gpr64_params_from_at(param_types: string, acc: int64, idx: int64) -> int64 {
     case len(param_types) == 0 of {
         true -> acc;
         false -> do
             pipe: int64 <- find_pipe_in_param_names(param_types, 0);
             case pipe < 0 of {
-                true -> case is_gpr64_param_type(param_types) of { true -> acc + 1; false -> acc };
+                true -> case counts_as_gpr64_param_at(param_types, idx) of { true -> acc + 1; false -> acc };
                 false -> do
                     head: string <- substring(param_types, 0, pipe);
                     rest: string <- substring(param_types, pipe + 1, len(param_types));
-                    n: int64 <- case is_gpr64_param_type(head) of { true -> 1; false -> 0 };
-                    count_gpr64_params_from(rest, acc + n)
+                    n: int64 <- case counts_as_gpr64_param_at(head, idx) of { true -> 1; false -> 0 };
+                    count_gpr64_params_from_at(rest, acc + n, idx + 1)
                 end
             }
         end
@@ -614,7 +631,7 @@ fn first_param_is_gpr64(param_types: string) -> bool {
 // X19/X20 are callee-saved: values survive BLR to user functions (X12–X15 are caller-saved and unsafe).
 // Still avoids X9/X10: print_int64 helper (L_pi_helper) clobbers those across BL; helpers preserve X19–X28 per AAPCS64.
 fn bind_reg_int64_abi_shadow(param_types: string, idx: int64, ptype: string, string_shadow: bool, second_param_shadow: bool, reply_sret_second_uses_x21: bool, hold_second_in_x21: bool) -> string {
-    case is_gpr64_param_type(ptype) of {
+    case counts_as_gpr64_param_at(ptype, idx) of {
         true -> case idx of {
             0 -> "X19";
             1 -> case reply_sret_second_uses_x21 of { true -> "X21"; false -> "X20" };
@@ -643,7 +660,12 @@ fn build_param_outer_reg_int64_abi_shadow_loop(param_names: string, param_types:
         false -> do
             first: string <- substring(param_names, 0, pipe);
             rest: string <- case pipe + 1 < len(param_names) of { true -> substring(param_names, pipe + 1, len(param_names)); false -> "" };
-            rest_types: string <- case pipe + 1 < len(param_types) of { true -> substring(param_types, pipe + 1, len(param_types)); false -> "" };
+            // Register slots are counted over the FULL type list (AAPCS: the n-th float goes to
+            // D<n> regardless of the ints before it), so the recursion keeps `param_types` whole
+            // and indexes it with idx. Slicing it per parameter -- previously at the NAMES' pipe
+            // position, which even cut into the type text -- made the second float parameter's
+            // slot depend on a truncated prefix (defect A1: `addf(x: float64, y: float64)` bound
+            // both to D0; `pick(n: int64, y: float64)` bound y to D1).
             prefixed: string <- concat("%", first);
             br: string <- bind_reg_int64_abi_shadow(param_types, idx, ptype, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21);
             sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
@@ -656,7 +678,7 @@ fn build_param_outer_reg_int64_abi_shadow_loop(param_names: string, param_types:
                 false -> acc
             };
             next_acc: string <- concat(base, part);
-            build_param_outer_reg_int64_abi_shadow_loop(rest, rest_types, idx + 1, next_acc, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21)
+            build_param_outer_reg_int64_abi_shadow_loop(rest, param_types, idx + 1, next_acc, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21)
         end
     }
 }
@@ -1002,14 +1024,19 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
         false -> do
             first: string <- substring(param_names, 0, pipe);
             rest: string <- case pipe + 1 < len(param_names) of { true -> substring(param_names, pipe + 1, len(param_names)); false -> "" };
-            rest_types: string <- case pipe + 1 < len(param_types) of { true -> substring(param_types, pipe + 1, len(param_types)); false -> "" };
+            // Register slots are counted over the FULL type list (AAPCS: the n-th float goes to
+            // D<n> regardless of the ints before it), so the recursion keeps `param_types` whole
+            // and indexes it with idx. Slicing it per parameter -- previously at the NAMES' pipe
+            // position, which even cut into the type text -- made the second float parameter's
+            // slot depend on a truncated prefix (defect A1: `addf(x: float64, y: float64)` bound
+            // both to D0; `pick(n: int64, y: float64)` bound y to D1).
             prefixed: string <- concat("%", first);
             br: string <- bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow, aggregate_first_shadow);
             sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
             part: string <- concat(sep, concat(prefixed, concat("=", br)));
             base: string <- case len(acc) == 0 of { true -> param_reg_for_index(param_types, idx, ptype); false -> acc };
             next_acc: string <- concat(base, part);
-            build_param_outer_reg_loop(rest, rest_types, idx + 1, next_acc, string_shadow, second_param_shadow, aggregate_first_shadow)
+            build_param_outer_reg_loop(rest, param_types, idx + 1, next_acc, string_shadow, second_param_shadow, aggregate_first_shadow)
         end
     }
 }

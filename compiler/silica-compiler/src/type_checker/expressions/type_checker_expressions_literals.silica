@@ -39,7 +39,7 @@ fn check_expr(expr: Expr, expected_type: int64, context: TypeContext, world: Lis
                 false -> type_checker_core@type_check_err("E2001", expr.location, "string literal required, got numeric literal", "sect6")
             };
             false -> case type_checker_core@type_id_accepts_numeric_literal(context, expected_type) of {
-                true -> type_checker_core@type_check_ok();
+                true -> check_numeric_literal_against_integer_kind(expr, expected_type, context);
                 false -> case expr.value == ")" of {
                     true -> type_checker_core@type_check_ok();
                     false -> do
@@ -53,5 +53,76 @@ fn check_expr(expr: Expr, expected_type: int64, context: TypeContext, world: Lis
                 }
             }
         }
+    }
+}
+
+// Defects B8 and B12: an integer-typed expectation must reject a float literal and a literal
+// outside the type's range. Float-typed expectations accept any numeric literal as before.
+fn literal_text_is_float(v: string, i: int64) -> bool {
+    case i >= len(v) of {
+        true -> false;
+        false -> case substring(v, i, i + 1) == "." of {
+            true -> true;
+            false -> literal_text_is_float(v, i + 1)
+        }
+    }
+}
+
+fn literal_digits_to_int64(v: string, i: int64, acc: int64, overflow: int64) -> (int64, int64) {
+    case i >= len(v) of {
+        true -> (acc, overflow);
+        false -> do
+            c: string <- substring(v, i, i + 1);
+            d: int64 <- case c of {
+                "0" -> 0; "1" -> 1; "2" -> 2; "3" -> 3; "4" -> 4;
+                "5" -> 5; "6" -> 6; "7" -> 7; "8" -> 8; "9" -> 9;
+                _: string -> -1
+            };
+            case d < 0 of {
+                true -> literal_digits_to_int64(v, i + 1, acc, overflow);
+                // 922337203685477580 * 10 + 7 is the largest value that fits; beyond it the type is out of range anyway.
+                false -> case acc > 922337203685477580 of {
+                    true -> (acc, 1);
+                    false -> literal_digits_to_int64(v, i + 1, acc * 10 + d, overflow)
+                }
+            }
+        end
+    }
+}
+
+fn integer_kind_bounds(surface: string) -> (bool, int64, int64) {
+    case surface of {
+        "int8" -> (true, -128, 127);
+        "int16" -> (true, -32768, 32767);
+        "int32" -> (true, -2147483648, 2147483647);
+        "uint8" -> (true, 0, 255);
+        "uint16" -> (true, 0, 65535);
+        "uint32" -> (true, 0, 4294967295);
+        "uint64" -> (true, 0, 9223372036854775807);
+        "int64" -> (true, -9223372036854775807, 9223372036854775807);
+        _: string -> (false, 0, 0)
+    }
+}
+
+fn check_numeric_literal_against_integer_kind(expr: Expr, expected_type: int64, context: TypeContext) -> TypeCheckResult {
+    case type_checker_core@type_id_is_integer_kind(context, expected_type) of {
+        false -> type_checker_core@type_check_ok();
+        true -> do
+            surface: string <- type_checker_core@type_id_to_surface(context, expected_type);
+            case literal_text_is_float(expr.value, 0) of {
+                true -> type_checker_core@type_check_err("E2001", expr.location, "integer literal required, got float literal", "sect6");
+                false -> do
+                    negative: bool <- len(expr.value) > 0 and substring(expr.value, 0, 1) == "-";
+                    (mag: int64, overflow: int64) <- literal_digits_to_int64(expr.value, 0, 0, 0);
+                    (known: bool, lo: int64, hi: int64) <- integer_kind_bounds(surface);
+                    signed_val: int64 <- case negative of { true -> 0 - mag; false -> mag };
+                    out_of_range: bool <- known and (overflow != 0 or signed_val < lo or signed_val > hi);
+                    case out_of_range of {
+                        true -> type_checker_core@type_check_err("E2011", expr.location, concat(concat(concat("integer literal ", expr.value), " is out of range for "), surface), "sect6");
+                        false -> type_checker_core@type_check_ok()
+                    }
+                end
+            }
+        end
     }
 }

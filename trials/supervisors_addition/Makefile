@@ -271,7 +271,7 @@ integrate-run:
 					else \
 						echo "✅✅ $(MSG_PREFIX)$$base output multiset-matches .scout"; \
 						$(INTEGRATE_DOT_OK); \
-						ok=$$((ko + 1)); \
+						ok=$$((ok + 1)); \
 					fi; \
 				elif ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
 					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
