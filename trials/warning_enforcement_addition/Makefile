@@ -16,7 +16,7 @@ all: integrate
 fixtures:
 	@$(MAKE) -C "$(abspath $(THIS_DIR)../ffi_addition)" fixtures
 
-integrate: fixtures clean
+integrate-run: fixtures clean
 	@$(ENSURE_SILICA_COMPILER)
 	@failed=0; ok=0; ko=0; rm -f "$(THIS_DIR).integrate_counts"; \
 	for trial in $(TRIALS); do \
@@ -30,6 +30,7 @@ integrate: fixtures clean
 		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$$out" 2>&1; status=$$?; \
 		if [ "$$status" -ne 0 ]; then \
 			echo "❌❌ warning_enforcement_addition/$$trial: compilation failed"; \
+			$(INTEGRATE_DOT_FAIL); \
 			cat "$$out"; \
 			ko=$$((ko + 1)); failed=1; rm -rf "$$tmpdir"; continue; \
 		fi; \
@@ -38,9 +39,11 @@ integrate: fixtures clean
 		rm -rf "$$tmpdir"; \
 		if diff -q "$(THIS_DIR)$$trial.cur_warn" "$(THIS_DIR)$$trial.golden_warn" > /dev/null 2>&1; then \
 			echo "✅✅ warning_enforcement_addition/$$trial"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		else \
 			echo "❌❌ warning_enforcement_addition/$$trial: .cur_warn differs from .golden_warn"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff "$(THIS_DIR)$$trial.cur_warn" "$(THIS_DIR)$$trial.golden_warn" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \

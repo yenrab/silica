@@ -86,9 +86,11 @@ link-fail:
 		printf "$$base.silica\n" > "$$tmpdir/silica.config"; \
 		( cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); } ) > "$$tmpdir/compile.out" 2>&1 || { \
 			echo "❌❌ $(MSG_PREFIX)$$case: expected compile success"; cat "$$tmpdir/compile.out"; rm -rf "$$tmpdir"; failed=1; continue; \
+			$(INTEGRATE_DOT_FAIL); \
 		}; \
 		if [ ! -f "$$tmpdir/silica.link" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$case: silica.link not emitted"; rm -rf "$$tmpdir"; failed=1; continue; \
+			$(INTEGRATE_DOT_FAIL); \
 		fi; \
 		link_archives=$$("$(SILICA_LINK_SH)" "$$tmpdir"); \
 		( cd "$$tmpdir" && \
@@ -97,6 +99,7 @@ link-fail:
 				base_obj=$${sams%.sams}; \
 				clang $(ASFLAGS) -c -x assembler "$$sams" -o "$$base_obj.o" || exit 1; \
 			done ) || { echo "❌❌ $(MSG_PREFIX)$$case: assembly failed"; rm -rf "$$tmpdir"; failed=1; continue; }; \
+			$(INTEGRATE_DOT_FAIL); \
 		( cd "$$tmpdir" && \
 			runtime_obj=""; \
 			[ -f __silica_runtime.o ] && runtime_obj=__silica_runtime.o; \
@@ -109,17 +112,21 @@ link-fail:
 		rm -rf "$$tmpdir"; \
 		if [ "$$link_st" -eq 0 ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$case: expected link failure"; cat "$$cur"; ko=$$((ko + 1)); failed=1; \
+			$(INTEGRATE_DOT_FAIL); \
 		elif [ ! -f "$$golden" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$case: missing link golden $$(basename "$$golden")"; ko=$$((ko + 1)); failed=1; \
+			$(INTEGRATE_DOT_FAIL); \
 		else \
 			sed -E 's/\(symbol ([^)]+)\+0x[0-9A-Fa-f]+\)/(symbol \1+0xADDR)/g' "$$cur" > "$$cur_norm"; \
 			sed -E 's/\(symbol ([^)]+)\+0x[0-9A-Fa-f]+\)/(symbol \1+0xADDR)/g' "$$golden" > "$$golden_norm"; \
 			if ! diff -q "$$cur_norm" "$$golden_norm" > /dev/null 2>&1; then \
 				echo "❌❌ $(MSG_PREFIX)$$case: .cur_link_fail differs from $$(basename "$$golden")"; \
+				$(INTEGRATE_DOT_FAIL); \
 				diff "$$cur_norm" "$$golden_norm" || true; \
 				ko=$$((ko + 1)); failed=1; \
 			else \
 				echo "✅✅ $(MSG_PREFIX)$$case (link failure matches golden)"; \
+				$(INTEGRATE_DOT_OK); \
 				ok=$$((ok + 1)); \
 			fi; \
 		fi; \
@@ -148,11 +155,14 @@ archive-missing:
 	rm -rf "$$tmpdir"; \
 	if [ ! -f "$$golden" ]; then \
 		echo "❌❌ $(MSG_PREFIX)$$case: missing .golden_fail"; ko=$$((ko + 1)); failed=1; \
+		$(INTEGRATE_DOT_FAIL); \
 	elif diff -q "$$cur" "$$golden" > /dev/null 2>&1; then \
 		echo "✅✅ $(MSG_PREFIX)$$case (missing archive compile failure)"; \
+		$(INTEGRATE_DOT_OK); \
 		ok=$$((ok + 1)); \
 	else \
 		echo "❌❌ $(MSG_PREFIX)$$case: .cur_fail differs from .golden_fail"; \
+		$(INTEGRATE_DOT_FAIL); \
 		diff "$$cur" "$$golden" || true; \
 		ko=$$((ko + 1)); failed=1; \
 	fi; \
@@ -203,12 +213,15 @@ compile-fail-goldens:
 		rm -rf "$$tmpdir"; \
 		if [ ! -f "$$golden" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$case: missing .golden_fail"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		elif diff -q "$$cur" "$$golden" > /dev/null 2>&1; then \
 			echo "✅✅ $(MSG_PREFIX)$$case"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		else \
 			echo "❌❌ $(MSG_PREFIX)$$case: .cur_fail differs from .golden_fail"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff "$$cur" "$$golden" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
@@ -225,15 +238,19 @@ diff-fail-goldens:
 		cur="$(THIS_DIR)$$case.cur_fail"; \
 		if [ ! -f "$$golden" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$case: missing .golden_fail"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		elif [ ! -f "$$cur" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$case: missing .cur_fail (run compile-fail-goldens or integrate first)"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		elif diff -q "$$cur" "$$golden" > /dev/null 2>&1; then \
 			echo "✅✅ $(MSG_PREFIX)$$case (.cur_fail matches .golden_fail)"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		else \
 			echo "❌❌ $(MSG_PREFIX)$$case: .cur_fail differs from .golden_fail"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff "$$cur" "$$golden" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
@@ -241,7 +258,7 @@ diff-fail-goldens:
 	echo "$(MSG_PREFIX)diff-fail-goldens: $$ok passed, $$ko failed"; \
 	exit $$failed
 
-integrate: clean
+integrate-run: clean
 	@failed=0; \
 	echo "=== $(MSG_PREFIX)integrate: compile-fail goldens, link-fail, archive-missing ==="; \
 	$(MAKE) compile-fail-goldens || failed=1; \

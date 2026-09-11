@@ -78,10 +78,15 @@ fn emit_kind_let_toplevel(term: { nodes: List[{ kind: int64, type_name: string, 
                             // handed the same register to the next sibling -- three interfering bindings
                             // all received X21. This only ever ADDS reservations, so it cannot introduce
                             // a collision.
-                            res_binding_tl: string <- case spill_tl of {
-                                true -> concat("|_res=", spill_reg_tl);
-                                false -> ""
-                            };
+                            // No |_res= reservation. It was meant to keep a spill register taken when the binding's
+                            // VALUE is a memory ref, but it was never effective (it was concatenated ahead of the base
+                            // register, so is_reg_bound never matched it) and every build that passed the trial suites
+                            // ran without it. Once it did take effect (2026-09-10) it starved the callee-saved chain:
+                            // case arms then fell through to X29 frame slots the prologue had not budgeted, and
+                            // [X29, #-16] landed on the saved X19/X20 pair (type_checker_expressions_binary_ops@
+                            // check_comparison_operands). The register is already recorded by the name binding and,
+                            // for aggregates, by the _ptr. binding; liveness is decided by kind (find_reg_pref_binding).
+                            res_binding_tl: string <- "";
                             body_bound_tl: string <- rhs_bind_tl;
                             tp_binding_tl: string <- case packs_escape_tl of {
                                 true -> "";
@@ -111,8 +116,8 @@ fn emit_kind_let_toplevel(term: { nodes: List[{ kind: int64, type_name: string, 
                                 true -> "SP";
                                 false -> var@base_reg_of(bound.outer_reg)
                             };
-                            inherit_sp_tl: string <- var@extract_sp_bindings(bound.outer_reg);
-                            new_outer_tl: string <- concat(res_binding_tl, concat(nob_tl, concat(inherit_sp_tl, concat(reg_binding_tl, concat(tp_binding_tl, concat(iap_tl, concat(vab_tl, ptr_binding_tl)))))));
+                            inherit_sp_tl: string <- var@strip_name_family(var@extract_sp_bindings(bound.outer_reg), term_sir_helpers@sir_term_root_node(term).name);
+                            new_outer_tl: string <- concat(nob_tl, concat(res_binding_tl, concat(inherit_sp_tl, concat(reg_binding_tl, concat(tp_binding_tl, concat(iap_tl, concat(vab_tl, ptr_binding_tl)))))));
                             outer_for_body_tl_pre: string <- term_reg_spill@outer_append_id_ret_tuple_sret(term, concat(new_outer_tl, term_let_helpers@list_cons_tail_rebind_suffix(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))), bound.outer_reg);
                             // Bytes this let's RHS actually subtracted from SP. tm_adj_tl is the
                             // NESTED allocation (0 for a flat tuple), whereas emit_tuple_make_stack

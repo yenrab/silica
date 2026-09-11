@@ -4,6 +4,16 @@
 #
 # integrate / clean: `make -C <trial> integrate|clean` for each immediate child with Makefile or makefile
 # To refresh only silica.config in a trial: `make -C <trial> silica.config`
+#
+# Parallelism: the subdirectories run concurrently under one make jobserver
+# (`make integrate` uses JOBS=<cores>; `make -j6 integrate` uses 6). Each subdirectory
+# prints its own report when it finishes; the final report covers the whole tree.
+# ordered_data_structures runs in its own, smaller pool (SDS_JOBS, default 4) because
+# its per-unit compiles are memory-bound, not core-bound.
+#
+#   make integrate                       # everything, cores-wide
+#   make integrate JOBS=4 SDS_JOBS=2     # gentler
+#   make -C actors_addition integrate    # one suite, with its own report
 
 # Immediate trial subdirs that contain Makefile or makefile (GNU make finds makefile in -C dir)
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
@@ -12,60 +22,50 @@ include $(THIS_DIR)silica_compiler.mk
 TRIAL_MAKEFILES := $(wildcard */Makefile */makefile)
 TRIAL_SUBDIRS := $(sort $(foreach mf,$(TRIAL_MAKEFILES),$(notdir $(patsubst %/,%,$(dir $(mf))))))
 
-.PHONY: integrate integrate-ffi clean help
+# Longest jobs first: make starts prerequisites in list order, so the heavy suites
+# begin immediately instead of forming a tail behind the small ones.
+SDS_DIR := ordered_data_structures
+HEAVY_FIRST := $(SDS_DIR) error_enforcement_addition
+TRIAL_ORDER := $(filter $(HEAVY_FIRST),$(TRIAL_SUBDIRS)) $(filter-out $(HEAVY_FIRST),$(TRIAL_SUBDIRS))
+INTEGRATE_DIR_TARGETS := $(TRIAL_ORDER:%=integrate-dir-%)
+
+.PHONY: integrate-run integrate-prepare integrate-dirs integrate-summary integrate-ffi clean help $(INTEGRATE_DIR_TARGETS)
 
 .DEFAULT_GOAL := integrate
 
-# integrate: delegate; each trial writes .integrate_counts ("<ok> <fail>" one line) for the parent to sum
-# Runs full tree `clean` first, then each trial's integrate (each trial lists `clean` before `silica.config` and
-# uses `silica.config: | clean` so regeneration never runs after a wipe that deletes the config).
-integrate: ensure-silica-compiler
-	@$(MAKE) clean
-	@ok=0; ko=0; failed=0; \
-	for dir in $(TRIAL_SUBDIRS); do \
-		echo "=== $$dir ==="; \
-		if [ "$$dir" = "modules_addition" ] && [ -f "modules_addition/INTEGRATE_PENDING" ]; then \
-			echo "SKIP: modules_addition (INTEGRATE_PENDING — see modules_addition/INTEGRATE_PENDING)"; \
-			continue; \
-		fi; \
-		if [ "$$dir" = "cpu_discovery_and_spawn_pinning" ] && [ -f "cpu_discovery_and_spawn_pinning/INTEGRATE_PENDING" ]; then \
-			echo "SKIP: cpu_discovery_and_spawn_pinning (INTEGRATE_PENDING — see cpu_discovery_and_spawn_pinning/README.md)"; \
-			continue; \
-		fi; \
-		if [ -f "$$dir/INTEGRATE_PENDING" ]; then \
-			echo "SKIP: $$dir (INTEGRATE_PENDING — see $$dir/README.md)"; \
-			continue; \
-		fi; \
-		if $(MAKE) -C $$dir integrate; then st=0; else st=1; failed=1; fi; \
-		cf="$$dir/.integrate_counts"; \
-		if [ -f "$$cf" ]; then \
-			read n1 n2 < "$$cf" || true; \
-			ok=$$((ok + $${n1:-0})); ko=$$((ko + $${n2:-0})); \
-		elif [ "$$st" -ne 0 ]; then \
-			ko=$$((ko + 1)); \
-		fi; \
-	done; \
-	echo "success: ✅✅ $$ok"; \
-	echo "fail: ❌❌ $$ko"; \
-	test "$$ko" -eq 0 && test "$${failed:-0}" -eq 0
+# integrate (wrapper in silica_compiler.mk) -> integrate-run:
+#   prepare once (serial), fan out over the suites (parallel), then summarise.
+# `integrate-dirs` is a sub-make so the fan-out cannot start before prepare finishes.
+integrate-run: integrate-prepare
+	@$(MAKE) --no-print-directory -f "$(INTEGRATE_MAKEFILE)" integrate-dirs || true
+	@$(MAKE) --no-print-directory -f "$(INTEGRATE_MAKEFILE)" integrate-summary
+
+# Shared state that several suites would otherwise build concurrently:
+#   - the ffi wrapper archives (ffi_addition and warning_enforcement_addition both build them)
+#   - the published iface cache
+# Each suite cleans its own directory inside its own integrate-run, so no tree-wide
+# `make clean` sweep runs here.
+integrate-prepare:
+	@rm -rf "$(THIS_DIR).cache/ifaces"
+	@rm -f $(TRIAL_SUBDIRS:%=$(THIS_DIR)%/.integrate_counts)
+	@$(MAKE) --no-print-directory -C "$(THIS_DIR)ffi_addition" fixtures
+
+integrate-dirs: $(INTEGRATE_DIR_TARGETS)
+
+# One rule per suite. Never fails: the summary decides the exit status, so every suite runs.
+$(INTEGRATE_DIR_TARGETS): integrate-dir-%:
+	@$(call INTEGRATE_CHILD,$*,$(if $(filter $*,$(SDS_DIR)),-j$(SDS_JOBS)))
+
+integrate-summary:
+	@cd "$(THIS_DIR)" && $(call INTEGRATE_SUM_CHILDREN,$(TRIAL_ORDER)); \
+	[ "$$ko" -eq 0 ] && [ "$$failed" -eq 0 ]
 
 # integrate-ffi: success-path FFI app trials only (same as make -C ffi_addition integrate).
 # Compile/link failure goldens live under error_enforcement_addition/ffi_addition integrate.
 integrate-ffi: ensure-silica-compiler
-	@echo "=== ffi_addition (integrate-ffi) ==="
-	@failed=0; \
-	if $(MAKE) -C ffi_addition integrate; then st=0; else st=1; failed=1; fi; \
-	ok=0; ko=0; \
-	cf="ffi_addition/.integrate_counts"; \
-	if [ -f "$$cf" ]; then \
-		read n1 n2 < "$$cf" || true; \
-		ok=$${n1:-0}; ko=$${n2:-0}; \
-	elif [ "$$st" -ne 0 ]; then \
-		ko=1; \
-	fi; \
-	echo "success: ✅✅ $$ok"; \
-	echo "fail: ❌❌ $$ko"; \
-	test "$$ko" -eq 0 && test "$${failed:-0}" -eq 0
+	@$(call INTEGRATE_CHILD,ffi_addition)
+	@cd "$(THIS_DIR)" && $(call INTEGRATE_SUM_CHILDREN,ffi_addition); \
+	[ "$$ko" -eq 0 ] && [ "$$failed" -eq 0 ]
 
 # clean: delegate so each trial removes what its Makefile defines (same dirs as integrate),
 # then drop any published *.iface caches under the trials tree.
@@ -78,24 +78,16 @@ clean:
 	echo "Removing *.iface and .cache/ifaces under trials..."; \
 	rm -rf "$(THIS_DIR).cache/ifaces"; \
 	find "$(THIS_DIR)" -name '*.iface' -type f -delete 2>/dev/null || true; \
-	if [ "$${failed:-0}" -eq 0 ]; then echo "Clean complete"; else echo "❌ clean: one or more trial directories failed"; fi; \
-	test "$${failed:-0}" -eq 0
+	find "$(THIS_DIR)" \( -name '.integrate_log' -o -name '.integrate_report' -o -name '.integrate_status' \
+		-o -name '.integrate_start' -o -name '.integrate_results' -o -name '.integrate_skipped' \) -type f -delete 2>/dev/null || true; \
+	exit $$failed
 
 help:
-	@echo "Silica trials Makefile"
-	@echo "====================="
-	@echo ""
-	@echo "Targets:"
-	@echo "  integrate     - Full tree clean, then for each trial subdir: make -C <dir> integrate"
-	@echo "                  Ensures binaries/silica-compiler first (update_silica_compiler_link.bash if missing)"
-	@echo "                  (compiler output and pass/fail rules are defined in that subdir)"
-	@echo "                  Ends with totals: success: ✅✅ <n>  fail: ❌❌ <m>"
-	@echo "                  (<n>/<m> sum each trial's .integrate_counts: ok fail)"
-	@echo "  integrate-ffi - FFI success-path app trials only: make -C ffi_addition integrate"
-	@echo "                  (failure goldens: error_enforcement_addition/ffi_addition integrate)"
-	@echo "  clean         - For each trial subdir: make -C <dir> clean, then remove all *.iface / .cache/ifaces"
-	@echo "  help       - Show this help"
-	@echo ""
-	@echo "Per-trial silica.config: run \`make -C <trial_dir> silica.config\` (see that Makefile)."
-	@echo ""
-	@echo "Trial dirs (integrate + clean): $(TRIAL_SUBDIRS)"
+	@echo "Silica trials"
+	@echo "  make integrate                 run every suite in parallel (JOBS=$(JOBS), SDS_JOBS=$(SDS_JOBS)), report per suite and overall"
+	@echo "  make integrate JOBS=N          cap the parallel pool"
+	@echo "  make integrate SDS_JOBS=N      cap ordered_data_structures separately (memory-bound)"
+	@echo "  make -C <suite> integrate      one suite; prints that suite's own report"
+	@echo "  make integrate-ffi             ffi_addition success-path apps only"
+	@echo "  make clean                     clean every suite"
+	@echo "Suites: $(TRIAL_SUBDIRS)"

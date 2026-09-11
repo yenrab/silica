@@ -33,6 +33,7 @@ export emit_str_mem_ref/2;
 export emit_var_with_sp_check/3;
 export find_sp_binding/2;
 export strip_sp_binding/2;
+export strip_name_family/2;
 export find_sp_binding_bare_or_percent_param/2;
 export base_reg_of/1;
 export is_memory_ref/1;
@@ -227,6 +228,25 @@ fn find_sp_binding_bare_or_percent_param(outer_reg: string, name: string) -> str
 // Remove every `|name=value` segment for `name` from outer_reg, keeping the base-register
 // prefix and all other bindings. Used to hide the actor-reply buffer (|_tuple_sret=X20) from a
 // NESTED aggregate make: only the root make may write into that buffer (mirrors the seed fix).
+// A let that rebinds a name must hide EVERY earlier binding of that name in its body: the
+// register/slab pair of the earlier definition (|%x=X24 then |%x=[X29, #-64] for the next
+// decomposition temporary %_td_0) otherwise stays visible, and a kind-preferring reader
+// resolves the new name to the OLD register. Strips the name, its bare/percent twin, and the
+// _ptr./_va. companions so the body sees exactly one definition.
+fn strip_name_family(sp: string, name: string) -> string {
+    bare: string <- case length_bytes(name) > 0 and substring(name, 0, 1) == "%" of {
+        true -> substring(name, 1, length_bytes(name));
+        false -> name
+    };
+    pct: string <- concat("%", bare);
+    s1: string <- strip_sp_binding(sp, pct);
+    s2: string <- strip_sp_binding(s1, bare);
+    s3: string <- strip_sp_binding(s2, concat("_ptr.", pct));
+    s4: string <- strip_sp_binding(s3, concat("_ptr.", bare));
+    s5: string <- strip_sp_binding(s4, concat("_va.", pct));
+    strip_sp_binding(s5, concat("_va.", bare))
+}
+
 fn strip_sp_binding(outer_reg: string, var_name: string) -> string {
     key: string <- concat("|", concat(var_name, "="));
     pos: int64 <- find_str_at(outer_reg, key, 0);
@@ -547,7 +567,8 @@ fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer
     // find_sp_binding returns the FIRST match, so with nb first every read of the
     // name resolved to a remembered [SP, #k] slot even while the value lived in a
     // register -- and that slot is wrong once it is released or SP moves.
-    concat(base, concat(sp_part, concat(enc, concat(rb, nb))))
+    inherited: string <- strip_name_family(concat(sp_part, enc), let_name);
+    concat(base, concat(inherited, concat(rb, nb)))
 }
 
 // Detect a valid AArch64 symbol character (alpha, digit, underscore).

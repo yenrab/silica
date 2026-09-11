@@ -76,13 +76,14 @@ executables: objects
 # Trials with <base>.wait_for_exit print one or more "done" markers and then call wait_for_exit/0; they are
 # run through run_integration_exit_after_marker.py, which sends "exit\n" after seeing the marker count.
 # Unmarked trials use the ordinary direct executable runner.
-integrate:
+integrate-run:
 	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
 	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \
 		echo "❌❌ $(MSG_PREFIX)silica.config missing after generation"; \
+		$(INTEGRATE_DOT_FAIL); \
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
@@ -90,6 +91,7 @@ integrate:
 	echo "Compiling with silica-compiler..."; \
 	if ! { $(RUN_SILICA_COMPILER); }; then \
 		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
+		$(INTEGRATE_DOT_FAIL); \
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
@@ -99,13 +101,16 @@ integrate:
 		[ "$$base" = "__silica_runtime" ] && continue; \
 		if [ ! -f "$$base.ascomp" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
 			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff -Bw "$$sams" "$$base.ascomp" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		else \
 			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		fi; \
 	done; \
@@ -115,6 +120,7 @@ integrate:
 		echo "Assembling $$sams..."; \
 		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o; then \
 		echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; \
+		$(INTEGRATE_DOT_FAIL); \
 		ko=$$((ko + 1)); failed=1; break; \
 	fi; \
 	done; \
@@ -136,11 +142,13 @@ integrate:
 		if test -x "$(RUST_LLD)"; then \
 			if ! $(RUST_LLD) -flavor darwin -o $$base $$o $$helper_objs $$runtime_obj $(LDFLAGS_rust-lld); then \
 			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
 		else \
 			if ! $(ASSEMBLER) $$o $$helper_objs $$runtime_obj -o $$base $(LDFLAGS_clang); then \
 			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
 		fi; \
@@ -152,6 +160,7 @@ integrate:
 	grep -qE '^\.global main$$' "$$exe" || continue; \
 		if [ ! -x "$$base" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$base missing executable (assemble/link failed earlier)"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		elif [ -x "$$base" ]; then \
 			if [ -f "$$base.scout" ]; then \
@@ -159,37 +168,54 @@ integrate:
 					if [ -f "$(THIS_DIR)run_integration_exit_after_marker.py" ]; then \
 						marker=$$(awk 'NF { print $$1; found=1; exit } END { if (!found) print "done" }' "$$base.wait_for_exit"); \
 						marker_count=$$(awk 'NF { print ($$2 == "" ? 1 : $$2); found=1; exit } END { if (!found) print 1 }' "$$base.wait_for_exit"); \
-						python3 "$(THIS_DIR)run_integration_exit_after_marker.py" "$(THIS_DIR)" "$$base" "$$base.sout" "$$marker" "$$marker_count"; \
+						$(call INTEGRATE_EXEC_TRIAL,$(MSG_PREFIX)$$base,python3 "$(THIS_DIR)run_integration_exit_after_marker.py" "$(THIS_DIR)" "$$base" "$$base.sout" "$$marker" "$$marker_count"); \
+						if [ "$$integrate_killed" = 1 ]; then \
+							echo "❌❌ $(MSG_PREFIX)$$base $(INTEGRATE_KILLED_MSG)"; \
+							$(INTEGRATE_DOT_FAIL); \
+							ko=$$((ko + 1)); failed=1; continue; \
+						fi; \
 					else \
 						echo "❌❌ $(MSG_PREFIX)$$base missing run_integration_exit_after_marker.py"; \
+						$(INTEGRATE_DOT_FAIL); \
 						ko=$$((ko + 1)); failed=1; \
 						continue; \
 					fi; \
 				else \
-					{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
+					$(call INTEGRATE_RUN_TRIAL,$(MSG_PREFIX)$$base,$$base.sout,./$$base); \
+					if [ "$$integrate_killed" = 1 ]; then \
+						echo "❌❌ $(MSG_PREFIX)$$base $(INTEGRATE_KILLED_MSG)"; \
+						$(INTEGRATE_DOT_FAIL); \
+						ko=$$((ko + 1)); failed=1; continue; \
+					fi; \
 				fi; \
 				if [ -f "$$base.scout.multiset" ]; then \
 					if [ -f "$(THIS_DIR)compare_scout_multiset.sh" ] && ! "$(SHELL)" "$(THIS_DIR)compare_scout_multiset.sh" "$$base.sout" "$$base.scout"; then \
 						echo "❌❌ $(MSG_PREFIX)$$base .sout multiset-compare differs from .scout"; \
+						$(INTEGRATE_DOT_FAIL); \
 						ko=$$((ko + 1)); failed=1; \
 					elif [ ! -f "$(THIS_DIR)compare_scout_multiset.sh" ] && ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
 						echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout (missing compare_scout_multiset.sh; used diff -Bw)"; \
+						$(INTEGRATE_DOT_FAIL); \
 						diff -Bw "$$base.sout" "$$base.scout" || true; \
 						ko=$$((ko + 1)); failed=1; \
 					else \
 						echo "✅✅ $(MSG_PREFIX)$$base output multiset-matches .scout"; \
+						$(INTEGRATE_DOT_OK); \
 						ok=$$((ok + 1)); \
 					fi; \
 				elif ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
 					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
+					$(INTEGRATE_DOT_FAIL); \
 					diff -Bw "$$base.sout" "$$base.scout" || true; \
 					ko=$$((ko + 1)); failed=1; \
 				else \
 					echo "✅✅ $(MSG_PREFIX)$$base output matches .scout"; \
+					$(INTEGRATE_DOT_OK); \
 					ok=$$((ok + 1)); \
 				fi; \
 			else \
 				echo "❌❌ $(MSG_PREFIX)$$base has no .scout file"; \
+				$(INTEGRATE_DOT_FAIL); \
 				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		fi; \
@@ -222,3 +248,6 @@ help:
 	@echo "  help        - Show this help"
 	@echo ""
 	@echo "Linker: $(LINKER)"
+
+# Under -j, `clean` and `silica.config` must not run side by side (clean deletes the config).
+silica.config: | clean

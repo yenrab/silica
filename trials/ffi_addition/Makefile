@@ -69,7 +69,7 @@ ARENA_APP_DIRS := \
 
 MODULE_VALID_FILE := module_addition/dangerous_naming_valid.silica
 
-.PHONY: all integrate fixtures phase-0 phase-a phase-3 phase-4 phase-5 phase-6 phase-7 phase-8 phase-9 phase-11 phase-12 phase-13 phase-14 \
+.PHONY: all integrate-run ffi-apps $(APP_DIRS:%=ffi-app-%) fixtures phase-0 phase-a phase-3 phase-4 phase-5 phase-6 phase-7 phase-8 phase-9 phase-11 phase-12 phase-13 phase-14 \
 	ffi-wrapper-archives module-valid abi-valid verify-symbols clean clean-fixtures clean-apps help
 
 .DEFAULT_GOAL := phase-0
@@ -78,19 +78,18 @@ MODULE_VALID_FILE := module_addition/dangerous_naming_valid.silica
 all: phase-9
 	@echo "✅ ffi_addition all complete"
 
-integrate: fixtures
-	@rm -f .integrate_counts; ok=0; ko=0; failed=0; \
-	for dir in $(APP_DIRS); do \
-		echo "=== ffi_addition/$$dir ==="; \
-		if $(MAKE) -C "$(THIS_DIR)$$dir" integrate; then st=0; else st=1; failed=1; fi; \
-		cf="$(THIS_DIR)$$dir/.integrate_counts"; \
-		if [ -f "$$cf" ]; then \
-			read n1 n2 < "$$cf" || true; \
-			ok=$$((ok + $${n1:-0})); ko=$$((ko + $${n2:-0})); \
-		elif [ "$$st" -ne 0 ]; then ko=$$((ko + 1)); fi; \
-	done; \
-	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
-	test "$$failed" -eq 0 && test "$$ko" -eq 0
+# integrate (wrapper in silica_compiler.mk) -> integrate-run: fixtures once, then every
+# app trial concurrently (each with its own Makefile, log and report); sum their counts.
+integrate-run: fixtures
+	@cd "$(THIS_DIR)" && rm -f $(APP_DIRS:%=%/.integrate_counts)
+	@cd "$(THIS_DIR)" && $(MAKE) --no-print-directory -f "$(INTEGRATE_MAKEFILE)" ffi-apps || true
+	@cd "$(THIS_DIR)" && $(call INTEGRATE_SUM_CHILDREN,$(APP_DIRS)); \
+	[ "$$ko" -eq 0 ] && [ "$$failed" -eq 0 ]
+
+ffi-apps: $(APP_DIRS:%=ffi-app-%)
+
+$(APP_DIRS:%=ffi-app-%): ffi-app-%:
+	@$(call INTEGRATE_CHILD,$*)
 
 fixtures: ffi-wrapper-archives
 	@echo "✅ ffi_addition/fixtures: static libraries built"
@@ -107,24 +106,28 @@ verify-symbols: fixtures
 					echo "  ✅ silica_legacy_math_add_int64"; \
 				else \
 					echo "  ❌ missing silica_legacy_math_add_int64"; failed=1; \
+					$(INTEGRATE_DOT_FAIL); \
 				fi ;; \
 			*libsilica_text.a) \
 				if echo "$$syms" | grep -Eq '(_)?silica_text_echo($$|[[:space:]])'; then \
 					echo "  ✅ silica_text_echo"; \
 				else \
 					echo "  ❌ missing silica_text_echo"; failed=1; \
+					$(INTEGRATE_DOT_FAIL); \
 				fi ;; \
 			*libsilica_net.a) \
 				if echo "$$syms" | grep -Eq '(_?)silica_net_parse_port($$|[[:space:]])'; then \
 					echo "  ✅ silica_net_parse_port"; \
 				else \
 					echo "  ❌ missing silica_net_parse_port"; failed=1; \
+					$(INTEGRATE_DOT_FAIL); \
 				fi ;; \
 			*libsilica_abi_types.a) \
 				if echo "$$syms" | grep -Eq '(_?)silica_abi_i64_identity($$|[[:space:]])'; then \
 					echo "  ✅ silica_abi_i64_identity"; \
 				else \
 					echo "  ❌ missing silica_abi_i64_identity"; failed=1; \
+					$(INTEGRATE_DOT_FAIL); \
 				fi ;; \
 		esac; \
 	done; \
@@ -147,8 +150,10 @@ module-valid: $(SILICA_COMPILER)
 	(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$$out" 2>&1 || true; \
 	if grep -qE '❌|Error error|ParseError|TypeError|EffectError|ModuleError' "$$out"; then \
 		echo "  ❌ $$silica: expected compile success"; cat "$$out"; rm -rf "$$tmpdir"; exit 1; \
+		$(INTEGRATE_DOT_FAIL); \
 	elif ! grep -q "Type checking..." "$$out"; then \
 		echo "  ❌ $$silica: did not reach type checking"; cat "$$out"; rm -rf "$$tmpdir"; exit 1; \
+		$(INTEGRATE_DOT_FAIL); \
 	else \
 		echo "  ✅ $$silica: module rules OK through type check"; \
 	fi; \

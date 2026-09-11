@@ -16,25 +16,31 @@ CASES := short few many
 
 all: integrate
 
-integrate: clean silica.config check
+integrate-run: check
+
+# Under -j, `clean` must finish before silica.config is written (clean deletes it).
+silica.config: | clean
 
 silica.config:
 	@printf '%s\n' 'cycle_a.silica' 'cycle_b.silica' > "$(THIS_DIR)short/silica.config"
 	@printf '%s\n' 'few_a.silica' 'few_b.silica' 'few_c.silica' 'few_leaf.silica' > "$(THIS_DIR)few/silica.config"
 	@printf '%s\n' 'many_a.silica' 'many_b.silica' 'many_c.silica' 'many_d.silica' 'many_e.silica' 'many_f.silica' 'many_l1.silica' 'many_l2.silica' 'many_l3.silica' > "$(THIS_DIR)many/silica.config"
 
-check:
+check: silica.config
 	@ok=0; ko=0; \
 	for case in $(CASES); do \
 		(cd "$(THIS_DIR)$$case" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,$(COMPILER)); }) > "$(THIS_DIR)$$case/$$case.cur_fail" 2>&1 || true; \
 		if [ ! -f "$(THIS_DIR)$$case/$$case.golden_fail" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$case: no .golden_fail"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); \
 		elif diff -q "$(THIS_DIR)$$case/$$case.cur_fail" "$(THIS_DIR)$$case/$$case.golden_fail" > /dev/null 2>&1; then \
 			echo "✅✅ $(MSG_PREFIX)$$case"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		else \
 			echo "❌❌ $(MSG_PREFIX)$$case: .cur_fail differs from .golden_fail"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff "$(THIS_DIR)$$case/$$case.cur_fail" "$(THIS_DIR)$$case/$$case.golden_fail" || true; \
 			ko=$$((ko + 1)); \
 		fi; \

@@ -47,7 +47,7 @@ altstack_check: dangerous_guarded_null_deref_fault
 	@nm "$(APP_TRIAL_DIR)/dangerous_guarded_null_deref_fault" 2>/dev/null | grep -q '_silica_rt_ffi_altstack_mem' || { echo "  ❌ altstack symbol missing"; exit 1; }
 	@echo "  ✅ altstack memory symbol present"
 
-integrate: fixtures unguarded_probe
+integrate-run: fixtures unguarded_probe
 	@ln -sf "$(FIXTURES_DIR)/dangerous_exposure_source" "$(APP_TRIAL_DIR)/dangerous_exposure_source"
 	@test -f "$(FFI_LEGACY_ARCHIVE)" || { echo "  ❌ $(APP_LABEL): missing legacy archive"; exit 1; }
 	@cd "$(APP_TRIAL_DIR)" && rm -f *.sams *.o *.iface $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime
@@ -63,13 +63,16 @@ integrate: fixtures unguarded_probe
 		[ "$$base" = "__silica_runtime" ] && continue; \
 		if [ ! -f "$$base.ascomp" ]; then \
 			echo "  ❌ $(APP_LABEL)/$$base: missing .ascomp"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
 			echo "  ❌ $(APP_LABEL)/$$base .sams differs from .ascomp"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff -Bw "$$sams" "$$base.ascomp" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		else \
 			echo "  ✅✅ $(APP_LABEL)/$$base assembly matches .ascomp"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		fi; \
 	done; \
@@ -79,6 +82,7 @@ integrate: fixtures unguarded_probe
 		echo "Assembling $$sams..."; \
 		if ! clang $(ASFLAGS) -c -x assembler "$$sams" -o "$$base.o"; then \
 		echo "❌❌ $$base assemble failed"; \
+		$(INTEGRATE_DOT_FAIL); \
 		ko=$$((ko + 1)); failed=1; break; \
 	fi; \
 	done; \
@@ -88,11 +92,13 @@ integrate: fixtures unguarded_probe
 		if test -x "$(RUST_LLD)"; then \
 						if ! "$(RUST_LLD)" -flavor darwin -o "$$trial" "$$trial.o" $$runtime_obj $$link_archives $(LDFLAGS_rust-lld); then \
 				echo "❌❌ $(APP_LABEL)/$$trial link failed"; \
+				$(INTEGRATE_DOT_FAIL); \
 				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		else \
 						if ! clang "$$trial.o" $$runtime_obj $$link_archives -o "$$trial" $(LDFLAGS_clang); then \
 				echo "❌❌ $(APP_LABEL)/$$trial link failed"; \
+				$(INTEGRATE_DOT_FAIL); \
 				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		fi; \
@@ -100,49 +106,80 @@ integrate: fixtures unguarded_probe
 		if [ -f "$$trial.wait_for_exit" ]; then \
 			marker=$$(awk 'NF { if ($$NF ~ /^[0-9]+$$/) { m=$$0; sub(/[ \t]+[0-9]+$$/, "", m); print m } else print $$0; exit } END { if (!NR) print "done" }' "$$trial.wait_for_exit"); \
 			marker_count=$$(awk 'NF { if ($$NF ~ /^[0-9]+$$/) print $$NF; else print 1; exit } END { if (!NR) print 1 }' "$$trial.wait_for_exit"); \
-			if ! python3 "$(FFI_TRIAL_DIR)/run_integration_exit_after_marker.py" "$(APP_TRIAL_DIR)" "$$trial" "$$trial.sout" "$$marker" "$$marker_count"; then \
+			$(call INTEGRATE_EXEC_TRIAL,$(APP_LABEL)/$$trial,python3 "$(FFI_TRIAL_DIR)/run_integration_exit_after_marker.py" "$(APP_TRIAL_DIR)" "$$trial" "$$trial.sout" "$$marker" "$$marker_count"); \
+			if [ "$$integrate_killed" = 1 ]; then \
+				echo "❌❌ $(APP_LABEL)/$$trial $(INTEGRATE_KILLED_MSG)"; \
+				$(INTEGRATE_DOT_FAIL); \
+				ko=$$((ko + 1)); failed=1; \
+			elif [ "$$integrate_rc" -ne 0 ]; then \
 			echo "❌❌ $(APP_LABEL)/$$trial run failed"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
 		else \
-			if ! { ./"$$trial" 2>&1; echo $$?; } > "$$trial.sout"; then \
+			$(call INTEGRATE_RUN_TRIAL,$(APP_LABEL)/$$trial,$$trial.sout,./$$trial); \
+			if [ "$$integrate_killed" = 1 ]; then \
+				echo "❌❌ $(APP_LABEL)/$$trial $(INTEGRATE_KILLED_MSG)"; \
+				$(INTEGRATE_DOT_FAIL); \
+				ko=$$((ko + 1)); failed=1; \
+			elif false; then \
 			echo "❌❌ $(APP_LABEL)/$$trial run failed"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
 		fi; \
 		[ "$$failed" -ne 0 ] && break; \
 		if [ ! -f "$$trial.scout" ]; then \
 			echo "  ❌ $(APP_LABEL)/$$trial: missing .scout"; ko=$$((ko + 1)); failed=1; \
+			$(INTEGRATE_DOT_FAIL); \
 		elif [ -f "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" ] && ! "$(SHELL)" "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" "$$trial.sout" "$$trial.scout" > /dev/null 2>&1; then \
 			echo "  ❌ $(APP_LABEL)/$$trial .sout differs from .scout (normalized compare)"; \
+			$(INTEGRATE_DOT_FAIL); \
 			"$(SHELL)" "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" "$$trial.sout" "$$trial.scout" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		elif [ ! -f "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" ] && ! diff -Bw -q "$$trial.sout" "$$trial.scout" > /dev/null 2>&1; then \
 			echo "  ❌ $(APP_LABEL)/$$trial .sout differs from .scout"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff -Bw "$$trial.sout" "$$trial.scout" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		else \
 			echo "  ✅✅ $(APP_LABEL)/$$trial output matches .scout"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		fi; \
 	done; \
 	if [ "$$failed" -eq 0 ] && ! $(MAKE) -C "$(APP_TRIAL_DIR)" altstack_check; then \
 		echo "❌❌ $(APP_LABEL)/altstack_check failed"; \
+		$(INTEGRATE_DOT_FAIL); \
 		ko=$$((ko + 1)); failed=1; \
 	fi; \
 	if [ "$$failed" -eq 0 ]; then \
-		if python3 "$(FFI_TRIAL_DIR)/run_integration_expect_crash.py" "$(UNGUARDED_PROBE)"; then \
+		$(call INTEGRATE_EXEC_TRIAL,$(APP_LABEL)/unguarded_probe,python3 "$(FFI_TRIAL_DIR)/run_integration_expect_crash.py" "$(UNGUARDED_PROBE)"); \
+		if [ "$$integrate_killed" = 1 ]; then \
+			echo "❌❌ $(APP_LABEL)/unguarded_probe $(INTEGRATE_KILLED_MSG)"; \
+			$(INTEGRATE_DOT_FAIL); \
+			ko=$$((ko + 1)); failed=1; \
+		elif [ "$$integrate_rc" -eq 0 ]; then \
 			echo "  ✅✅ $(APP_LABEL)/unguarded_null_deref_abort crash probe OK"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
-		if python3 "$(FFI_TRIAL_DIR)/run_fault_report_expect.py" "$(UNGUARDED_PROBE)"; then \
+		$(call INTEGRATE_EXEC_TRIAL,$(APP_LABEL)/unguarded_probe,python3 "$(FFI_TRIAL_DIR)/run_fault_report_expect.py" "$(UNGUARDED_PROBE)"); \
+		if [ "$$integrate_killed" = 1 ]; then \
+			echo "❌❌ $(APP_LABEL)/unguarded_probe $(INTEGRATE_KILLED_MSG)"; \
+			$(INTEGRATE_DOT_FAIL); \
+			ko=$$((ko + 1)); failed=1; \
+		elif [ "$$integrate_rc" -eq 0 ]; then \
 			echo "  ✅✅ $(APP_LABEL)/unguarded_null_deref_report OK (fault site + exit 70)"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		else \
 			echo "❌❌ $(APP_LABEL)/unguarded_null_deref_report failed"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
 		else \
 			echo "❌❌ $(APP_LABEL)/unguarded_null_deref_abort crash probe failed"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
 	fi; \

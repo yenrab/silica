@@ -23,7 +23,7 @@ ABI_TRIAL_FILES := \
 
 .DEFAULT_GOAL := integrate
 
-integrate: fixtures $(SILICA_COMPILER)
+integrate-run: fixtures $(SILICA_COMPILER)
 	@failed=0; ok=0; ko=0; \
 	for silica in $(ABI_TRIAL_FILES); do \
 		base=$$(basename "$$silica" .silica); \
@@ -35,10 +35,13 @@ integrate: fixtures $(SILICA_COMPILER)
 		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$$out" 2>&1 || true; \
 		if grep -qE '❌|Error error|ParseError|TypeError|EffectError|ModuleError' "$$out"; then \
 			echo "  ❌ abi_addition/$$silica: expected compile success"; cat "$$out"; rm -rf "$$tmpdir"; ko=$$((ko + 1)); failed=1; \
+			$(INTEGRATE_DOT_FAIL); \
 		elif ! grep -q "Type checking..." "$$out"; then \
 			echo "  ❌ abi_addition/$$silica: did not reach type checking"; cat "$$out"; rm -rf "$$tmpdir"; ko=$$((ko + 1)); failed=1; \
+			$(INTEGRATE_DOT_FAIL); \
 		else \
 			echo "  ✅✅ abi_addition/$$silica"; ok=$$((ok + 1)); \
+			$(INTEGRATE_DOT_OK); \
 		fi; \
 		rm -rf "$$tmpdir"; \
 	done; \

@@ -9,8 +9,8 @@ include $(abspath $(THIS_DIR)/../common_app.mk)
 
 all: integrate
 
-integrate: fixtures
-integrate:
+integrate-run: fixtures
+integrate-run:
 	$(APP_INTEGRATE_BODY)
 
 clean:

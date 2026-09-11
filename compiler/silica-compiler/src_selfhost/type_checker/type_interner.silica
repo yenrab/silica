@@ -21,6 +21,7 @@
 
 use wbt_map;
 use OrderedMap;
+use type_surface_cache;
 
 export create_type_interner/0;
 export types_equal/2;
@@ -316,46 +317,34 @@ fn nodes_length_bytes(nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg
     end
 }
 
+// O(1): prepend. The old form copied the whole list to append at the end (11.7 M allocations /
+// 0.6 GB on emitter_core). Ids are unchanged: id = position from the OLD end = n-1-(position
+// from the new head); nodes_at does that arithmetic.
 fn nodes_append(nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], node: { kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }) -> List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)] {
     sequence proc[mem(normal)]
-        n: int64 <- length[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)](nodes);
-        result: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)] <- case n == 0 of {
-            true -> prepend[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)](node, empty_nodes());
-            false -> {
-                sequence proc[mem(normal)]
-                    h: { kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean } <- head[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)](nodes);
-                    t: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)] <- remove_head[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)](nodes);
-                    rest: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)] <- nodes_append(t, node);
-                    out: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)] <- prepend[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)](h, rest)
-                produces
-                    pure out
-                end
-            }
-        }
+        out: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)] <- prepend[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)](node, nodes)
     produces
-        pure result
+        pure out
     end
 }
 
+// The interner's node list is stored NEWEST-FIRST (nodes_append prepends), so node id `idx`
+// is element n-1-idx from the head. list_nth is the allocation-free chunk walk; the old form
+// recursed with remove_head per step (a 40 B handle each) and re-measured the list every step:
+// 15.9 M allocations / 0.64 GB while type-checking emitter_core.
 fn nodes_at(nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], idx: int64) -> { kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean } {
+    n: int64 <- nodes_len_ti(nodes);
+    case idx < 0 or idx >= n of {
+        true -> { kind: 0, arg_a: 0, arg_b: 0, arg_c: 0, buf_size_is_name: false };
+        false -> list_nth(nodes, n - 1 - idx)
+    }
+}
+
+fn nodes_len_ti(nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)]) -> int64 {
     sequence proc[mem(normal)]
-        n: int64 <- length[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)](nodes);
-        result: { kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean } <- case n == 0 of {
-            true -> { kind: 0, arg_a: 0, arg_b: 0, arg_c: 0, buf_size_is_name: false };
-            false -> case idx == 0 of {
-                true -> head[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)](nodes);
-                false -> {
-                    sequence proc[mem(normal)]
-                        t: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)] <- remove_head[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)](nodes);
-                        out: { kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean } <- nodes_at(t, idx - 1)
-                    produces
-                        pure out
-                    end
-                }
-            }
-        }
+        n: int64 <- length[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)](nodes)
     produces
-        pure result
+        pure n
     end
 }
 
@@ -4333,7 +4322,18 @@ fn strip_type_spaces(s: string) -> string {
     // Hot path: annotations are usually already compact — avoid O(n) rebuild.
     case type_surface_has_space(s, 0) of {
         0 -> s;
-        _: int64 -> strip_type_spaces_from(s, 0, "")
+        _: int64 -> strip_type_spaces_cached(s)
+    }
+}
+
+// Process-wide strip cache (see type_surface_cache): the interner's own memo is lost whenever
+// the type checker discards a context, so the same spaced annotation was re-stripped
+// hundreds of times into the never-released string arena.
+fn strip_type_spaces_cached(s: string) -> string {
+    hit: string <- type_surface_cache@stripped_for(s);
+    case length_bytes(hit) > 0 of {
+        true -> hit;
+        false -> type_surface_cache@remember_stripped(s, strip_type_spaces_from(s, 0, ""))
     }
 }
 

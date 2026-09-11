@@ -159,140 +159,12 @@ assembly: lib-sources silica.config
 	@cd "$(LEAF_DIR)" && $(INSTALL_SDS_STDLIB_OBJS)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
-positive-integrate: lib-sources silica.config
-	@echo "$(MSG_PREFIX)positive-integrate: starting..."
-	@cd "$(LEAF_DIR)" || exit 1; \
-	$(INTEGRATE_PRE_CLEAN); \
-	$(INSTALL_SDS_STDLIB_OBJS); \
-	ok=0; ko=0; failed=0; asc_ok=0; asc_warn=0; \
-	if [ ! -s silica.config ]; then \
-		echo "SKIP: $(MSG_PREFIX)no positive trials"; \
-		printf '%d %d\n' 0 0 > .integrate_counts; \
-		exit 0; \
-	fi; \
-	$(ENSURE_SILICA_COMPILER); \
-	echo "Compiling with silica-compiler (one trial per process)..."; \
-	if ! $(WBT_COMPILE_PER_TRIAL); then \
-		printf '%d %d\n' 0 1 > .integrate_counts; \
-		exit 1; \
-	fi; \
-	$(INSTALL_SDS_STDLIB_OBJS); \
-	$(MAKE) check-wbt-alloc-rec-gate || { failed=1; printf '%d %d\n' 0 1 > .integrate_counts; exit 1; }; \
-	for sams in *.sams; do \
-		[ -f "$$sams" ] || continue; \
-		base=$${sams%.sams}; \
-		[ "$$base" = "__silica_runtime" ] && continue; \
-		if [ ! -f "$$base.ascomp" ]; then \
-			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file (run make record-golden from trial root)"; \
-			asc_warn=$$((asc_warn + 1)); \
-			ko=$$((ko + 1)); failed=1; \
-		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
-			raw=$$(diff -Bw "$$sams" "$$base.ascomp" | grep -c '^[<>]'); \
-			sed -E 's/o[0-9]+/oN/g' "$$sams" > "$$sams.norm"; \
-			sed -E 's/o[0-9]+/oN/g' "$$base.ascomp" > "$$sams.gnorm"; \
-			norm=$$(diff -Bw "$$sams.norm" "$$sams.gnorm" | grep -c '^[<>]'); \
-			subst=$$(diff -Bw "$$sams.norm" "$$sams.gnorm" | grep '^[<>]' | grep -vc '^[<>][[:space:]]*;'); \
-			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp -- $$raw diff lines; $$norm after normalising o<N> counters; $$subst of those are code, not comments"; \
-			if [ "$$norm" -eq 0 ]; then \
-				echo "        (drift is ENTIRELY SIR/label counter numbering -- generated code is identical)"; \
-			else \
-				echo "        first real differences (counters normalised):"; \
-				diff -Bw "$$sams.norm" "$$sams.gnorm" | head -30 | sed 's/^/        /' || true; \
-			fi; \
-			rm -f "$$sams.norm" "$$sams.gnorm"; \
-			asc_warn=$$((asc_warn + 1)); \
-			ko=$$((ko + 1)); failed=1; \
-		else \
-			asc_ok=$$((asc_ok + 1)); \
-		fi; \
-	done; \
-	for sams in *.sams; do \
-		[ -f "$$sams" ] || continue; \
-		base=$${sams%.sams}; \
-		[ "$$base" = "__silica_runtime" ] && continue; \
-		echo "Assembling $$sams..."; \
-		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o"; then \
-		echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; \
-		ko=$$((ko + 1)); failed=1; break; \
-	fi; \
-	done; \
-	if [ -f "__silica_runtime.sams" ]; then \
-		echo "Assembling __silica_runtime.sams..."; \
-		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o"; then \
-		echo "❌❌ $(MSG_PREFIX)__silica_runtime assemble failed"; \
-		ko=$$((ko + 1)); failed=1; \
-	fi; \
-	fi; \
-	for sams in lib/*.sams; do \
-		[ -f "$$sams" ] || continue; \
-		base=$$(basename "$$sams" .sams); \
-		if [ -n "$(SDS_STDLIB_CACHE)" ] && [ -f "$(SDS_STDLIB_CACHE)/lib/$$base.o" ]; then \
-			echo "Reusing $(SDS_STDLIB_CACHE)/lib/$$base.o"; \
-			cp -f "$(SDS_STDLIB_CACHE)/lib/$$base.o" "lib/$$base.o"; \
-			continue; \
-		fi; \
-		echo "Assembling $$sams..."; \
-		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "lib/$$base.o"; then \
-		echo "❌❌ $(MSG_PREFIX)lib/$$base assemble failed"; \
-		ko=$$((ko + 1)); failed=1; \
-	fi; \
-	done; \
-	lib_objs=""; \
-	for obj in lib/*.o; do [ -f "$$obj" ] && lib_objs="$$lib_objs $$obj"; done; \
-	rust_sysroot=$$(rustc --print sysroot 2>/dev/null); \
-	rust_target=$$(rustc -vV 2>/dev/null | sed -n 's/^host: //p'); \
-	rust_lld="$$rust_sysroot/lib/rustlib/$$rust_target/bin/rust-lld"; \
-	macos_sdk=$$(xcrun --sdk macosx --show-sdk-path 2>/dev/null); \
-	for trial in $(ALL_COMPILE_SILICA); do \
-		base=$${trial%.silica}; \
-		[ -f "$$base.o" ] || continue; \
-		runtime_obj=""; \
-		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
-		echo "Linking $$base..."; \
-		if test -x "$$rust_lld"; then \
-			if ! $$rust_lld -flavor darwin -o "$$base" "$$base.o" $$lib_objs $$runtime_obj \
-				-arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) \
-				-syslibroot "$$macos_sdk" -lSystem -e main; then \
-				echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
-				ko=$$((ko + 1)); failed=1; \
-			fi; \
-		else \
-			if ! $(ASSEMBLER) "$$base.o" $$lib_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang); then \
-			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
-			ko=$$((ko + 1)); failed=1; \
-		fi; \
-		fi; \
-	done; \
-	for trial in $(ALL_COMPILE_SILICA); do \
-		base=$${trial%.silica}; \
-		if [ ! -x "$$base" ]; then \
-		echo "❌❌ $(MSG_PREFIX)$$base missing executable (assemble/link failed earlier)"; \
-		ko=$$((ko + 1)); failed=1; continue; \
-	fi; \
-		echo "Running $$base..."; \
-		{ perl -e 'alarm shift @ARGV; exec @ARGV or exit 127' $(TRIAL_TIMEOUT_SECS) ./$$base 2>&1; rc=$$?; \
-		  if [ $$rc -eq 142 ]; then echo "TIMEOUT"; else echo $$rc; fi; } > "$$base.sout"; \
-		if [ "$$(tail -1 "$$base.sout")" = "TIMEOUT" ]; then \
-			echo "❌❌ $(MSG_PREFIX)$$base TIMED OUT after $(TRIAL_TIMEOUT_SECS)s (killed; counted as a failure)"; \
-			ko=$$((ko + 1)); failed=1; \
-		elif [ -f "$$base.scout" ]; then \
-			if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
-				echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
-				diff -Bw "$$base.sout" "$$base.scout" || true; \
-				ko=$$((ko + 1)); failed=1; \
-			else \
-				echo "✅✅ $(MSG_PREFIX)$$base output matches .scout"; \
-				ok=$$((ok + 1)); \
-			fi; \
-		else \
-			echo "❌❌ $(MSG_PREFIX)$$base has no .scout file (run make record-golden from trial root)"; \
-			ko=$$((ko + 1)); failed=1; \
-		fi; \
-	done; \
-	[ "$$failed" -ne 0 ] && [ "$$ko" -eq 0 ] && ko=$$((ko + 1)); \
-	echo "$(MSG_PREFIX)assembly: $$asc_ok matched .ascomp, $$asc_warn differed or missing"; \
-	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
-	exit $$failed
+# integrate: leaf.mk's parallel per-unit sandboxes over the enumerated gate trials
+# (positive + collection-error). The §8A.3 allocation-site gate runs once the lib
+# units are compiled and before the unit fan-out.
+LEAF_UNITS := $(ALL_COMPILE_SILICA)
+LEAF_POST_LIB_HOOK = $(MAKE) --no-print-directory -f "$(INTEGRATE_MAKEFILE)" check-wbt-alloc-rec-gate || { printf '%d %d\n' 0 1 > .integrate_counts; exit 1; }
+positive-integrate: lib-sources
 
 record-positive-golden: lib-sources silica.config
 	@echo "$(MSG_PREFIX)record-positive-golden: starting..."
@@ -361,5 +233,6 @@ clean:
 		[ -f "$$s" ] || continue; \
 		rm -f "$${s%.sams}"; \
 	done
-	@cd "$(LEAF_DIR)" && rm -f *.sams lib/wbt_set.sams lib/wbt_map.sams lib/wbt_set.silica lib/wbt_map.silica *.o *.iface lib/*.o __silica_runtime.o smoke_harness_ready wbt_balance_boundaries wbt_empty_representation wbt_generic_payload_shapes wbt_generic_tuple_map_empty wbt_representation_specializations wbt_representation_string_specialization wbt_constructor_ordering_bundle wbt_search_contains wbt_minimum_maximum wbt_fold_ascending wbt_from_sorted_empty wbt_from_sorted_singleton wbt_from_sorted_two wbt_from_sorted_shape wbt_from_sorted_shape_large wbt_from_sorted_set_map wbt_from_sorted_ten_plus wbt_from_sorted_valid_invalid wbt_from_sorted_map_invalid_two wbt_from_sorted_count_mismatch wbt_from_sorted_linear wbt_from_sorted_persistence wbt_read_only_alloc_free wbt_read_only_empty wbt_rebalance_adversarial wbt_rotation_double_left wbt_rotation_double_right wbt_rotation_gamma_equality wbt_rotation_single_left wbt_rotation_single_right wbt_smart_node_arena wbt_smart_node_production_path wbt_smart_node_size wbt_weight_checked wbt_set_insert_adversarial wbt_set_insert_duplicate wbt_set_insert_orders wbt_set_insert_payload_shapes wbt_set_insert_persistence wbt_set_insert_sharing wbt_map_canonical_key wbt_map_compare_value_not_called wbt_map_insert_payload_shapes wbt_map_insert_orders wbt_map_insert_replace wbt_map_insert_tuple_value wbt_map_tuple_value_escapes_frame wbt_map_replace_persistence wbt_map_value_pairing wbt_delete_absent wbt_delete_leaf wbt_delete_one_child wbt_delete_two_child wbt_delete_root wbt_delete_extreme wbt_delete_heavier_side wbt_delete_rebalance wbt_delete_persistence wbt_delete_payload_shapes wbt_validate_invariants wbt_validate_malformed_fixture wbt_validate_error_precedence wbt_validate_map_pairing wbt_oracle_harness_smoke wbt_set_exhaustive_trace wbt_map_exhaustive_trace wbt_set_randomized_oracle wbt_map_randomized_oracle wbt_persistence_fanout wbt_complexity_observations trial_collection_error_wbt_search_invalid_comparator trial_collection_error_wbt_smart_node_overflow trial_collection_error_wbt_balance_missing_child trial_collection_error_wbt_set_insert_invalid_comparator trial_collection_error_wbt_map_insert_invalid_comparator trial_collection_error_wbt_set_delete_invalid_comparator trial_collection_error_wbt_map_delete_invalid_comparator trial_collection_error_wbt_from_sorted_set_invalid_comparator trial_collection_error_wbt_from_sorted_map_invalid_comparator trial_collection_error_wbt_validate_invalid_comparator *.sout silica.config silica.config.full .compile_trials.list .compile_libs.list silica.compile.order silica.needs_runtime silica.link .integrate_counts
+	@cd "$(LEAF_DIR)" && rm -f *.sams lib/wbt_set.sams lib/wbt_map.sams lib/wbt_set.silica lib/wbt_map.silica *.o *.iface lib/*.o __silica_runtime.o smoke_harness_ready wbt_balance_boundaries wbt_empty_representation wbt_generic_payload_shapes wbt_generic_tuple_map_empty wbt_representation_specializations wbt_representation_string_specialization wbt_constructor_ordering_bundle wbt_search_contains wbt_minimum_maximum wbt_fold_ascending wbt_from_sorted_empty wbt_from_sorted_singleton wbt_from_sorted_two wbt_from_sorted_shape wbt_from_sorted_shape_large wbt_from_sorted_set_map wbt_from_sorted_ten_plus wbt_from_sorted_valid_invalid wbt_from_sorted_map_invalid_two wbt_from_sorted_count_mismatch wbt_from_sorted_linear wbt_from_sorted_persistence wbt_read_only_alloc_free wbt_read_only_empty wbt_rebalance_adversarial wbt_rotation_double_left wbt_rotation_double_right wbt_rotation_gamma_equality wbt_rotation_single_left wbt_rotation_single_right wbt_smart_node_arena wbt_smart_node_production_path wbt_smart_node_size wbt_weight_checked wbt_set_insert_adversarial wbt_set_insert_duplicate wbt_set_insert_orders wbt_set_insert_payload_shapes wbt_set_insert_persistence wbt_set_insert_sharing wbt_map_canonical_key wbt_map_compare_value_not_called wbt_map_insert_payload_shapes wbt_map_insert_orders wbt_map_insert_replace wbt_map_insert_tuple_value wbt_map_tuple_value_escapes_frame wbt_map_replace_persistence wbt_map_value_pairing wbt_delete_absent wbt_delete_leaf wbt_delete_one_child wbt_delete_two_child wbt_delete_root wbt_delete_extreme wbt_delete_heavier_side wbt_delete_rebalance wbt_delete_persistence wbt_delete_payload_shapes wbt_validate_invariants wbt_validate_malformed_fixture wbt_validate_error_precedence wbt_validate_map_pairing wbt_oracle_harness_smoke wbt_set_exhaustive_trace wbt_map_exhaustive_trace wbt_set_randomized_oracle wbt_map_randomized_oracle wbt_persistence_fanout wbt_complexity_observations trial_collection_error_wbt_search_invalid_comparator trial_collection_error_wbt_smart_node_overflow trial_collection_error_wbt_balance_missing_child trial_collection_error_wbt_set_insert_invalid_comparator trial_collection_error_wbt_map_insert_invalid_comparator trial_collection_error_wbt_set_delete_invalid_comparator trial_collection_error_wbt_map_delete_invalid_comparator trial_collection_error_wbt_from_sorted_set_invalid_comparator trial_collection_error_wbt_from_sorted_map_invalid_comparator trial_collection_error_wbt_validate_invalid_comparator *.sout silica.config silica.config.full .compile_trials.list .compile_libs.list silica.compile.order silica.needs_runtime silica.link .integrate_counts .integrate_results *.checked __silica_runtime.sams.*
+	@cd "$(LEAF_DIR)" && rm -rf $(LEAF_SANDBOX)
 	@echo "✅ $(MSG_PREFIX)Clean complete"

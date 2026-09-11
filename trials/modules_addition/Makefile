@@ -34,11 +34,12 @@ all: clean silica.config
 	echo "Compiling with silica-compiler..." && \
 	if ! { $(RUN_SILICA_COMPILER); }; then \
 		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
+		$(INTEGRATE_DOT_FAIL); \
 		exit 1; \
 	fi && \
 	echo "✅ $(MSG_PREFIX)Assembly generated"
 
-integrate:
+integrate-run:
 	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
 	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
 	@$(MAKE) -f "$(THIS_DIR)Makefile" all
@@ -49,18 +50,22 @@ integrate:
 		sams="$$base.sams"; \
 		if [ ! -f "$$sams" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$base: missing $$sams"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 			continue; \
 		fi; \
 		if [ ! -f "$$base.ascomp" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
 			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff -Bw "$$sams" "$$base.ascomp" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		else \
 			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		fi; \
 	done; \
@@ -71,6 +76,7 @@ integrate:
 		echo "Assembling $$sams..."; \
 		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o"; then \
 		echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; \
+		$(INTEGRATE_DOT_FAIL); \
 		ko=$$((ko + 1)); failed=1; break; \
 	fi; \
 	done; \
@@ -78,6 +84,7 @@ integrate:
 		echo "Assembling __silica_runtime.sams..."; \
 		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o"; then \
 		echo "❌❌ $(MSG_PREFIX)__silica_runtime assemble failed"; \
+		$(INTEGRATE_DOT_FAIL); \
 		ko=$$((ko + 1)); failed=1; \
 	fi; \
 	fi; \
@@ -88,6 +95,7 @@ integrate:
 		echo "Assembling $$sams..."; \
 		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj"; then \
 		echo "❌❌ $(MSG_PREFIX)$$obj assemble failed"; \
+		$(INTEGRATE_DOT_FAIL); \
 		ko=$$((ko + 1)); failed=1; break; \
 	fi; \
 	done; \
@@ -104,11 +112,13 @@ integrate:
 		if test -x "$(RUST_LLD)"; then \
 						if ! $(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$lib_objs $$runtime_obj $(LDFLAGS_rust-lld); then \
 				echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
+				$(INTEGRATE_DOT_FAIL); \
 				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		else \
 			if ! $(ASSEMBLER) "$$base.o" $$lib_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang); then \
 			echo "❌❌ $(MSG_PREFIX)$$base link failed"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
 		fi; \
@@ -117,20 +127,29 @@ integrate:
 		base=$${line%.silica}; \
 		if [ ! -x "$$base" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$base missing executable (assemble/link failed earlier)"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 	elif [ -x "$$base" ]; then \
-			{ ./"$$base" 2>&1; echo $$?; } > "$$base.sout"; \
+			$(call INTEGRATE_RUN_TRIAL,$(MSG_PREFIX)$$base,$$base.sout,./$$base); \
+			if [ "$$integrate_killed" = 1 ]; then \
+				echo "❌❌ $(MSG_PREFIX)$$base $(INTEGRATE_KILLED_MSG)"; \
+				$(INTEGRATE_DOT_FAIL); \
+				ko=$$((ko + 1)); failed=1; continue; \
+			fi; \
 			if [ -f "$$base.scout" ]; then \
 				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
 					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
+					$(INTEGRATE_DOT_FAIL); \
 					diff -Bw "$$base.sout" "$$base.scout" || true; \
 					ko=$$((ko + 1)); failed=1; \
 				else \
 					echo "✅✅ $(MSG_PREFIX)$$base output matches .scout"; \
+					$(INTEGRATE_DOT_OK); \
 					ok=$$((ok + 1)); \
 				fi; \
 			else \
 				echo "❌❌ $(MSG_PREFIX)$$base has no .scout file"; \
+				$(INTEGRATE_DOT_FAIL); \
 				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		fi; \
@@ -152,3 +171,6 @@ clean:
 help:
 	@echo "modules_addition: multi-file module trials; lib/*.silica are libraries (no main)."
 	@echo "Targets: all (default, compile only), integrate (assembly/output checks + run), clean"
+
+# Under -j, `clean` and `silica.config` must not run side by side (clean deletes the config).
+silica.config: | clean

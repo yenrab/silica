@@ -41,13 +41,16 @@ define APP_INTEGRATE_BODY
 	if [ -f silica.link.scout ]; then \
 		if [ ! -f silica.link ]; then \
 			echo "  ❌ $(APP_LABEL): silica.link not emitted"; \
+			$(INTEGRATE_DOT_FAIL); \
 			printf '%d %d\n' 0 1 > .integrate_counts; exit 1; \
 		elif ! diff -Bw -q silica.link silica.link.scout > /dev/null 2>&1; then \
 			echo "  ❌ $(APP_LABEL): silica.link differs from .scout"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff -Bw silica.link silica.link.scout || true; \
 			printf '%d %d\n' 0 1 > .integrate_counts; exit 1; \
 		else \
 			echo "  ✅✅ $(APP_LABEL)/silica.link matches .scout"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		fi; \
 	fi; \
@@ -58,13 +61,16 @@ define APP_INTEGRATE_BODY
 		[ "$$base" = "__silica_runtime" ] && continue; \
 		if [ ! -f "$$base.ascomp" ]; then \
 			echo "  ❌ $(APP_LABEL)/$$base: missing .ascomp"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
 			echo "  ❌ $(APP_LABEL)/$$base .sams differs from .ascomp"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff -Bw "$$sams" "$$base.ascomp" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		else \
 			echo "  ✅✅ $(APP_LABEL)/$$base assembly matches .ascomp"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		fi; \
 	done; \
@@ -74,6 +80,7 @@ define APP_INTEGRATE_BODY
 		echo "Assembling $$sams..."; \
 		if ! clang $(ASFLAGS) -c -x assembler "$$sams" -o "$$base.o"; then \
 		echo "❌❌ $$base assemble failed"; \
+		$(INTEGRATE_DOT_FAIL); \
 		ko=$$((ko + 1)); failed=1; break; \
 	fi; \
 	done; \
@@ -85,12 +92,14 @@ define APP_INTEGRATE_BODY
 			objs="$$trial.o $(APP_LINK_OBJECTS)"; \
 			if ! "$(RUST_LLD)" -flavor darwin -o "$$trial" $$objs $$runtime_obj $$link_archives $(LDFLAGS_rust-lld); then \
 			echo "❌❌ $(APP_LABEL)/$$trial link failed"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
 		else \
 			objs="$$trial.o $(APP_LINK_OBJECTS)"; \
 			if ! clang $$objs $$runtime_obj $$link_archives -o "$$trial" $(LDFLAGS_clang); then \
 			echo "❌❌ $(APP_LABEL)/$$trial link failed"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
 		fi; \
@@ -98,26 +107,41 @@ define APP_INTEGRATE_BODY
 		if [ -f "$$trial.wait_for_exit" ]; then \
 			marker=$$(awk 'NF { if ($$NF ~ /^[0-9]+$$/) { m=$$0; sub(/[ \t]+[0-9]+$$/, "", m); print m } else print $$0; exit } END { if (!NR) print "done" }' "$$trial.wait_for_exit"); \
 			marker_count=$$(awk 'NF { if ($$NF ~ /^[0-9]+$$/) print $$NF; else print 1; exit } END { if (!NR) print 1 }' "$$trial.wait_for_exit"); \
-			if ! python3 "$(FFI_TRIAL_DIR)/run_integration_exit_after_marker.py" "$(APP_TRIAL_DIR)" "$$trial" "$$trial.sout" "$$marker" "$$marker_count"; then \
+			$(call INTEGRATE_EXEC_TRIAL,$(APP_LABEL)/$$trial,python3 "$(FFI_TRIAL_DIR)/run_integration_exit_after_marker.py" "$(APP_TRIAL_DIR)" "$$trial" "$$trial.sout" "$$marker" "$$marker_count"); \
+			if [ "$$integrate_killed" = 1 ]; then \
+				echo "❌❌ $(APP_LABEL)/$$trial $(INTEGRATE_KILLED_MSG)"; \
+				$(INTEGRATE_DOT_FAIL); \
+				ko=$$((ko + 1)); failed=1; \
+			elif [ "$$integrate_rc" -ne 0 ]; then \
 			echo "❌❌ $(APP_LABEL)/$$trial run failed"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
 		else \
-			{ ./"$$trial" 2>&1; echo $$?; } > "$$trial.sout"; \
+			$(call INTEGRATE_RUN_TRIAL,$(APP_LABEL)/$$trial,$$trial.sout,./$$trial); \
+			if [ "$$integrate_killed" = 1 ]; then \
+				echo "❌❌ $(APP_LABEL)/$$trial $(INTEGRATE_KILLED_MSG)"; \
+				$(INTEGRATE_DOT_FAIL); \
+				ko=$$((ko + 1)); failed=1; \
+			fi; \
 		fi; \
 		[ "$$failed" -ne 0 ] && break; \
 		if [ ! -f "$$trial.scout" ]; then \
 			echo "  ❌ $(APP_LABEL)/$$trial: missing .scout"; ko=$$((ko + 1)); failed=1; \
+			$(INTEGRATE_DOT_FAIL); \
 		elif [ -f "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" ] && ! "$(SHELL)" "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" "$$trial.sout" "$$trial.scout" > /dev/null 2>&1; then \
 			echo "  ❌ $(APP_LABEL)/$$trial .sout differs from .scout (normalized compare)"; \
+			$(INTEGRATE_DOT_FAIL); \
 			"$(SHELL)" "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" "$$trial.sout" "$$trial.scout" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		elif [ ! -f "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" ] && ! diff -Bw -q "$$trial.sout" "$$trial.scout" > /dev/null 2>&1; then \
 			echo "  ❌ $(APP_LABEL)/$$trial .sout differs from .scout"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff -Bw "$$trial.sout" "$$trial.scout" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		else \
 			echo "  ✅✅ $(APP_LABEL)/$$trial output matches .scout"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		fi; \
 	done; \

@@ -33,13 +33,14 @@ COMPILE_FAIL_TRIALS := \
 
 all: integrate
 
-integrate:
+integrate-run:
 	@cd "$(THIS_DIR)" || exit 1; \
 	failed=0; ok=0; ko=0; rm -f "$(THIS_DIR).integrate_counts"; \
 	$(ENSURE_SILICA_COMPILER); \
 	for trial in $(COMPILE_FAIL_TRIALS); do \
 		if [ ! -f "$(THIS_DIR)$$trial.golden_fail" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$trial: no .golden_fail (run make record-golden)"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 			continue; \
 		fi; \
@@ -59,9 +60,11 @@ integrate:
 		rm -rf "$$tmpdir"; \
 		if diff -q "$(THIS_DIR)$$trial.cur_fail" "$(THIS_DIR)$$trial.golden_fail" > /dev/null 2>&1; then \
 			echo "✅✅ $(MSG_PREFIX)$$trial"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		else \
 			echo "❌❌ $(MSG_PREFIX)$$trial: .cur_fail differs from .golden_fail"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff "$(THIS_DIR)$$trial.cur_fail" "$(THIS_DIR)$$trial.golden_fail" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \

@@ -76,13 +76,14 @@ executables: objects
 	done < silica.config
 
 # integrate: compile, diff .sams vs .ascomp, run, diff .sout vs .scout
-integrate:
+integrate-run:
 	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
 	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \
 		echo "❌❌ $(MSG_PREFIX)silica.config missing after generation"; \
+		$(INTEGRATE_DOT_FAIL); \
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
@@ -90,6 +91,7 @@ integrate:
 	echo "Compiling with silica-compiler..."; \
 	if ! { $(RUN_SILICA_COMPILER); }; then \
 		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
+		$(INTEGRATE_DOT_FAIL); \
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
@@ -99,13 +101,16 @@ integrate:
 		[ "$$base" = "__silica_runtime" ] && continue; \
 		if [ ! -f "$$base.ascomp" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
 			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
+			$(INTEGRATE_DOT_FAIL); \
 			diff -Bw "$$sams" "$$base.ascomp" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		else \
 			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
+			$(INTEGRATE_DOT_OK); \
 			ok=$$((ok + 1)); \
 		fi; \
 	done; \
@@ -115,6 +120,7 @@ integrate:
 		echo "Assembling $$sams..."; \
 		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o; then \
 		echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; \
+		$(INTEGRATE_DOT_FAIL); \
 		ko=$$((ko + 1)); failed=1; break; \
 	fi; \
 	done; \
@@ -131,11 +137,13 @@ integrate:
 		if test -x "$(RUST_LLD)"; then \
 						if ! $(RUST_LLD) -flavor darwin -o $$stem $$main_o $$rt_one $(LDFLAGS_rust-lld); then \
 				echo "❌❌ $(MSG_PREFIX)$$stem link failed"; \
+				$(INTEGRATE_DOT_FAIL); \
 				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		else \
 						if ! $(ASSEMBLER) $$main_o $$rt_one -o $$stem $(LDFLAGS_clang); then \
 				echo "❌❌ $(MSG_PREFIX)$$stem link failed"; \
+				$(INTEGRATE_DOT_FAIL); \
 				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		fi; \
@@ -147,20 +155,24 @@ integrate:
 		[ "$$stem" = "__silica_runtime" ] && continue; \
 		if [ ! -x "$$stem" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$stem missing executable (assemble/link failed earlier)"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; continue; \
 		fi; \
 		if [ -f "$$stem.scout" ]; then \
 			{ printf 'exit\n' | ./$$stem 2>&1; echo $$?; } > "$$stem.sout"; \
 			if ! diff -Bw -q "$$stem.sout" "$$stem.scout" > /dev/null 2>&1; then \
 				echo "❌❌ $(MSG_PREFIX)$$stem .sout differs from .scout"; \
+				$(INTEGRATE_DOT_FAIL); \
 				diff -Bw "$$stem.sout" "$$stem.scout" || true; \
 				ko=$$((ko + 1)); failed=1; \
 			else \
 				echo "✅✅ $(MSG_PREFIX)$$stem output matches .scout"; \
+				$(INTEGRATE_DOT_OK); \
 				ok=$$((ok + 1)); \
 			fi; \
 		else \
 			echo "❌❌ $(MSG_PREFIX)$$stem has no .scout file"; \
+			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
 		fi; \
 	done < silica.config; \
@@ -192,3 +204,6 @@ help:
 	@echo "  help        - Show this help"
 	@echo ""
 	@echo "Linker: $(LINKER)"
+
+# Under -j, `clean` and `silica.config` must not run side by side (clean deletes the config).
+silica.config: | clean

@@ -15,7 +15,7 @@ MSG_PREFIX := $(TRIAL_DIR)/
 all: integrate
 
 # Sequential: clean must not run after silica.config (sibling prereqs can reorder).
-integrate:
+integrate-run:
 	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
 	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
 	@$(MAKE) -f "$(THIS_DIR)Makefile" check
@@ -24,9 +24,11 @@ check: silica.config
 	@cd "$(THIS_DIR)" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,$(COMPILER)); } > main_wrong_arg_count.cur_fail 2>&1 || true
 	@if diff -q "$(THIS_DIR)main_wrong_arg_count.cur_fail" "$(THIS_DIR)main_wrong_arg_count.golden_fail" > /dev/null 2>&1; then \
 		echo "✅✅ $(MSG_PREFIX)qualified_call_wrong_arg_count_trial"; \
+		$(INTEGRATE_DOT_OK); \
 		printf '%d %d\n' 1 0 > "$(THIS_DIR).integrate_counts"; \
 	else \
 		echo "❌❌ $(MSG_PREFIX)qualified_call_wrong_arg_count_trial: .cur_fail differs from .golden_fail"; \
+		$(INTEGRATE_DOT_FAIL); \
 		diff "$(THIS_DIR)main_wrong_arg_count.cur_fail" "$(THIS_DIR)main_wrong_arg_count.golden_fail" || true; \
 		printf '%d %d\n' 0 1 > "$(THIS_DIR).integrate_counts"; \
 		exit 1; \

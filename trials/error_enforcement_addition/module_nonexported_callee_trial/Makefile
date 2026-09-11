@@ -16,15 +16,17 @@ MSG_PREFIX := $(TRIAL_DIR)/
 # Parent: integrate -> silica.config all; sub: all == integrate == silica.config + golden check.
 all: integrate
 
-integrate: clean silica.config check
+integrate-run: check
 
-check:
+check: silica.config
 	@cd "$(THIS_DIR)" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,$(COMPILER)); } > main_use_partial.cur_fail 2>&1 || true
 	@if diff -q "$(THIS_DIR)main_use_partial.cur_fail" "$(THIS_DIR)main_use_partial.golden_fail" > /dev/null 2>&1; then \
 		echo "✅✅ $(MSG_PREFIX)module_nonexported_callee_trial"; \
+		$(INTEGRATE_DOT_OK); \
 		printf '%d %d\n' 1 0 > "$(THIS_DIR).integrate_counts"; \
 	else \
 		echo "❌❌ $(MSG_PREFIX)module_nonexported_callee_trial: .cur_fail differs from .golden_fail"; \
+		$(INTEGRATE_DOT_FAIL); \
 		diff "$(THIS_DIR)main_use_partial.cur_fail" "$(THIS_DIR)main_use_partial.golden_fail" || true; \
 		printf '%d %d\n' 0 1 > "$(THIS_DIR).integrate_counts"; \
 		exit 1; \
@@ -32,6 +34,9 @@ check:
 
 clean:
 	@rm -f "$(THIS_DIR)main_use_partial.cur_fail" "$(THIS_DIR)silica.config" "$(THIS_DIR).integrate_counts"
+
+# Under -j, `clean` must finish before silica.config is written (clean deletes it).
+silica.config: | clean
 
 silica.config:
 	@cd "$(THIS_DIR)" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config

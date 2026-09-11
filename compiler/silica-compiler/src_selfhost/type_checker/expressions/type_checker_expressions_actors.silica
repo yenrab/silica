@@ -82,7 +82,32 @@ fn behavior_return_is_call_only(return_type: string) -> boolean {
     t: string <- trim_leading_actor(return_type);
     case length_bytes(t) >= 8 of {
         false -> false;
-        true -> substring(t, 0, 8) == "(:reply," or behavior_return_is_atom_3_tuple(t)
+        true -> substring(t, 0, 8) == "(:reply," or behavior_return_first_elem_is(t, ":reply") or behavior_return_is_atom_3_tuple(t)
+    }
+}
+
+// Bracket-aware form of the "(:reply," prefix test: the parser re-joins some annotations from
+// tokens with a space after every token ("( :reply , ..."), e.g. when the State type carries
+// fn-typed or ref?/region fields, and the 8-byte prefix test then rejected a valid behaviour.
+fn behavior_return_first_elem_is(t: string, want: string) -> boolean {
+    case length_bytes(t) < 2 or substring(t, 0, 1) != "(" of {
+        true -> false;
+        false -> {
+            inner: string <- substring(t, 1, length_bytes(t));
+            first_comma: int64 <- find_top_level_comma_actor(inner, 0, 0);
+            first: string <- trim_leading_actor(substring(inner, 0, first_comma));
+            trim_trailing_actor_ws(first) == want
+        }
+    }
+}
+
+fn trim_trailing_actor_ws(s: string) -> string {
+    case length_bytes(s) == 0 of {
+        true -> s;
+        false -> case substring(s, length_bytes(s) - 1, length_bytes(s)) == " " of {
+            true -> trim_trailing_actor_ws(substring(s, 0, length_bytes(s) - 1));
+            false -> s
+        }
     }
 }
 
@@ -136,12 +161,25 @@ fn behavior_return_is_cast_only(return_type: string) -> boolean {
     }
 }
 
+// Top-level arrow only: a behaviour whose State (or Reply) type carries an fn-typed field, e.g.
+// a wbt_map's compare_key, has " -> " INSIDE the parameter types; taking the first arrow split the
+// function type there and rejected the behaviour with "return type must be (:reply, ...)".
 fn find_arrow_pos_actor(s: string, i: int64) -> int64 {
+    find_arrow_pos_actor_depth(s, i, 0)
+}
+
+fn find_arrow_pos_actor_depth(s: string, i: int64, depth: int64) -> int64 {
     case i + 4 > length_bytes(s) of {
         true -> -1;
-        false -> case substring(s, i, i + 4) == " -> " of {
+        false -> case depth == 0 and substring(s, i, i + 4) == " -> " of {
             true -> i;
-            false -> find_arrow_pos_actor(s, i + 1)
+            false -> case substring(s, i, i + 1) == "(" or substring(s, i, i + 1) == "[" or substring(s, i, i + 1) == "{" of {
+                true -> find_arrow_pos_actor_depth(s, i + 1, depth + 1);
+                false -> case substring(s, i, i + 1) == ")" or substring(s, i, i + 1) == "]" or substring(s, i, i + 1) == "}" of {
+                    true -> find_arrow_pos_actor_depth(s, i + 1, depth - 1);
+                    false -> find_arrow_pos_actor_depth(s, i + 1, depth)
+                }
+            }
         }
     }
 }

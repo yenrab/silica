@@ -16,6 +16,10 @@
 
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 include $(THIS_DIR)../silica_compiler.mk
+# This suite is memory-bound (every unit compile re-derives its stdlib dependencies):
+# a standalone `make integrate` here fans out SDS_JOBS-wide, and the trials root passes
+# -j$(SDS_JOBS) so the same cap holds inside the tree-wide run.
+INTEGRATE_JOBS := $(SDS_JOBS)
 
 SUB_TRIALS := \
 	compiler_substrate \
@@ -43,7 +47,7 @@ SDS_LEAF_MAKEFLAGS = \
 	SDS_STDLIB_CACHE="$(SDS_STDLIB_CACHE)" \
 	SDS_STDLIB_MODULES="$(SDS_STDLIB_MODULES)"
 
-.PHONY: all integrate record-golden clean help stdlib-objs gate-stdlib $(SUB_TRIALS)
+.PHONY: all integrate-run sds-leaves record-golden clean help stdlib-objs gate-stdlib $(SUB_TRIALS) $(SUB_TRIALS:%=sds-leaf-%)
 
 .DEFAULT_GOAL := all
 
@@ -117,12 +121,15 @@ gate-stdlib: stdlib-objs
 		esac; \
 		if [ ! -f "$$sams" ]; then \
 			echo "❌❌ gate-stdlib: $$m produced no assembly"; ko=$$((ko + 1)); continue; \
+			$(INTEGRATE_DOT_FAIL); \
 		fi; \
 		if [ ! -f "$$golden" ]; then \
 			echo "❌❌ gate-stdlib: $$m has no golden at $$golden"; ko=$$((ko + 1)); continue; \
+			$(INTEGRATE_DOT_FAIL); \
 		fi; \
 		if diff -Bw -q "$$sams" "$$golden" > /dev/null 2>&1; then \
 			echo "✅✅ gate-stdlib: $$m matches its golden exactly"; ok=$$((ok + 1)); continue; \
+			$(INTEGRATE_DOT_OK); \
 		fi; \
 		raw=$$(diff -Bw "$$sams" "$$golden" | grep -c '^[<>]'); \
 		sed -E 's/o[0-9]+/oN/g' "$$sams"   > "$$sams.norm"; \
@@ -130,6 +137,7 @@ gate-stdlib: stdlib-objs
 		norm=$$(diff -Bw "$$sams.norm" "$$sams.gnorm" | grep -c '^[<>]'); \
 		subst=$$(diff -Bw "$$sams.norm" "$$sams.gnorm" | grep '^[<>]' | grep -vc '^[<>][[:space:]]*;'); \
 		echo "❌❌ gate-stdlib: $$m differs -- $$raw diff lines; $$norm after normalising o<N> counters; $$subst of those are code, not comments"; \
+		$(INTEGRATE_DOT_FAIL); \
 		if [ "$$norm" -eq 0 ]; then \
 			echo "        (drift is ENTIRELY SIR/label counter numbering -- generated code is identical)"; \
 		else \
@@ -150,25 +158,19 @@ all: stdlib-objs
 	done; \
 	exit $$failed
 
-integrate: stdlib-objs
-	@failed=0; ok=0; ko=0; rm -f "$(THIS_DIR).integrate_counts"; \
-	for sub in $(SUB_TRIALS); do \
-		echo "=== standard_data_structures_phase1/$$sub ==="; \
-		if $(MAKE) -C "$(THIS_DIR)$$sub" integrate $(SDS_LEAF_MAKEFLAGS); then \
-			st=0; \
-		else \
-			st=1; failed=1; \
-		fi; \
-		if [ -f "$(THIS_DIR)$$sub/.integrate_counts" ]; then \
-			read s1 s2 < "$(THIS_DIR)$$sub/.integrate_counts" || true; \
-			ok=$$((ok + $${s1:-0})); ko=$$((ko + $${s2:-0})); \
-		elif [ "$$st" -ne 0 ]; then \
-			echo "❌❌ standard_data_structures_phase1/$$sub integrate failed (no .integrate_counts)"; \
-			ko=$$((ko + 1)); \
-		fi; \
-	done; \
-	printf '%d %d\n' "$$ok" "$$ko" > "$(THIS_DIR).integrate_counts"; \
-	exit $$failed
+# integrate (wrapper in silica_compiler.mk) -> integrate-run: compile the shared stdlib
+# once, then run every leaf concurrently (each leaf fans its units out further). Each
+# leaf prints its own report as it finishes; this level sums their .integrate_counts.
+integrate-run: stdlib-objs
+	@cd "$(THIS_DIR)" && rm -f $(SUB_TRIALS:%=%/.integrate_counts)
+	@cd "$(THIS_DIR)" && $(MAKE) --no-print-directory -f "$(INTEGRATE_MAKEFILE)" sds-leaves || true
+	@cd "$(THIS_DIR)" && $(call INTEGRATE_SUM_CHILDREN,$(SUB_TRIALS)); \
+	[ "$$ko" -eq 0 ] && [ "$$failed" -eq 0 ]
+
+sds-leaves: $(SUB_TRIALS:%=sds-leaf-%)
+
+$(SUB_TRIALS:%=sds-leaf-%): sds-leaf-%:
+	@$(call INTEGRATE_CHILD,$*,$(SDS_LEAF_MAKEFLAGS))
 
 record-golden: stdlib-objs
 	@failed=0; \
@@ -189,7 +191,7 @@ clean:
 help:
 	@echo "Phase 1 standard data structures trial root"
 	@echo "  all             - compile stdlib once, then build all leaves (default)"
-	@echo "  integrate       - compile stdlib once, then run all dependency leaves"
+	@echo "  integrate       - compile stdlib once, then run all leaves in parallel (SDS_JOBS=$(SDS_JOBS)); report per leaf and overall"
 	@echo "  record-golden   - compile stdlib once, then capture .ascomp/.scout/.golden_fail"
 	@echo "  stdlib-objs     - compile shared stdlib .o files into .stdlib_cache/"
 	@echo "  gate-stdlib     - FAST gate: 4 stdlib modules must match their .ascomp goldens"

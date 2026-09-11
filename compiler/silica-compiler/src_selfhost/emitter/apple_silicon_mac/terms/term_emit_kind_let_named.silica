@@ -138,5 +138,13 @@ fn emit_kind_let_named(term: { nodes: List[{ kind: int64, type_name: string, val
                             // Prefer rhs_bind_b (post-spill) over rhs_reg. Tuple-proj lets of scalars spill
                             // X0/X1 into X19+; keeping body_bound on the caller-saved load reg made
                             // `(d, n) <- p; … + n` after a BL read a clobbered X1 (extract_function readers).
-                            term_emit_kind_let_named_tail@emit_kind_let_named_tail(term, dest, bound, pools, emit_child, { rhs_reg: rhs_reg, rhs_asm: rhs_asm, rhs_bind_b: rhs_bind_b, mov_spill_b: mov_spill_b, packs_escape_b: packs_escape_b, iap_b: iap_b, va_b: va_b, proj_tvs: proj_tvs, tp_is_reg_b: tp_is_reg_b, alloc_bytes: case term_reg_spill@is_aggregate_make(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of { true -> tm_adj; false -> 0 }, res_binding: case spill_b of { true -> concat("|_res=", spill_reg_b); false -> "" } })
+                            // No |_res= reservation. It was meant to keep a spill register taken when the binding's
+                            // VALUE is a memory ref, but it was never effective (it was concatenated ahead of the base
+                            // register, so is_reg_bound never matched it) and every build that passed the trial suites
+                            // ran without it. Once it did take effect (2026-09-10) it starved the callee-saved chain:
+                            // case arms then fell through to X29 frame slots the prologue had not budgeted, and
+                            // [X29, #-16] landed on the saved X19/X20 pair (type_checker_expressions_binary_ops@
+                            // check_comparison_operands). The register is already recorded by the name binding and,
+                            // for aggregates, by the _ptr. binding; liveness is decided by kind (find_reg_pref_binding).
+                            term_emit_kind_let_named_tail@emit_kind_let_named_tail(term, dest, bound, pools, emit_child, { rhs_reg: rhs_reg, rhs_asm: rhs_asm, rhs_bind_b: rhs_bind_b, mov_spill_b: mov_spill_b, packs_escape_b: packs_escape_b, iap_b: iap_b, va_b: va_b, proj_tvs: proj_tvs, tp_is_reg_b: tp_is_reg_b, alloc_bytes: case term_reg_spill@is_aggregate_make(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of { true -> tm_adj; false -> 0 }, res_binding: "" })
                         }

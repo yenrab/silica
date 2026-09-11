@@ -145,7 +145,12 @@ fn outer_reg_has_live_binding_from(outer_reg: string, reg: string, body: { nodes
                     binding_name: string <- substring(segment, 0, eq);
                     binding_value: string <- substring(segment, eq + 1, length_bytes(segment));
                     binding_value == reg
-                        and var@find_last_sp_binding(outer_reg, binding_name) == binding_value
+                        // Choose the CURRENT home by KIND, not by position: a destructuring records
+                        // |%r=X19 and |%r=[SP, #8] for the same name (register first since the
+                        // build_outer_with_sp reorder), so the last-match test called the register
+                        // binding stale and handed X19 to the next tuple element while %r was live
+                        // (extract_function: four elements in X19). See find_reg_pref_binding.
+                        and var@find_reg_pref_binding(outer_reg, binding_name) == binding_value
                         and sir_term_references_binding(body, binding_name)
                 }
             };
@@ -823,28 +828,38 @@ fn next_frame_spill_slot(outer_reg: string) -> string {
 }
 
 fn compute_let_rhs_spill_reg(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, rhs_reg: string, outer_reg: string) -> string {
-    case is_float_scalar_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name) of {
-        true -> case is_caller_saved_fp(rhs_reg) of {
-            true -> fp_spill_reg_chain_from_outer(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name, outer_reg);
-            false -> ""
-        };
-        false -> case is_caller_saved_gpr(rhs_reg) of {
-            false -> "";
-            true -> case let_rhs_type_spills_across_io(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name) of {
-                true -> {
-                    unused: string <- spill_reg_chain_from_outer(outer_reg);
-                    case length_bytes(unused) > 0 of {
-                        true -> unused;
-                        false -> {
-                            body_spill: string <- spill_reg_chain_for_body(outer_reg, term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
-                            case length_bytes(body_spill) > 0 of {
-                                true -> body_spill;
-                                false -> next_frame_spill_slot(outer_reg)
+    // A discarded let (`_`, `%_`, e.g. `(r, _) <- ...` or `_: int8 <- println(...)`) must not
+    // consume X19-X28: the seed has always skipped it, and the frame budget
+    // (count_spill_eligible_lets_in_term) excludes it, so allocating for it here let the
+    // callee-saved chain run dry inside case arms and pushed live values into X29 slots the
+    // prologue never reserved ([X29, #-16] over the saved X19/X20 pair in
+    // type_checker_expressions_binary_ops@check_comparison_operands).
+    case term_sir_helpers@sir_term_root_node(term).name == "_" or term_sir_helpers@sir_term_root_node(term).name == "%_" of {
+        true -> "";
+        false ->
+        case is_float_scalar_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name) of {
+            true -> case is_caller_saved_fp(rhs_reg) of {
+                true -> fp_spill_reg_chain_from_outer(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name, outer_reg);
+                false -> ""
+            };
+            false -> case is_caller_saved_gpr(rhs_reg) of {
+                false -> "";
+                true -> case let_rhs_type_spills_across_io(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name) of {
+                    true -> {
+                        unused: string <- spill_reg_chain_from_outer(outer_reg);
+                        case length_bytes(unused) > 0 of {
+                            true -> unused;
+                            false -> {
+                                body_spill: string <- spill_reg_chain_for_body(outer_reg, term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
+                                case length_bytes(body_spill) > 0 of {
+                                    true -> body_spill;
+                                    false -> next_frame_spill_slot(outer_reg)
+                                }
                             }
                         }
-                    }
-                };
-                false -> ""
+                    };
+                    false -> ""
+                }
             }
         }
     }

@@ -1,16 +1,20 @@
 # Makefile for Silica error enforcement trials
-# Files to test: all *.silica under this directory except paths inside SUB_TRIALS
-# (those multi-file trials use their own Makefile + silica.config).
+# Files to test: all *.silica directly in this directory (the multi-file trials in
+# SUB_TRIALS use their own Makefile + silica.config).
 # Each single-file trial is compiled in isolation inside a temporary directory: a symlink to
 # the .silica file and a single-entry silica.config are created there, the
 # compiler is run, then the temp directory is removed.
 # Compiler output is captured to *.cur_fail and diffed against *.golden_fail.
 # If a source path has a sidecar "<same-stem>.no_golden_fail" (empty marker next to
-# "<stem>.silica"), that file is skipped by the single-file loop (no .golden_fail required).
+# "<stem>.silica"), that file is skipped by the single-file rule (no .golden_fail required).
 # Reports ✅✅ on match, ❌❌ on mismatch or missing .golden_fail.
 # Exits with failure if any check fails.
 #
-# Run from this directory: cd error_enforcement_addition && make
+# The single-file trials are independent, so each is a pattern rule (%.cur_fail: %.silica)
+# and `integrate` runs them under make's jobserver; SUB_TRIALS run concurrently with them.
+# Each result is one line appended to .integrate_results; the totals come from that file.
+#
+# Run from this directory: cd error_enforcement_addition && make integrate
 
 THIS_DIR        := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 include $(THIS_DIR)../silica_compiler.mk
@@ -20,83 +24,98 @@ MSG_PREFIX := $(TRIAL_DIR)/
 # Multi-file trials (subdir Makefile generates silica.config on integrate).
 SUB_TRIALS      := ffi_addition module_nonexported_callee_trial module_cycle_trial qualified_call_module_name_case_mismatch_trial qualified_call_wrong_arg_count_trial supervisor_agent_type_invalid_atom_trial standard_data_structures
 
-# Single-file trial sources only (paths under SUB_TRIALS excluded; keep prune list in sync with SUB_TRIALS).
-SILICA_FILES := $(shell cd "$(THIS_DIR)" && find . \( -path './ffi_addition/*' -o -path './module_nonexported_callee_trial/*' -o -path './module_cycle_trial/*' -o -path './qualified_call_module_name_case_mismatch_trial/*' -o -path './qualified_call_wrong_arg_count_trial/*' -o -path './supervisor_agent_type_invalid_atom_trial/*' -o -path './standard_data_structures/*' \) -prune -o -type f -name '*.silica' -print 2>/dev/null | sed 's|^\./||')
+# Single-file trial sources: every *.silica directly in this directory. $(wildcard)
+# rather than $(shell find): the tree holds ~20k files and this file is parsed several times.
+SILICA_FILES := $(sort $(notdir $(wildcard $(THIS_DIR)*.silica)))
+CUR_FAILS := $(SILICA_FILES:.silica=.cur_fail)
+SUB_TARGETS := $(SUB_TRIALS:%=ee-sub-%)
 
 .DEFAULT_GOAL := all
-.PHONY: all integrate clean help silica.config
+.PHONY: all integrate-run ee-units clean help silica.config $(SUB_TARGETS)
 
 silica.config:
-	@cd "$(THIS_DIR)" && find . \( -path './ffi_addition/*' -o -path './module_nonexported_callee_trial/*' -o -path './module_cycle_trial/*' -o -path './qualified_call_module_name_case_mismatch_trial/*' -o -path './qualified_call_wrong_arg_count_trial/*' -o -path './supervisor_agent_type_invalid_atom_trial/*' -o -path './standard_data_structures/*' \) -prune -o -type f -name '*.silica' -print 2>/dev/null | sed 's|^\./||' > silica.config
+	@cd "$(THIS_DIR)" && printf '%s\n' $(SILICA_FILES) > silica.config
 
-# Same checks as top-level trials Makefile for this directory (error output vs .golden_fail).
-integrate:
+# integrate (wrapper in silica_compiler.mk) -> integrate-run. Sequential sub-makes:
+# clean must finish before silica.config is written.
+integrate-run:
 	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
 	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
 	@$(MAKE) -f "$(THIS_DIR)Makefile" all
 
 all: | clean
-	@failed=0; ok=0; ko=0; rm -f "$(THIS_DIR).integrate_counts"; \
-	for silica in $(SILICA_FILES); do \
-		[ -f "$(THIS_DIR)$$silica" ] || { echo "❌❌ $(MSG_PREFIX)$$silica: file not found"; ko=$$((ko + 1)); failed=1; continue; }; \
-		base=$${silica%.silica}; \
-		if [ -f "$(THIS_DIR)$$base.no_golden_fail" ]; then \
-			continue; \
-		fi; \
-		if [ ! -f "$(THIS_DIR)$$base.golden_fail" ]; then \
-			echo "❌❌ $(MSG_PREFIX)$$base: no matching .golden_fail file"; \
-			ko=$$((ko + 1)); failed=1; \
-			continue; \
-		fi; \
-		tmpdir=$$(mktemp -d); \
-		mkdir -p "$$tmpdir/$$(dirname "$$silica")"; \
-		ln -s "$(THIS_DIR)$$silica" "$$tmpdir/$$silica"; \
-		echo "$$silica" > "$$tmpdir/silica.config"; \
-		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,$(SILICA_COMPILER)); }) > "$(THIS_DIR)$$base.cur_fail" 2>&1 || true; \
-		rm -rf "$$tmpdir"; \
-		if diff -q "$(THIS_DIR)$$base.cur_fail" "$(THIS_DIR)$$base.golden_fail" > /dev/null 2>&1; then \
-			echo "✅✅ $(MSG_PREFIX)$$base"; \
-			ok=$$((ok + 1)); \
-		else \
-			echo "❌❌ $(MSG_PREFIX)$$base: .cur_fail differs from .golden_fail"; \
-			diff "$(THIS_DIR)$$base.cur_fail" "$(THIS_DIR)$$base.golden_fail" || true; \
-			ko=$$((ko + 1)); failed=1; \
-		fi; \
-	done; \
+	@cd "$(THIS_DIR)" && : > .integrate_results && rm -f $(SUB_TRIALS:%=%/.integrate_counts)
+	@cd "$(THIS_DIR)" && $(MAKE) --no-print-directory -k -f "$(INTEGRATE_MAKEFILE)" ee-units || true
+	@cd "$(THIS_DIR)" && ok=$$(grep -c '^PASS' .integrate_results); ko=$$(grep -c '^FAIL' .integrate_results); failed=0; \
+	[ "$$ko" -ne 0 ] && failed=1; \
+	echo "$(MSG_PREFIX)single-file trials: $$ok matched .golden_fail, $$ko differed or missing"; \
 	for sub in $(SUB_TRIALS); do \
-		if $(MAKE) -C "$(THIS_DIR)$$sub" integrate COMPILER="$(SILICA_COMPILER)"; then \
-			:; \
-		else \
-			failed=1; \
-		fi; \
-		if [ -f "$(THIS_DIR)$$sub/.integrate_counts" ]; then \
-			read s1 s2 < "$(THIS_DIR)$$sub/.integrate_counts" || true; \
-			ok=$$((ok + $${s1:-0})); ko=$$((ko + $${s2:-0})); \
-		fi; \
+		[ -f "$$sub/.integrate_skipped" ] && continue; \
+		n1=0; n2=0; \
+		if [ -f "$$sub/.integrate_counts" ]; then read n1 n2 < "$$sub/.integrate_counts" || true; fi; \
+		n1=$${n1:-0}; n2=$${n2:-0}; \
+		cst=$$(cat "$$sub/.integrate_status" 2>/dev/null || echo 1); \
+		if [ "$$cst" -ne 0 ] && [ "$$n2" -eq 0 ]; then n2=1; fi; \
+		ok=$$((ok + n1)); ko=$$((ko + n2)); \
+		[ "$$n2" -ne 0 ] && failed=1; \
 	done; \
 	[ "$$failed" -ne 0 ] && [ "$$ko" -eq 0 ] && ko=$$((ko + 1)); \
-	printf '%d %d\n' "$$ok" "$$ko" > "$(THIS_DIR).integrate_counts"; \
+	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
 	exit $$failed
 
+ee-units: $(CUR_FAILS) $(SUB_TARGETS)
+
+# One single-file trial. Never fails the make: every outcome is a results line.
+%.cur_fail: %.silica
+	@cd "$(THIS_DIR)" && base="$*"; \
+	if [ -f "$$base.no_golden_fail" ]; then exit 0; fi; \
+	if [ ! -f "$$base.golden_fail" ]; then \
+		echo "❌❌ $(MSG_PREFIX)$$base: no matching .golden_fail file"; \
+		$(INTEGRATE_DOT_FAIL); \
+		printf 'FAIL\t%s\tno matching .golden_fail file\n' "$$base" >> .integrate_results; \
+		exit 0; \
+	fi; \
+	tmpdir=$$(mktemp -d); \
+	ln -s "$(THIS_DIR)$$base.silica" "$$tmpdir/$$base.silica"; \
+	echo "$$base.silica" > "$$tmpdir/silica.config"; \
+	(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,$(SILICA_COMPILER)); }) > "$$base.cur_fail" 2>&1 || true; \
+	rm -rf "$$tmpdir"; \
+	if diff -q "$$base.cur_fail" "$$base.golden_fail" > /dev/null 2>&1; then \
+		echo "✅✅ $(MSG_PREFIX)$$base"; \
+		$(INTEGRATE_DOT_OK); \
+		printf 'PASS\t%s\n' "$$base" >> .integrate_results; \
+	else \
+		{ echo "❌❌ $(MSG_PREFIX)$$base: .cur_fail differs from .golden_fail"; \
+		$(INTEGRATE_DOT_FAIL); \
+		  diff "$$base.cur_fail" "$$base.golden_fail" || true; } > "$$base.cur_fail.msg"; \
+		cat "$$base.cur_fail.msg"; rm -f "$$base.cur_fail.msg"; \
+		printf 'FAIL\t%s\t.cur_fail differs from .golden_fail\n' "$$base" >> .integrate_results; \
+	fi
+
+# One multi-file trial directory (its own Makefile, log and report).
+$(SUB_TARGETS): ee-sub-%:
+	@$(call INTEGRATE_CHILD,$*,COMPILER="$(SILICA_COMPILER)")
+
 clean:
-	@rm -f $(THIS_DIR)*.cur_fail "$(THIS_DIR)silica.config" "$(THIS_DIR).integrate_counts"
+	@find "$(THIS_DIR)" -maxdepth 1 \( -name '*.cur_fail' -o -name '*.cur_fail.msg' \) -type f -delete 2>/dev/null || true
+	@rm -f "$(THIS_DIR)silica.config" "$(THIS_DIR).integrate_counts" "$(THIS_DIR).integrate_results"
 	@for sub in $(SUB_TRIALS); do $(MAKE) -C "$(THIS_DIR)$$sub" clean; done
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
 	@echo "Makefile - Silica error enforcement trials"
 	@echo "=========================================="
-	@echo "Single-file list: *.silica here excluding SUB_TRIALS ($(SUB_TRIALS)); then each subdir integrate."
-	@echo "Each file is compiled in an isolated temp directory; a one-line silica.config"
-	@echo "is left untouched.  Compiler output is captured to .cur_fail and"
-	@echo "compared to .golden_fail.  Files with a sidecar .no_golden_fail are skipped."
+	@echo "Single-file list: *.silica here (SUB_TRIALS: $(SUB_TRIALS) have their own Makefiles)."
+	@echo "Each file is compiled in an isolated temp directory with a one-line silica.config;"
+	@echo "compiler output is captured to .cur_fail and compared to .golden_fail."
+	@echo "Files with a sidecar .no_golden_fail are skipped."
 	@echo ""
 	@echo "Targets:"
-	@echo "  all       - Single-file loop (excluding SUB_TRIALS), then make integrate in each SUB_TRIAL"
+	@echo "  integrate - Single-file trials and SUB_TRIALS in parallel, then this directory's report"
 	@echo "              ✅✅ = output matches .golden_fail"
 	@echo "              ❌❌ = output differs, file not found, or missing .golden_fail (when not skipped)"
-	@echo "  integrate - Same as all (integration test for this directory)"
+	@echo "  all       - Same as integrate-run without the report wrapper"
 	@echo "  clean     - Remove .cur_fail files, silica.config, and .integrate_counts"
 	@echo "  help      - Show this help"
 	@echo ""
-	@echo "Files under test: $(SILICA_FILES)"
+	@echo "Single-file trials: $(words $(SILICA_FILES))"
