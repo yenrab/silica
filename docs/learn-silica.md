@@ -439,7 +439,7 @@ Read the trials when you want a small program in hand. Read the specification wh
 - [trials](https://github.com/yenrab/silica/tree/main/trials) — simple programs, grouped by topic. Run one directory with `make -C trials/<name> integrate`.
 - [Language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md)
 - [Tutorials](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/tutorials_and_howtos)
-- [Build the compiler](https://github.com/yenrab/silica#building-the-compiler)
+- [Build and test the compiler]({{ '/build-and-test/' | relative_url }})
 - [Participate]({{ '/participate/' | relative_url }})
 - [Learn to Program]({{ '/learn-programming/' | relative_url }}) — same language, slower on-ramp
 

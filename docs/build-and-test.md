@@ -1,89 +1,26 @@
-![Silica](./silica_icon_small.png)
-
-# Silica
-
-Silica is a memory-safe, functional systems language. The compiler rejects unsafe or accidental behavior at compile time, with errors you can act on. Effects are explicit, actors pass messages, and memory is region-based with no garbage collector.
-
-Silica is designed for bare metal systems development, but also supports applications hosted by operating systems. The initial toolchain works, today, on Apple Silicon macOS.
-
-[Why Silica](https://yenrab.github.io/silica/) — language goals and how to get involved.
-
-```silica
-module main;
-
-fn add(a: int64, b: int64) -> int64 {
-    a + b
-}
-
-fn main() -> atom {
-    case add(20, 1) * 2 of {
-        42: int64 -> :ok;
-        _: int64 -> :error
-    }
-}
-```
-
-- [Build the compiler](#building-the-compiler) (seed, gen1, gen2) and [run the trials](#running-the-continuous-integration-trials)
-- [Language specification](compiler/silica-compiler/design_documents/silica-specification.md)
-- [Tutorials](compiler/silica-compiler/tutorials_and_howtos/)
-- [Roadmap](ROADMAP.md)
-- [Contributing](CONTRIBUTING.md)
-
+---
+title: Build and test the compiler
+layout: default
+permalink: /build-and-test/
 ---
 
-![](./silica_icon_emoji.png)**Motto: Secure by default at compile time — fail soft, never fail silent**
+# Build and test the compiler
 
----
-
-
-
-## Language and runtime
-
-- Effects live in the type system. Memory is organized with regions and per-actor stacks: no shared heap, no GC. See the [language specification](compiler/silica-compiler/design_documents/silica-specification.md), [actor stack architecture](compiler/silica-compiler/design_documents/silica-specification.md#spec-actor-stack-architecture), and [region handles](compiler/silica-compiler/design_documents/silica-specification.md#spec-region-handles-actor-spawn).
-- Dead bindings, duplicate work, redundant arithmetic, and similar “the optimizer will fix it” patterns are compile-time errors. See [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md).
-- FFI goes through Fifi, the compiler’s outbound foreign-function layer. Think of a cute poodle that bites: non-Silica code looks approachable and lives outside Silica’s guarantees. Wrappers and anything that depends on them must be named `dangerous_*` all the way to the app root. See the [FFI wrapper specification](compiler/silica-compiler/design_documents/silica_ffi_wrapper_specification.md), the [dangerous FFI security model](compiler/silica-compiler/design_documents/dangerous_ffi_security_model.md), and [designing apps with foreign functions](compiler/silica-compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md).
-- The runtime is lightweight actors, message passing, and let-it-crash isolation (BEAM-like, native), with hardware help such as MTE on AArch64. See [crash containment](compiler/silica-compiler/design_documents/beam_like_crash_containment_design_notes.md). Brokered IPC for untrusted C is proposed as an alternative to in-process FFI; that path would not need `dangerous_*` names. See [brokered IPC](compiler/silica-compiler/design_documents/brokered_ipc_isolation_architecture.md).
-- Types and syntax stay explicit. There are no generics; polymorphism is traits plus concrete types. Language-level crypto labels and richer proof tooling are proposed: [crypto proposal](compiler/silica-compiler/design_documents/crypto-proposal-introduction.md), [formal verification](compiler/silica-compiler/design_documents/silica-formal-verification-specification.md).
-
-Related notes: [actor capabilities](compiler/silica-compiler/design_documents/silica_actor_capabilities_specification.md) (draft), [memory effects on AArch64 / OS-free targets](compiler/silica-compiler/design_documents/memory-effects-aarch64-implementation-plan.md).
-
-## Contributing and roadmap
-
-Working on a self-hosted toolchain plus the runtime around it, in the open, with the spec and the errors meant to stay aligned. How to open issues and PRs is in [CONTRIBUTING.md](CONTRIBUTING.md). [Code organization](compiler/silica-compiler/design_documents/silica-compiler-code-organization.md) is a map of the tree.
-
-Development is organised by emitter path — Apple Silicon leads, Linux AArch64 is in lock-step, ESP32-S3 follows at its own pace — and delivered in chunks between fixed points. See the [roadmap](ROADMAP.md). Compiler-building tools (including JSON-LD agent graphs) live under [compiler-building-tools/](compiler/silica-compiler/compiler-building-tools/).
-
-## Documentation
-
-Design docs are working documents and change with the implementation. Start here:
-
-- [Language specification](compiler/silica-compiler/design_documents/silica-specification.md) and [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md)
-- Fifi: [§26.3](compiler/silica-compiler/design_documents/silica-specification.md#spec-fifi), [FFI wrapper specification](compiler/silica-compiler/design_documents/silica_ffi_wrapper_specification.md), [dangerous FFI security model](compiler/silica-compiler/design_documents/dangerous_ffi_security_model.md), [macOS guarded FFI crash handling](compiler/silica-compiler/design_documents/macos_crash_handling_for_silica.md)
-- [Actor capabilities](compiler/silica-compiler/design_documents/silica_actor_capabilities_specification.md), [memory effects (AArch64 / OS-free)](compiler/silica-compiler/design_documents/memory-effects-aarch64-implementation-plan.md)
-- Full index: [design_documents/](compiler/silica-compiler/design_documents/)
-- Hosted vs OS-free: on a mainstream OS, kernel policy limits what you can assume about memory spaces and core pinning. Short overview: [execution environments](compiler/silica-compiler/design_documents/execution-environments-hosted-vs-bare-metal.md).
-
-Tutorials (actors, regions, lists, blocks, and related topics) are in [tutorials_and_howtos/](compiler/silica-compiler/tutorials_and_howtos/). Useful starting points:
-
-- Foreign functions: [designing apps with foreign functions](compiler/silica-compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md), then [FFI wrappers and Makefiles](compiler/silica-compiler/tutorials_and_howtos/ffi_wrappers_and_makefiles.md)
-- App builds: [building apps with project Makefiles](compiler/silica-compiler/tutorials_and_howtos/building_apps_with_project_makefiles.md) (drop-in files in `[project_makefiles/](project_makefiles/)`)
-- Large apps: [compiling with less RAM](compiler/silica-compiler/tutorials_and_howtos/compiling_with_less_ram.md)
-
-
+How to rebuild the seed, build the self-hosted compiler from the seed (gen1) and from itself (gen2), and run the continuous-integration trials against either generation.
 
 ## Building the compiler
 
-These steps build the self-hosted toolchain ([roadmap](ROADMAP.md) Track 1). The same instructions, with more context, are on the project site: [Build and test the compiler](https://yenrab.github.io/silica/build-and-test/).
+These steps build the self-hosted toolchain ([roadmap](https://github.com/yenrab/silica/blob/main/ROADMAP.md) Track 1). This page mirrors the [README](https://github.com/yenrab/silica#building-the-compiler); the repository copy is the one kept in step with the Makefiles.
 
-**Platform notice (temporary):** the build and link path is validated on Apple Silicon (arm64 macOS) only. Other hosts are not yet supported end-to-end. A useful early contribution is another emit backend under [src_selfhost/emitter/](compiler/silica-compiler/src_selfhost/emitter/) (see `apple_silicon_mac/`, `linux_aarch64/`, and `ESP32-S32_raw/`), then `make TARGET=…`.
+**Platform notice (temporary):** the build and link path is validated on Apple Silicon (arm64 macOS) only. Other hosts are not yet supported end-to-end. A useful early contribution is another emit backend under [src_selfhost/emitter/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/src_selfhost/emitter/) (see `apple_silicon_mac/`, `linux_aarch64/`, and `ESP32-S32_raw/`), then `make TARGET=…`.
 
 ### The three compilers
 
 | Name | Source | Built by | Published as |
 | ---- | ------ | -------- | ------------ |
-| Bootstrap | [compiler/silica-bootstrap-compiler/](compiler/silica-bootstrap-compiler/) (Rust) | `cargo` | `target/release/silica-boot` (not in `binaries/`) |
-| Seed | [compiler/silica-compiler/src/](compiler/silica-compiler/src/) (Silica) | the bootstrap | `binaries/silica-NNNNNN-seed-<platform>`, reached through `binaries/seed-compiler` |
-| Selfhost | [compiler/silica-compiler/src_selfhost/](compiler/silica-compiler/src_selfhost/) (Silica, Rust-free) | the seed (**gen1**) or a previous selfhost (**gen2**) | `binaries/silica-NNNNNN-<platform>`, reached through `binaries/silica-compiler` |
+| Bootstrap | [compiler/silica-bootstrap-compiler/](https://github.com/yenrab/silica/tree/main/compiler/silica-bootstrap-compiler/) (Rust) | `cargo` | `target/release/silica-boot` (not in `binaries/`) |
+| Seed | [compiler/silica-compiler/src/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/src/) (Silica) | the bootstrap | `binaries/silica-NNNNNN-seed-<platform>`, reached through `binaries/seed-compiler` |
+| Selfhost | [compiler/silica-compiler/src_selfhost/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/src_selfhost/) (Silica, Rust-free) | the seed (**gen1**) or a previous selfhost (**gen2**) | `binaries/silica-NNNNNN-<platform>`, reached through `binaries/silica-compiler` |
 
 Generation numbers in `binaries/` count **down**: the lowest `NNNNNN` is the newest build. The two symlinks always point at the newest seed and the newest selfhost. `gen1` is the selfhost tree compiled by the seed; `gen2` is the same tree compiled by gen1, and it is the build that must pass every trial before the selfhost can replace the seed.
 
@@ -156,11 +93,11 @@ make gen2
 
 ### Runtime (Track 2): no single documented build yet
 
-[Track 2](ROADMAP.md) is foreign interoperability and, later, brokered IPC. Exact build and link steps for that path are still to be defined. Until then, the self-hosted compiler build above is the supported path.
+[Track 2](https://github.com/yenrab/silica/blob/main/ROADMAP.md) is foreign interoperability and, later, brokered IPC. Exact build and link steps for that path are still to be defined. Until then, the self-hosted compiler build above is the supported path.
 
 ## Running the Continuous Integration trials
 
-CI trials live under [trials/](trials/). Each suite directory (for example `atoms_addition`, `case_addition`, `error_enforcement_addition`, `ordered_data_structures`) holds Silica sources and golden files: `.ascomp` (expected assembly), `.scout` (expected stdout followed by the exit code), and `.golden_fail` (expected compiler diagnostics for programs that must not compile). The [trials Makefile](trials/Makefile) compiles every trial with the chosen compiler, compares the assembly to `.ascomp`, assembles and links, runs the binary, and compares its output to `.scout` (or the diagnostics to `.golden_fail`). Suites run in parallel; a counter line at the bottom of the terminal shows passes and failures as they happen.
+CI trials live under [trials/](https://github.com/yenrab/silica/tree/main/trials/). Each suite directory (for example `atoms_addition`, `case_addition`, `error_enforcement_addition`, `ordered_data_structures`) holds Silica sources and golden files: `.ascomp` (expected assembly), `.scout` (expected stdout followed by the exit code), and `.golden_fail` (expected compiler diagnostics for programs that must not compile). The [trials Makefile](https://github.com/yenrab/silica/blob/main/trials/Makefile) compiles every trial with the chosen compiler, compares the assembly to `.ascomp`, assembles and links, runs the binary, and compares its output to `.scout` (or the diagnostics to `.golden_fail`). Suites run in parallel; a counter line at the bottom of the terminal shows passes and failures as they happen.
 
 ### Run the tree against gen1 and gen2
 
@@ -211,6 +148,3 @@ Other useful targets in `trials/`:
 
 The harness assumes the same Apple Silicon / macOS toolchain as the compiler build. Some suites have their own READMEs.
 
-## License
-
-This project is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for copyright attribution.

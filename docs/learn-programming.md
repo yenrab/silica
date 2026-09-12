@@ -812,7 +812,7 @@ When you want the rules in full, read the [language specification](https://githu
 
 When you want hands-on topics — actors, regions, foreign functions, project makefiles — start from the [tutorials](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/tutorials_and_howtos).
 
-When you want to run programs, [build the compiler](https://github.com/yenrab/silica#building-the-compiler).
+When you want to run programs, [build the compiler]({{ '/build-and-test/' | relative_url }}).
 
 Programming is a craft. The first programs will feel stiff. That is expected. Write small functions. Let the compiler talk. Change one thing at a time. The machine is literal. You can learn to be literal too.
 

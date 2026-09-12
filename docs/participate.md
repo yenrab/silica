@@ -4,43 +4,52 @@ layout: default
 permalink: /participate/
 ---
 
-The bootstrap compiler is complete. Ongoing work is grouped by whether it primarily advances the language and toolchain or the runtime platform. Items can move forward on either track as design and implementation allow.
+The bootstrap compiler is complete and the self-hosted compiler runs the trials. Work is organised by **emitter path** and delivered in **chunks between fixed points**; the authoritative checklist is the [roadmap](https://github.com/yenrab/silica/blob/main/ROADMAP.md). How to open issues and PRs is in [CONTRIBUTING.md](https://github.com/yenrab/silica/blob/main/CONTRIBUTING.md). The [code organization](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-compiler-code-organization.md) document helps you navigate the tree, and [Build and test the compiler]({{ '/build-and-test/' | relative_url }}) explains generations, trials, and the fixed-point check.
 
-A shorter checklist lives in the [roadmap](https://github.com/yenrab/silica/blob/main/ROADMAP.md). How to open issues and PRs is in [CONTRIBUTING.md](https://github.com/yenrab/silica/blob/main/CONTRIBUTING.md). The [code organization](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-compiler-code-organization.md) document helps you navigate the tree.
+## Fixed points and chunks
 
-## Track 1 — language and compiler
+A **fixed point** is a self-hosted compiler that passes the whole trial tree when built by itself and then reproduces itself byte for byte (`make fixpoint`). A **chunk** is a slice of the not-yet-implemented specification; it is closed by the next fixed point on that path, never by a build that merely compiles. Every chunk ships with trials.
 
-### Phase 2 (in progress)
+## The three paths
 
-Here’s where you could help.
+- **Apple Silicon (macOS, AArch64)** leads. The code as it stands today is the content of its first fixed point (FP1).
+- **Linux AArch64** is in lock-step: fixed point *n* on Linux has exactly the Silica behaviours of fixed point *n* on Apple Silicon. Apple leads inside a chunk; the chunk is not closed until Linux has caught up. Port notes: [linux_aarch64_port_checklist.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/ports/linux_aarch64_port_checklist.md).
+- **ESP32-S3 (Xtensa LX7, OS-free)** is not in lock-step. Its FP1 has all the behaviours of Apple Silicon FP1 **plus peek and poke** — `map_device` binding a board-legal MMIO window, volatile device loads and stores, callable only from a `spawn_device` worker — after which it works through the same chunks at its own pace, skipping hosted-only items. Port notes: [esp32s3_xtensa_port.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/ports/esp32s3_xtensa_port.md), [porting_for_os_free_targets.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/porting_for_os_free_targets.md), [device actor specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica_device_actor_specification.md).
 
-#### Immutable lists and lowering
+## Raw paths: chip features in chunk 2
 
-Fast Map, Filter, and Reduce: make immutable list traversals use vector-sized chunks in region-backed storage—so the usual functional pipeline stays expressive in source while the emitter can target SIMD-friendly layouts and avoid redundant allocations.
+On every raw (OS-free) path the chip's own capabilities are **chunk 2**, right after the actor stacks and data
+structures, wherever the chip has them; a feature the chip lacks is recorded in the port notes as not applicable rather
+than left open. Hosted paths are different by specification: on an OS the memory spaces are a discipline without
+guaranteed attribute differentiation (§12.1.1.0) and placement goes through the OS affinity interface, which Apple Silicon
+already has ([cpu_topology_implementation_plan.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/cpu_topology_implementation_plan.md)).
 
-See [list implementation design](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/list_implementation_design.md) (kernel ops and lowering).
+| Feature (spec wording) | Where | What the raw path delivers |
+| --- | --- | --- |
+| **Actor placement on a specific core.** `spawn(initial_state, behavior, n)` with a `uint64` logical core index or `core_id(n)` (§4.6); `get_cpu_topology()` and the `cpu_topology` / `core_info` records (§22.10); scheduling and affinity (§23.1.3). | §4.6, §22.10, §23.1.3 | On a multi-core chip the runtime pins that actor to the named core and reports the real topology. ESP32-S3 has two LX7 cores, so this applies to it. |
+| **Memory spaces.** `region(L, Space)` with `normal`, `normal_writeback`, `normal_writethrough`, `normal_noncacheable`, `atomic`, and `device` (§4.4); OS-free runtimes give each space its real attributes, on AArch64 through `MAIR_EL1` (§12.1.1.0, §12.1.1.1). | §4.4, §12.1.1 | Every space the chip can distinguish maps to the matching cache policy, shareability, or device attribute; `device` is the peek-and-poke window. Spaces the chip cannot distinguish are documented as collapsed. |
+| **Chip-specific behaviours.** Feature detection and capability queries (§21.0), then whatever the chip has: on AArch64 SVE (§21.1), NEON (§21.2), MTE (§21.3), PAC (§21.4) and the system-register access of §21.0.2; on ESP32-S3 the Xtensa LX7 equivalents (its vector and cache-control instructions) and none of the AArch64-only items. | §21 | Each raw path carries the §21 items its chip supports, with trials, and lists the rest as not applicable. |
 
-#### Compiler rules and diagnostics
+## Where you can help, by chunk
 
-Compiler errors for anti-patterns: the self-hosted compiler reports hard errors for dead bindings, duplicate work, redundant arithmetic, loop-invariant mistakes, and other patterns spelled out in [additional compiler rules](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification-additional.md)—so inefficient or ambiguous code is fixed at the source, not silently “optimized away.”
+Chunk 1 is fixed and identical on every path; the rest are the planned order and may shift when a dependency demands it.
 
-Fine-tuning compiler errors: refine diagnostics for the current pipeline—clearer messages, stable error codes, accurate locations, and spec-linked references (see §1.6 of the [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md))—so fixing mistakes stays fast while the self-hosted compiler matures.
+1. **Growable and shrinkable actor stacks, and the remaining standard data structures** — first after FP1 on every path. Stacks (spec §15.1.2.2): segmented, runtime-managed, with a probe under each frame, a guard page under each segment, growth in the fault handler and shrink on return, so a single actor's stack is bounded only by machine memory; runtime, emitter prologue, and trials for deep recursion inside actors. Plan: [actor_stack_growth_plan.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/actor_stack_growth_plan.md). Data structures: the remaining public traits and graph query backends, then using them inside the compiler. [Designs](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/README.md).
+2. **Raw paths: chip features** — actor placement on a specific core, the memory spaces with their real attributes, and the chip's §21 behaviours, as listed above. A no-op on hosted paths; the number is kept so fixed points line up across paths.
+3. **Diagnostics and open defects**: the remaining silent miscompilations and the mistakes the compiler still accepts, listed in [HIGH_PRIORITY defects](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/HIGH_PRIORITY_compiler_defects_and_diagnostic_gaps_2026-09-08.md); each fix lands with an `error_enforcement_addition` or positive trial. Also the standing bar for every later feature: human-readable, machine-friendly, spec-linked errors (spec §1.6).
+4. **Immutable lists — map, filter, reduce** over region-backed, vector-sized chunks so the functional pipeline stays expressive while the emitter can target SIMD-friendly layouts. [List implementation design](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/list_implementation_design.md), [TODO M1–M3](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/list_map_filter_reduce_and_hardening_todo.md).
+5. **Region memory safety**: static lifetime analysis, buffer bounds, isolation, an ownership-based release strategy, atomic references, lifetime polymorphism. [Region TODO](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/region_memory_safety_todo.md).
+6. **Variants and advanced control**: variant types and patterns, behaviour switching, advanced effects (spec §4.2.5, §6).
+7. **Atomic operations and synchronization guarantees** audited and completed (spec §17, §18).
+8. **Extended numerics**: big integers, big floats, rationals, big rationals, and 128-bit integers as distinct explicit types with no implicit widening.
+9. **Beyond the process**: Fifi inbound calls and dynamic linking (spec §26.3.1) and [brokered IPC](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/brokered_ipc_isolation_architecture.md), hosted paths only. Today Fifi calls C and C-ABI libraries; see [designing apps with foreign functions](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md).
+10. **Tooling and proof**: [formal verification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-formal-verification-specification.md), [cryptographic guardrails](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/crypto-proposal-introduction.md), IDE and developer experience (spec §29), and tighter AArch64 emission without weakening the trials' contract with checked-in baselines.
 
-Carry diagnostic quality forward as further language features land—new rules for crypto, numerics, IPC, and verification-oriented feedback—with the same bar: human-readable and machine-friendly errors that stay aligned with the specification.
+CI trial edge-case additions are welcome at any time: grow [trials/](https://github.com/yenrab/silica/tree/main/trials) with scenarios that stress parsing, types, effects, and codegen so the trial tree keeps catching regressions.
 
-#### CI and golden trials
+## Later paths
 
-CI trial edge-case additions: grow [compiler/silica-compiler/trials/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/trials) with scenarios that stress the self-hosted pipeline—corner cases for parsing, types, effects, and codegen—so `make integrate` stays the gate for regressions on golden assembly (`.ascomp`) and output (`.scout`).
-
-#### Chip, OS, and bare-metal support
-
-The self-hosted toolchain is validated end-to-end on macOS with Apple Silicon (AArch64).
-
-The table is not a timeline and not a rigid pecking order. Planned focus is where work is intended to go next—counting within each strand only (hosted vs bare metal stay parallel). Smaller numbers mean sooner planned attention, not a guarantee every row advances in lockstep or that cross-strand rows compete.
-
-Rows are sorted by that band. When two rows share the same band, Hosted is listed before bare metal for readability, not as ranking one strand above the other. Among bare-metal rows in the same band, ESP32-S3 is listed first—there is already a volunteer driving that bring-up.
-
-If you enjoy ABIs, triples, link steps, CI on new hosts, or bringing up a small runtime on a board with no OS, pick a row and open a discussion or PR. See the [build plan](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/build-plan.md), `TARGET=…` and emitter layout under [compiler/silica-compiler/src_selfhost/emitter/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/src_selfhost/emitter), and [hosted vs bare-metal execution](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/execution-environments-hosted-vs-bare-metal.md).
+A new emitter's first fixed point has the same behaviours as the **analogous pre-existing fixed point**, not Apple Silicon's: a hosted Linux path starts from Linux AArch64 (Linux on AMD or Intel x86-64 takes the current Linux AArch64 fixed point), and a bare-metal path starts from the nearest bare-metal one (bare-metal AArch64 takes the current ESP32-S3 fixed point, peek and poke included). From there it works through the chunks. Hosted and bare metal stay parallel; smaller numbers mean sooner planned attention, not a guarantee. Among bare-metal rows in the same band, ESP32-S3 is listed first because a volunteer is driving it. If you enjoy ABIs, triples, link steps, CI on new hosts, or bringing up a small runtime on a board with no OS, pick a row and open a discussion or PR. See [porting for OS-free targets](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/porting_for_os_free_targets.md).
 
 | Planned focus | Strand | Target | Why it helps |
 | --- | --- | --- | --- |
@@ -52,38 +61,8 @@ If you enjoy ABIs, triples, link steps, CI on new hosts, or bringing up a small 
 | 3 | Hosted (chip + OS) | Windows (x86_64; AArch64 when there is demand) | Lowers the barrier for contributors and teams on Windows workstations. |
 | 3 | Bare metal (OS-free, by chip) | Common MCU classes (e.g. 32-bit embedded) | Longer tail of boards/ISAs; linker scripts, platform packages, minimal-runtime contract per profile. |
 
-### Phase 3 (next up)
-
-Assembly optimization: tighten and tune AArch64 emission (instruction choice, scheduling, and related emitter paths) for better performance and smaller binaries without weakening the trials’ contract with checked-in baselines.
-
-Compiler architecture: re-engineer `silica-compiler` so it is structured around Silica actors—dogfooding the concurrency model in the toolchain itself while simplifying the compiler's source code.
-
-Extended numerics: first-class big integers, big floats, rationals, and big rationals as distinct explicit types (no implicit widening or automatic promotion between numeric kinds).
-
-Formal methods: deepen Curry–Howard–aligned reasoning and proof tooling on top of the type system. See [formal verification specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-formal-verification-specification.md).
-
-Cryptography: realize the language-level cryptographic guardrails (secret/public labels, constant-time discipline, protected buffers, and related rules). See [crypto proposal](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/crypto-proposal-introduction.md).
-
-## Track 2 — runtime
-
-### Phase 2 (in progress)
-
-Foreign interoperability (Fifi): call into existing C libraries and into any library that exposes a C-compatible ABI (a stable C calling convention and linkable symbols) via Fifi—the compiler's outbound FFI layer—instead of rewriting the ecosystem in pure Silica.
-
-Non-Silica code loaded and run this way is the poodle that bites: approachable at the boundary, but outside Silica's memory and type guarantees. That lets Silica programs use mature code in unsafe languages to get us started.
-
-For app structure, start with [designing apps with foreign functions](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md). For security-review framing of the `dangerous_*` boundary, see the [dangerous FFI security model](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/dangerous_ffi_security_model.md).
-
-### Phase 3 (next up)
-
-Runtime safety: implement the brokered IPC architecture so unsafe language work can be isolated and mediated as designed. See [brokered IPC architecture](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/brokered_ipc_isolation_architecture.md).
-
 ## Compiler-building tools
 
-Tools for generating compiler code and coordinating Phase 2 work live under [compiler/silica-compiler/compiler-building-tools/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/compiler-building-tools).
+Tools for generating compiler code and coordinating work live under [compiler/silica-compiler/compiler-building-tools/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/compiler-building-tools/).
 
 For JSON-LD agent graphs, which files to use, and how they fit AI-assisted workflows, see [compiler-building-tools/README.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/compiler-building-tools/README.md).
-
----
-
-[Back to Silica]({% link index.md %}) · [View the project on GitHub](https://github.com/yenrab/silica)

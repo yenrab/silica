@@ -10,7 +10,7 @@ layout: default
   <a class="card" href="{{ '/learn-silica/' | relative_url }}"><b>Silica for Programmers</b><span>A short introduction to Silica if you already write software.</span></a>
   <a class="card" href="{{ '/design-principles/' | relative_url }}"><b>Design Principles</b><span>The choices the language is built around, stated for readers.</span></a>
   <a class="card" href="https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md"><b>Language Specification</b><span>The normative source: effects, regions, actors, and the FFI contract.</span></a>
-  <a class="card" href="https://github.com/yenrab/silica#building-the-compiler"><b>Build the Compiler</b><span>Bootstrap path, seed compiler, and the self-hosted tree.</span></a>
+  <a class="card" href="{{ '/build-and-test/' | relative_url }}"><b>Build and Test</b><span>Rebuild the seed, build the self-hosted compiler (gen1, gen2), and run the trials.</span></a>
   <a class="card" href="{{ '/participate/' | relative_url }}"><b>Participate</b><span>In-flight work on parallel language and runtime tracks.</span></a>
 </div>
 
@@ -143,7 +143,7 @@ If you care about secure-by-construction systems, native performance, and clarit
 
 The compiler, specification, tutorials, and build instructions live in the [GitHub repository](https://github.com/yenrab/silica).
 
-- [Build the compiler](https://github.com/yenrab/silica#building-the-compiler)
+- [Build and test the compiler]({{ '/build-and-test/' | relative_url }}) (also in the [README](https://github.com/yenrab/silica#building-the-compiler))
 - [Silica's Design Principles]({{ '/design-principles/' | relative_url }})
 - [Language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md)
 - [Learn to Program]({{ '/learn-programming/' | relative_url }})
