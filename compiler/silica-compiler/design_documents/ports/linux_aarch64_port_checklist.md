@@ -1,6 +1,6 @@
 # `linux_aarch64` port checklist
 
-**Status:** Working plan. Not implemented. This document is a **checklist for one hosted port**, not a specification. Where it disagrees with [silica-specification.md](../silica-specification.md), the specification wins.
+**Status:** In progress (2026-09-11). `src_selfhost/emitter/linux_aarch64/` exists: syntax, symbols, syscalls, runtime shims and the fault bridge are ported (see its `README.md`); `src_selfhost/Makefile` builds on a Linux host. Gates G0 (golden-file axis) and G2+ (running on the Pi) are not done. This document is a **checklist for one hosted port**, not a specification. Where it disagrees with [silica-specification.md](../silica-specification.md), the specification wins.
 
 **Audience:** whoever adds `emitter/linux_aarch64/` and brings a self-hosting `silica-compiler` up on 64-bit Raspberry Pi OS (or any Debian-family AArch64 host).
 
