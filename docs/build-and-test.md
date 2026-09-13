@@ -8,13 +8,11 @@ permalink: /build-and-test/
 
 How to rebuild the seed, build the self-hosted compiler from the seed (gen1) and from itself (gen2), and run the continuous-integration trials against either generation.
 
-## Building the compiler
-
 These steps build the self-hosted toolchain ([roadmap](https://github.com/yenrab/silica/blob/main/ROADMAP.md) Track 1). This page mirrors the [README](https://github.com/yenrab/silica#building-the-compiler); the repository copy is the one kept in step with the Makefiles.
 
 **Platform notice (temporary):** the build and link path is validated on Apple Silicon (arm64 macOS) only. Other hosts are not yet supported end-to-end. A useful early contribution is another emit backend under [src_selfhost/emitter/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/src_selfhost/emitter/) (see `apple_silicon_mac/`, `linux_aarch64/`, and `ESP32-S32_raw/`), then `make TARGET=…`.
 
-### The three compilers
+## The three compilers
 
 | Name | Source | Built by | Published as |
 | ---- | ------ | -------- | ------------ |
@@ -24,7 +22,7 @@ These steps build the self-hosted toolchain ([roadmap](https://github.com/yenrab
 
 Generation numbers in `binaries/` count **down**: the lowest `NNNNNN` is the newest build. The two symlinks always point at the newest seed and the newest selfhost. `gen1` is the selfhost tree compiled by the seed; `gen2` is the same tree compiled by gen1, and it is the build that must pass every trial before the selfhost can replace the seed.
 
-### 1. Prerequisites
+## 1. Prerequisites
 
 | Requirement | Role |
 | ----------- | ---- |
@@ -33,7 +31,7 @@ Generation numbers in `binaries/` count **down**: the lowest `NNNNNN` is the new
 | Clang | Assembles `.sams` → `.o` and links. On Apple Silicon with Homebrew LLVM, the Makefiles prefer `/opt/homebrew/opt/llvm/bin/clang` when present. |
 | Rust toolchain (`cargo`) and LLVM (`llvm-as`, `llc`) | Only for step 2, rebuilding the seed: the bootstrap compiler is a Cargo project and the seed build goes through LLVM IR. |
 
-### 2. Rebuild the seed (only after editing `src/`)
+## 2. Rebuild the seed (only after editing `src/`)
 
 ```bash
 cd compiler/silica-compiler/src
@@ -42,7 +40,7 @@ make
 
 This builds the Rust bootstrap if needed (`cargo build --release --no-default-features`), compiles the seed sources with it, links `silica-compiler` in `src/`, and installs it as the next `binaries/silica-NNNNNN-seed-<platform>`, moving `seed-compiler` to it. Without that install a seed fix stays invisible to the selfhost tree. `make INSTALL_SEED=0` builds without publishing.
 
-### 3. Build the selfhost from the seed (gen1)
+## 3. Build gen1: the selfhost from the seed
 
 ```bash
 cd compiler/silica-compiler/src_selfhost
@@ -63,7 +61,7 @@ Number or name [apple_silicon_mac]:
 
 Answer with a number or a name; an empty answer takes the host default. The choice is written to `silica.target` and passed to the sub-makes, so you are asked once per build. `make TARGET=<name>` skips the question, `SILICA_TARGET_PROMPT=0` always takes the host default (for scripts), and builds without a terminal (CI, `nohup`, pipes) take the host default silently. `make help` and `make clean` never ask. `TARGET` is a code-generation backend baked into the binary, not a runtime switch and not the `binaries/` host platform tag.
 
-### 4. Build the selfhost from the selfhost (gen2)
+## 4. Build gen2: the selfhost from the selfhost
 
 ```bash
 cd compiler/silica-compiler/src_selfhost
@@ -72,14 +70,14 @@ make gen2
 
 `make gen2` compiles `src_selfhost` with `binaries/silica-gen1` (it stops with a message if gen1 has not been built), installs the result as the next numbered selfhost, moves `binaries/silica-compiler` to it, and keeps the copy `binaries/silica-gen2`. Every unit is recompiled: the compiler binary is a staleness input, so there is no incremental path between generations. `INSTALL_SELFHOST=0` on either generation builds and keeps the `silica-genN` copy without touching the numbered install or the `silica-compiler` link.
 
-### Other `src_selfhost` targets
+## Other `src_selfhost` targets
 
 | Command | What it does |
 | ------- | ------------ |
 | `make` / `make build` | Full build with `seed-compiler`: config → compile → objects → link → install. |
 | `make gen1` / `make gen2` | The generation builds described above. |
-| `make trials-gen1` / `make trials-gen2` / `make trials-both` | Run the whole trial tree against a generation (next section). |
-| `make fixpoint` | Build gen3 with gen2 and pass only if it is byte-identical to gen2 (see the trials section). |
+| `make trials-gen1` / `make trials-gen2` / `make trials-both` | Run the whole trial tree against a generation (see [Run the trials against gen1 and gen2](#run-the-trials-against-gen1-and-gen2)). |
+| `make fixpoint` | Build gen3 with gen2 and pass only if it is byte-identical to gen2 (see [Check for a fixed point](#check-for-a-fixed-point)). |
 | `make assembly` | Compile only (produce / refresh `.sams`). |
 | `make objects` | Assemble `.sams` → `.o` (runs assembly first if needed). |
 | `make executables` | Link `silica-compiler` (runs objects first if needed). |
@@ -91,15 +89,15 @@ make gen2
 | `make EXECUTABLE=<name>` | Override the output binary name (default: `silica-compiler`). |
 | `make build SILICA_COMPILER=<binary>` | Compile with any compiler binary (this is what `gen2` does with `silica-gen1`). |
 
-### Runtime (Track 2): no single documented build yet
+## Runtime (Track 2): no single documented build yet
 
 [Track 2](https://github.com/yenrab/silica/blob/main/ROADMAP.md) is foreign interoperability and, later, brokered IPC. Exact build and link steps for that path are still to be defined. Until then, the self-hosted compiler build above is the supported path.
 
-## Running the Continuous Integration trials
+## The trial tree
 
 CI trials live under [trials/](https://github.com/yenrab/silica/tree/main/trials/). Each suite directory (for example `atoms_addition`, `case_addition`, `error_enforcement_addition`, `ordered_data_structures`) holds Silica sources and golden files: `.ascomp` (expected assembly), `.scout` (expected stdout followed by the exit code), and `.golden_fail` (expected compiler diagnostics for programs that must not compile). The [trials Makefile](https://github.com/yenrab/silica/blob/main/trials/Makefile) compiles every trial with the chosen compiler, compares the assembly to `.ascomp`, assembles and links, runs the binary, and compares its output to `.scout` (or the diagnostics to `.golden_fail`). Suites run in parallel; a counter line at the bottom of the terminal shows passes and failures as they happen.
 
-### Run the tree against gen1 and gen2
+## Run the trials against gen1 and gen2
 
 ```bash
 cd compiler/silica-compiler/src_selfhost
@@ -110,7 +108,7 @@ make trials-both     # gen1, then gen2
 
 Each run writes `trials/.integrate_report` and keeps a copy as `trials/.integrate_report.gen1` or `.gen2`, so running both does not lose the first result. The make target's exit status is the run's.
 
-### Check for a fixed point
+## Check for a fixed point
 
 ```bash
 cd compiler/silica-compiler/src_selfhost
@@ -120,7 +118,7 @@ make fixpoint
 
 `make fixpoint` builds gen3, `src_selfhost` compiled by `binaries/silica-gen2`, as `silica-compiler-gen3` (never published), and passes only if gen3 is byte-identical to gen2. Passing the trials shows gen2 compiles programs correctly; the fixed point shows the compiler reproduces itself with nothing inherited from the seed, which is the condition for retiring the bootstrap. On a mismatch the target lists every unit whose emission changed between gen1 and gen2, with the first differing lines (`o<N>` node counters normalised), and keeps gen1's `.sams` under `src_selfhost/.fixpoint/gen2_sams/`. It refuses to run if the last build in `src_selfhost/` was not `make gen2`, because the comparison needs gen1's `.sams` in place.
 
-### Run the tree or one suite with any compiler
+## Run the tree or one suite with any compiler
 
 ```bash
 cd trials
@@ -131,7 +129,7 @@ make -C case_addition integrate SILICA_COMPILER=/path/to/compiler   # one suite
 
 `make integrate` is the Makefile default, so plain `make` in `trials/` does the same. A few suites are not part of the tree run and must be run directly: any suite with an `INTEGRATE_PENDING` marker is skipped (see its README).
 
-### Reading a report
+## Reading a report
 
 `trials/.integrate_report` starts with the totals and then lists each failing trial with its reason (`.sams differs from .ascomp`, `.sout differs from .scout`, `.cur_fail differs from .golden_fail`, `compilation failed`, `missing executable`, and so on).
 
