@@ -1,32 +1,16 @@
 /* Silica documentation site — progressive enhancement only.
    With JavaScript off the page is still complete and readable; this
-   file adds the contents rail, heading anchors, code labels, and the
-   light/dark toggle. */
+   file adds the contents rail, heading anchors, and code labels.
+   Light and dark follow the browser's setting through CSS alone. */
 (function () {
   "use strict";
 
   var content = document.getElementById("content");
 
-  /* ---------------------------------------------------------
-     Theme toggle. The pre-paint script in the layout has
-     already applied any stored choice; this only switches it.
-     --------------------------------------------------------- */
-  var toggle = document.getElementById("theme-toggle");
-  if (toggle) {
-    toggle.addEventListener("click", function () {
-      var root = document.documentElement;
-      var explicit = root.getAttribute("data-theme");
-      var isDark = explicit
-        ? explicit === "dark"
-        : window.matchMedia("(prefers-color-scheme: dark)").matches;
-      var next = isDark ? "light" : "dark";
-
-      root.setAttribute("data-theme", next);
-      try {
-        localStorage.setItem("silica-theme", next);
-      } catch (e) { /* private mode: the choice just won't persist */ }
-    });
-  }
+  /* The site used to offer a light/dark button that saved a choice in local storage,
+     which then overrode the browser's setting on every visit. The button is gone; forget
+     any saved choice so it can no longer override the browser. */
+  try { localStorage.removeItem("silica-theme"); } catch (e) { /* storage blocked: nothing to forget */ }
 
   if (!content) return;
 
