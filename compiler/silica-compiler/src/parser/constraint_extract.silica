@@ -38,6 +38,8 @@ export validate_no_single_element_tuples/1;
 export validate_max_params/1;
 export validate_no_escaping_capturing_lambda/1;
 export validate_no_standalone_if/1;
+export validate_function_bodies_present/1;
+export validate_no_intrinsic_named_functions/1;
 export validate_max_tuple_decompose_bindings/1;
 export validate_required_statement_terminators/1;
 export validate_uncategorized_syntax_defect/1;
@@ -2742,12 +2744,25 @@ fn extract_body(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
     }
 }
 
+// `()` is the unit literal (spec §2.2.3): a kind-0 literal whose value is "()". Without this
+// case extract_body saw `)` first, returned a dummy, and the enclosing function lost its whole
+// body (memory_region_addition/alloc_ref_unit compiled to a placeholder `main` returning 0).
 fn extract_parenthesized(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
     lparen_slot: TokenSlot <- slots.head;
     inner_slots: ListTokenSlot <- slots.tail;
-    (first: Expr, rest_after_first: ListTokenSlot) <- extract_body(inner_slots);
-    (result: Expr, rest_after_rparen: ListTokenSlot) <- extract_parenthesized_tail(lparen_slot, first, rest_after_first);
-    (result, rest_after_rparen)
+    after_ws: ListTokenSlot <- skip_leading_whitespace_slots(inner_slots);
+    case after_ws.is_nil == false and (after_ws.head.token.kind == lexer_token_kind@token_kind_right_paren() or after_ws.head.token.lexeme == ")") of {
+        true -> do
+            dummy: Expr <- parser_ast@dummy_expr();
+            unit_lit: Expr <- Expr { kind: 0, value: "()", name: "", location: lparen_slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+            (unit_lit, after_ws.tail)
+        end;
+        false -> do
+            (first: Expr, rest_after_first: ListTokenSlot) <- extract_body(inner_slots);
+            (result: Expr, rest_after_rparen: ListTokenSlot) <- extract_parenthesized_tail(lparen_slot, first, rest_after_first);
+            (result, rest_after_rparen)
+        end
+    }
 }
 
 fn extract_parenthesized_tail(lparen_slot: TokenSlot, first: Expr, rest_after_first: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
@@ -5665,6 +5680,89 @@ fn validate_no_standalone_if(program: Program) -> ParseResult {
     (found: bool, err_loc: SourceLocation) <- decls_has_standalone_if(program.declarations);
     case found of {
         true -> parser_core@parse_err("E1066", err_loc, "'if' is only valid as a case-arm guard; use case ... of { ... } for branching", "sect3.3.5");
+        false -> parser_core@parse_ok(program)
+    }
+}
+
+// --- E1068: actor runtime intrinsic names (`link`, `monitor`, `demonitor`; spec §15.4.8.5–§15.4.8.6) ---
+// `Q@link(...)` / `Q@monitor(...)` / `Q@demonitor(...)` is the supervisor intrinsic surface (module_checker
+// is_phase_g_link_monitor_demonitor_intrinsic_for_export_surface), and the lexer keys these names as keywords,
+// so a module function with one of these names could never be reached through its export. Reject the
+// definition and the export line up front instead of letting callers parse to nothing.
+fn is_actor_runtime_intrinsic_fn_name(nm: string) -> bool {
+    case nm of {
+        "link" -> true;
+        "monitor" -> true;
+        "demonitor" -> true;
+        _: string -> false
+    }
+}
+
+fn export_params_has_intrinsic_name(ps: ListParam) -> (bool, SourceLocation, string) {
+    case ps.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case is_actor_runtime_intrinsic_fn_name(ps.head.name) of {
+            true -> (true, ps.head.location, ps.head.name);
+            false -> export_params_has_intrinsic_name(ps.tail)
+        }
+    }
+}
+
+fn decl_has_intrinsic_fn_name(decl: Declaration) -> (bool, SourceLocation, string) {
+    case decl.tag == 0 of {
+        true -> case is_actor_runtime_intrinsic_fn_name(decl.name) of {
+            true -> (true, decl.location, decl.name);
+            false -> (false, parser_ast@zero_location(), "")
+        };
+        false -> case decl.tag == 3 of {
+            true -> export_params_has_intrinsic_name(decl.parameters);
+            false -> (false, parser_ast@zero_location(), "")
+        }
+    }
+}
+
+fn decls_has_intrinsic_fn_name(decls: ListDeclaration) -> (bool, SourceLocation, string) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> do
+            (found: bool, loc: SourceLocation, nm: string) <- decl_has_intrinsic_fn_name(decls.head);
+            case found of {
+                true -> (true, loc, nm);
+                false -> decls_has_intrinsic_fn_name(decls.tail)
+            }
+        end
+    }
+}
+
+fn validate_no_intrinsic_named_functions(program: Program) -> ParseResult {
+    (found: bool, err_loc: SourceLocation, nm: string) <- decls_has_intrinsic_fn_name(program.declarations);
+    case found of {
+        true -> parser_core@parse_err("E1068", err_loc, concat(concat("'", nm), "' is an actor runtime intrinsic (link, monitor, demonitor) and cannot be the name of a module function or export; choose a different name"), "sect15.4.8.5");
+        false -> parser_core@parse_ok(program)
+    }
+}
+
+// --- E1069: every function declaration must carry a parsable body ---
+// A body the extractor could not parse (brodal_okasaki forest: a `Q@link(...)` rhs inside a sequence let,
+// `link` being a keyword) used to reach the SIR generator as a declaration with a dummy body and was emitted
+// as `MOV X0, #0`. Any tag-0 declaration whose body is still the dummy after extraction is a parse failure.
+fn decls_has_bodyless_function(decls: ListDeclaration) -> (bool, SourceLocation, string) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case decls.head.tag == 0 of {
+            true -> case decls.head.body.kind < 0 of {
+                true -> (true, decls.head.location, decls.head.name);
+                false -> decls_has_bodyless_function(decls.tail)
+            };
+            false -> decls_has_bodyless_function(decls.tail)
+        }
+    }
+}
+
+fn validate_function_bodies_present(program: Program) -> ParseResult {
+    (found: bool, err_loc: SourceLocation, fn_name: string) <- decls_has_bodyless_function(program.declarations);
+    case found of {
+        true -> parser_core@parse_err("E1069", err_loc, concat(concat("function '", fn_name), "' has no parsable body; an expression inside it could not be parsed (for example a call whose function name is a keyword such as link)"), "sect3.4");
         false -> parser_core@parse_ok(program)
     }
 }

@@ -126,8 +126,8 @@ endef
 #      write theirs (the outermost failure list replays every nested failure).
 #
 # Parents that fan out over children use $(call INTEGRATE_CHILD,<subdir>[,flags]):
-# the child's output goes only to its own log; the terminal shows one dot per check
-# (see the progress channel below) and the outermost report at the end. Diff bodies
+# the child's output goes only to its own log; the terminal shows the live pass/fail
+# counters (see the progress channel below) and the outermost report at the end. Diff bodies
 # stay in the child's log and are replayed, deduplicated, in the failure section.
 #
 # Counts are the existing per-directory `.integrate_counts` files ("<ok> <fail>").
@@ -137,7 +137,7 @@ endef
 #   JOBS=N                 parallelism for a standalone `make integrate` (default: cores)
 #   SDS_JOBS=N             parallelism for ordered_data_structures (memory-bound, default 4)
 #   INTEGRATE_DETAIL_LINES per-failure context lines replayed in reports (default 40)
-#   INTEGRATE_WATCHDOG_MINUTES minutes of silence before running trials are killed (default 15)
+#   INTEGRATE_WATCHDOG_MINUTES minutes without a pass or fail before running trials are killed (default 15)
 
 INTEGRATE_MAKEFILE := $(abspath $(firstword $(MAKEFILE_LIST)))
 INTEGRATE_DIR      := $(dir $(INTEGRATE_MAKEFILE))
@@ -148,7 +148,7 @@ INTEGRATE_LABEL := $(if $(filter $(_INTEGRATE_TRIALS_ROOT),$(_INTEGRATE_DIR_NOSL
 INTEGRATE_FILES := $(INTEGRATE_DIR).integrate_log $(INTEGRATE_DIR).integrate_report \
 	$(INTEGRATE_DIR).integrate_status $(INTEGRATE_DIR).integrate_start \
 	$(INTEGRATE_DIR).integrate_results $(INTEGRATE_DIR).integrate_skipped \
-	$(INTEGRATE_DIR).integrate_last_dot
+	$(INTEGRATE_DIR).integrate_pass_marks $(INTEGRATE_DIR).integrate_fail_marks
 INTEGRATE_RUNNING_DIR := $(INTEGRATE_DIR).integrate_running
 
 ifeq ($(origin JOBS),undefined)
@@ -159,7 +159,7 @@ SDS_JOBS ?= 4
 export SDS_JOBS
 INTEGRATE_DETAIL_LINES ?= 40
 export INTEGRATE_DETAIL_LINES
-# The watchdog kills every registered running trial after this many minutes without a dot.
+# The watchdog kills every registered running trial after this many minutes without a new mark.
 INTEGRATE_WATCHDOG_MINUTES ?= 15
 export INTEGRATE_WATCHDOG_MINUTES
 
@@ -170,18 +170,23 @@ INTEGRATE_JOBS ?= $(JOBS)
 INTEGRATE_JOBFLAGS = $(if $(filter -j% --jobserver%,$(MAKEFLAGS)),,-j$(INTEGRATE_JOBS))
 
 # ---- progress channel ---------------------------------------------------------------
-# The outermost `integrate` opens file descriptor 9 on its terminal and exports
-# SILICA_INTEGRATE_ROOT (its directory), SILICA_INTEGRATE_DOT_OK and SILICA_INTEGRATE_DOT_FAIL
-# (a full-block glyph U+2588 in the foreground colour when fd 9 is a terminal: blue (256-colour
-# index 33) for a pass, orange (208) for a failure -- a pair that stays distinct under red-green
-# and blue-yellow colour blindness; the background attribute is never set -- `.` and `F`
-# otherwise). Every check prints
-# one dot to fd 9 with a single write, so parallel suites never tear the line, and touches
-# the root's .integrate_last_dot for the watchdog. Nothing else reaches the terminal until
-# the root prints its report. Without the wrapper (fd 9 closed) the dots are silently dropped.
-# fd 3 and fd 4 are the make 3.81 jobserver pipe; never use them for this.
-INTEGRATE_DOT_OK   = { printf '%s' "$$SILICA_INTEGRATE_DOT_OK" >&9; touch "$$SILICA_INTEGRATE_ROOT/.integrate_last_dot"; } 2>/dev/null || true
-INTEGRATE_DOT_FAIL = { printf '%s' "$$SILICA_INTEGRATE_DOT_FAIL" >&9; touch "$$SILICA_INTEGRATE_ROOT/.integrate_last_dot"; } 2>/dev/null || true
+# The outermost `integrate` exports SILICA_INTEGRATE_ROOT (its directory) and creates two
+# empty files there, .integrate_pass_marks and .integrate_fail_marks. Every check appends one
+# byte to one of them: a one-byte O_APPEND write is atomic, so parallel suites never lose or
+# tear a mark, and no check ever touches the terminal. A loop in the outermost wrapper (the
+# same loop that runs the watchdog) redraws one line on the terminal once a second from the
+# two file sizes: `✅✅ <passes>  ❌❌ <failures>`. Nothing is drawn when stdout is not a
+# terminal. The final totals still come from the suites' .integrate_counts; the marks are
+# display only. Without the wrapper (no root exported) the appends fail silently.
+# fd 3 and fd 4 are the make 3.81 jobserver pipe; never use them for anything here.
+INTEGRATE_DOT_OK   = { printf P >> "$$SILICA_INTEGRATE_ROOT/.integrate_pass_marks"; } 2>/dev/null || true
+INTEGRATE_DOT_FAIL = { printf F >> "$$SILICA_INTEGRATE_ROOT/.integrate_fail_marks"; } 2>/dev/null || true
+
+# One redraw of the live counter line on fd 9 (the terminal). $(1) = directory holding the marks.
+define INTEGRATE_DRAW_COUNTS
+{ pm=$$(stat -f %z "$(1).integrate_pass_marks" 2>/dev/null || echo 0); fm=$$(stat -f %z "$(1).integrate_fail_marks" 2>/dev/null || echo 0); \
+  printf '\r✅✅ %-8s ❌❌ %-8s' "$$pm" "$$fm" >&9; } 2>/dev/null || true
+endef
 
 # ---- trial runs -----------------------------------------------------------------------
 # Every trial executable (and every helper script that drives one) runs through one of
@@ -237,26 +242,42 @@ else
 	else \
 		exec 9>&1; \
 		export SILICA_INTEGRATE_ACTIVE=1 SILICA_INTEGRATE_ROOT="$(_INTEGRATE_DIR_NOSLASH)" SILICA_INTEGRATE_WATCHDOG_MINUTES="$(INTEGRATE_WATCHDOG_MINUTES)"; \
-		if [ -t 9 ]; then export SILICA_INTEGRATE_DOT_OK="$$(printf '\033[38;5;33m\342\226\210\033[0m')" SILICA_INTEGRATE_DOT_FAIL="$$(printf '\033[38;5;208m\342\226\210\033[0m')"; \
-		else export SILICA_INTEGRATE_DOT_OK="." SILICA_INTEGRATE_DOT_FAIL="F"; fi; \
-		rm -rf "$(INTEGRATE_RUNNING_DIR)"; mkdir -p "$(INTEGRATE_RUNNING_DIR)"; touch "$(INTEGRATE_DIR).integrate_last_dot"; \
-		( wd_secs=$$(( $(INTEGRATE_WATCHDOG_MINUTES) * 60 )); \
-		  while sleep 30; do \
-			last=$$(stat -f %m "$(INTEGRATE_DIR).integrate_last_dot" 2>/dev/null || echo 0); now=$$(date +%s); \
+		rm -rf "$(INTEGRATE_RUNNING_DIR)"; mkdir -p "$(INTEGRATE_RUNNING_DIR)"; \
+		: > "$(INTEGRATE_DIR).integrate_pass_marks"; : > "$(INTEGRATE_DIR).integrate_fail_marks"; \
+		: "While the run owns the terminal, keystrokes are swallowed: echo off and canonical mode off so nothing is shown and the cursor stays put; isig stays on so Ctrl-C still kills. Anything typed is drained (min 0 time 0 + cat) before the settings are restored, so it cannot spill into the shell prompt."; \
+		if [ -t 9 ]; then tty=1; else tty=0; fi; \
+		saved_stty=""; \
+		if [ "$$tty" = 1 ]; then \
+			saved_stty=$$(stty -g < /dev/tty 2>/dev/null); \
+			stty -echo -icanon min 1 time 0 < /dev/tty 2>/dev/null; \
+		fi; \
+		parent=$$$$; \
+		( wd_secs=$$(( $(INTEGRATE_WATCHDOG_MINUTES) * 60 )); tick=0; \
+		  while sleep 1; do \
+			kill -0 "$$parent" 2>/dev/null || exit 0; \
+			if [ "$$tty" = 1 ]; then $(call INTEGRATE_DRAW_COUNTS,$(INTEGRATE_DIR)); fi; \
+			tick=$$((tick + 1)); [ $$((tick % 30)) -eq 0 ] || continue; \
+			p=$$(stat -f %m "$(INTEGRATE_DIR).integrate_pass_marks" 2>/dev/null || echo 0); f=$$(stat -f %m "$(INTEGRATE_DIR).integrate_fail_marks" 2>/dev/null || echo 0); \
+			last=$$p; [ "$$f" -gt "$$last" ] && last=$$f; now=$$(date +%s); \
 			if [ $$((now - last)) -ge "$$wd_secs" ]; then \
 				for reg in "$(INTEGRATE_RUNNING_DIR)"/*; do \
 					[ -f "$$reg" ] || continue; case "$$reg" in *.killed) continue;; esac; \
 					read -r pid label < "$$reg"; : > "$$reg.killed"; \
 					kill -TERM -- "-$$pid" 2>/dev/null; sleep 5; kill -KILL -- "-$$pid" 2>/dev/null; \
 				done; \
-				touch "$(INTEGRATE_DIR).integrate_last_dot"; \
+				touch "$(INTEGRATE_DIR).integrate_pass_marks"; \
 			fi; \
 		  done ) & wd_pid=$$!; \
+		trap 'kill "$$wd_pid" 2>/dev/null; if [ -n "$$saved_stty" ]; then stty "$$saved_stty" < /dev/tty 2>/dev/null; fi' INT TERM EXIT; \
 		{ $(MAKE) --no-print-directory $(INTEGRATE_JOBFLAGS) -C "$(INTEGRATE_DIR)" -f "$(INTEGRATE_MAKEFILE)" integrate-run; \
 		  echo $$? > "$(INTEGRATE_DIR).integrate_status"; } 2>&1 | tee -a "$(INTEGRATE_DIR).integrate_log" > /dev/null; \
-		kill "$$wd_pid" 2>/dev/null; wait "$$wd_pid" 2>/dev/null; \
+		kill "$$wd_pid" 2>/dev/null; wait "$$wd_pid" 2>/dev/null; trap - INT TERM EXIT; \
+		if [ -n "$$saved_stty" ]; then \
+			stty -icanon min 0 time 0 < /dev/tty 2>/dev/null; cat < /dev/tty > /dev/null 2>&1; \
+			stty "$$saved_stty" < /dev/tty 2>/dev/null; \
+		fi; \
 		rm -rf "$(INTEGRATE_RUNNING_DIR)"; \
-		printf '\n' >&9; \
+		if [ "$$tty" = 1 ]; then $(call INTEGRATE_DRAW_COUNTS,$(INTEGRATE_DIR)); printf '\n' >&9; fi; \
 		$(MAKE) --no-print-directory -C "$(INTEGRATE_DIR)" -f "$(INTEGRATE_MAKEFILE)" integrate-report; \
 	fi
 endif

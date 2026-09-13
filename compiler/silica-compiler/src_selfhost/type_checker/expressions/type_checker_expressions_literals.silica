@@ -38,6 +38,17 @@ fn check_expr(expr: { nodes: List[{ kind: int64, value: string, name: string, lo
     node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
     interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } <- context.interner;
     k: int64 <- type_interner@node_kind(interner, expected_type);
+    // The unit literal `()` (spec §2.2.3) has exactly the type unit; a discard expectation accepts it.
+    case node.value == "()" of {
+        true -> case k == type_interner@kind_unit() or k == type_interner@kind_discard() of {
+            true -> (type_checker_core@type_check_ok(), context);
+            false -> (type_checker_core@type_check_err("E2001", node.location, concat("unit literal () has type unit, expected ", type_checker_core@surface_for_type_id(context, expected_type)), "sect6"), context)
+        };
+        false -> check_non_unit_literal(node, k, expected_type, context, world)
+    }
+}
+
+fn check_non_unit_literal(node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, k: int64, expected_type: int64, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> ({ is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) {
     case literal_ok_for_kind(k) of {
         true -> (check_numeric_literal_against_integer_kind(node.value, node.location, integer_kind_for_literal(k), type_checker_core@surface_for_type_id(context, expected_type)), context);
         false -> case k == type_interner@kind_char() of {
@@ -106,6 +117,56 @@ fn literal_digits_to_int64(v: string, i: int64, acc: int64, overflow: int64) -> 
     }
 }
 
+fn decimal_digit_value(c: string) -> int64 {
+    case c of {
+        "0" -> 0; "1" -> 1; "2" -> 2; "3" -> 3; "4" -> 4;
+        "5" -> 5; "6" -> 6; "7" -> 7; "8" -> 8; "9" -> 9;
+        _: string -> -1
+    }
+}
+
+// Digits of a literal with the sign and leading zeros removed ("-0042" -> "42").
+fn literal_magnitude_digits(v: string, i: int64) -> string {
+    case i >= length_bytes(v) of {
+        true -> "";
+        false -> case substring(v, i, i + 1) == "-" or substring(v, i, i + 1) == "0" of {
+            true -> literal_magnitude_digits(v, i + 1);
+            false -> substring(v, i, length_bytes(v))
+        }
+    }
+}
+
+// digits <= max_digits, both plain decimal strings of the same length (Silica strings
+// compare for equality only, so walk the digits).
+fn digits_le(digits: string, max_digits: string, i: int64) -> boolean {
+    case i >= length_bytes(digits) of {
+        true -> true;
+        false -> {
+            d: int64 <- decimal_digit_value(substring(digits, i, i + 1));
+            m: int64 <- decimal_digit_value(substring(max_digits, i, i + 1));
+            case d < m of {
+                true -> true;
+                false -> case d > m of {
+                    true -> false;
+                    false -> digits_le(digits, max_digits, i + 1)
+                }
+            }
+        }
+    }
+}
+
+// Magnitude of the literal text fits below or at max_digits (a decimal string).
+fn literal_magnitude_fits(v: string, max_digits: string) -> boolean {
+    digits: string <- literal_magnitude_digits(v, 0);
+    case length_bytes(digits) < length_bytes(max_digits) of {
+        true -> true;
+        false -> case length_bytes(digits) > length_bytes(max_digits) of {
+            true -> false;
+            false -> digits_le(digits, max_digits, 0)
+        }
+    }
+}
+
 fn integer_kind_bounds(surface: string) -> (boolean, int64, int64) {
     case surface of {
         "int8" -> (true, 0 - 128, 127);
@@ -130,7 +191,19 @@ fn check_numeric_literal_against_integer_kind(value: string, loc: { file: string
                 (mag: int64, overflow: int64) <- literal_digits_to_int64(value, 0, 0, 0);
                 (known: boolean, lo: int64, hi: int64) <- integer_kind_bounds(surface);
                 signed_val: int64 <- case negative of { true -> 0 - mag; false -> mag };
-                out_of_range: boolean <- known and (overflow != 0 or signed_val < lo or signed_val > hi);
+                // The int64 accumulator cannot hold every 64-bit literal (uint64 reaches
+                // 18446744073709551615, int64 reaches -9223372036854775808), so the two
+                // 64-bit kinds are judged on the digit text; the narrower kinds use the value.
+                out_of_range: boolean <- case surface == "uint64" of {
+                    true -> negative and mag > 0 or literal_magnitude_fits(value, "18446744073709551615") == false;
+                    false -> case surface == "int64" of {
+                        true -> case negative of {
+                            true -> literal_magnitude_fits(value, "9223372036854775808") == false;
+                            false -> literal_magnitude_fits(value, "9223372036854775807") == false
+                        };
+                        false -> known and (overflow != 0 or signed_val < lo or signed_val > hi)
+                    }
+                };
                 case out_of_range of {
                     true -> type_checker_core@type_check_err("E2011", loc, concat(concat(concat("integer literal ", value), " is out of range for "), surface), "sect6");
                     false -> type_checker_core@type_check_ok()

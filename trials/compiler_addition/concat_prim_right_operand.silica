@@ -1,0 +1,41 @@
+// The left operand of a string concat lives in X0; a nested concat on the RIGHT (a builtin helper
+// call, not a user call) returns into X0 too. The emitter must save the left operand across ANY
+// non-simple right operand, not only across user calls. Under register pressure (eleven live
+// bindings, then a five-tuple decomposition) the selfhost-built compiler read the wrong left
+// operand here, which is how gen3 (built by gen2) misparsed every program.
+// Want: z123z1234z12345z123456z1234567z12345678z123456789z1234567890z12345678901abcz1z12 then 18 then main's 0.
+
+fn five(x: string) -> (string, { l: int64 }, List[int64, mem(normal)], string, string) {
+    sequence proc[mem(normal)]
+        e: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure (concat(x, "a"), { l: 7 }, e, concat(x, "b"), concat(x, "c"))
+    end
+}
+fn f(x: string) -> string {
+    a: string <- concat(x, "1");
+    b: string <- concat(a, "2");
+    c: string <- concat(b, "3");
+    d: string <- concat(c, "4");
+    e: string <- concat(d, "5");
+    g: string <- concat(e, "6");
+    h: string <- concat(g, "7");
+    i: string <- concat(h, "8");
+    j: string <- concat(i, "9");
+    k: string <- concat(j, "0");
+    l: string <- concat(k, "1");
+    (p: string, q: { l: int64 }, r: List[int64, mem(normal)], s: string, t: string) <- five("");
+    m: string <- concat(concat(concat(p, s), t), concat(a, b));
+    concat(concat(concat(concat(concat(concat(c, d), e), g), h), i), concat(concat(concat(j, k), l), m))
+}
+fn len_of(x: string) -> int64 {
+    (p: string, q: { l: int64 }, r: List[int64, mem(normal)], s: string, t: string) <- five(x);
+    length_bytes(p) + length_bytes(s) + length_bytes(t) + q.l + length_bytes(x)
+}
+fn main() -> int64 {
+    sequence proc[device_io]
+        println(f("z"));
+        print_int64(len_of("qq"));
+        println("")
+    produces pure 0 end
+}

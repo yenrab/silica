@@ -334,8 +334,8 @@ fn emit_spawn_linked(dest: string, term: SIRTerm) -> string {
                     true -> do
                         promote_sl: string <- heap_promote_stack_aggregate_x0(nb_sl);
                         pop_stack_sl: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nb_sl), "\n"));
-                        pre_sl: string <- concat("    MOV X12, X10\n    MOV X0, X9\n", promote_sl);
-                        mid_sl: string <- concat(pre_sl, concat("    MOV X9, X0\n    MOV X10, X12\n", concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV X2, XZR\n    MOV X3, XZR\n")));
+                        pre_sl: string <- concat("    STR X10, [SP, #-16]!\n    MOV X0, X9\n", promote_sl);
+                        mid_sl: string <- concat(pre_sl, concat("    MOV X9, X0\n    LDR X10, [SP], #16\n", concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV X2, XZR\n    MOV X3, XZR\n")));
                         after_sl: string <- concat(mid_sl, asm_bl("_silica_rt_actor_spawn_linked"));
                         with_dest_sl: string <- concat(after_sl, mov_dest_from_x0_for_type(dest, term.type_name));
                         concat(with_dest_sl, pop_stack_sl)
@@ -359,8 +359,10 @@ fn emit_spawn(dest: string, term: SIRTerm) -> string {
                 true -> do
                     promote: string <- heap_promote_stack_aggregate_x0(nb);
                     pop_stack: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nb), "\n"));
-                    pre: string <- concat("    MOV X12, X10\n    MOV X0, X9\n", promote);
-                    mid: string <- concat(pre, concat("    MOV X9, X0\n    MOV X10, X12\n", concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n")));
+                    // The behaviour pointer must survive the heap-promote call: X12 is caller-saved and
+                    // _silica_rt_region_alloc clobbers it (the actor then BLRs to garbage, A3). Keep it on the stack.
+                    pre: string <- concat("    STR X10, [SP, #-16]!\n    MOV X0, X9\n", promote);
+                    mid: string <- concat(pre, concat("    MOV X9, X0\n    LDR X10, [SP], #16\n", concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n")));
                     after_spawn: string <- concat(mid, asm_bl("_silica_rt_actor_spawn"));
                     with_dest: string <- concat(after_spawn, mov_dest_from_x0_for_type(dest, term.type_name));
                     concat(with_dest, pop_stack)

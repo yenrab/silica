@@ -46,10 +46,6 @@ fn emit_case_one_branch_inner(branch: { nodes: List[{ kind: int64, type_name: st
         true -> case length_bytes(term_sir_helpers@sir_term_root_node(branch).name) > 1 of { true -> substring(term_sir_helpers@sir_term_root_node(branch).name, 1, length_bytes(term_sir_helpers@sir_term_root_node(branch).name)); false -> "" };
         false -> bound.bound_name
     };
-    br_br: string <- case pkind == "bind" of {
-        true -> case_env.scrut_reg;
-        false -> bound.bound_reg
-    };
     // A `bind` arm names the unwrapped scrutinee (e.g. `right_ref: ref(...) -> ...`).
     // It was carried only in bound_name/bound_reg, which holds ONE name and is
     // replaced as soon as the arm body nests into lets -- so a use deeper in the arm
@@ -61,6 +57,16 @@ fn emit_case_one_branch_inner(branch: { nodes: List[{ kind: int64, type_name: st
     bind_slot: string <- case pkind == "bind" and length_bytes(br_bn) > 0 of {
         true -> term_reg_spill@next_frame_spill_slot(bound.outer_reg);
         false -> ""
+    };
+    // The body's immediate bound_reg must be the same home the outer binding names: the
+    // scrutinee register is caller-saved scratch that the arm's own calls and argument
+    // staging reuse (brodal_okasaki link read n2 from X3 after X3 was restaged with d2).
+    br_br: string <- case length_bytes(bind_slot) > 0 of {
+        true -> bind_slot;
+        false -> case pkind == "bind" of {
+            true -> case_env.scrut_reg;
+            false -> bound.bound_reg
+        }
     };
     bind_save: string <- case length_bytes(bind_slot) > 0 of {
         true -> concat(var@emit_str_mem_ref(case_env.scrut_reg, bind_slot), "\n");

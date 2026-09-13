@@ -30,12 +30,15 @@ use var;
 
 export emit_kind_let_named_tail/6;
 
+// The value's own home (callee-saved register or X29 frame slot) is what the body reads;
+// the [SP, #k] slab alias is only for a value with no home (a spilled tuple root made
+// tp_is_reg_b false and handed the body `[SP, #8]` for an element living at [X29, #-144]).
 fn lnt_body_bound(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, st: { rhs_reg: string, rhs_asm: string, rhs_bind_b: string, mov_spill_b: string, packs_escape_b: boolean, iap_b: string, va_b: string, proj_tvs: string, tp_is_reg_b: boolean, alloc_bytes: int64, res_binding: string }) -> string {
     case st.packs_escape_b of {
                                 true -> st.rhs_bind_b;
                                 false -> case st.tp_is_reg_b of {
                                     true -> st.rhs_bind_b;
-                                    false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_proj" and length_bytes(st.proj_tvs) > 0 of {
+                                    false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_proj" and length_bytes(st.proj_tvs) > 0 and var@is_callee_saved_reg(st.rhs_bind_b) == false and var@is_frame_slot_ref(st.rhs_bind_b) == false of {
                                         true -> {
                                             pix_b: int64 <- string_parse@string_to_int64(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).right_expr)).value);
                                             byte_b: int64 <- prims_tuple@tuple_field_start_byte_offset(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).inner)).type_name, pix_b);
@@ -71,12 +74,22 @@ fn lnt_reg_binding_inner(term: { nodes: List[{ kind: int64, type_name: string, v
                                                       false -> ""
                                                   };
                                                   base_rb_r: int64 <- var@parse_x29_neg_offset_bytes(base_rg_r);
-                                                  case length_bytes(base_pr_r) > 0 and var@is_memory_ref(base_pr_r) == false and var@is_callee_saved_reg(base_pr_r) of {
+                                                  // The element's own home wins when it has one: after the spill the value
+                                                  // lives in a callee-saved register (or an X29 frame slot), and that is
+                                                  // the binding every later reader and the register allocator must see.
+                                                  // Recording only the through-pointer alias here left the home register
+                                                  // invisible to liveness (a rebound %_td_0 took n's X22) and left the
+                                                  // reader dependent on the base register outliving its own binding
+                                                  // (b took X20, n was then read from [X20, #8]) -- decompose_nested_bare.
+                                                  case var@is_callee_saved_reg(st.rhs_bind_b) or var@is_frame_slot_ref(st.rhs_bind_b) of {
+                                                      true -> concat("|", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", st.rhs_bind_b)));
+                                                  false -> case length_bytes(base_pr_r) > 0 and var@is_memory_ref(base_pr_r) == false and var@is_callee_saved_reg(base_pr_r) of {
                                                       true -> concat("|", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", var@reg_offset_for_byte(base_pr_r, byte_r))));
                                                       false -> case base_rb_r > 0 of {
                                                           true -> concat("|", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", var@fp_offset_for_byte(byte_r, 0, base_rb_r))));
                                                           false -> concat("|", concat(term_sir_helpers@sir_term_root_node(term).name, concat("=", var@sp_offset_for_byte(byte_r))))
                                                       }
+                                                  }
                                                   }
                                               }
                                         };
@@ -143,9 +156,22 @@ fn emit_kind_let_named_tail(term: { nodes: List[{ kind: int64, type_name: string
                                 true -> term_aggregate_helpers@let_suppressed_base_stack_fixup(term);
                                 false -> base_stack_n
                             };
+                            // An aggregate built as the tail of a nested let chain (`x <- let a = .. in {..}`,
+                            // the shape call_supervisor lowers to) lives in a frame region that the next
+                            // aggregate make reuses. A direct aggregate RHS is promoted before its pointer
+                            // is bound; the nested-let RHS was not (the inner let promotes only into X0,
+                            // the return register), so get_reply pointed at a region which_reply then
+                            // overwrote. Move it to the heap here, at the binding, like the direct case.
+                            let_tail_agg_n: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 2 and st.rhs_reg != "X0" of {
+                                true -> term_aggregate_helpers@let_tail_aggregate_promote_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                                false -> 0
+                            };
                             early_prom_b: string <- case st.packs_escape_b of {
                                 true -> term_aggregate_helpers@let_early_heap_promote_asm(st.rhs_bind_b, term_aggregate_helpers@agg_promote_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)));
-                                false -> ""
+                                false -> case let_tail_agg_n > 0 of {
+                                    true -> term_aggregate_helpers@let_early_heap_promote_asm(st.rhs_bind_b, let_tail_agg_n);
+                                    false -> ""
+                                }
                             };
                             tail_stack_raw_n: int64 <- term_aggregate_helpers@let_tail_aggregate_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
                             tail_stack_n: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 2 of {

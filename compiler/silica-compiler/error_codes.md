@@ -38,6 +38,8 @@ Per silica-error-code-scheme.jsonld and silica-specification.md §1.6.
 - E1008 UnsupportedSyntax
 - E1040 MissingStatementTerminator — expected `;` after a statement before the next statement
 - E1065 UnclosedFunctionParameterList — function body `{` began before `)` closed the parameter list
+- E1068 IntrinsicNamedFunction — a module function or export line is named after an actor runtime intrinsic (`link`, `monitor`, `demonitor`; spec §15.4.8.5–§15.4.8.6), which `Q@name(...)` always resolves to instead of the export
+- E1069 FunctionBodyNotParsed — a function declaration whose body the parser could not extract (for example a qualified call whose function name is a keyword); previously the empty body was emitted silently as a zero return
 
 ### Type checker (E2000-E2999)
 - E2000 TypeErrorDefault

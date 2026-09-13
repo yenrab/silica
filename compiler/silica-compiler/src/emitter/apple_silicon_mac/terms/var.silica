@@ -37,6 +37,7 @@ export strip_sp_binding/2;
 export find_sp_binding_bare_or_percent_param/2;
 export base_reg_of/1;
 export is_memory_ref/1;
+export is_callee_saved_reg/1;
 export sp_offset_for_index/1;
 export sp_offset_for_byte_adj/2;
 export reg_offset_for_byte/2;
@@ -437,7 +438,12 @@ fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer
     sp_part: string <- extract_sp_bindings(current_outer);
     enc: string <- enclosing_sp_binding(bound_name, base_bound_reg);
     rb: string <- reg_binding(let_name, rhs_reg);
-    nb: string <- new_tp_binding(let_name, inner_term, sp_adj);
+    // The element's own home (a callee-saved register or an X29 frame slot) is the only
+    // binding recorded; the [SP, #k] slab alias is minted only when there is no home.
+    nb: string <- case len(rb) > 0 of {
+        true -> "";
+        false -> new_tp_binding(let_name, inner_term, sp_adj)
+    };
     concat(base, concat(sp_part, concat(enc, concat(nb, rb))))
 }
 
@@ -574,6 +580,10 @@ fn bare_qualifies_as_fn_pointer_asm_symbol(bare: string) -> bool {
             }
         }
     }
+}
+
+fn is_callee_saved_reg(r: string) -> bool {
+    r == "X19" or r == "X20" or r == "X21" or r == "X22" or r == "X23" or r == "X24" or r == "X25" or r == "X26" or r == "X27" or r == "X28"
 }
 
 fn is_memory_ref(s: string) -> bool {
@@ -830,7 +840,9 @@ fn is_reg_bound(outer_reg: string, reg: string) -> bool {
     key_mid: string <- concat(concat("=", reg), "|");
     key_end: string <- concat("=", reg);
     end_pos: int64 <- len(outer_reg) - len(key_end);
-    case find_str_at(outer_reg, key_mid, 0) >= 0 of {
+    // A binding addressed THROUGH the register (`|n=[X20, #8]`) keeps it live like `|p=X20`.
+    key_base: string <- concat(concat("=[", reg), ", #");
+    case find_str_at(outer_reg, key_mid, 0) >= 0 or find_str_at(outer_reg, key_base, 0) >= 0 of {
         true -> true;
         false -> case end_pos >= 0 of {
             true -> case substring(outer_reg, end_pos, len(outer_reg)) == key_end of {

@@ -886,6 +886,28 @@ fn user_call_aggregate_return_alloc_bytes(type_name: string) -> int64 {
     }
 }
 
+// Push the argument registers already staged (X0..X<g-1>, D0..D<f-1>) and pop them back in
+// the opposite order. Each push is a 16-byte slot so SP stays aligned.
+fn save_staged_arg_regs(g: int64, f: int64) -> string {
+    case g > 0 of {
+        true -> concat(save_staged_arg_regs(g - 1, f), concat(concat("    STR X", atom_table@int64_to_decimal_string(g - 1)), ", [SP, #-16]!\n"));
+        false -> case f > 0 of {
+            true -> concat(save_staged_arg_regs(0, f - 1), concat(concat("    STR D", atom_table@int64_to_decimal_string(f - 1)), ", [SP, #-16]!\n"));
+            false -> ""
+        }
+    }
+}
+
+fn restore_staged_arg_regs(g: int64, f: int64) -> string {
+    case g > 0 of {
+        true -> concat(concat(concat("    LDR X", atom_table@int64_to_decimal_string(g - 1)), ", [SP], #16\n"), restore_staged_arg_regs(g - 1, f));
+        false -> case f > 0 of {
+            true -> concat(concat(concat("    LDR D", atom_table@int64_to_decimal_string(f - 1)), ", [SP], #16\n"), restore_staged_arg_regs(0, f - 1));
+            false -> ""
+        }
+    }
+}
+
 fn emit_rest_args(rest: SIRTerm, gpr_slot: int64, fp_slot: int64, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
     case rest.name == "user_call_rest" of {
         true -> do
@@ -962,9 +984,17 @@ fn emit_rest_args(rest: SIRTerm, gpr_slot: int64, fp_slot: int64, table: AtomTab
             };
             save_next: string <- concat(concat("    STR ", save_src_reg), ", [SP, #-16]!\n");
             restore_current: string <- concat(concat("    LDR ", reg), ", [SP], #16\n");
+            // Arguments already staged in X0..X<gpr_slot-1> / D0..D<fp_slot-1> are caller-saved
+            // and die inside any call this argument makes (link(heap, digit_rank(d1), ..) passed
+            // the rank as the heap). Keep them on the stack across the argument's evaluation.
+            guard_prev: bool <- (gpr_slot > 0 or fp_slot > 0) and term_subterm_has_user_call(rest.inner);
+            arg_guarded: string <- case guard_prev of {
+                true -> concat(concat(concat(save_staged_arg_regs(gpr_slot, fp_slot), arg_asm), "\n"), restore_staged_arg_regs(gpr_slot, fp_slot));
+                false -> arg_asm
+            };
             case use_save_next_for_current of {
                 true -> concat(concat(concat(concat(save_next, next_arg_asm), "\n"), restore_current), further_rest_asm);
-                false -> concat(concat(arg_asm, "\n"), rest_asm)
+                false -> concat(concat(arg_guarded, "\n"), rest_asm)
             }
         end;
         false -> do
@@ -1714,11 +1744,28 @@ fn emit_case_one_branch_inner(branch: SIRTerm, scrut_t: string, scrut_reg: strin
         true -> case len(branch.name) > 1 of { true -> substring(branch.name, 1, len(branch.name)); false -> "" };
         false -> bound_name
     };
-    br_br: string <- case pkind == "bind" of {
-        true -> scrut_reg;
-        false -> bound_reg
+    // A `bind` arm names the unwrapped scrutinee. scrut_reg is caller-saved scratch that the
+    // arm's own calls and argument staging reuse, so park the value in a frame slot and make
+    // that slot the binding's home, for the immediate body and for the outer binding string.
+    bind_slot: string <- case pkind == "bind" and len(br_bn) > 0 of {
+        true -> next_frame_spill_slot(outer_reg);
+        false -> ""
     };
-    outer_body: string <- outer_for_branch;
+    bind_save: string <- case len(bind_slot) > 0 of {
+        true -> concat(var@emit_str_mem_ref(scrut_reg, bind_slot), "\n");
+        false -> ""
+    };
+    br_br: string <- case len(bind_slot) > 0 of {
+        true -> bind_slot;
+        false -> case pkind == "bind" of {
+            true -> scrut_reg;
+            false -> bound_reg
+        }
+    };
+    outer_body: string <- case len(bind_slot) > 0 of {
+        true -> concat(outer_for_branch, concat("|", concat(branch.name, concat("=", bind_slot))));
+        false -> outer_for_branch
+    };
     guard_asm: string <- case branch.inner.kind < 0 of {
         true -> "";
         false -> do
@@ -1758,7 +1805,7 @@ fn emit_case_one_branch_inner(branch: SIRTerm, scrut_t: string, scrut_reg: strin
         false -> ""
     };
     h0: string <- concat(entry_l, ":\n");
-    h1: string <- concat(concat(h0, pat_full), guard_asm);
+    h1: string <- concat(concat(concat(h0, pat_full), bind_save), guard_asm);
     h2: string <- concat(concat(concat(h1, body_asm), "\n"), branch_cleanup);
     br: string <- concat(concat("    B ", done_l), "\n");
     concat(h2, br)
@@ -2771,7 +2818,9 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> rhs_bind_b;
                     false -> case tp_is_reg_b of {
                         true -> rhs_bind_b;
-                        false -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 of {
+                        // The value's own home (callee-saved register or X29 frame slot) is what the
+                        // body reads; the [SP, #k] slab alias is only for a value with no home.
+                        false -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 and var@is_callee_saved_reg(rhs_bind_b) == false and frame_spill_ref(rhs_bind_b) == false of {
                             true -> do
                                 pix_b: int64 <- string_parse@string_to_int64(term.inner.right_expr.value);
                                 byte_b: int64 <- prims_tuple@tuple_field_start_byte_offset(term.inner.inner.type_name, pix_b);
@@ -2796,7 +2845,12 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 reg_binding_inner: string <- case packs_escape_b of {
                     true -> concat("|", concat(term.name, concat("=", rhs_bind_b)));
                     false -> case tp_is_reg_b of {
-                        true -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 of {
+                        // The element's own home wins when it has one: after the spill the value
+                        // lives in a callee-saved register (or an X29 frame slot). Recording only
+                        // the [SP, #k] slab alias left that register invisible to liveness (the
+                        // next decomposition reused it) and made every later read SP-relative,
+                        // wrong once SP moved or the slab was popped -- decompose_nested_bare.
+                        true -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 and var@is_callee_saved_reg(rhs_bind_b) == false and frame_spill_ref(rhs_bind_b) == false of {
                             true -> do
                                 pix_r: int64 <- string_parse@string_to_int64(term.inner.right_expr.value);
                                 byte_r: int64 <- prims_tuple@tuple_field_start_byte_offset(term.inner.inner.type_name, pix_r);
@@ -2882,8 +2936,16 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         false -> 0
                     }
                 };
-                promote_asm: string <- case dest == "X0" and promote_nbytes_n > 0 and (id_ret_n or tail_ret_n) and len(tuple_sret_outer_n) == 0 of {
-                    true -> aggregate_return_heap_promote_x0(promote_nbytes_n);
+                // The tail aggregate leaves this let in `dest`, and the slab it lives in is popped
+                // right after (dealloc). Promote it for ANY destination, not only X0 (the return
+                // register): when this let chain is the RHS of an enclosing binding (the shape
+                // call_supervisor lowers to) dest is X1, and without the copy the enclosing
+                // binding held a pointer into the popped slab -- phase_d_protocol_lifecycle_queries.
+                promote_asm: string <- case promote_nbytes_n > 0 and (id_ret_n or tail_ret_n) and len(tuple_sret_outer_n) == 0 of {
+                    true -> case dest == "X0" of {
+                        true -> aggregate_return_heap_promote_x0(promote_nbytes_n);
+                        false -> let_early_heap_promote_asm(dest, promote_nbytes_n)
+                    };
                     false -> ""
                 };
                 rhs_sep: string <- case len(rhs_asm) > 0 and substring(rhs_asm, len(rhs_asm) - 1, len(rhs_asm)) == "\n" of {
@@ -3692,7 +3754,12 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 // substring(s, i, i+len(kw)) calling substring(kw, ...) — false keyword hits
                 // (Heap/Tree on "int64") and infinite validate_collection recursion.
                 guarded_arg3: string <- concat("    STP X0, X1, [SP, #-16]!\n", concat(arg3_asm, "\n    LDP X0, X1, [SP], #16\n"));
-                concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), guarded_arg3), op_asm)
+                // arg2 (start) can embed a call too -- substring(t, length_bytes(prefix), length_bytes(t)) in
+                // type_interner@parse_bracket_args: length_bytes stages its own operand in X0, so the string
+                // staged there by arg1 was replaced by the prefix and every Heap/Tree/SearchTree/PriorityQueue/
+                // graph surface failed to parse. Guard X0 around arg2 exactly as X0/X1 are guarded around arg3.
+                guarded_arg2: string <- concat("    STR X0, [SP, #-16]!\n", concat(arg2_asm, "\n    LDR X0, [SP], #16\n"));
+                concat(concat(concat(concat(arg1_asm, "\n"), guarded_arg2), guarded_arg3), op_asm)
             end;
             false -> case term.type_name == "bool" and prims_string@is_string_predicate_prim(term.name) of {
             true -> do
@@ -4215,21 +4282,27 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                             };
                                             false -> ""
                                         };
-                                        save_left_across_right_call: string <- case right_is_call of {
+                                        // A let (2), case (3) or tail call (5) operand evaluates its own compares and
+                                        // bindings through X9/X10 (or D1/D2), exactly like a call clobbers X0: the operand
+                                        // already staged in the other register must be saved across it. `own + (case a > b of
+                                        // ...)` in term_reg_spill@agg_subtree_bytes came out as a + max(a, b) without this.
+                                        left_is_complex: bool <- term.inner.kind == 2 or term.inner.kind == 3 or term.inner.kind == 5;
+                                        right_is_complex: bool <- term.right_expr.kind == 2 or term.right_expr.kind == 3 or term.right_expr.kind == 5;
+                                        save_left_across_right_call: string <- case right_is_call or right_is_complex of {
                                             true -> case is_string_prim of {
                                                 true -> "    STR X0, [SP, #-16]!\n";
                                                 false -> concat(concat("    STR ", left_reg), ", [SP, #-16]!\n")
                                             };
                                             false -> ""
                                         };
-                                        restore_left_across_right_call: string <- case right_is_call of {
+                                        restore_left_across_right_call: string <- case right_is_call or right_is_complex of {
                                             true -> case is_string_prim of {
                                                 true -> "    LDR X0, [SP], #16\n";
                                                 false -> concat(concat("    LDR ", left_reg), ", [SP], #16\n")
                                             };
                                             false -> ""
                                         };
-                                        save_right: string <- case left_is_call of {
+                                        save_right: string <- case left_is_call or left_is_complex of {
                                             true -> case left_is_call and right_is_call of {
                                                 true -> "";
                                                 false -> case is_string_prim of {
@@ -4239,20 +4312,20 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                             };
                                             false -> ""
                                         };
-                                        restore_right: string <- case left_is_call of {
+                                        restore_right: string <- case left_is_call or left_is_complex of {
                                             true -> case is_string_prim of {
                                                 true -> "    LDR X1, [SP], #16\n";
                                                 false -> concat(concat("    LDR ", right_reg), ", [SP], #16\n")
                                             };
                                             false -> ""
                                         };
-                                        first_combined: string <- case left_is_call of {
+                                        first_combined: string <- case left_is_call or left_is_complex of {
                                             true -> do
                                                 fc0: string <- concat(save_x0_before_right_when_both_calls, second_with_id);
                                                 fc1: string <- concat(concat(concat(concat(concat(concat(fc0, "\n"), restore_x0_before_left_when_both_calls), "\n"), save_right_after_restore_x0_both_calls), "\n"), save_right);
                                                 concat(concat(concat(concat(fc1, l), "\n"), restore_right), "")
                                             end;
-                                            false -> case right_is_call of {
+                                            false -> case right_is_call or right_is_complex of {
                                                 true -> concat(concat(concat(concat(concat(concat(l, "\n"), save_left_across_right_call), second_with_id), "\n"), restore_left_across_right_call), "");
                                                 false -> concat(concat(second_with_id, "\n"), l)
                                             }
@@ -4446,14 +4519,20 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 // empty L_pa_table and no function bodies.
                                 // See trials/codegen_regressions/concat_call_operand.silica.
                                 right_calls_here: bool <- term_subterm_has_user_call(term.right_expr);
-                                case right_calls_here or right_is_call of {
+                                // A let (2), case (3) or tail call (5) operand evaluates its own compares and
+                                // bindings through X9/X10 (or D1/D2), exactly like a call clobbers X0: the operand
+                                // already staged in the other register must be saved across it. `own + (case a > b of
+                                // ...)` in term_reg_spill@agg_subtree_bytes came out as a + max(a, b) without this.
+                                left_is_complex: bool <- term.inner.kind == 2 or term.inner.kind == 3 or term.inner.kind == 5;
+                                right_is_complex: bool <- term.right_expr.kind == 2 or term.right_expr.kind == 3 or term.right_expr.kind == 5;
+                                case right_calls_here or right_is_call or right_is_complex of {
                                     true -> do
                                         save_left: string <- concat(concat("    STR ", left_reg), ", [SP, #-16]!\n");
                                         restore_left: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");
                                         combined: string <- concat(concat(concat(concat(concat(concat(l, "\n"), save_left), r), "\n"), restore_left), "");
                                         (combined, "")
                                     end;
-                                    false -> case left_is_call and is_string_prim == false of {
+                                    false -> case (left_is_call or left_is_complex) and is_string_prim == false of {
                                         true -> do
                                             save_right: string <- concat(concat("    STR ", right_reg), ", [SP, #-16]!\n");
                                             restore_right: string <- concat(concat("    LDR ", right_reg), ", [SP], #16\n");
@@ -5461,6 +5540,15 @@ fn let_suppressed_base_stack_fixup(term: SIRTerm) -> int64 {
     }
 }
 
+// The value a let chain produces is its innermost body: `call_supervisor(..).count` lowers to
+// record_proj over `let .. in let .. in {reply}`, and the lets carry their bindings' types.
+fn record_proj_skip_lets(term: SIRTerm) -> SIRTerm {
+    case term.kind == 2 of {
+        true -> record_proj_skip_lets(term.right_expr);
+        false -> term
+    }
+}
+
 // Outermost aggregate type for record_proj chains (value-flat substruct address; trial 04). A value
 // base reports the record it produced, so projecting an embedded substruct out of `slots.head` takes
 // the same address-of path a variable base does.
@@ -5471,7 +5559,7 @@ fn record_proj_root_record_type(term: SIRTerm) -> string {
             true -> term.inner.type_name;
             false -> case term.inner.kind == 6 and term.inner.name == "record_proj" of {
                 true -> record_proj_root_record_type(term.inner);
-                false -> term.inner.type_name
+                false -> record_proj_skip_lets(term.inner).type_name
             }
         }
     }
@@ -5504,7 +5592,9 @@ fn record_proj_chain_byte_offset(term: SIRTerm) -> int64 {
                 end;
                 // A value base (list_head, a call, a struct literal) carries the projected record in
                 // its own type_name, so its link contributes the same offset a variable base would.
-                false -> prims_record@offset_bytes_before_field(term.inner.type_name, term.value)
+                // A let wrapping that value has the binding's type_name (int64 for count_children);
+                // walk to the body so `.count` lands at #32, not the tag at #0.
+                false -> prims_record@offset_bytes_before_field(record_proj_skip_lets(term.inner).type_name, term.value)
             }
         }
     }

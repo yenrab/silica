@@ -181,7 +181,9 @@ make gen2       # if not already done: the .sams left here must be gen1's emissi
 make fixpoint
 ```
 
-`make fixpoint` builds gen3, `src_selfhost` compiled by `binaries/silica-gen2`, as `silica-compiler-gen3` (never published), and passes only if gen3 is byte-identical to gen2. Passing the trials shows gen2 compiles programs correctly; the fixed point shows the compiler reproduces itself with nothing inherited from the seed, which is the condition for retiring the bootstrap. On a mismatch the target lists every unit whose emission changed between gen1 and gen2, with the first differing lines (`o<N>` node counters normalised), and keeps gen1's `.sams` under `src_selfhost/.fixpoint/gen2_sams/`. It refuses to run if the last build in `src_selfhost/` was not `make gen2`, because the comparison needs gen1's `.sams` in place.
+`make fixpoint` builds gen3, `src_selfhost` compiled by `binaries/silica-gen2`, and passes only if gen3 is byte-identical to gen2. Passing the trials shows gen2 compiles programs correctly; the fixed point shows the compiler reproduces itself with nothing inherited from the seed, which is the condition for retiring the bootstrap.
+
+It must run right after `make gen2`: the `.sams` left in `src_selfhost/` are then gen1's emission of the sources, and `make gen2` stamps them. The target refuses to run if that stamp is missing or any `.sams` was rewritten since, saves those `.sams` to `compiler/silica-compiler/.src_selfhost_fixpoint/gen1_sams/`, builds gen3 with gen2, and prints how many units gen2 emits differently from gen1 (with the first differing lines, `o<N>` node counters normalised) and both binary sizes. gen3 is linked at the same path as gen2, `src_selfhost/silica-compiler`, because Apple's linker derives the binary's UUID and signature identifier from the output path; it is not installed and is kept as `silica-compiler-gen3`. Running it again needs a fresh `make gen2`.
 
 ### Run the tree or one suite with any compiler
 

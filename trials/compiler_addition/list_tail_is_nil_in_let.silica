@@ -1,0 +1,56 @@
+// `v.tail.is_nil` and `v.tail.tail.is_nil` on a list of RECORDS, inside a let body. The selfhost
+// emitter carried a shortcut for `length(v.tail) == 0` that assumed a scalar element stride (8/16)
+// and a variable in an X register; a chained tail made it emit `MOV X9, X-1` (assembler error) and
+// a record element list got the wrong stride. The seed never had the shortcut.
+// Want: 1 0 1 0 then main's 0.
+
+fn len2_or_more(xs: List[{ a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 }, mem(normal)]) -> int64 {
+    n: int64 <- 5;
+    case xs.tail.is_nil of {
+        true -> 0;
+        false -> n - 4
+    }
+}
+
+fn len3_or_more(xs: List[{ a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 }, mem(normal)]) -> int64 {
+    case xs.is_nil of {
+        true -> 0;
+        false -> {
+            ac: List[{ a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 }, mem(normal)] <- xs;
+            case ac.head.a == 1 of {
+                true -> case ac.tail.tail.is_nil of {
+                    true -> 0;
+                    false -> 1
+                };
+                false -> 0
+            }
+        }
+    }
+}
+
+fn mk(x: int64) -> { a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 } {
+    { a: x, b: 0, c: 0, d: 0, e: 0, f: 0, g: 0, h: 0 }
+}
+
+fn push(x: int64, s: List[{ a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 }, mem(normal)]) -> List[{ a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 }, mem(normal)] {
+    sequence proc[mem(normal)]
+        r: List[{ a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 }, mem(normal)] <- prepend[{ a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 }, mem(normal)](mk(x), s)
+    produces pure r end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io, mem(normal)]
+        e: List[{ a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 }, mem(normal)] <- empty[{ a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 }, mem(normal)]();
+        two: List[{ a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 }, mem(normal)] <- push(1, push(2, e));
+        one: List[{ a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 }, mem(normal)] <- push(1, e);
+        three: List[{ a: int64, b: int64, c: int64, d: int64, e: int64, f: int64, g: int64, h: int64 }, mem(normal)] <- push(1, push(2, push(3, e)));
+        print_int64(len2_or_more(two));
+        println("");
+        print_int64(len2_or_more(one));
+        println("");
+        print_int64(len3_or_more(three));
+        println("");
+        print_int64(len3_or_more(two));
+        println("")
+    produces pure 0 end
+}

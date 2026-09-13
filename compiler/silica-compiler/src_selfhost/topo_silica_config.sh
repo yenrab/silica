@@ -36,7 +36,8 @@ if [[ -z "$TARGET" ]]; then
   echo "FAIL: emit TARGET required (e.g. apple_silicon_mac)" >&2
   exit 1
 fi
-if ! [[ "$TARGET" =~ ^[A-Za-z0-9_]+$ ]]; then
+# Same character set as emit_target.mk's check-target (hyphens allowed: ESP32-S32_raw).
+if ! [[ "$TARGET" =~ ^[A-Za-z0-9_-]+$ ]]; then
   echo "FAIL: invalid emit target name '$TARGET'" >&2
   exit 1
 fi

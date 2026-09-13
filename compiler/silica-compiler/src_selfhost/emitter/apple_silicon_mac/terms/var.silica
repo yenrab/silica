@@ -38,6 +38,7 @@ export find_sp_binding_bare_or_percent_param/2;
 export base_reg_of/1;
 export is_memory_ref/1;
 export is_callee_saved_reg/1;
+export is_frame_slot_ref/1;
 export sp_offset_for_index/1;
 export fp_ptr_to_region/2;
 export sp_offset_for_byte/1;
@@ -562,11 +563,17 @@ fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer
         true -> find_last_sp_binding(current_outer, concat("_va.", base_name));
         false -> ""
     };
-    nb: string <- new_tp_binding(let_name, inner_term, base_ptr, base_region);
-    // RA: the register binding (rb) must precede the tuple-projection binding (nb).
-    // find_sp_binding returns the FIRST match, so with nb first every read of the
-    // name resolved to a remembered [SP, #k] slot even while the value lived in a
-    // register -- and that slot is wrong once it is released or SP moves.
+    // The element's own home wins when it has one: rb is non-empty when the value was
+    // spilled to a callee-saved register or an X29 frame slot, and that binding is the
+    // only one recorded. Minting the [SP, #k] alias beside it left a reader that prefers
+    // registers with "else the last binding" -- the alias -- so a value spilled to
+    // [X29, #-32] was read back from [SP, #8] (qualified_call_mangler@mangle_user_call_name,
+    // effect_checker_propagation@resolve_call_effects_with_binding, when the selfhost compiled
+    // itself). An SP-relative alias is minted only for a value with no durable home.
+    nb: string <- case length_bytes(rb) > 0 of {
+        true -> "";
+        false -> new_tp_binding(let_name, inner_term, base_ptr, base_region)
+    };
     inherited: string <- strip_name_family(concat(sp_part, enc), let_name);
     concat(base, concat(inherited, concat(rb, nb)))
 }
@@ -712,6 +719,11 @@ fn bare_qualifies_as_fn_pointer_asm_symbol(bare: string) -> boolean {
 // minting [that_reg, #off] reads garbage once a call clobbers it.
 fn is_callee_saved_reg(r: string) -> boolean {
     r == "X19" or r == "X20" or r == "X21" or r == "X22" or r == "X23" or r == "X24" or r == "X25" or r == "X26" or r == "X27" or r == "X28"
+}
+
+// An X29-relative frame slot: a stable home for a spilled value (SP may move, X29 does not).
+fn is_frame_slot_ref(s: string) -> boolean {
+    length_bytes(s) > 7 and substring(s, 0, 7) == "[X29, #"
 }
 
 fn is_memory_ref(s: string) -> boolean {
@@ -971,8 +983,12 @@ fn reg_reserved_as_sret_buffer(outer_reg: string, reg: string) -> boolean {
 fn is_reg_bound(outer_reg: string, reg: string) -> boolean {
     key_mid: string <- concat(concat("=", reg), "|");
     key_end: string <- concat("=", reg);
+    // A binding addressed THROUGH the register (`|n=[X20, #8]`, minted for a tuple
+    // element reached via a pointer) keeps the register live just as `|p=X20` does;
+    // without this the allocator handed X20 to the next let while n still read it.
+    key_base: string <- concat(concat("=[", reg), ", #");
     end_pos: int64 <- length_bytes(outer_reg) - length_bytes(key_end);
-    case find_str_at(outer_reg, key_mid, 0) >= 0 of {
+    case find_str_at(outer_reg, key_mid, 0) >= 0 or find_str_at(outer_reg, key_base, 0) >= 0 of {
         true -> true;
         false -> case end_pos >= 0 of {
             true -> case substring(outer_reg, end_pos, length_bytes(outer_reg)) == key_end of {
@@ -1061,7 +1077,16 @@ fn find_reg_pref_rec(outer_reg: string, key: string, start: int64, best: string,
         true -> case length_bytes(best) > 0 of { true -> best; false -> last };
         false -> {
             v: string <- find_sp_binding_extract(outer_reg, pos + length_bytes(key));
-            nb: string <- case length_bytes(v) > 0 and is_memory_ref(v) == false of { true -> v; false -> best };
+            // Kinds in order of durability: a callee-saved register, then an X29 frame slot
+            // (survives SP movement), then a caller-saved register (a case scrutinee's X3 that
+            // the next argument staging reuses -- brodal_okasaki_link@link read n2 as d2), then
+            // whatever came last (an SP-relative alias).
+            v_is_cs: boolean <- is_callee_saved_reg(v);
+            v_is_slot: boolean <- is_frame_slot_ref(v);
+            v_is_reg: boolean <- length_bytes(v) > 0 and is_memory_ref(v) == false;
+            best_rank: int64 <- case is_callee_saved_reg(best) of { true -> 3; false -> case is_frame_slot_ref(best) of { true -> 2; false -> case length_bytes(best) > 0 and is_memory_ref(best) == false of { true -> 1; false -> 0 } } };
+            v_rank: int64 <- case v_is_cs of { true -> 3; false -> case v_is_slot of { true -> 2; false -> case v_is_reg of { true -> 1; false -> 0 } } };
+            nb: string <- case v_rank > best_rank of { true -> v; false -> best };
             find_reg_pref_rec(outer_reg, key, pos + 1, nb, v)
         }
     }

@@ -26,6 +26,21 @@ use type_checker_tuple_decompose_helpers;
 export check_expr/4;
 
 fn check_expr(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
+    case expr.value == "()" of {
+        true -> check_unit_literal(expr, expected_type, context);
+        false -> check_non_unit_literal(expr, expected_type, context, world)
+    }
+}
+
+// The unit literal `()` (spec §2.2.3) has exactly the type unit; a discard expectation accepts it.
+fn check_unit_literal(expr: Expr, expected_type: int64, context: TypeContext) -> TypeCheckResult {
+    case type_checker_core@type_id_is_discard(context, expected_type) or type_checker_core@type_id_to_surface(context, expected_type) == "unit" of {
+        true -> type_checker_core@type_check_ok();
+        false -> type_checker_core@type_check_err("E2001", expr.location, concat("unit literal () has type unit, expected ", type_checker_core@type_id_to_surface(context, expected_type)), "sect6")
+    }
+}
+
+fn check_non_unit_literal(expr: Expr, expected_type: int64, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
     // Exact char/string match only — type_id_eq_or_discard would treat discard as char/string
     // and reject numeric literals under discard (e.g. spawn_registered_supervisor init state).
     case type_checker_core@types_equal_type_ids(expected_type, type_checker_core@context_tid_char(context)) of {
@@ -90,6 +105,56 @@ fn literal_digits_to_int64(v: string, i: int64, acc: int64, overflow: int64) -> 
     }
 }
 
+fn decimal_digit_value(c: string) -> int64 {
+    case c of {
+        "0" -> 0; "1" -> 1; "2" -> 2; "3" -> 3; "4" -> 4;
+        "5" -> 5; "6" -> 6; "7" -> 7; "8" -> 8; "9" -> 9;
+        _: string -> -1
+    }
+}
+
+// Digits of a literal with the sign and leading zeros removed ("-0042" -> "42").
+fn literal_magnitude_digits(v: string, i: int64) -> string {
+    case i >= len(v) of {
+        true -> "";
+        false -> case substring(v, i, i + 1) == "-" or substring(v, i, i + 1) == "0" of {
+            true -> literal_magnitude_digits(v, i + 1);
+            false -> substring(v, i, len(v))
+        }
+    }
+}
+
+// digits <= max_digits, both plain decimal strings of the same length (Silica strings
+// compare for equality only, so walk the digits).
+fn digits_le(digits: string, max_digits: string, i: int64) -> bool {
+    case i >= len(digits) of {
+        true -> true;
+        false -> do
+            d: int64 <- decimal_digit_value(substring(digits, i, i + 1));
+            m: int64 <- decimal_digit_value(substring(max_digits, i, i + 1));
+            case d < m of {
+                true -> true;
+                false -> case d > m of {
+                    true -> false;
+                    false -> digits_le(digits, max_digits, i + 1)
+                }
+            }
+        end
+    }
+}
+
+// Magnitude of the literal text fits below or at max_digits (a decimal string).
+fn literal_magnitude_fits(v: string, max_digits: string) -> bool {
+    digits: string <- literal_magnitude_digits(v, 0);
+    case len(digits) < len(max_digits) of {
+        true -> true;
+        false -> case len(digits) > len(max_digits) of {
+            true -> false;
+            false -> digits_le(digits, max_digits, 0)
+        }
+    }
+}
+
 fn integer_kind_bounds(surface: string) -> (bool, int64, int64) {
     case surface of {
         "int8" -> (true, -128, 127);
@@ -116,7 +181,19 @@ fn check_numeric_literal_against_integer_kind(expr: Expr, expected_type: int64, 
                     (mag: int64, overflow: int64) <- literal_digits_to_int64(expr.value, 0, 0, 0);
                     (known: bool, lo: int64, hi: int64) <- integer_kind_bounds(surface);
                     signed_val: int64 <- case negative of { true -> 0 - mag; false -> mag };
-                    out_of_range: bool <- known and (overflow != 0 or signed_val < lo or signed_val > hi);
+                    // The int64 accumulator cannot hold every 64-bit literal (uint64 reaches
+                // 18446744073709551615, int64 reaches -9223372036854775808), so the two
+                // 64-bit kinds are judged on the digit text; the narrower kinds use the value.
+                out_of_range: bool <- case surface == "uint64" of {
+                    true -> negative and mag > 0 or literal_magnitude_fits(expr.value, "18446744073709551615") == false;
+                    false -> case surface == "int64" of {
+                        true -> case negative of {
+                            true -> literal_magnitude_fits(expr.value, "9223372036854775808") == false;
+                            false -> literal_magnitude_fits(expr.value, "9223372036854775807") == false
+                        };
+                        false -> known and (overflow != 0 or signed_val < lo or signed_val > hi)
+                    }
+                };
                     case out_of_range of {
                         true -> type_checker_core@type_check_err("E2011", expr.location, concat(concat(concat("integer literal ", expr.value), " is out of range for "), surface), "sect6");
                         false -> type_checker_core@type_check_ok()

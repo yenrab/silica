@@ -80,7 +80,7 @@ clean:
 	find "$(THIS_DIR)" -name '*.iface' -type f -delete 2>/dev/null || true; \
 	find "$(THIS_DIR)" \( -name '.integrate_log' -o -name '.integrate_report' -o -name '.integrate_status' \
 		-o -name '.integrate_start' -o -name '.integrate_results' -o -name '.integrate_skipped' \
-		-o -name '.integrate_last_dot' \) -type f -delete 2>/dev/null || true; \
+		-o -name '.integrate_pass_marks' -o -name '.integrate_fail_marks' \) -type f -delete 2>/dev/null || true; \
 	find "$(THIS_DIR)" -name '.integrate_running' -type d -prune -exec rm -rf {} + 2>/dev/null || true; \
 	exit $$failed
 

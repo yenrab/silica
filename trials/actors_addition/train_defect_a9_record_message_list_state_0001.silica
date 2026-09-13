@@ -1,0 +1,30 @@
+// defect A9: record message with a List-typed state through call/reply; lengths 0 then 2
+fn llen(s: List[int64, mem(normal)]) -> int64 {
+    sequence proc[mem(normal)] r: int64 <- length[int64, mem(normal)](s) produces pure r end
+}
+fn lpush(v: int64, s: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)] r: List[int64, mem(normal)] <- prepend[int64, mem(normal)](v, s) produces pure r end
+}
+fn srv(msg: { op: atom, v: int64 }, state: List[int64, mem(normal)]) -> (:reply, int64, List[int64, mem(normal)]) {
+    case msg.op of {
+        :len -> (:reply, llen(state), state);
+        _: atom -> {
+            ns: List[int64, mem(normal)] <- lpush(msg.v, state);
+            (:reply, llen(ns), ns)
+        }
+    }
+}
+fn main() -> atom {
+    sequence proc[concurrency, device_io, mem(normal)]
+        e: List[int64, mem(normal)] <- [];
+        w: actor_ref <- spawn(e, srv);
+        l0: int64 <- call(w, { op: :len, v: 0 } impl ActorMessage {});
+        print_int64(l0);
+        println("");
+        _: int64 <- call(w, { op: :push, v: 5 } impl ActorMessage {});
+        _: int64 <- call(w, { op: :push, v: 6 } impl ActorMessage {});
+        l2: int64 <- call(w, { op: :len, v: 0 } impl ActorMessage {});
+        print_int64(l2);
+        println("")
+    produces pure :ok end
+}

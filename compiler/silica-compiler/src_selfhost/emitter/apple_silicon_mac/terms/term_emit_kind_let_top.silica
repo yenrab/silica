@@ -153,9 +153,22 @@ fn emit_kind_let_toplevel(term: { nodes: List[{ kind: int64, type_name: string, 
                                 true -> term_aggregate_helpers@let_suppressed_base_stack_fixup(term);
                                 false -> base_stack_tl
                             };
+                            // An aggregate built as the tail of a nested let chain (`x <- let a = .. in {..}`,
+                            // the shape call_supervisor lowers to) lives in a frame region that the next
+                            // aggregate make reuses. A direct aggregate RHS is promoted before its pointer
+                            // is bound; the nested-let RHS was not (the inner let promotes only into X0,
+                            // the return register), so get_reply pointed at a region which_reply then
+                            // overwrote. Move it to the heap here, at the binding, like the direct case.
+                            let_tail_agg_n: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 2 and rhs_reg != "X0" of {
+                                true -> term_aggregate_helpers@let_tail_aggregate_promote_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                                false -> 0
+                            };
                             early_prom_tl: string <- case packs_escape_tl of {
                                 true -> term_aggregate_helpers@let_early_heap_promote_asm(rhs_bind_tl, term_aggregate_helpers@agg_promote_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)));
-                                false -> ""
+                                false -> case let_tail_agg_n > 0 of {
+                                    true -> term_aggregate_helpers@let_early_heap_promote_asm(rhs_bind_tl, let_tail_agg_n);
+                                    false -> ""
+                                }
                             };
                             tail_stack_raw_tl: int64 <- term_aggregate_helpers@let_tail_aggregate_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
                             tail_stack_tl: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind == 2 of {

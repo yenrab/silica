@@ -25,6 +25,8 @@ export validate_max_params/1;
 export validate_no_single_element_tuples/1;
 export validate_required_statement_terminators/1;
 export validate_no_standalone_if/1;
+export validate_function_bodies_present/1;
+export validate_no_intrinsic_named_functions/1;
 export validate_no_escaping_capturing_lambda/1;
 export validate_uncategorized_syntax_defect/1;
 export validate_no_illegal_trailing_semicolon/1;
@@ -395,6 +397,89 @@ fn validate_required_statement_terminators(program: { declarations: List[{ tag: 
 }
 
 
+
+// --- E1068: actor runtime intrinsic names (`link`, `monitor`, `demonitor`; spec §15.4.8.5–§15.4.8.6) ---
+// `Q@link(...)` / `Q@monitor(...)` / `Q@demonitor(...)` is the supervisor intrinsic surface (module_checker
+// is_phase_g_link_monitor_demonitor_intrinsic_for_export_surface), and the lexer keys these names as keywords,
+// so a module function with one of these names could never be reached through its export. Reject the
+// definition and the export line up front instead of letting callers parse to nothing.
+fn is_actor_runtime_intrinsic_fn_name(nm: string) -> boolean {
+    case nm of {
+        "link" -> true;
+        "monitor" -> true;
+        "demonitor" -> true;
+        _: string -> false
+    }
+}
+
+fn export_params_has_intrinsic_name(ps: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> (boolean, { file: string, line: int64, column: int64, offset: int64 }, string) {
+    case ps.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case is_actor_runtime_intrinsic_fn_name(ps.head.name) of {
+            true -> (true, ps.head.location, ps.head.name);
+            false -> export_params_has_intrinsic_name(ps.tail)
+        }
+    }
+}
+
+fn decl_has_intrinsic_fn_name(decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) -> (boolean, { file: string, line: int64, column: int64, offset: int64 }, string) {
+    case decl.tag == 0 of {
+        true -> case is_actor_runtime_intrinsic_fn_name(decl.name) of {
+            true -> (true, decl.location, decl.name);
+            false -> (false, parser_ast@zero_location(), "")
+        };
+        false -> case decl.tag == 3 of {
+            true -> export_params_has_intrinsic_name(decl.parameters);
+            false -> (false, parser_ast@zero_location(), "")
+        }
+    }
+}
+
+fn decls_has_intrinsic_fn_name(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> (boolean, { file: string, line: int64, column: int64, offset: int64 }, string) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> {
+            (found: boolean, loc: { file: string, line: int64, column: int64, offset: int64 }, nm: string) <- decl_has_intrinsic_fn_name(decls.head);
+            case found of {
+                true -> (true, loc, nm);
+                false -> decls_has_intrinsic_fn_name(decls.tail)
+            }
+        }
+    }
+}
+
+fn validate_no_intrinsic_named_functions(program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) -> { is_ok: boolean, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    (found: boolean, err_loc: { file: string, line: int64, column: int64, offset: int64 }, nm: string) <- decls_has_intrinsic_fn_name(program.declarations);
+    case found of {
+        true -> parser_core@parse_err("E1068", err_loc, concat(concat("'", nm), "' is an actor runtime intrinsic (link, monitor, demonitor) and cannot be the name of a module function or export; choose a different name"), "sect15.4.8.5");
+        false -> parser_core@parse_ok(program)
+    }
+}
+
+// --- E1069: every function declaration must carry a parsable body ---
+// A body the extractor could not parse (brodal_okasaki forest: a `Q@link(...)` rhs inside a sequence let,
+// `link` being a keyword) used to reach the SIR generator as a declaration with a dummy body and was emitted
+// as `MOV X0, #0`. Any tag-0 declaration whose body is still the dummy after extraction is a parse failure.
+fn decls_has_bodyless_function(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> (boolean, { file: string, line: int64, column: int64, offset: int64 }, string) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case decls.head.tag == 0 of {
+            true -> case decls.head.body.root < 0 of {
+                true -> (true, decls.head.location, decls.head.name);
+                false -> decls_has_bodyless_function(decls.tail)
+            };
+            false -> decls_has_bodyless_function(decls.tail)
+        }
+    }
+}
+
+fn validate_function_bodies_present(program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) -> { is_ok: boolean, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    (found: boolean, err_loc: { file: string, line: int64, column: int64, offset: int64 }, fn_name: string) <- decls_has_bodyless_function(program.declarations);
+    case found of {
+        true -> parser_core@parse_err("E1069", err_loc, concat(concat("function '", fn_name), "' has no parsable body; an expression inside it could not be parsed (for example a call whose function name is a keyword such as link)"), "sect3.4");
+        false -> parser_core@parse_ok(program)
+    }
+}
 
 fn validate_uncategorized_syntax_defect(program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) -> { is_ok: boolean, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     (found: boolean, err_loc: { file: string, line: int64, column: int64, offset: int64 }) <- decls_has_uncategorized_syntax_defect(program.declarations);

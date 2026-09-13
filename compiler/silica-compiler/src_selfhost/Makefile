@@ -37,12 +37,27 @@ EXECUTABLE := silica-compiler
 INSTALL_COMPILER_SH := $(BINARIES_DIR)/install_compiler.bash
 INSTALL_SELFHOST ?= 1
 
+# Host toolchain (where this build runs; HOST_UNAME_S comes from emit_target.mk).
+# macOS: clang + Apple ld; main_entry_alias.s supplies _main; the linker flag raises the
+# main-thread stack (lexer/parser recurse over whole files; default 8MB is too small).
+# Linux (64-bit Raspberry Pi OS / Debian AArch64): cc + GNU ld from build-essential. No entry
+# alias (crt1 calls `main`), -no-pie (emitted data tables hold absolute pointers), and the
+# stack limit is a process setting instead of a link flag: run `ulimit -s unlimited` (or at
+# least 262144) in the shell before running silica-compiler on large units.
+ifeq ($(HOST_UNAME_S),Darwin)
 ASSEMBLER := clang
 MACOS_MIN_VERSION ?= 26.0
-ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
+ASFLAGS_host := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LINKER_CLANG := $(or $(LINKER_CLANG), $(shell test -x /opt/homebrew/opt/llvm/bin/clang && echo "/opt/homebrew/opt/llvm/bin/clang" || echo "clang"))
-# Self-host lexer/parser recurse over whole files; raise main-thread stack (macOS default 8MB).
 LDFLAGS_STACK := -Wl,-stack_size,0x10000000
+HOST_RT_ASM := deviceio_link_thunks.s main_entry_alias.s silica_rt_shim.s
+else
+ASSEMBLER := cc
+ASFLAGS_host :=
+LINKER_CLANG := cc
+LDFLAGS_STACK := -no-pie
+HOST_RT_ASM := deviceio_link_thunks_linux.s silica_rt_shim_linux.s
+endif
 
 # Parallel .sams → .o assembly (Stage 2). Silica emission (Stage 1) stays serial
 # (leaf-to-root + process-per-unit). Override: make build JOBS=4
@@ -55,6 +70,7 @@ LIB_STDLIB_MODULES := wbt_map OrderedMap
 
 .PHONY: all clean build assembly objects executables lib-sources \
 	silica.config.regen assembly-selfhost build-selfhost \
+	gen1 gen2 trials-gen1 trials-gen2 trials-both fixpoint \
 	help --help all-targets check-seed record-compile-start
 
 # Wall-clock compile timing: record epoch seconds at compile start; report
@@ -263,7 +279,7 @@ assembly: check-seed silica.config record-compile-start
 # Invoked in parallel via sub-make -j$(JOBS) after Stage 1 finishes.
 %.o: %.sams
 	@echo "Assembling: $< -> $@"
-	@$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$<" -o "$@"
+	@$(ASSEMBLER) $(ASFLAGS_host) -c -x assembler "$<" -o "$@"
 
 objects: assembly
 	@cd "$(THIS_DIR)" && \
@@ -282,15 +298,15 @@ objects: assembly
 
 # Stage 3: link entry point `main` with all module objects + runtime.
 # No Rust archive is linked (see POLICY above); DeviceIO helpers come from
-# silica_rt_shim.s. deviceio_link_thunks.s covers seeds that emit them as calls.
-# deviceio_link_thunks.s covers seeds that still emit DeviceIO as module_user calls.
-# main_entry_alias.s provides _main for Apple ld (asm emits `main` without underscore).
+# silica_rt_shim.s (silica_rt_shim_linux.s on Linux). deviceio_link_thunks.s covers seeds
+# that still emit DeviceIO as module_user calls. main_entry_alias.s provides _main for
+# Apple ld only (asm emits `main` without underscore). HOST_RT_ASM picks the set per host.
 executables: objects
 	@cd "$(THIS_DIR)" && \
 	if [ ! -f main.o ]; then echo "FAIL: main.o missing"; $(REPORT_COMPILE_TIME); exit 1; fi; \
-	$(ASSEMBLER) $(ASFLAGS_macos) -c deviceio_link_thunks.s -o deviceio_link_thunks.o || { $(REPORT_COMPILE_TIME); exit 1; }; \
-	$(ASSEMBLER) $(ASFLAGS_macos) -c main_entry_alias.s -o main_entry_alias.o || { $(REPORT_COMPILE_TIME); exit 1; }; \
-	$(ASSEMBLER) $(ASFLAGS_macos) -c silica_rt_shim.s -o silica_rt_shim.o || { $(REPORT_COMPILE_TIME); exit 1; }; \
+	for s in $(HOST_RT_ASM); do \
+		$(ASSEMBLER) $(ASFLAGS_host) -c "$$s" -o "$${s%.s}.o" || { $(REPORT_COMPILE_TIME); exit 1; }; \
+	done; \
 	objs=$$(find . -type f -name '*.o' ! -path './_wd_probe/*' | sed 's|^\./||' | sort | tr '\n' ' '); \
 	link_archives=""; \
 	if [ -x "$(SILICA_LINK_SH)" ]; then link_archives=$$("$(SILICA_LINK_SH)" .); fi; \
@@ -319,8 +335,122 @@ build: silica.config executables
 assembly-selfhost: assembly
 build-selfhost: build
 
-# Build once per allowable emit target (distinct binaries). Requires an
-# emitter/<name>/ tree for each entry in ALLOWED_TARGETS.
+# ---- Generations -------------------------------------------------------------------
+# gen1 = this tree compiled by the seed (binaries/seed-compiler); gen2 = this tree compiled by
+# gen1. Each build also keeps a stable copy, binaries/silica-gen1 and binaries/silica-gen2, so
+# the trial tree can be run against either generation by name (the numbered install and the
+# silica-compiler symlink keep tracking the newest build as before; INSTALL_SELFHOST=0 still
+# skips that). gen2 recompiles every unit: the compiler binary is a staleness input.
+#
+#   make gen1            seed-compiler  -> src_selfhost  => binaries/silica-gen1
+#   make gen2            silica-gen1    -> src_selfhost  => binaries/silica-gen2
+#   make trials-gen1     make -C trials integrate SILICA_COMPILER=binaries/silica-gen1
+#   make trials-gen2     make -C trials integrate SILICA_COMPILER=binaries/silica-gen2
+#   make trials-both     trials-gen1 then trials-gen2 (reports kept as .integrate_report.gen1/.gen2)
+TRIALS_DIR := $(abspath $(THIS_DIR)../../../trials)
+GEN1_BIN := $(BINARIES_DIR)/silica-gen1
+GEN2_BIN := $(BINARIES_DIR)/silica-gen2
+
+gen1:
+	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" build SILICA_COMPILER="$(BINARIES_DIR)/seed-compiler"
+	@rm -f "$(GEN1_BIN)" && cp "$(THIS_DIR)$(EXECUTABLE)" "$(GEN1_BIN)" && chmod +x "$(GEN1_BIN)"
+	@echo "✅ gen1 (seed-built selfhost) saved as $(GEN1_BIN)"
+
+gen2:
+	@if [ ! -x "$(GEN1_BIN)" ]; then \
+		echo "FAIL: $(GEN1_BIN) is missing; run 'make gen1' first"; exit 1; \
+	fi
+	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" build SILICA_COMPILER="$(GEN1_BIN)"
+	@rm -f "$(GEN2_BIN)" && cp "$(THIS_DIR)$(EXECUTABLE)" "$(GEN2_BIN)" && chmod +x "$(GEN2_BIN)"
+	@touch "$(GEN1_EMISSION_STAMP)"
+	@echo "✅ gen2 (selfhost-built selfhost) saved as $(GEN2_BIN)"
+
+trials-gen1:
+	@if [ ! -x "$(GEN1_BIN)" ]; then echo "FAIL: $(GEN1_BIN) is missing; run 'make gen1' first"; exit 1; fi
+	@echo "==== trials with gen1: $(GEN1_BIN) ===="
+	@$(MAKE) -C "$(TRIALS_DIR)" integrate SILICA_COMPILER="$(GEN1_BIN)"; st=$$?; \
+	cp -f "$(TRIALS_DIR)/.integrate_report" "$(TRIALS_DIR)/.integrate_report.gen1" 2>/dev/null; \
+	echo "report kept at $(TRIALS_DIR)/.integrate_report.gen1"; exit $$st
+
+trials-gen2:
+	@if [ ! -x "$(GEN2_BIN)" ]; then echo "FAIL: $(GEN2_BIN) is missing; run 'make gen2' first"; exit 1; fi
+	@echo "==== trials with gen2: $(GEN2_BIN) ===="
+	@$(MAKE) -C "$(TRIALS_DIR)" integrate SILICA_COMPILER="$(GEN2_BIN)"; st=$$?; \
+	cp -f "$(TRIALS_DIR)/.integrate_report" "$(TRIALS_DIR)/.integrate_report.gen2" 2>/dev/null; \
+	echo "report kept at $(TRIALS_DIR)/.integrate_report.gen2"; exit $$st
+
+trials-both:
+	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" trials-gen1
+	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" trials-gen2
+
+# ---- Fixed point ------------------------------------------------------------------
+# gen3 = this tree compiled by gen2. The compiler has reached its fixed point when gen3 is
+# byte-identical to gen2: nothing in the binary was inherited from the seed.
+#
+# Run right after `make gen2`: at that moment the .sams here are gen1's emission of these
+# sources (gen2's code). `make gen2` stamps them; the stamp check refuses a tree whose .sams
+# were rewritten since. gen1's .sams are saved OUTSIDE this directory (the assembly rule's
+# orphan scan deletes any .sams under here that has no .silica beside it), gen3 is built
+# with gen2, and the .sams are compared unit by unit with the o<N> counters normalised.
+#
+# gen3 is linked at the same path as gen2 (./silica-compiler): Apple's linker derives the
+# LC_UUID and the ad-hoc signature identifier from the output path, so a binary linked under
+# another name can never be byte-identical. It is not installed (INSTALL_SELFHOST=0) and is
+# kept as silica-compiler-gen3.
+FIXPOINT_DIR := $(abspath $(THIS_DIR)..)/.src_selfhost_fixpoint
+GEN1_EMISSION_STAMP := $(THIS_DIR).gen1_emission_stamp
+GEN3_EXE := silica-compiler-gen3
+
+fixpoint:
+	@if [ ! -x "$(GEN2_BIN)" ]; then echo "FAIL: $(GEN2_BIN) is missing; run 'make gen2' first"; exit 1; fi
+	@if [ ! -f "$(GEN1_EMISSION_STAMP)" ]; then \
+		echo "FAIL: the .sams here are not the fresh output of 'make gen2'; run 'make gen2' first"; exit 1; \
+	fi
+	@cd "$(THIS_DIR)" && newer=$$(find . -name '*.sams' -type f ! -path './_wd_probe/*' -newer "$(GEN1_EMISSION_STAMP)" | head -3); \
+	if [ -n "$$newer" ]; then \
+		echo "FAIL: .sams rewritten since 'make gen2' (e.g. $$newer); run 'make gen2' first"; exit 1; \
+	fi
+	@if ! cmp -s "$(GEN2_BIN)" "$(THIS_DIR)$(EXECUTABLE)"; then \
+		echo "FAIL: $(THIS_DIR)$(EXECUTABLE) is not the gen2 build; run 'make gen2' first"; exit 1; \
+	fi
+	@rm -rf "$(FIXPOINT_DIR)" && mkdir -p "$(FIXPOINT_DIR)/gen1_sams"
+	@cd "$(THIS_DIR)" && find . -name '*.sams' -type f ! -path './_wd_probe/*' | while read -r f; do \
+		mkdir -p "$(FIXPOINT_DIR)/gen1_sams/$$(dirname "$$f")"; cp "$$f" "$(FIXPOINT_DIR)/gen1_sams/$$f"; done
+	@n=$$(find "$(FIXPOINT_DIR)/gen1_sams" -name '*.sams' -type f | wc -l | tr -d ' '); \
+	echo "saved $$n .sams (gen1's emission) to $(FIXPOINT_DIR)/gen1_sams"; \
+	if [ "$$n" -eq 0 ]; then echo "FAIL: nothing saved"; exit 1; fi
+	@rm -f "$(GEN1_EMISSION_STAMP)"
+	@echo "==== fixpoint: building gen3 with $(GEN2_BIN) ===="
+	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" build SILICA_COMPILER="$(GEN2_BIN)" INSTALL_SELFHOST=0
+	@rm -f "$(THIS_DIR)$(GEN3_EXE)" && cp "$(THIS_DIR)$(EXECUTABLE)" "$(THIS_DIR)$(GEN3_EXE)"
+	@cd "$(THIS_DIR)" && n=0; changed=0; added=0; missing=0; \
+	for f in $$(find . -name '*.sams' -type f ! -path './_wd_probe/*' | sed 's|^\./||' | sort); do \
+		n=$$((n + 1)); \
+		if [ ! -f "$(FIXPOINT_DIR)/gen1_sams/$$f" ]; then added=$$((added + 1)); echo "   + $$f (no gen1 counterpart)"; continue; fi; \
+		sed -E 's/o[0-9]+/oN/g' "$(FIXPOINT_DIR)/gen1_sams/$$f" > "$(FIXPOINT_DIR)/a.norm"; \
+		sed -E 's/o[0-9]+/oN/g' "$$f" > "$(FIXPOINT_DIR)/b.norm"; \
+		if ! cmp -s "$(FIXPOINT_DIR)/a.norm" "$(FIXPOINT_DIR)/b.norm"; then \
+			changed=$$((changed + 1)); echo "   * $$f"; \
+			diff "$(FIXPOINT_DIR)/a.norm" "$(FIXPOINT_DIR)/b.norm" | head -6 | sed 's/^/       /'; \
+		fi; \
+	done; \
+	for f in $$(cd "$(FIXPOINT_DIR)/gen1_sams" && find . -name '*.sams' -type f | sed 's|^\./||'); do \
+		[ -f "$$f" ] || { missing=$$((missing + 1)); echo "   - $$f (gone in gen3)"; }; \
+	done; \
+	echo "units: $$n compared, $$changed emitted differently by gen2 than by gen1, $$added new, $$missing gone"; \
+	s2=$$(stat -f %z "$(GEN2_BIN)"); s3=$$(stat -f %z "$(GEN3_EXE)"); \
+	echo "binaries: gen2 $$s2 bytes, gen3 $$s3 bytes"; \
+	if cmp -s "$(GEN2_BIN)" "$(GEN3_EXE)"; then \
+		echo "✅ fixed point: gen3 is byte-identical to gen2 ($(GEN2_BIN))"; \
+	else \
+		echo "❌ not a fixed point: gen3 differs from gen2"; \
+		if [ "$$changed$$added$$missing" = "000" ]; then \
+			echo "   every unit's emission is identical; the difference is in linking (compare 'otool -l' of the two binaries)"; \
+		fi; \
+		echo "   gen1's .sams are kept under $(FIXPOINT_DIR)/gen1_sams/"; \
+		exit 1; \
+	fi
+
 all-targets:
 	@if [ -z "$(ALLOWED_TARGETS)" ]; then \
 		echo "FAIL: no emitter/*/ targets found"; \
@@ -380,8 +510,14 @@ help:
 	@if [ -z "$(ALLOWED_TARGETS)" ]; then echo "      (none found)"; fi
 	@echo ""
 	@echo "  Examples:"
-	@echo "    make                          # host-default TARGET + full build"
+	@echo "    make                          # asks which emit target to build (default: host)"
+	@echo "    make SILICA_TARGET_PROMPT=0   # never ask: host-default TARGET + full build"
+	@echo "    make gen1                     # selfhost compiled by seed-compiler -> binaries/silica-gen1"
+	@echo "    make gen2                     # selfhost compiled by gen1 -> binaries/silica-gen2"
+	@echo "    make trials-gen1 | trials-gen2 | trials-both   # full trial tree against a generation"
+	@echo "    make fixpoint                 # build gen3 with gen2; pass iff gen3 == gen2 byte for byte"
 	@echo "    make TARGET=apple_silicon_mac     # explicit emit backend"
+	@echo "    make TARGET=linux_aarch64         # Linux AArch64 backend (64-bit Raspberry Pi OS)"
 	@echo "    make assembly TARGET=apple_silicon_mac"
 	@echo "    make all-targets              # loop clean/build for each allowable TARGET"
 	@echo ""

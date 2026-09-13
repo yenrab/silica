@@ -545,7 +545,7 @@ fn param_type_at_index(param_types: string, idx: int64) -> string {
     }
 }
 
-fn bind_reg_for_param(param_types: string, idx: int64, ptype: string, string_shadow: bool, second_param_shadow: bool, aggregate_first_shadow: bool) -> string {
+fn bind_reg_for_param(param_types: string, idx: int64, ptype: string, string_shadow: bool, second_param_shadow: bool, aggregate_first_shadow: bool, agg_sret_conflict: bool) -> string {
     reg: string <- param_reg_for_index(param_types, idx, ptype);
     first_in_x19: bool <- string_shadow and idx == 0 and (ptype == "string" or term_emitter@type_name_is_list_like(ptype));
     case first_in_x19 of {
@@ -553,8 +553,16 @@ fn bind_reg_for_param(param_types: string, idx: int64, ptype: string, string_sha
         false -> case second_param_shadow and idx == 1 of {
             true -> "X20";
             false -> case idx == 0 and reg_conventions@is_aggregate_struct_or_tuple_return_type(ptype) of {
-                true -> case aggregate_first_shadow of { true -> "X20"; false -> "X11" };
-                false -> reg
+                // A behaviour whose reply uses the X20 sret buffer cannot also shadow an aggregate
+                // first parameter in X20 (defect A9). Message -> X22, state -> X21, both callee-saved.
+                true -> case agg_sret_conflict of {
+                    true -> "X22";
+                    false -> case aggregate_first_shadow of { true -> "X20"; false -> "X11" }
+                };
+                false -> case idx == 1 and agg_sret_conflict and second_param_is_non_float(param_types) of {
+                    true -> "X21";
+                    false -> reg
+                }
             }
         }
     }
@@ -639,7 +647,7 @@ fn bind_reg_int64_abi_shadow(param_types: string, idx: int64, ptype: string, str
         };
         false -> case idx == 1 and hold_second_in_x21 of {
             true -> "X21";
-            false -> bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow, false)
+            false -> bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow, false, false)
         }
     }
 }
@@ -1008,7 +1016,7 @@ fn actor_reply_sret_second_param_uses_x21(fn_val: SIRFunction) -> bool {
     }
 }
 
-fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int64, acc: string, string_shadow: bool, second_param_shadow: bool, aggregate_first_shadow: bool) -> string {
+fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int64, acc: string, string_shadow: bool, second_param_shadow: bool, aggregate_first_shadow: bool, agg_sret_conflict: bool) -> string {
     pipe: int64 <- find_pipe_in_param_names(param_names, 0);
     ptype: string <- param_type_at_index(param_types, idx);
     case pipe < 0 of {
@@ -1016,7 +1024,7 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
             true -> acc;
             false -> do
                 prefixed: string <- concat("%", param_names);
-                br: string <- bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow, aggregate_first_shadow);
+                br: string <- bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow, aggregate_first_shadow, agg_sret_conflict);
                 sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
                 concat(acc, concat(sep, concat(prefixed, concat("=", br))))
             end
@@ -1031,12 +1039,12 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
             // slot depend on a truncated prefix (defect A1: `addf(x: float64, y: float64)` bound
             // both to D0; `pick(n: int64, y: float64)` bound y to D1).
             prefixed: string <- concat("%", first);
-            br: string <- bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow, aggregate_first_shadow);
+            br: string <- bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow, aggregate_first_shadow, agg_sret_conflict);
             sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
             part: string <- concat(sep, concat(prefixed, concat("=", br)));
             base: string <- case len(acc) == 0 of { true -> param_reg_for_index(param_types, idx, ptype); false -> acc };
             next_acc: string <- concat(base, part);
-            build_param_outer_reg_loop(rest, param_types, idx + 1, next_acc, string_shadow, second_param_shadow, aggregate_first_shadow)
+            build_param_outer_reg_loop(rest, param_types, idx + 1, next_acc, string_shadow, second_param_shadow, aggregate_first_shadow, agg_sret_conflict)
         end
     }
 }
@@ -1051,17 +1059,20 @@ fn find_pipe_in_param_names(s: string, start: int64) -> int64 {
     }
 }
 
-fn build_param_outer_reg(param_names: string, param_types: string, string_shadow: bool, aggregate_first_shadow: bool) -> string {
+fn build_param_outer_reg(param_names: string, param_types: string, string_shadow: bool, aggregate_first_shadow: bool, agg_sret_conflict: bool) -> string {
     case len(param_names) == 0 of {
         true -> "";
         false -> do
             first_ptype: string <- param_type_at_index(param_types, 0);
             first_reg: string <- case reg_conventions@is_aggregate_struct_or_tuple_return_type(first_ptype) of {
-                true -> case aggregate_first_shadow of { true -> "X20"; false -> "X11" };
+                true -> case agg_sret_conflict of {
+                    true -> "X22";
+                    false -> case aggregate_first_shadow of { true -> "X20"; false -> "X11" }
+                };
                 false -> param_reg_for_index(param_types, 0, first_ptype)
             };
             second_ps: bool <- second_param_shadow_enabled(param_types, string_shadow);
-            build_param_outer_reg_loop(param_names, param_types, 0, first_reg, string_shadow, second_ps, aggregate_first_shadow)
+            build_param_outer_reg_loop(param_names, param_types, 0, first_reg, string_shadow, second_ps, aggregate_first_shadow, agg_sret_conflict)
         end
     }
 }
@@ -1529,7 +1540,9 @@ fn fs_build_param_outer(param_names: string, n: int64) -> string {
 
 // STP/LDP X21,X22 when spill pressure (lets + weighted list-cons tails) reaches 2, or when X21 holds the second GPR parameter (actor reply sret + int64 shadow).
 fn needs_actor_ref_x21_x22_frame(fn_val: SIRFunction) -> bool {
-    case fn_val.body.kind == 5 of {
+    case first_param_is_aggregate_struct_or_tuple(fn_val) and first_param_aggregate_needs_x11_base(fn_val) and use_actor_reply_sret_buffer(fn_val) of {
+    true -> true;
+    false ->     case fn_val.body.kind == 5 of {
         true -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2;
         false -> case actor_reply_sret_second_param_uses_x21(fn_val) of {
             true -> true;
@@ -1538,6 +1551,7 @@ fn needs_actor_ref_x21_x22_frame(fn_val: SIRFunction) -> bool {
                 false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2
             }
         }
+    }
     }
 }
 
@@ -1574,9 +1588,24 @@ fn frame_spill_slot_count(fn_val: SIRFunction) -> int64 {
         true -> lets * 2;
         false -> pressure
     };
-    case demand > 10 of {
+    reg_backed: int64 <- case demand > 10 of {
         true -> demand - 10;
         false -> 0
+    };
+    // Case `bind` arms park the unwrapped scrutinee in a frame slot (term_emitter
+    // emit_case_branch), so the frame must reserve room for them or the slot lands on the
+    // callee-saved save area (a seed built without this restored the caller's X19 from it).
+    reg_backed + case_bind_slots(fn_val.body)
+}
+
+// Mirrors the bind-arm slot allocation exactly: keyed on the branch node's value "bind".
+fn case_bind_slots(term: SIRTerm) -> int64 {
+    case term.kind < 0 of {
+        true -> 0;
+        false -> do
+            here: int64 <- case term.value == "bind" and len(term.name) > 1 of { true -> 1; false -> 0 };
+            here + case_bind_slots(term.inner) + case_bind_slots(term.right_expr)
+        end
     }
 }
 
@@ -1761,7 +1790,8 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
     string_shadow: bool <- first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind);
     second_param_shadow: bool <- second_param_shadow_enabled(fn_val.param_types, string_shadow);
     aggregate_first_shadow: bool <- first_param_aggregate_needs_x11_base(fn_val);
-    param_outer: string <- build_param_outer_reg(fn_val.param_names, fn_val.param_types, string_shadow, aggregate_first_shadow);
+    agg_sret_conflict: bool <- first_param_is_aggregate_struct_or_tuple(fn_val) and aggregate_first_shadow and use_actor_reply_sret_buffer(fn_val);
+    param_outer: string <- build_param_outer_reg(fn_val.param_names, fn_val.param_types, string_shadow, aggregate_first_shadow, agg_sret_conflict);
     use_int64_abi_shadow: bool <- case full_shadow of { true -> false; false -> needs_int64_abi_entry_shadow(fn_val) };
     reply_sret_second_x21: bool <- actor_reply_sret_second_param_uses_x21(fn_val);
     hold_second_param_in_x21: bool <- needs_second_param_x21_bl_survival(fn_val);
@@ -1782,9 +1812,15 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
     aggregate_x11_mov: string <- case full_shadow of {
         true -> "";
         false -> case first_param_is_aggregate_struct_or_tuple(fn_val) of {
-            true -> case aggregate_first_shadow of {
-                true -> "    MOV X20, X0\n";
-                false -> "    MOV X11, X0\n"
+            true -> case agg_sret_conflict of {
+                true -> case second_param_is_non_float(fn_val.param_types) of {
+                    true -> "    MOV X22, X0\n    MOV X21, X1\n";
+                    false -> "    MOV X22, X0\n"
+                };
+                false -> case aggregate_first_shadow of {
+                    true -> "    MOV X20, X0\n";
+                    false -> "    MOV X11, X0\n"
+                }
             };
             false -> ""
         }

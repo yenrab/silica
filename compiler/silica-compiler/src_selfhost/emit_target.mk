@@ -10,8 +10,8 @@ EMITTER_ROOT := $(THIS_DIR)emitter
 
 # Discover allowable emit targets from emitter/*/ directory names only.
 # (macOS / GNU Make wildcard can also match plain files like Makefile.)
-# Names must be simple identifiers: letters, digits, underscore.
-ALLOWED_TARGETS := $(shell find "$(EMITTER_ROOT)" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | grep -E '^[A-Za-z0-9_]+$$' | LC_ALL=C sort -u)
+# Names must be simple identifiers: letters, digits, underscore, hyphen (ESP32-S32_raw).
+ALLOWED_TARGETS := $(shell find "$(EMITTER_ROOT)" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | grep -E '^[A-Za-z0-9_-]+$$' | LC_ALL=C sort -u)
 
 HOST_UNAME_S := $(shell uname -s 2>/dev/null)
 HOST_UNAME_M := $(shell uname -m 2>/dev/null)
@@ -28,17 +28,36 @@ ifndef TARGET
   endif
   ifeq ($(HOST_UNAME_S),Linux)
     ifneq ($(filter $(HOST_UNAME_M),aarch64 arm64),)
-      TARGET_CANDIDATES := linux_aarch64 aarch64_debian
+      TARGET_CANDIDATES := linux_aarch64
     endif
     ifeq ($(HOST_UNAME_M),x86_64)
       TARGET_CANDIDATES := linux_x86_64
     endif
   endif
-  TARGET := $(firstword $(filter $(TARGET_CANDIDATES),$(ALLOWED_TARGETS)))
+  HOST_DEFAULT_TARGET := $(firstword $(filter $(TARGET_CANDIDATES),$(ALLOWED_TARGETS)))
+  # Ask which emitter/<name>/ to build when more than one exists and a terminal is
+  # attached (choose_emit_target.sh prints the host default without asking otherwise).
+  # Goals that need no target (help, clean) never prompt; SILICA_TARGET_PROMPT=0 forces
+  # the silent host default, e.g. for scripts and CI.
+  TARGET_PROMPT_GOALS := $(filter-out help clean,$(if $(MAKECMDGOALS),$(MAKECMDGOALS),build))
+  ifeq ($(SILICA_TARGET_PROMPT),0)
+    TARGET := $(HOST_DEFAULT_TARGET)
+  else ifeq ($(TARGET_PROMPT_GOALS),)
+    TARGET := $(HOST_DEFAULT_TARGET)
+  else ifeq ($(words $(ALLOWED_TARGETS)),1)
+    TARGET := $(HOST_DEFAULT_TARGET)
+  else
+    TARGET := $(shell sh "$(THIS_DIR)choose_emit_target.sh" "$(HOST_DEFAULT_TARGET)" $(ALLOWED_TARGETS))
+    TARGET_CHOSEN_BY_PROMPT := $(if $(filter $(TARGET),$(HOST_DEFAULT_TARGET)),,yes)
+  endif
 endif
 
-# True when TARGET was left to host detection (not set by user/env before include).
-TARGET_ORIGIN := $(if $(filter command line environment,$(origin TARGET)),user,host-default)
+# Sub-makes (objects fan-out, emitter/Makefile) must not ask again: hand the choice down.
+export TARGET
+
+# user: given on the command line or in the environment; prompt: picked from the menu;
+# host-default: left to host detection (or the menu accepted the default).
+TARGET_ORIGIN := $(if $(filter command line environment,$(origin TARGET)),user,$(if $(TARGET_CHOSEN_BY_PROMPT),prompt,host-default))
 
 .PHONY: check-target
 
@@ -51,8 +70,8 @@ check-target:
 		if [ -z "$(ALLOWED_TARGETS)" ]; then echo "  (none found under emitter/)" >&2; fi; \
 		exit 1; \
 	fi
-	@echo "$(TARGET)" | grep -Eq '^[A-Za-z0-9_]+$$' || { \
-		echo "FAIL: invalid emit target name '$(TARGET)' (use letters, digits, underscore only)." >&2; \
+	@echo "$(TARGET)" | grep -Eq '^[A-Za-z0-9_-]+$$' || { \
+		echo "FAIL: invalid emit target name '$(TARGET)' (use letters, digits, underscore, hyphen only)." >&2; \
 		exit 1; \
 	}
 	@if [ ! -d "$(EMITTER_ROOT)/$(TARGET)" ]; then \
