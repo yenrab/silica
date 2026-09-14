@@ -3311,6 +3311,8 @@ spawn(initial_state, behavior, 0)
 spawn(initial_state, behavior, core_id(0))
 ```
 
+The core an actor is spawned on is the core it is pinned to for its whole life, unless the program moves it to another core (see **Actor Pinning Policy**, §15.1.2).
+
 ### 4.7 SIMD Vector Types
 
 Silica provides first-class SIMD vector types for AArch64 architectures using concrete types and marker traits:
@@ -7385,7 +7387,7 @@ demonitor(ref: monitor_ref) -> :ok  proc[concurrency]
 
 When `initial_state` contains a region handle, the handle is moved from `spawn` to the actor. The actor receives exclusive ownership of the region.
 
-**Optional core id:** When present, the third argument must be a **`uint64`** logical core id or **`core_id(n)`** with **`n: uint64`**. It must not be a list of cores, `core_set(...)`, `performance_cores`, or `efficiency_cores`.
+**Optional core id:** When present, the third argument must be a **`uint64`** logical core id or **`core_id(n)`** with **`n: uint64`**. It must not be a list of cores, `core_set(...)`, `performance_cores`, or `efficiency_cores`. The actor is **pinned** to that core, or, without a core id, to the core the runtime assigns at spawn, until the program moves it or the actor terminates (see **Actor Pinning Policy**, §15.1.2).
 
 The `spawn()` function is the execution point for actor creation. It returns an `actor_ref` handle that can be used with `call()`, `cast()`, and control operations like `pin_actor_to_core()`. The actor begins executing immediately when `spawn()` is called.
 
@@ -7624,16 +7626,25 @@ fn server(msg: atom, state: int64) -> (:no_reply, int64) {
 
 **Supervisor Specification:** Full details of supervisor registration, failure notification delivery, the high-priority supervision ingress, restart protocols, and the required `Supervisor` trait are specified in **§15.4 Supervision and Fault Tolerance**.
 
-**Actor Migration Policy:**
+**Actor Pinning Policy (normative):**
 
-Actor migration between cores is **manual-only** - there is no automatic migration. Actors remain on their initial core unless explicitly migrated by application code using the `migrate_actor()` function. The runtime does not perform automatic load balancing or thermal migration of actors.
+Every actor is **pinned** to a core from the moment it is spawned until it terminates.
 
-**Migration Control:**
+- **Initial core**: the core passed as `spawn`'s third argument or, when none is passed, the core the runtime assigns at spawn time.
+- **Changing core**: an actor's core changes **only** when the program migrates it with `migrate_actor()` (the `pin_actor_to_*` helpers of §22.10 are shorthands for migrating to a chosen core). After a migration the actor is pinned to the new core.
+- **End of pinning**: pinning ends **only** when the actor terminates: normal exit, `remove_actor()`, `kill_abnormal()`, termination by its supervisor, or failure.
+- **No unpinned state**: there is no operation that unpins an actor.
+- **No runtime movement**: the runtime **never** moves an actor on its own: not for load balancing, thermal throttling, core parking, power management, NUMA locality, or region allocation. A program that wants any such policy implements it with `migrate_actor()`.
+- **When a move takes effect**: nothing interrupts an actor in the middle of a message dispatch. A move requested while the actor is running takes effect at its next dispatch boundary or scheduler yield point; migration is handled by the runtime outside the behavior function (§16.2.6.6), and message order is preserved (§15.1.2.2.1).
 
-- **Default Behavior**: Actors remain on the core where they were spawned unless explicitly migrated
-- **Manual Migration**: Application code must call `migrate_actor()` to move actors between cores
-- **Core Affinity**: Actors can be pinned to specific cores using `pin_actor_to_core()`, preventing migration
-- **Migration API**: `migrate_actor(actor_ref, target_core) -> atom` - explicitly migrates an actor to a target core proc[concurrency]
+**What "pinned" guarantees depends on the host** (compare the OS-free / OS-hosted split for memory spaces in §12.1.1.0):
+
+- **OS-free** (the Silica runtime owns the chip's cores; applications, libraries and firmware images running on raw cores): pinning is **exclusive and hard**. The actor executes exclusively on its core, and nothing but the program moves it.
+- **OS-hosted** (macOS, Linux, Windows, and analogous OSes): the actor is bound to the runtime's carrier thread for its logical core, and the runtime never moves it to another carrier on its own. The runtime requests affinity for that carrier thread from the OS where the OS allows it, but the OS still owns the cores: it may run other threads on the same core, may migrate the carrier thread, and on some hosts treats affinity only as a hint (Apple Silicon macOS offers no hard thread-to-core binding). Exclusive or hard placement is therefore **not** guaranteed on an OS-hosted target. On such a target `migrate_actor()` transfers the actor between carrier threads, as the BEAM migrates processes between its scheduler threads.
+
+**Migration API** (`proc[concurrency]`; details in §22.10):
+
+- `migrate_actor(actor_ref, target_core) -> atom`: moves the actor from whatever core it is on to `target_core` and pins it there. It returns `:ok` on success. On failure it returns an error atom and the actor stays pinned to its current core.
 
 #### 15.1.2.1 AArch64 Runtime Integration
 
@@ -7643,9 +7654,9 @@ The actor runtime integrates with AArch64 hardware features to provide efficient
 
 The runtime schedules actors on AArch64 cores using the following mechanisms:
 
-1. **Core Affinity Enforcement**: Actors with specified core affinity are pinned to their designated cores using `pthread_setaffinity_np()` or equivalent system calls
-2. **NUMA Awareness**: When actors are spawned or migrated, the runtime schedules them on cores within the same NUMA node as their data regions to minimize cross-NUMA memory access latency
-3. **Initial Core Assignment**: Actors without explicit affinity are assigned to available cores at spawn time, but remain on that core unless explicitly migrated
+1. **Core Affinity Enforcement**: Every actor is pinned (Actor Pinning Policy above). On an OS-hosted target the runtime binds each carrier thread to its core with `pthread_setaffinity_np()` or the host's equivalent where one exists; on an OS-free target each core's scheduler dispatches only the actors pinned to it
+2. **NUMA Awareness**: When an actor is spawned without a core id, the runtime prefers a core on the same NUMA node as its data regions to minimize cross-NUMA memory access latency. The runtime never re-places an actor after spawn
+3. **Initial Core Assignment**: An actor spawned without a core id is assigned a core at spawn time and is pinned to it from then on; only the program moves it
 4. **Core Topology Detection**: The runtime queries AArch64 CPU topology via system registers and `/proc/cpuinfo`/`sysfs` to determine:
    - Core IDs and their physical/logical mapping
    - NUMA node assignments for each core
@@ -7889,7 +7900,7 @@ actor_ref: actor_ref <- spawn(initial_state, behavior, core_id(0))
 The runtime:
 1. **Thread Creation**: Creates a pthread bound to the specified core(s)
 2. **Affinity Setting**: Uses `pthread_setaffinity_np()` to set CPU affinity mask
-3. **Migration Prevention**: Prevents OS scheduler from migrating the thread to other cores
+3. **Migration Prevention**: Asks the OS not to migrate the carrier thread to other cores. On hosts where affinity is only a hint (for example Apple Silicon macOS) this cannot be enforced; see the OS-hosted guarantee in the Actor Pinning Policy (§15.1.2)
 4. **Core Validation**: Verifies that specified cores exist and are available
 
 **NUMA-Aware Actor Placement:**
@@ -7898,7 +7909,7 @@ The runtime optimizes actor placement for NUMA architectures:
 
 1. **NUMA Node Detection**: Queries NUMA topology via `numa_available()` and `numa_node_of_cpu()`
 2. **Region-to-NUMA Mapping**: Tracks which NUMA node each region is allocated on
-3. **Actor-to-Region Affinity**: Places actors on cores within the same NUMA node as their primary data regions
+3. **Actor-to-Region Affinity**: At spawn, for an actor spawned without a core id, places it on a core within the same NUMA node as its primary data regions
 4. **Cross-NUMA Minimization**: Minimizes cross-NUMA memory accesses by co-locating actors with their data
 
 **Interaction with AArch64 Power Management:**
@@ -7920,8 +7931,8 @@ The runtime interacts with CPU frequency scaling:
 **Runtime Adaptation:**
 ```pseudocode
 function schedule_actor_with_frequency_scaling(actor, core):
-    // Pin actor to core
-    pin_actor_to_core(actor, core)
+    // The actor is already pinned to `core` (Actor Pinning Policy, §15.1.2);
+    // only the core's frequency is adjusted here.
     
     // Monitor actor priority and load
     if actor.priority == HIGH_PRIORITY:
@@ -7943,46 +7954,34 @@ end function
 
 **2. Core Parking and Unparking:**
 
-Efficiency cores may be parked/unparked by the OS based on system load. Actors running on cores remain unaffected by core parking; if a core is parked while an actor is executing there, the actor continues until explicitly migrated by application code using `migrate_actor()`.
+Efficiency cores may be parked and unparked based on system load. The runtime never moves an actor because its core is parked. On an OS-hosted target the OS may park a core and run the actor's carrier thread elsewhere; the actor stays bound to its carrier and its recorded core does not change. On an OS-free target, parking a core is the program's decision, and the program migrates that core's actors first with `migrate_actor()`.
 
 **3. Thermal Throttling:**
 
-The runtime monitors thermal conditions. When cores thermal throttle, actors running on those cores experience performance degradation but continue executing. Application code can monitor and respond to thermal conditions as needed.
+The runtime monitors thermal conditions. When cores thermal throttle, actors running on those cores experience performance degradation but continue executing on them; the runtime does not move them. Application code can monitor thermal conditions and migrate actors with `migrate_actor()` as needed.
 
 **4. Energy Efficiency Optimization:**
 
-The runtime optimizes for energy efficiency by placing actors on appropriate cores:
+Energy efficiency affects only the **initial** core of an actor spawned without a core id. After spawn the choice is fixed: the runtime never rebalances actors between cores (Actor Pinning Policy, §15.1.2).
 
 **Behavior:**
-- **Low-Priority Actors**: Scheduled on efficiency cores
+- **Low-Priority Actors**: Initially placed on efficiency cores
   - Efficiency cores consume less power
   - Lower performance but adequate for low-priority work
-- **High-Priority Actors**: Scheduled on performance cores
+- **High-Priority Actors**: Initially placed on performance cores
   - Performance cores provide maximum performance
   - Higher power consumption but necessary for performance-critical work
-- **Load Balancing**: Distributes load to minimize power consumption
+- **Rebalancing**: Never done by the runtime; a program that wants to spread load for power reasons migrates its actors with `migrate_actor()`
 
-**Runtime Strategy:**
+**Runtime Strategy (spawn without a core id):**
 ```pseudocode
-function optimize_energy_efficiency():
-    // Classify actors by priority
-    high_priority_actors = filter_actors_by_priority(HIGH)
-    low_priority_actors = filter_actors_by_priority(LOW)
-    
-    // Schedule high-priority actors on performance cores
-    for each actor in high_priority_actors:
-        performance_core = find_available_performance_core()
-        schedule_actor(actor, performance_core)
-    end for
-    
-    // Schedule low-priority actors on efficiency cores
-    for each actor in low_priority_actors:
-        efficiency_core = find_available_efficiency_core()
-        schedule_actor(actor, efficiency_core)
-    end for
-    
-    // Balance load to minimize power consumption
-    balance_load_for_power_efficiency()
+function choose_initial_core(actor):
+    // Runs once, at spawn; the result is the core the actor is pinned to.
+    if actor.priority == HIGH_PRIORITY:
+        return find_available_performance_core()
+    else:
+        return find_available_efficiency_core()
+    end if
 end function
 ```
 
@@ -7996,8 +7995,8 @@ end function
 | Feature | Behavior | Impact on Actors | Application Response |
 |---------|----------|------------------|----------------------|
 | **Frequency Scaling** | CPU frequency adjusts based on load | Performance varies with frequency | Request max frequency for high-priority actors |
-| **Core Parking** | Efficiency cores powered down | Minimal impact on active actors | Use `migrate_actor()` if needed |
-| **Thermal Throttling** | Cores throttle when hot | Performance degradation on hot cores | Use `migrate_actor()` to move to cooler cores |
+| **Core Parking** | Efficiency cores powered down | Actors are not moved by the runtime | Migrate actors off the core with `migrate_actor()` if needed |
+| **Thermal Throttling** | Cores throttle when hot | Performance degradation on hot cores; actors are not moved | Use `migrate_actor()` to move actors to cooler cores |
 | **Energy Optimization** | Initial actor placement considers efficiency | Placement at spawn time based on affinity | Choose a core id (e.g. from topology lists) and pass `uint64` to `spawn` |
 
 **Power Management Integration:**
@@ -8056,37 +8055,37 @@ actor_ref: actor_ref <- spawn_on_numa(initial_state, behavior, 0);
 
 #### 15.1.2.2 Message Delivery During Migration
 
-When an actor is explicitly migrated via `migrate_actor()`, message delivery guarantees ensure correct actor semantics and message ordering.
+When the program migrates an actor with `migrate_actor()`, message delivery guarantees ensure correct actor semantics and message ordering.
 - **NUMA Cache Effects**: Cross-NUMA migration may cause cache misses if data is not local to target core
 
 **Migration Control:**
 
-Actor migration is **manual-only** - application programmers must explicitly migrate actors using the `migrate_actor()` function. The runtime does not perform automatic migration for load balancing, thermal management, or core parking.
+Actor migration is **program-only**: an actor changes core only when the program calls `migrate_actor()` (Actor Pinning Policy, §15.1.2). The runtime never migrates an actor for load balancing, thermal management, core parking, power, or NUMA locality.
 
 **Migration API:**
 
 ```silica
-// Explicitly migrate an actor to a target core
+// Move an actor from whatever core it is on to target_core, and pin it there
 migrate_actor(actor_ref: actor_ref, target_core: int) -> atom proc[concurrency]
 
-// Pin an actor to a specific core (prevents migration)
-pin_actor_to_core(actor_ref: actor_ref, core_id: int) -> atom proc[concurrency]
+// Also a move: re-pins the actor to core_id (every actor is always pinned)
+pin_actor_to_core(actor_ref: actor_ref, core_id: int) -> (int64, affinity_error) proc[concurrency]
 ```
 
 **Migration Policy:**
 
-- **No Automatic Migration**: The runtime never automatically migrates actors between cores
-- **Manual Migration Only**: Actors only migrate when explicitly requested via `migrate_actor()`
-- **Core Affinity**: Actors can be pinned to cores using `pin_actor_to_core()` to prevent migration
+- **Always Pinned**: Every actor is pinned from spawn until it terminates; there is no unpinned state
+- **No Automatic Migration**: The runtime never migrates actors between cores on its own
+- **Program Migration Only**: Actors migrate only when the program calls `migrate_actor()` or a `pin_actor_to_*` helper; the actor is then pinned to the new core
 - **Migration Responsibility**: Application programmers are responsible for implementing migration policies (load balancing, thermal management, etc.) if needed
 
 **NUMA-Aware Migration Strategies:**
 
-The runtime implements sophisticated NUMA-aware migration strategies to optimize actor placement and minimize cross-NUMA memory access latency. These strategies leverage AArch64 topology detection to make intelligent migration decisions.
+The runtime never decides on its own to migrate an actor (Actor Pinning Policy, §15.1.2). NUMA topology is used in two places: the runtime uses it to choose the initial core of an actor spawned without a core id, and programs use it to decide their own moves. The decision algorithm below is a model for such program-level policies; the runtime does not run it on existing actors.
 
 **NUMA Topology Detection:**
 
-Before making migration decisions, the runtime detects NUMA topology using AArch64 system registers and kernel interfaces:
+The runtime detects NUMA topology using AArch64 system registers and kernel interfaces, and exposes it to programs through the topology queries (§22.10):
 
 ```pseudocode
 function detect_numa_topology():
@@ -8110,7 +8109,7 @@ end function
 
 **NUMA-Aware Migration Decision Algorithm:**
 
-The runtime uses the following algorithm to determine optimal actor placement:
+A program-level placement policy can use the following algorithm and then call `migrate_actor()` with its result. The runtime itself applies only the scoring part, once, when choosing the initial core for an actor spawned without a core id:
 
 ```pseudocode
 function decide_actor_migration(actor, current_core, target_candidates):
@@ -8180,16 +8179,16 @@ When migrating an actor to a different NUMA node:
 
 **Scenario 3: NUMA-Optimized Placement**
 
-When placing a new actor or migrating for NUMA optimization:
+When placing a new actor spawned without a core id, or when a program moves an actor for NUMA locality:
 
-- **Placement Strategy**: Runtime selects core on same NUMA node as actor's data regions
+- **Placement Strategy**: At spawn the runtime selects a core on the same NUMA node as the actor's data regions; for a move, the program names the core
 - **Data Locality**: Maximizes data locality by keeping actor and data on same NUMA node
 - **Performance**: Optimal memory access latency (local NUMA access)
 - **Behavioral Guarantee**: Actor is placed to minimize cross-NUMA memory access
 
 **NUMA Migration Behavioral Guarantees:**
 
-The runtime provides the following behavioral guarantees for NUMA-aware migration:
+The runtime provides the following behavioral guarantees for every move a program requests:
 
 1. **Correctness**: Actor execution remains correct regardless of NUMA placement - migration does not affect program semantics
 2. **Message Delivery**: Messages continue to be delivered correctly during and after migration, regardless of NUMA placement
@@ -8199,7 +8198,7 @@ The runtime provides the following behavioral guarantees for NUMA-aware migratio
 
 **NUMA Migration Decision Factors:**
 
-The runtime considers the following factors when making NUMA-aware migration decisions:
+A program-level placement policy should consider the following factors:
 
 - **Data Region NUMA Affinity**: NUMA node where actor's data regions are allocated
 - **Current Core NUMA Node**: NUMA node of the core where actor currently executes
@@ -8210,12 +8209,11 @@ The runtime considers the following factors when making NUMA-aware migration dec
 
 **NUMA Migration Timing:**
 
-NUMA-aware migration occurs at specific times:
+NUMA placement happens at exactly two kinds of moment:
 
-- **Actor Spawn**: New actors are placed on cores with same NUMA node as their data regions
-- **Explicit Migration**: When `migrate_actor()` is called, runtime selects NUMA-optimal target core
-- **Data Region Allocation**: When actor allocates new data regions, runtime may migrate actor to optimize NUMA placement
-- **Load Balancing**: When load balancing triggers migration, runtime considers NUMA placement in target selection
+- **Actor Spawn**: An actor spawned without a core id is placed on a core in the same NUMA node as its data regions, and is pinned there
+- **Program Migrations**: `migrate_actor()` takes the target core from the program; the runtime does not substitute a different core
+- **Nothing Else**: Allocating regions, load, and temperature never move an actor
 
 **NUMA Migration Examples:**
 
@@ -8283,7 +8281,7 @@ end
 Developers implementing manual migration should consider:
 
 - **NUMA Awareness**: Allocate data regions on the same NUMA node as target cores to minimize cross-NUMA migration overhead
-- **Affinity Pinning**: Pin performance-critical actors to specific cores to prevent accidental migration
+- **Choose the Core at Spawn**: Every actor is pinned from spawn; pass a core id to `spawn` for performance-critical actors rather than moving them later
 - **Cache-Friendly Data**: Use cache-friendly data structures to minimize cache miss impact after migration
 - **Migration Timing**: Migrate actors during low-activity periods to minimize performance impact
 - **NUMA Placement**: When spawning actors, allocate data regions first, then spawn actors to ensure NUMA-optimal placement
@@ -8330,7 +8328,7 @@ Message delivery operations are atomic with respect to migration:
 
 The migration window is the period during which an actor is transitioning between cores:
 
-1. **Window Start**: Migration window begins when runtime decides to migrate actor
+1. **Window Start**: Migration window begins when the runtime starts a move the program requested
 2. **Window Duration**: Migration window duration is typically 1-20 microseconds (depends on NUMA topology)
 3. **Window End**: Migration window ends when actor is fully operational on target core
 4. **Message Handling**: During migration window, incoming messages are queued but not processed
@@ -8342,7 +8340,7 @@ The migration window is the period during which an actor is transitioning betwee
 cast(actor_b, msg1)  // Delivered before migration
 cast(actor_b, msg2)  // Delivered before migration
 
-// Runtime decides to migrate Actor B (migration window starts)
+// The program calls migrate_actor(actor_b, 3) (migration window starts)
 // Migration occurs (1-20 microseconds)
 
 cast(actor_b, msg3)  // Queued during migration, delivered after migration completes
@@ -8374,8 +8372,8 @@ If migration fails:
 
 1. **Migration Rollback**: Actor remains on source core, migration is rolled back
 2. **Message Queue**: Message queue remains on source core, no messages are lost
-3. **Retry Strategy**: Runtime may retry migration after a delay
-4. **Error Reporting**: Migration failure is reported to runtime monitoring systems
+3. **No Automatic Retry**: The runtime does not retry; the actor stays pinned to its source core, and retrying is the program's decision
+4. **Error Reporting**: The failure is returned to the caller as the error atom from `migrate_actor()`
 
 **Cross-References:**
 - See Section 16.1.3 (Message Ordering) for general message ordering guarantees
@@ -9717,7 +9715,7 @@ error: cannot call(self(), ...)
 
 #### 16.2.6.6 Migration Message Handling
 
-**Migration Control**: Actor migration between cores is initiated by messages sent to the actor (via `migrate_actor()` or similar control functions). However, these migration messages are **handled by the runtime**, not by the behavior function.
+**Migration Control**: Actor migration between cores is initiated only by the program, with `migrate_actor()` or a `pin_actor_to_*` helper; the runtime never starts one (Actor Pinning Policy, §15.1.2). These requests are delivered to the actor as control messages that are **handled by the runtime**, not by the behavior function.
 
 **Semantics**:
 - Migration messages are processed **outside** the normal message handler
@@ -11745,9 +11743,15 @@ fn monitor(target: actor_ref, monitor: actor_ref<down_msg>)
     -> atom proc[concurrency]
 ```
 
-### 20.4 Networking
+### 20.4 Networking (core language)
 
-Silica provides optional networking capabilities through effect-gated modules. Networking is not part of the core language but available as standard library modules that require the `networking` effect.
+**Normative:** Networking is part of the **core Silica language**, not the standard library. This section keeps its number in chapter 20 so existing references stay valid; its contents are core language. Specifically:
+
+- **Built in.** The types in §20.4.1 and the operations in §20.4.2–§20.4.6 are provided by the compiler and runtime in the same way as the actor operations (§22.4) and file I/O (§22.6). Every program can use them without a `use` declaration, and the compiler type-checks and effect-checks every call. They are listed with the other built-ins in §22.17.
+- **Reserved names.** `net.socket`, `net.tcp`, `net.udp`, `net.packet`, and `net.utils` are built-in namespaces, not library modules; a program cannot define or shadow them.
+- **One effect.** Every operation that touches the network requires the `network_io` effect (§9). The pure helpers of §20.4.5 (packet parsing and checksums) require no effect.
+- **Actors, not threads, wait.** A socket operation that cannot complete immediately suspends only the calling actor; no carrier thread and no core blocks while it waits.
+- **Every target.** OS-hosted targets implement networking over the host's socket interface, with readiness notification (for example kqueue on macOS, epoll on Linux) delivered to the waiting actors. OS-free targets implement it with a TCP/IP stack in the Silica runtime (ARP, IPv4, ICMP, UDP, TCP, DHCP), running as supervised actors over a device-actor network driver ([silica_device_actor_specification.md](silica_device_actor_specification.md)). Programs see the same types, operations, and effect on both.
 
 #### 20.4.1 Core Networking Types
 ```
@@ -11773,34 +11777,34 @@ type net_error =
   | InvalidAddress
 ```
 
-#### 20.4.2 Socket Module
+#### 20.4.2 Sockets (`net.socket`)
 ```
+// Built-in namespace: core language, no `use` required
 module net.socket {
 
     pub type socket<T: protocol_type>  // Protocol-specific socket
 
     pub fn create_socket(protocol: protocol_type)
-        -> result<socket<protocol>, net_error> proc[networking]
+        -> result<socket<protocol>, net_error> proc[network_io]
 
     pub fn bind_socket(sock: socket<T>, addr: socket_addr)
-        -> result<atom, net_error> proc[networking]
+        -> result<atom, net_error> proc[network_io]
 
     pub fn close_socket(sock: socket<T>)
-        -> atom proc[networking]
+        -> atom proc[network_io]
 
     pub fn get_socket_addr(sock: socket<T>)
-        -> socket_addr proc[networking]
+        -> socket_addr proc[network_io]
 
     pub fn set_socket_option<T>(sock: socket<T>, option: socket_option, value: T)
-        -> result<atom, net_error> proc[networking]
+        -> result<atom, net_error> proc[network_io]
 }
 ```
 
-#### 20.4.3 TCP Module
+#### 20.4.3 TCP (`net.tcp`)
 ```
+// Built-in namespace: core language, no `use` required
 module net.tcp {
-
-    use module net.socket
 
     pub type tcp_socket = socket<tcp>
     pub type tcp_connection = {
@@ -11811,50 +11815,50 @@ module net.tcp {
     }
 
     pub fn connect(sock: tcp_socket, addr: socket_addr)
-        -> result<tcp_connection, net_error> proc[networking]
+        -> result<tcp_connection, net_error> proc[network_io]
 
     pub fn listen(sock: tcp_socket, backlog: int)
-        -> result<atom, net_error> proc[networking]
+        -> result<atom, net_error> proc[network_io]
 
     pub fn accept(sock: tcp_socket)
-        -> result<tcp_connection, net_error> proc[networking]
+        -> result<tcp_connection, net_error> proc[network_io]
 
     pub fn write(sock: tcp_connection, data: buf(R, normal, uint8, size))
-        -> result<int, net_error> proc[networking]
+        -> result<int, net_error> proc[network_io]
 
     pub fn receive(sock: tcp_connection, buffer: buf(R, normal, uint8, max_size))
-        -> result<int, net_error> proc[networking]
+        -> result<int, net_error> proc[network_io]
 
     pub fn shutdown(sock: tcp_connection, direction: shutdown_direction)
-        -> result<atom, net_error> proc[networking]
+        -> result<atom, net_error> proc[network_io]
 }
 ```
 
-#### 20.4.4 UDP Module
+#### 20.4.4 UDP (`net.udp`)
 ```
+// Built-in namespace: core language, no `use` required
 module net.udp {
-
-    use module net.socket
 
     pub type udp_socket = socket<udp>
     pub type udp_endpoint = socket_addr
 
     pub fn transmit_to(sock: udp_socket, data: buf(R, normal, uint8, size), dest: socket_addr)
-        -> result<int, net_error> proc[networking]
+        -> result<int, net_error> proc[network_io]
 
     pub fn receive_from(sock: udp_socket, buffer: buf(R, normal, uint8, max_size))
-        -> result<(int, socket_addr), net_error> proc[networking]
+        -> result<(int, socket_addr), net_error> proc[network_io]
 
     pub fn join_multicast_group(sock: udp_socket, group_addr: ip_addr, interface: ip_addr)
-        -> result<atom, net_error> proc[networking]
+        -> result<atom, net_error> proc[network_io]
 
     pub fn leave_multicast_group(sock: udp_socket, group_addr: ip_addr, interface: ip_addr)
-        -> result<atom, net_error> proc[networking]
+        -> result<atom, net_error> proc[network_io]
 }
 ```
 
-#### 20.4.5 Packet Processing Module
+#### 20.4.5 Packet Processing (`net.packet`)
 ```
+// Built-in namespace: core language, no `use` required
 module net.packet {
 
     use module arch.sve  // Optional: for SIMD acceleration
@@ -11901,21 +11905,22 @@ module net.packet {
 }
 ```
 
-#### 20.4.6 Networking Utilities
+#### 20.4.6 Networking Utilities (`net.utils`)
 ```
+// Built-in namespace: core language, no `use` required
 module net.utils {
 
     pub fn resolve_hostname(hostname: string)
-        -> result<ip_addr, resolve_error> proc[networking]
+        -> result<ip_addr, resolve_error> proc[network_io]
 
     pub fn get_network_interfaces()
-        -> list<network_interface> proc[networking]
+        -> list<network_interface> proc[network_io]
 
     pub fn create_network_buffer(size: int)
-        -> buf(R, normal_noncacheable, uint8, size) proc[networking, mem(normal_noncacheable)]
+        -> buf(R, normal_noncacheable, uint8, size) proc[network_io, mem(normal_noncacheable)]
 
     pub fn optimize_buffer_for_nic(buffer: buf(R, normal_noncacheable, T, size), nic_device: device_ref)
-        -> buf(R, normal_noncacheable, T, size) proc[networking]
+        -> buf(R, normal_noncacheable, T, size) proc[network_io]
 }
 ```
 
@@ -11925,7 +11930,7 @@ module net.utils {
 
 ### 20.5 Networking Integration with Chip Features
 
-Silica's networking modules leverage AArch64 chip capabilities for optimal performance:
+Silica's built-in networking operations leverage AArch64 chip capabilities for optimal performance:
 
 #### 20.5.1 NUMA-Aware Networking
 Network buffers and processing can be NUMA-optimized:
@@ -11948,14 +11953,14 @@ rx_buffers: buf(R, normal, packet, N) <- alloc_buf(region, buffer_count)
 
 // Allocate actor on same NUMA node as its data
 actor_ref: actor_ref <- spawn(initial_state, behavior)
-pin_actor_to_numa_node(actor_ref, nic_numa_node)
+pin_actor_to_numa_node(actor_ref, nic_numa_node)  // a move: re-pins the actor to a core on that node
 ```
 
 **NUMA-Aware Actor Placement:**
 Actors processing NUMA-local data should be placed on cores within the same NUMA node to minimize cross-NUMA memory access latency. The runtime provides NUMA-aware scheduling hints.
 
 #### 20.5.2 CPU Affinity for Network Processing
-Network actors can be pinned to optimal cores:
+Every actor is pinned from spawn; these helpers move a freshly spawned actor to a better core class (spawning it on the right core directly avoids the move):
 ```silica
 // Pin network processing to efficiency cores (continuous I/O)
 network_actor: actor_ref <- spawn_actor(network_state, packet_processor)
@@ -11969,7 +11974,7 @@ pin_actor_to_performance_core(app_actor)
 #### 20.5.3 SIMD-Accelerated Packet Processing
 When SVE is available, packet processing is automatically vectorized:
 ```silica
-use module net.packet
+// net.packet is built in; no `use` required
 use module arch.sve  // Enables SIMD acceleration
 
 // Automatic vectorization for batch packet processing
@@ -14369,18 +14374,17 @@ get_efficiency_cores() -> List[int64,normal]
 get_performance_cores() -> List[int64,normal]
 get_core_capabilities(core_id: int) -> core_info
 
-// Actor pinning operations
-// Returns (int64, affinity_error) tuple: (0, error) on failure, (1, error) on success
-// error is set to appropriate value or empty on success
-pin_actor_to_core(actor: actor_ref, core_id: int) -> (int64, affinity_error)
-pin_actor_to_efficiency_core(actor: actor_ref) -> (int64, affinity_error)
-pin_actor_to_performance_core(actor: actor_ref) -> (int64, affinity_error)
-pin_actor_realtime(actor: actor_ref, priority: int) -> (int64, affinity_error)
-unpin_actor(actor: actor_ref) -> atom
+// Actor placement. Every actor is pinned from spawn until it terminates (§15.1.2).
+// Each of the following moves the actor to another core; none of them unpins it.
+// migrate_actor: moves the actor from whatever core it is on to target_core; returns :ok or an error atom
+migrate_actor(actor: actor_ref, target_core: int) -> atom
+// pin_actor_* helpers return (int64, affinity_error): (1, _) on success, (0, error) on failure
+pin_actor_to_core(actor: actor_ref, core_id: int) -> (int64, affinity_error)        // move to core_id
+pin_actor_to_efficiency_core(actor: actor_ref) -> (int64, affinity_error)          // move to an efficiency core
+pin_actor_to_performance_core(actor: actor_ref) -> (int64, affinity_error)         // move to a performance core
+pin_actor_realtime(actor: actor_ref, priority: int) -> (int64, affinity_error)     // real-time priority on its current core
 
-// Actor removal
-// Removes an actor from the system, unpinning it and allowing cleanup
-// All actors are pinned until remove() is called
+// Actor removal: terminates the actor normally; its pinning ends with it
 remove_actor(actor: actor_ref) -> (int64, affinity_error)
 
 // Advanced scheduling hints
@@ -14388,7 +14392,7 @@ set_actor_priority(actor: actor_ref, priority: priority_level) -> atom
 ```
 
 **Error Handling:**
-Actor pinning functions return a tuple `(int64, affinity_error)`:
+The `pin_actor_*` helpers and `remove_actor` return a tuple `(int64, affinity_error)` (`migrate_actor` returns an atom, `:ok` on success):
 - On success: `(1, affinity_error)` where `affinity_error` is empty/unused
 - On failure: `(0, affinity_error)` where `affinity_error` indicates the failure reason
 
@@ -14403,21 +14407,24 @@ The static return type is `core_info`. Implementations **must** distinguish succ
 Platform-specific sysctl keys, NUMA layout, and cache-level details for **Apple Silicon on macOS** are described in [`cpu_topology_implementation_plan.md`](./Phase1_TODOs/cpu_topology_implementation_plan.md) (that document is scoped to that runtime; other platforms need their own notes).
 
 **Actor Pinning Behavior:**
-All actors are pinned to their initial core assignment until `remove_actor()` is called. Once an actor is pinned:
-- It remains on the assigned core(s) until explicitly unpinned or removed
-- The runtime respects the pinning constraint for scheduling decisions
-- Thermal management and power optimization may still migrate the actor if necessary, but will attempt to return it to the pinned core when conditions allow
+All actors are pinned from spawn until they terminate (Actor Pinning Policy, §15.1.2). A pinned actor:
+- Runs only on its core on an OS-free target, or only on the carrier thread for its core on an OS-hosted target (where the OS may still share or move that thread)
+- Changes core only when the program calls `migrate_actor` or a `pin_actor_to_*` helper, after which it is pinned to the new core
+- Is never moved by the runtime: not for thermal management, power optimization, load, or NUMA locality
+- Stops being pinned only by terminating (normal exit, `remove_actor`, `kill_abnormal`, supervisor termination, or failure)
+
+`unpin_actor` is not part of the language: an actor has no unpinned state.
 
 Example usage:
 ```silica
-// Pin actor to specific core
+// Move the actor to core 2 (it is pinned there afterwards)
 (result: int64, error: affinity_error) <- pin_actor_to_core(actor_ref, 2);
 case result of {
-    1 -> // Success, actor pinned
+    1 -> // Success, actor now pinned to core 2
     0 -> // Failure, check error for reason
 }
 
-// Remove actor (unpins and allows cleanup)
+// Terminate the actor normally (its pinning ends with it)
 (remove_result: int64, remove_error: affinity_error) <- remove_actor(actor_ref);
 case remove_result of {
     1 -> // Success, actor removed
@@ -14488,6 +14495,54 @@ assert(condition: boolean, message: string) -> atom proc[]
 unreachable() -> ! proc[]                   // mark unreachable code
 ```
 
+### 22.17 Networking Operations
+
+Networking is part of the core language (§20.4). These operations are built in, need no `use` declaration, and require the `network_io` effect unless marked pure. Their types and full semantics are in §20.4; a socket operation that cannot complete immediately suspends only the calling actor.
+
+#### 22.17.1 Sockets
+```
+net.socket.create_socket(protocol: protocol_type) -> result<socket<protocol>, net_error> proc[network_io]
+net.socket.bind_socket(sock: socket<T>, addr: socket_addr) -> result<atom, net_error> proc[network_io]
+net.socket.close_socket(sock: socket<T>) -> atom proc[network_io]
+net.socket.get_socket_addr(sock: socket<T>) -> socket_addr proc[network_io]
+net.socket.set_socket_option<T>(sock: socket<T>, option: socket_option, value: T) -> result<atom, net_error> proc[network_io]
+```
+
+#### 22.17.2 TCP
+```
+net.tcp.connect(sock: tcp_socket, addr: socket_addr) -> result<tcp_connection, net_error> proc[network_io]
+net.tcp.listen(sock: tcp_socket, backlog: int) -> result<atom, net_error> proc[network_io]
+net.tcp.accept(sock: tcp_socket) -> result<tcp_connection, net_error> proc[network_io]
+net.tcp.write(sock: tcp_connection, data: buf(R, normal, uint8, size)) -> result<int, net_error> proc[network_io]
+net.tcp.receive(sock: tcp_connection, buffer: buf(R, normal, uint8, max_size)) -> result<int, net_error> proc[network_io]
+net.tcp.shutdown(sock: tcp_connection, direction: shutdown_direction) -> result<atom, net_error> proc[network_io]
+```
+
+#### 22.17.3 UDP
+```
+net.udp.transmit_to(sock: udp_socket, data: buf(R, normal, uint8, size), dest: socket_addr) -> result<int, net_error> proc[network_io]
+net.udp.receive_from(sock: udp_socket, buffer: buf(R, normal, uint8, max_size)) -> result<(int, socket_addr), net_error> proc[network_io]
+net.udp.join_multicast_group(sock: udp_socket, group_addr: ip_addr, interface: ip_addr) -> result<atom, net_error> proc[network_io]
+net.udp.leave_multicast_group(sock: udp_socket, group_addr: ip_addr, interface: ip_addr) -> result<atom, net_error> proc[network_io]
+```
+
+#### 22.17.4 Packet Processing (pure)
+```
+net.packet.parse_ethernet_frame(data: buf(R, normal, uint8, frame_size)) -> result<ethernet_frame, parse_error> proc[]
+net.packet.parse_ipv4_packet(data: buf(R, normal, uint8, packet_size)) -> result<ipv4_packet, parse_error> proc[]
+net.packet.calculate_ipv4_checksum(packet: ipv4_packet) -> int proc[]
+net.packet.validate_packet(packet: ipv4_packet) -> result<atom, validation_error> proc[]
+net.packet.process_packet_batch(packets: buf(R, normal, packet, batch_size)) -> processed_results proc[]
+```
+
+#### 22.17.5 Networking Utilities
+```
+net.utils.resolve_hostname(hostname: string) -> result<ip_addr, resolve_error> proc[network_io]
+net.utils.get_network_interfaces() -> list<network_interface> proc[network_io]
+net.utils.create_network_buffer(size: int) -> buf(R, normal_noncacheable, uint8, size) proc[network_io, mem(normal_noncacheable)]
+net.utils.optimize_buffer_for_nic(buffer: buf(R, normal_noncacheable, T, size), nic_device: device_ref) -> buf(R, normal_noncacheable, T, size) proc[network_io]
+```
+
 ## 23. Runtime System
 
 ### 23.1 Execution Environment
@@ -14495,10 +14550,10 @@ unreachable() -> ! proc[]                   // mark unreachable code
 #### 23.1.1 Process Scheduler
 The runtime provides a scheduler for process execution:
 
-- **Fair Scheduling**: Processes are scheduled fairly across available cores
+- **Fair Scheduling**: Processes are scheduled fairly on each core
 - **Preemptive**: Long-running processes can be preempted
 - **Priority Support**: Optional priority hints for process scheduling
-- **Load Balancing**: Automatic distribution across CPU cores
+- **Placement**: Each actor runs on the core it is pinned to (§15.1.2); the scheduler shares a core's time among its actors and never balances load by moving actors between cores
 
 #### 23.1.2 Actor Runtime
 Actors are managed by the runtime:
@@ -14512,9 +14567,9 @@ Actors are managed by the runtime:
 The runtime provides intelligent CPU scheduling with optional affinity controls:
 
 - **NUMA-Aware Scheduling**: Initial scheduling considers memory locality to minimize cross-NUMA communication latency
-- **Core Affinity Control**: Developers pass a single **`uint64`** core id (or `core_id(...)`) at `spawn` time; pinning helpers and topology queries refine placement afterward
+- **Core Affinity Control**: Developers pass a single **`uint64`** core id (or `core_id(...)`) at `spawn` time; the actor is pinned there until the program migrates it (`migrate_actor()` or a `pin_actor_to_*` helper) or it terminates
 - **Core Type Awareness**: Distinguishes between efficiency cores (power-optimized) and performance cores (speed-optimized)
-- **Manual Migration**: Application code can explicitly migrate actors using `migrate_actor()` to respond to thermal or load conditions
+- **Program Migration**: Application code migrates actors with `migrate_actor()` to respond to thermal or load conditions; the runtime never does so on its own
 - **Monitoring Support**: Runtime provides temperature and load information for application-driven optimization decisions
 - **Real-Time Scheduling**: Optional real-time priority scheduling for latency-critical actors with CPU affinity guarantees
 
@@ -14583,7 +14638,7 @@ Concurrency operations require capabilities:
 - `concurrency`: Actor spawning, message passing, and management
 - `atomic`: Atomic memory operations
 - `cpu_affinity`: CPU pinning and affinity controls
-- `networking`: Network device access and communication
+- `network_io`: Network communication: sockets, TCP, UDP, name resolution (core language, §20.4)
 
 ### 23.3 Error Handling and Recovery
 
@@ -14849,8 +14904,8 @@ region: region(R, normal) <- alloc_region(normal)
 AArch64's big.LITTLE and similar asymmetric designs are leveraged through Silica's actor model:
 
 - **Core Type Awareness**: Runtime distinguishes between performance cores (high-speed) and efficiency cores (power-optimized)
-- **Intelligent Task Placement**: Actors are automatically scheduled on appropriate core types based on workload characteristics
-- **Dynamic Migration**: Runtime can migrate actors between core types based on system load and thermal conditions
+- **Initial Task Placement**: An actor spawned without a core id is placed on an appropriate core type at spawn, and stays pinned there
+- **Program-Driven Migration**: Programs migrate actors between core types with `migrate_actor()` in response to load and thermal conditions; the runtime never moves them on its own
 
 **Memory Coherence and Interconnects:**
 Silica's message-passing concurrency aligns with AArch64's cache-coherent interconnects:
@@ -15505,7 +15560,7 @@ BL process_secret   // Call processing function
 The compiler generates code optimized for heterogeneous core architectures:
 - **Performance Core Targeting**: Latency-critical actor code optimized for high-performance cores
 - **Efficiency Core Targeting**: Background tasks optimized for power-efficient cores
-- **Dynamic Code Paths**: Runtime core migration with recompilation hints
+- **Dynamic Code Paths**: Code paths suited to each core type, for actors a program moves between core types
 
 **Custom Instruction Utilization:**
 Direct exploitation of AArch64-specific instructions:
@@ -15585,7 +15640,7 @@ Runtime performance feedback drives recompilation:
 **Chip Temperature Integration:**
 Compiler adapts to thermal conditions:
 - **Dynamic Voltage Scaling**: Code generation considers power states
-- **Core Migration Planning**: Pre-planned migration paths for thermal events
+- **Core Migration Planning**: Topology and temperature data a program can use to plan its own moves for thermal events
 - **Workload Balancing**: Distribute computation to avoid thermal hotspots
 
 ### 27.5 Compilation Phases

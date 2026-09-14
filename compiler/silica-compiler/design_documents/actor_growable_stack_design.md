@@ -1271,19 +1271,17 @@ Scenario 4: Dynamic Workload (Mixed Migration Frequency)
 **Built-in Function**:
 
 ```silica
-move(processid: ProcessId; from: int64; to: int64) -> atom proc[concurrency]
+migrate_actor(processid: ProcessId; to: int64) -> atom proc[concurrency]
 ```
 
-**Purpose**: Explicitly move an actor from one CPU core to another. This function is the user-facing interface for actor migration and wraps the internal `migrate_actor` implementation.
+**Purpose**: Explicitly move an actor from whatever CPU core it is on to another. `migrate_actor` is the user-facing function for actor migration; every actor stays pinned to its core until the program migrates it or it terminates (spec §15.1.2, Actor Pinning Policy).
 
 **Parameters**:
-- `processid`: The actor/process identifier to move
-- `from`: Current (source) core ID (used for validation/optimization)
+- `processid`: The actor/process identifier to migrate
 - `to`: Target core ID where the actor should execute
 
 **Return**: An atom indicating success or failure
 - `SUCCESS`: Actor successfully moved to target core
-- `INVALID_SOURCE`: Actor is not currently on the `from` core
 - `INVALID_TARGET`: Target core does not exist or is unavailable
 - `ACTOR_NOT_FOUND`: No actor with the given processid
 - `MIGRATION_BLOCKED`: Actor is in a non-migratable state (e.g., executing a critical section)
@@ -1291,25 +1289,21 @@ move(processid: ProcessId; from: int64; to: int64) -> atom proc[concurrency]
 **Execution Steps**:
 
 ```pseudocode
-atom move(processid, from_core, to_core):
+atom migrate_actor(processid, to_core):
     // Step 1: Locate actor
     ActorStackMetadata *meta = get_actor_metadata(processid)
     if meta == null:
         return ACTOR_NOT_FOUND
 
-    // Step 2: Validate source core
-    if meta->core_id != from_core:
-        return INVALID_SOURCE
-
-    // Step 3: Validate target core
+    // Step 2: Validate target core
     if not is_valid_core(to_core):
         return INVALID_TARGET
 
-    // Step 4: Check if actor is migratable
+    // Step 3: Check if actor is migratable
     if is_actor_blocked_for_migration(meta):
         return MIGRATION_BLOCKED
 
-    // Step 5: Perform migration
+    // Step 4: Perform migration
     int target_numa = get_numa_node(to_core)
 
     // Atomically update core assignment
@@ -1331,15 +1325,12 @@ atom move(processid, from_core, to_core):
 **Usage Examples**:
 
 ```silica
-// Move actor from core 0 to core 4
-result: atom <- move(my_actor_ref, 0, 4);
+// Migrate the actor to core 4
+result: atom <- migrate_actor(my_actor_ref, 4);
 case result of {
     SUCCESS ->
         // Actor is now executing on core 4
         print("Actor moved successfully");
-    INVALID_SOURCE ->
-        // Actor was not on core 0
-        print("Source core mismatch");
     INVALID_TARGET ->
         // Core 4 doesn't exist or is unavailable
         print("Target core unavailable");
@@ -1350,13 +1341,13 @@ case result of {
 
 **Interaction with Migration Strategy**:
 
-The `move` function respects the actor's migration strategy (set at spawn time):
+`migrate_actor` respects the actor's migration strategy (set at spawn time):
 
 | Migration Strategy | Behavior |
 |-------------------|----------|
 | `lazy` | Migration completes immediately (< 1 μs), pages migrate on access (~10 μs per page) |
 | `eager_copy` | Migration blocks for stack copy (~10-100 ms depending on size), then executes cleanly |
-| `static_core` | Move fails with error if target core differs from pinned core |
+| `static_core` | `migrate_actor` fails with an error if the target core differs from the pinned core |
 
 **Performance Characteristics**:
 
@@ -1385,7 +1376,7 @@ Latency Breakdown (eager_copy migration):
 
 **Atomicity and Thread Safety**:
 
-The `move` function is atomic with respect to:
+`migrate_actor` is atomic with respect to:
 - The actor's execution context (cannot be interrupted mid-migration)
 - Core assignment updates (visible immediately to all observers)
 - Page marking (all pages marked together)
