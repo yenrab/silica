@@ -114,7 +114,7 @@ integrate-run:
 		if ! $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o; then \
 		echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; \
 		$(INTEGRATE_DOT_FAIL); \
-		ko=$$((ko + 1)); failed=1; break; \
+		ko=$$((ko + 1)); failed=1; \
 	fi; \
 	done; \
 	for o in *.o; do \

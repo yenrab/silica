@@ -75,6 +75,25 @@ The exit status is 0 only when every check passed. Suites with an `INTEGRATE_PEN
 file are skipped and not counted. The per-directory table for a tree-wide run is in
 the log.
 
+### Running the trials on a board
+
+`make integrate` can also run the trials on an ESP32-S3 board over USB: an interactive run asks
+where to run (Enter = this Mac), and `TRIAL_TARGET=host|ESP32-S3_raw|both` answers in advance.
+
+```
+make integrate TRIAL_TARGET=ESP32-S3_raw                       # the whole tree on the board
+make -C case_addition integrate TRIAL_TARGET=ESP32-S3_raw      # one suite on the board
+make integrate TRIAL_TARGET=both                               # this Mac, then the board
+```
+
+Only one trial run of any target can be in progress; a second one stops at once and names the
+run that holds `trials/.integrate.lock`. A board run compiles with
+`binaries/silica-compiler-ESP32-S3_raw`, runs each program from the board's RAM, compares its output
+with the same `.scout` goldens, and writes its report to `.integrate_report.ESP32-S3_raw` without
+touching the host's files. Details, the skip list and the settings are in
+[targets/README.md](targets/README.md); the software it needs is listed in
+[docs/required-software.md](../docs/required-software.md).
+
 ### Hung trials
 
 Trial programs have no run time limit of their own. Instead the outermost `integrate`
@@ -104,6 +123,8 @@ trials themselves and removed by `make clean`):
 | `.integrate_results` | one line per check, in suites that run trials as make rules |
 | `.integrate_pass_marks`, `.integrate_fail_marks` | one byte appended per check; their sizes drive the live counters and their timestamps the watchdog (outermost directory only) |
 | `.integrate_running/` | one file per trial program currently running, for the watchdog (outermost directory only) |
+| `.integrate.lock/` | held by the trial run in progress, of any target (trials root only) |
+| `<trial>.<target>.sout`, `.cur_fail`, `.integrate_report.<target>` | a board run's outputs (see [targets/README.md](targets/README.md)); board work files are under `.target/` |
 
 ordered_data_structures leaves compile each unit in a private `.sandbox/<unit>/`
 directory (removed when the unit finishes) and keep a content-addressed compile cache

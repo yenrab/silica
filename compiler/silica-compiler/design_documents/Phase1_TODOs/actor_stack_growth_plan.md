@@ -48,7 +48,7 @@ arena blocks.
 | Prologue text | `emitter/<target>/control/control.silica`, `function_prologue` |
 | Frame size for the probe distance | `emitter/<target>/emitter_core.silica`, `frame_spill_bytes(fn_val)` |
 | Thread entry and actor control block | runtime `_actor_thread_main`; the ACB is 384 bytes (`mov w1, #384` at the two `calloc` sites) and grows by the segment fields |
-| Fault handler and shrink trampoline | runtime shim (`silica_rt_shim.s`, `silica_rt_shim_linux.s`; the ESP32-S3 port table for Xtensa) |
+| Fault handler and shrink trampoline | runtime shim (`silica_rt_shim.s`, `runtime_asm/linux_aarch64/silica_rt_shim.s`; the ESP32-S3 port table for Xtensa) |
 
 ## Consequences and gate
 

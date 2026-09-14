@@ -29,10 +29,15 @@ STDLIB_DS := $(abspath $(THIS_DIR)../stdlib/data_structures)
 
 EXECUTABLE := silica-compiler
 
-# A successful build installs itself as the new selfhost: binaries/silica-<NNNNNN>-<platform>
-# with binaries/silica-compiler pointing at it, which is what compiles base and the trials.
-# Only the default EXECUTABLE is published; the per-emit-target builds from `make all-targets`
-# produce silica-compiler-<target> binaries that do not run on this host.
+# A successful build publishes itself to binaries/ (binaries/install_compiler.bash):
+#   - TARGET is the host's emit target and EXECUTABLE is the default: the new selfhost,
+#     binaries/silica-<NNNNNN>-<platform>, with binaries/silica-compiler pointing at it (what
+#     compiles base and the trials);
+#   - any other TARGET (e.g. ESP32-S3_raw): a compiler that runs on this host and emits for that
+#     target, binaries/silica-<NNNNNN>-<TARGET with - as _>-<platform>, with
+#     binaries/silica-compiler-<TARGET> pointing at it (what compiles the trials for a board).
+#     Each emit target has its own numbering. It is never installed as binaries/silica-compiler.
+# Host-target builds under another EXECUTABLE name (e.g. `make all-targets`) are not published.
 # Set INSTALL_SELFHOST=0 to build without publishing.
 INSTALL_COMPILER_SH := $(BINARIES_DIR)/install_compiler.bash
 INSTALL_SELFHOST ?= 1
@@ -56,7 +61,7 @@ ASSEMBLER := cc
 ASFLAGS_host :=
 LINKER_CLANG := cc
 LDFLAGS_STACK := -no-pie
-HOST_RT_ASM := deviceio_link_thunks_linux.s silica_rt_shim_linux.s
+HOST_RT_ASM := runtime_asm/linux_aarch64/deviceio_link_thunks.s runtime_asm/linux_aarch64/silica_rt_shim.s
 endif
 
 # Parallel .sams → .o assembly (Stage 2). Silica emission (Stage 1) stays serial
@@ -298,7 +303,7 @@ objects: assembly
 
 # Stage 3: link entry point `main` with all module objects + runtime.
 # No Rust archive is linked (see POLICY above); DeviceIO helpers come from
-# silica_rt_shim.s (silica_rt_shim_linux.s on Linux). deviceio_link_thunks.s covers seeds
+# silica_rt_shim.s (runtime_asm/linux_aarch64/ on Linux). deviceio_link_thunks.s covers seeds
 # that still emit DeviceIO as module_user calls. main_entry_alias.s provides _main for
 # Apple ld only (asm emits `main` without underscore). HOST_RT_ASM picks the set per host.
 executables: objects
@@ -317,7 +322,13 @@ executables: objects
 		exit 1; \
 	fi; \
 	echo "✅ Built $(EXECUTABLE)"; \
-	if [ "$(INSTALL_SELFHOST)" = "1" ] && [ "$(EXECUTABLE)" = "silica-compiler" ]; then \
+	if [ "$(INSTALL_SELFHOST)" = "1" ] && [ "$(TARGET)" != "$(HOST_DEFAULT_TARGET)" ]; then \
+		if [ -x "$(INSTALL_COMPILER_SH)" ]; then \
+			"$(INSTALL_COMPILER_SH)" target "$(TARGET)" "$(THIS_DIR)$(EXECUTABLE)" || { $(REPORT_COMPILE_TIME); exit 1; }; \
+		else \
+			echo "WARN: $(INSTALL_COMPILER_SH) missing; binaries/silica-compiler-$(TARGET) not updated"; \
+		fi; \
+	elif [ "$(INSTALL_SELFHOST)" = "1" ] && [ "$(EXECUTABLE)" = "silica-compiler" ]; then \
 		if [ -x "$(INSTALL_COMPILER_SH)" ]; then \
 			"$(INSTALL_COMPILER_SH)" selfhost "$(THIS_DIR)$(EXECUTABLE)" || { $(REPORT_COMPILE_TIME); exit 1; }; \
 		else \

@@ -51,6 +51,12 @@ Use the entries below for **quick navigation**. Each item links to a file in thi
 
 ---
 
+## [ports/esp32s3_port_status.md](./ports/esp32s3_port_status.md)
+
+**ESP32-S3 port status**: the behaviours verified on the board (apps and trial suites, with dates), the behaviours that differ from Apple Silicon (console, exit statuses, faults, stacks, heap, numerics, printing), what the emitter refuses (`.error`), and the gaps ordered for the next addition: actor runtime, peek and poke, the suites not yet run on the board, trial-driver gaps, emitter performance.
+
+---
+
 ## [ports/linux_aarch64_port_checklist.md](./ports/linux_aarch64_port_checklist.md)
 
 **Hosted port checklist** for **64-bit Raspberry Pi OS / Debian AArch64**: emit-target naming, the Darwin-ism inventory (syscall convention, `X8` hazard, symbol decoration, relocation syntax, sections, entry point and stack), the per-target golden-file split, Pi bootstrap steps, and verification gates through self-host.

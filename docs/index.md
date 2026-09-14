@@ -11,6 +11,7 @@ layout: default
   <a class="card" href="{{ '/design-principles/' | relative_url }}"><b>Design Principles</b><span>The choices the language is built around, stated for readers.</span></a>
   <a class="card" href="https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md"><b>Language Specification</b><span>The normative source: effects, regions, actors, and the FFI contract.</span></a>
   <a class="card" href="{{ '/build-and-test/' | relative_url }}"><b>Build and Test</b><span>Rebuild the seed, build the self-hosted compiler (gen1, gen2), and run the trials.</span></a>
+  <a class="card" href="{{ '/required-software/' | relative_url }}"><b>Required Software</b><span>What to install to build the compilers and run the trials, on a Mac and on an ESP32-S3 board.</span></a>
   <a class="card" href="{{ '/participate/' | relative_url }}"><b>Participate</b><span>In-flight work on parallel language and runtime tracks.</span></a>
 </div>
 

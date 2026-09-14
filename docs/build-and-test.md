@@ -10,7 +10,7 @@ How to rebuild the seed, build the self-hosted compiler from the seed (gen1) and
 
 These steps build the self-hosted toolchain ([roadmap](https://github.com/yenrab/silica/blob/main/ROADMAP.md) Track 1). This page mirrors the [README](https://github.com/yenrab/silica#building-the-compiler); the repository copy is the one kept in step with the Makefiles.
 
-**Platform notice (temporary):** the build and link path is validated on Apple Silicon (arm64 macOS) only. Other hosts are not yet supported end-to-end. A useful early contribution is another emit backend under [src_selfhost/emitter/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/src_selfhost/emitter/) (see `apple_silicon_mac/`, `linux_aarch64/`, and `ESP32-S32_raw/`), then `make TARGET=…`.
+**Platform notice (temporary):** the build and link path is validated on Apple Silicon (arm64 macOS) only. Other hosts are not yet supported end-to-end. A useful early contribution is another emit backend under [src_selfhost/emitter/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/src_selfhost/emitter/) (see `apple_silicon_mac/`, `linux_aarch64/`, and `ESP32-S3_raw/`), then `make TARGET=…`.
 
 ## The three compilers
 
@@ -19,10 +19,13 @@ These steps build the self-hosted toolchain ([roadmap](https://github.com/yenrab
 | Bootstrap | [compiler/silica-bootstrap-compiler/](https://github.com/yenrab/silica/tree/main/compiler/silica-bootstrap-compiler/) (Rust) | `cargo` | `target/release/silica-boot` (not in `binaries/`) |
 | Seed | [compiler/silica-compiler/src/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/src/) (Silica) | the bootstrap | `binaries/silica-NNNNNN-seed-<platform>`, reached through `binaries/seed-compiler` |
 | Selfhost | [compiler/silica-compiler/src_selfhost/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/src_selfhost/) (Silica, Rust-free) | the seed (**gen1**) or a previous selfhost (**gen2**) | `binaries/silica-NNNNNN-<platform>`, reached through `binaries/silica-compiler` |
+| ESP32-S3 compiler | the same tree with `TARGET=ESP32-S3_raw`: runs on the Mac, emits ESP32-S3 (Xtensa) assembly | the seed | `binaries/silica-NNNNNN-ESP32_S3_raw-<platform>`, reached through `binaries/silica-compiler-ESP32-S3_raw` |
 
-Generation numbers in `binaries/` count **down**: the lowest `NNNNNN` is the newest build. The two symlinks always point at the newest seed and the newest selfhost. `gen1` is the selfhost tree compiled by the seed; `gen2` is the same tree compiled by gen1, and it is the build that must pass every trial before the selfhost can replace the seed.
+Generation numbers in `binaries/` count **down**: the lowest `NNNNNN` is the newest build. Each kind (seed, selfhost, and each emit target such as ESP32-S3_raw) is numbered on its own, and its symlink always points at its newest build. `gen1` is the selfhost tree compiled by the seed; `gen2` is the same tree compiled by gen1, and it is the build that must pass every trial before the selfhost can replace the seed.
 
 ## 1. Prerequisites
+
+The complete list, with versions, install commands and the ESP32-S3 board tools, is on its own page: [Required software]({{ '/required-software/' | relative_url }}).
 
 | Requirement | Role |
 | ----------- | ---- |
@@ -53,7 +56,7 @@ make gen1
 
 ```
 Select the emit target (emitter/<name>/ to bake into silica-compiler):
-  1) ESP32-S32_raw
+  1) ESP32-S3_raw
   2) apple_silicon_mac  [default: host]
   3) linux_aarch64
 Number or name [apple_silicon_mac]:
@@ -84,7 +87,7 @@ make gen2
 | `make clean` | Remove generated artifacts (`.sams`, `.o`, configs, iface caches, the local executable). |
 | `make all` | `clean`, then `build`. |
 | `make help` | List targets, the active emit target, and allowable `TARGET` values. |
-| `make TARGET=<name>` | Bake a specific backend from `emitter/<name>/` (writes `silica.target`). |
+| `make TARGET=<name>` | Bake a specific backend from `emitter/<name>/` (writes `silica.target`). A backend other than the host's is published as `binaries/silica-compiler-<name>` (for example the ESP32-S3 compiler), never as `binaries/silica-compiler`. |
 | `make all-targets` | Clean/build once per allowable emit target, producing `silica-compiler-<TARGET>` for each. |
 | `make EXECUTABLE=<name>` | Override the output binary name (default: `silica-compiler`). |
 | `make build SILICA_COMPILER=<binary>` | Compile with any compiler binary (this is what `gen2` does with `silica-gen1`). |
@@ -131,6 +134,19 @@ make -C case_addition integrate SILICA_COMPILER=/path/to/compiler   # one suite
 
 `make integrate` is the Makefile default, so plain `make` in `trials/` does the same. A few suites are not part of the tree run and must be run directly: any suite with an `INTEGRATE_PENDING` marker is skipped (see its README).
 
+## Run the trials on an ESP32-S3 board
+
+The same trials can run on an ESP32-S3 board over USB: compiled by `binaries/silica-compiler-ESP32-S3_raw`, loaded into the board's RAM one at a time, and compared with the same `.scout` goldens. An interactive `make integrate` asks where to run (Enter = this Mac); set `TRIAL_TARGET` to skip the question:
+
+```bash
+cd trials
+make integrate TRIAL_TARGET=ESP32-S3_raw          # the whole tree on the board (takes hours)
+make integrate TRIAL_TARGET=both                  # this Mac, then the board
+make -C case_addition integrate TRIAL_TARGET=ESP32-S3_raw   # one suite on the board
+```
+
+Only one trial run, host or board, can be in progress at a time; a second one stops and names the run in progress. The board run writes its report to `trials/.integrate_report.ESP32-S3_raw` and leaves the host's results untouched. How it works, what it skips and its settings: [trials/targets/README.md](https://github.com/yenrab/silica/blob/main/trials/targets/README.md). What it needs installed: [Required software]({{ '/required-software/' | relative_url }}).
+
 ## Reading a report
 
 `trials/.integrate_report` starts with the totals and then lists each failing trial with its reason (`.sams differs from .ascomp`, `.sout differs from .scout`, `.cur_fail differs from .golden_fail`, `compilation failed`, `missing executable`, and so on).
@@ -146,5 +162,5 @@ Other useful targets in `trials/`:
 - `make help` — list targets and suites.
 - `make integrate-ffi` — the success-path FFI application trials only.
 
-The harness assumes the same Apple Silicon / macOS toolchain as the compiler build. Some suites have their own READMEs.
+The harness assumes the same Apple Silicon / macOS toolchain as the compiler build (see [Required software]({{ '/required-software/' | relative_url }})). Some suites have their own READMEs.
 

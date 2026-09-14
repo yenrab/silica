@@ -10,31 +10,34 @@ EMITTER_ROOT := $(THIS_DIR)emitter
 
 # Discover allowable emit targets from emitter/*/ directory names only.
 # (macOS / GNU Make wildcard can also match plain files like Makefile.)
-# Names must be simple identifiers: letters, digits, underscore, hyphen (ESP32-S32_raw).
+# Names must be simple identifiers: letters, digits, underscore, hyphen (ESP32-S3_raw).
 ALLOWED_TARGETS := $(shell find "$(EMITTER_ROOT)" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | grep -E '^[A-Za-z0-9_-]+$$' | LC_ALL=C sort -u)
 
 HOST_UNAME_S := $(shell uname -s 2>/dev/null)
 HOST_UNAME_M := $(shell uname -m 2>/dev/null)
 
+# The emit target of the current host platform. Candidates are tried in order against
+# directories that actually exist under emitter/. Computed whether or not TARGET is given:
+# the Makefile's publish step compares TARGET with it (a host build installs as the selfhost,
+# any other target as its own kind -- see install_compiler.bash).
+TARGET_CANDIDATES :=
+ifeq ($(HOST_UNAME_S),Darwin)
+  ifeq ($(HOST_UNAME_M),arm64)
+    TARGET_CANDIDATES := apple_silicon_mac
+  endif
+endif
+ifeq ($(HOST_UNAME_S),Linux)
+  ifneq ($(filter $(HOST_UNAME_M),aarch64 arm64),)
+    TARGET_CANDIDATES := linux_aarch64
+  endif
+  ifeq ($(HOST_UNAME_M),x86_64)
+    TARGET_CANDIDATES := linux_x86_64
+  endif
+endif
+HOST_DEFAULT_TARGET := $(firstword $(filter $(TARGET_CANDIDATES),$(ALLOWED_TARGETS)))
 # Default TARGET to the current host platform when the user does not pass
-# TARGET=... on the command line or via the environment. Candidates are
-# tried in order against directories that actually exist under emitter/.
+# TARGET=... on the command line or via the environment.
 ifndef TARGET
-  TARGET_CANDIDATES :=
-  ifeq ($(HOST_UNAME_S),Darwin)
-    ifeq ($(HOST_UNAME_M),arm64)
-      TARGET_CANDIDATES := apple_silicon_mac
-    endif
-  endif
-  ifeq ($(HOST_UNAME_S),Linux)
-    ifneq ($(filter $(HOST_UNAME_M),aarch64 arm64),)
-      TARGET_CANDIDATES := linux_aarch64
-    endif
-    ifeq ($(HOST_UNAME_M),x86_64)
-      TARGET_CANDIDATES := linux_x86_64
-    endif
-  endif
-  HOST_DEFAULT_TARGET := $(firstword $(filter $(TARGET_CANDIDATES),$(ALLOWED_TARGETS)))
   # Ask which emitter/<name>/ to build when more than one exists and a terminal is
   # attached (choose_emit_target.sh prints the host default without asking otherwise).
   # Goals that need no target (help, clean) never prompt; SILICA_TARGET_PROMPT=0 forces

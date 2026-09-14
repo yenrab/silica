@@ -144,6 +144,10 @@ INTEGRATE_DIR      := $(dir $(INTEGRATE_MAKEFILE))
 _INTEGRATE_TRIALS_ROOT := $(patsubst %/,%,$(abspath $(_SILICA_COMPILER_MK_DIR)))
 _INTEGRATE_DIR_NOSLASH := $(patsubst %/,%,$(INTEGRATE_DIR))
 INTEGRATE_LABEL := $(if $(filter $(_INTEGRATE_TRIALS_ROOT),$(_INTEGRATE_DIR_NOSLASH)),trials,$(patsubst $(_INTEGRATE_TRIALS_ROOT)/%,%,$(_INTEGRATE_DIR_NOSLASH)))
+# Board trial runs (targets/) name their directories after the target, e.g. ESP32-S3_raw/case_addition.
+ifdef INTEGRATE_LABEL_OVERRIDE
+INTEGRATE_LABEL := $(INTEGRATE_LABEL_OVERRIDE)
+endif
 
 INTEGRATE_FILES := $(INTEGRATE_DIR).integrate_log $(INTEGRATE_DIR).integrate_report \
 	$(INTEGRATE_DIR).integrate_status $(INTEGRATE_DIR).integrate_start \
@@ -224,6 +228,20 @@ INTEGRATE_KILLED_MSG = killed by the watchdog after $$SILICA_INTEGRATE_WATCHDOG_
 # SILICA_INTEGRATE_ACTIVE tells the shared clean hook not to delete the log and start
 # stamp while the run they belong to is in progress (most integrate-run recipes clean first).
 #
+# Trial targets (targets/README.md). The outermost `integrate` -- the one the user typed, in
+# trials/ or in a suite -- first decides where the trials run:
+#   TRIAL_TARGET=host              this Mac, binaries/silica-compiler (what integrate always did)
+#   TRIAL_TARGET=<board target>    e.g. ESP32-S3_raw: compiled by binaries/silica-compiler-<target>,
+#                                  run on the board (targets/trial_target.sh does the whole run)
+#   TRIAL_TARGET=both              host, then every board target, one after the other
+# Without TRIAL_TARGET an interactive run asks (Enter = host); a run without a terminal, with
+# SILICA_TARGET_PROMPT=0, or with SILICA_COMPILER given on the command line (trials-gen1/gen2)
+# runs on the host without asking. Only one trial run of any target may be in progress: the
+# outermost integrate takes trials/.integrate.lock (runs started from a board run or a `both` run
+# share their parent's lock through SILICA_INTEGRATE_LOCK_PID, and never dispatch again:
+# SILICA_INTEGRATE_DISPATCHED). All of this happens before the directory's previous log and report
+# are touched, so a board run leaves the host's results alone.
+#
 # Recipe lines that contain $(MAKE) are executed even under `make -n` (make passes -n
 # down instead), so every such line here and in the fan-out Makefiles carries nothing
 # but the sub-make and its output plumbing; file writes sit on their own lines. Under
@@ -232,14 +250,42 @@ integrate: ensure-silica-compiler
 ifneq (,$(findstring n,$(firstword -$(MAKEFLAGS))))
 	@$(MAKE) --no-print-directory -C "$(INTEGRATE_DIR)" -f "$(INTEGRATE_MAKEFILE)" integrate-run
 else
-	@date +%s > "$(INTEGRATE_DIR).integrate_start"; \
-	rm -f "$(INTEGRATE_DIR).integrate_log" "$(INTEGRATE_DIR).integrate_status" "$(INTEGRATE_DIR).integrate_report"
-	@if [ -n "$$SILICA_INTEGRATE_ROOT" ]; then \
+	@if [ -z "$$SILICA_INTEGRATE_ROOT" ] && [ -z "$(TRIAL_MIRROR)" ] && [ -z "$$SILICA_INTEGRATE_DISPATCHED" ]; then \
+		tt="$(_INTEGRATE_TRIALS_ROOT)/targets/trial_target.sh"; \
+		trial_target="$(TRIAL_TARGET)"; \
+		if [ -z "$$SILICA_INTEGRATE_LOCK_PID" ]; then bash "$$tt" check "$(INTEGRATE_LABEL)" || exit 1; fi; \
+		if [ -z "$$trial_target" ]; then \
+			if [ "$(SILICA_TARGET_PROMPT)" != 0 ] && [ -z "$(filter command line,$(origin SILICA_COMPILER))" ]; then \
+				trial_target=$$(bash "$$tt" choose); \
+			else \
+				trial_target=host; \
+			fi; \
+		fi; \
+		if [ "$$trial_target" != host ]; then \
+			if [ -z "$$SILICA_INTEGRATE_LOCK_PID" ]; then \
+				bash "$$tt" lock $$$$ "$(INTEGRATE_LABEL)" "$$trial_target" || exit 1; \
+				export SILICA_INTEGRATE_LOCK_PID=$$$$; \
+				trap 'bash "$$tt" unlock $$$$' EXIT; trap 'exit 130' INT TERM; \
+			fi; \
+			bash "$$tt" run "$$trial_target" "$(_INTEGRATE_DIR_NOSLASH)" "$(MAKE)"; \
+			exit $$?; \
+		fi; \
+	fi; \
+	date +%s > "$(INTEGRATE_DIR).integrate_start"; \
+	rm -f "$(INTEGRATE_DIR).integrate_log" "$(INTEGRATE_DIR).integrate_status" "$(INTEGRATE_DIR).integrate_report"; \
+	if [ -n "$$SILICA_INTEGRATE_ROOT" ]; then \
 		export SILICA_INTEGRATE_ACTIVE=1; \
 		{ $(MAKE) --no-print-directory $(INTEGRATE_JOBFLAGS) -C "$(INTEGRATE_DIR)" -f "$(INTEGRATE_MAKEFILE)" integrate-run; \
 		  echo $$? > "$(INTEGRATE_DIR).integrate_status"; } 2>&1 | tee -a "$(INTEGRATE_DIR).integrate_log"; \
 		$(MAKE) --no-print-directory -C "$(INTEGRATE_DIR)" -f "$(INTEGRATE_MAKEFILE)" integrate-report; \
 	else \
+		own_lock=0; \
+		if [ -z "$$SILICA_INTEGRATE_LOCK_PID" ]; then \
+			bash "$(_INTEGRATE_TRIALS_ROOT)/targets/trial_target.sh" lock $$$$ "$(INTEGRATE_LABEL)" "$(if $(TRIAL_MIRROR),$(TRIAL_TARGET),host)" || exit 1; \
+			own_lock=1; export SILICA_INTEGRATE_LOCK_PID=$$$$; \
+		fi; \
+		release_lock() { if [ "$$own_lock" = 1 ]; then bash "$(_INTEGRATE_TRIALS_ROOT)/targets/trial_target.sh" unlock $$$$; own_lock=0; fi; }; \
+		trap 'release_lock' EXIT; \
 		exec 9>&1; \
 		export SILICA_INTEGRATE_ACTIVE=1 SILICA_INTEGRATE_ROOT="$(_INTEGRATE_DIR_NOSLASH)" SILICA_INTEGRATE_WATCHDOG_MINUTES="$(INTEGRATE_WATCHDOG_MINUTES)"; \
 		rm -rf "$(INTEGRATE_RUNNING_DIR)"; mkdir -p "$(INTEGRATE_RUNNING_DIR)"; \
@@ -268,10 +314,10 @@ else
 				touch "$(INTEGRATE_DIR).integrate_pass_marks"; \
 			fi; \
 		  done ) & wd_pid=$$!; \
-		trap 'kill "$$wd_pid" 2>/dev/null; if [ -n "$$saved_stty" ]; then stty "$$saved_stty" < /dev/tty 2>/dev/null; fi' INT TERM EXIT; \
+		trap 'kill "$$wd_pid" 2>/dev/null; if [ -n "$$saved_stty" ]; then stty "$$saved_stty" < /dev/tty 2>/dev/null; fi; release_lock' INT TERM EXIT; \
 		{ $(MAKE) --no-print-directory $(INTEGRATE_JOBFLAGS) -C "$(INTEGRATE_DIR)" -f "$(INTEGRATE_MAKEFILE)" integrate-run; \
 		  echo $$? > "$(INTEGRATE_DIR).integrate_status"; } 2>&1 | tee -a "$(INTEGRATE_DIR).integrate_log" > /dev/null; \
-		kill "$$wd_pid" 2>/dev/null; wait "$$wd_pid" 2>/dev/null; trap - INT TERM EXIT; \
+		kill "$$wd_pid" 2>/dev/null; wait "$$wd_pid" 2>/dev/null; trap - INT TERM EXIT; trap 'release_lock' EXIT; \
 		if [ -n "$$saved_stty" ]; then \
 			stty -icanon min 0 time 0 < /dev/tty 2>/dev/null; cat < /dev/tty > /dev/null 2>&1; \
 			stty "$$saved_stty" < /dev/tty 2>/dev/null; \

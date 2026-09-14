@@ -1,0 +1,403 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Virtual registers (VRs) for the Xtensa LX7 (ESP32-S3) emitter.
+//
+// The emitter names values X0-X30, W<n>, D/S/H<n>, SP, XZR/WZR -- on this target those are VRs, not
+// machine registers (design_documents/ports/esp32s3_xtensa_port.md section 2). This module maps a VR to
+// its home and emits the Xtensa that moves a VR's 32-bit words in and out of scratch registers.
+//
+// Homes:
+//   X0 = a10:a11, X1 = a12:a13, X2 = a14:a15   CALL8 argument/result positions: calls need no moves
+//   X9 = a4:a5,   X10 = a6:a7                  the binary-prim operand temps (survive calls: harmless)
+//   X3-X8, D0-D7  -> the global transfer block silica_rt_vrg (X3 at 0 .. X8 at 40, D0 at 48 .. D7 at 104).
+//                    They are caller-saved on AArch64 -- dead across every call -- so one block shared by
+//                    all frames is exact, and arguments / float results pass between frames with no copy.
+//   X29           -> the frame pointer: its value is a1 + SFP (top of the [X29, #-N] slot area); read-only
+//   SP            -> the auxiliary data stack pointer, the global word silica_rt_vsp
+//   XZR/WZR       -> reads 0, writes are discarded
+//   any other X/W -> frame slot SVR_X<nn> (8 bytes, low word first)
+//   other D/S/H   -> frame slot SVR_D<nn>   (S and H use the low word / low half)
+// SVR_* offsets are assembler symbols emitter_core defines at the top of each function once the body is
+// known, so only the homes a body references get a slot and callee-saved semantics come free.
+//
+// Scratch registers a2, a3, a8, a9 belong to the helpers; nothing is live in them between helpers.
+// Results are written with vr_put, which picks an address temp that is neither data word.
+// A W-register write zeroes the high word, as it does on AArch64.
+
+use string_parse;
+
+export xt_ins/2;
+export xt_itos/1;
+export vr_class/1;
+export vr_num/1;
+export vr_is_int/1;
+export vr_is_float/1;
+export vr_is_phys/1;
+export vr_is_fp/1;
+export vr_phys_lo/1;
+export vr_phys_hi/1;
+export vr_home/1;
+export vr_lo_reg/2;
+export vr_lo_load/2;
+export vr_hi_reg/2;
+export vr_hi_load/2;
+export vr_put/3;
+export vr_put_lo/2;
+export vr_x_home_name/1;
+export vr_d_home_name/1;
+export xt_prelude_macros/0;
+
+// One instruction line.
+fn xt_ins(op: string, args: string) -> string {
+    case length_bytes(args) == 0 of {
+        true -> concat("    ", concat(op, "\n"));
+        false -> concat("    ", concat(op, concat(" ", concat(args, "\n"))))
+    }
+}
+
+fn xt_digit(d: int64) -> string {
+    case d of {
+        0 -> "0"; 1 -> "1"; 2 -> "2"; 3 -> "3"; 4 -> "4";
+        5 -> "5"; 6 -> "6"; 7 -> "7"; 8 -> "8"; _: int64 -> "9"
+    }
+}
+
+fn xt_utos(n: int64) -> string {
+    case n < 10 of {
+        true -> xt_digit(n);
+        false -> concat(xt_utos(n / 10), xt_digit(n % 10))
+    }
+}
+
+// Decimal text of an int64. INT64_MIN has no positive counterpart, so it is spelled out.
+fn xt_itos(n: int64) -> string {
+    case n < 0 of {
+        false -> xt_utos(n);
+        true -> case n == 0 - 9223372036854775807 - 1 of {
+            true -> "-9223372036854775808";
+            false -> concat("-", xt_utos(0 - n))
+        }
+    }
+}
+
+fn two_digits(n: int64) -> string {
+    case n < 10 of {
+        true -> concat("0", xt_utos(n));
+        false -> xt_utos(n)
+    }
+}
+
+fn is_digit_char(c: string) -> boolean {
+    case c of {
+        "0" -> true; "1" -> true; "2" -> true; "3" -> true; "4" -> true;
+        "5" -> true; "6" -> true; "7" -> true; "8" -> true; "9" -> true;
+        _: string -> false
+    }
+}
+
+fn all_digits_from(s: string, i: int64) -> boolean {
+    case i >= length_bytes(s) of {
+        true -> true;
+        false -> case is_digit_char(substring(s, i, i + 1)) of {
+            true -> all_digits_from(s, i + 1);
+            false -> false
+        }
+    }
+}
+
+// "X", "W", "D", "S", "H", "SP", "ZR" (XZR/WZR), or "" when v is not a register name.
+fn vr_class(v: string) -> string {
+    n: int64 <- length_bytes(v);
+    case v == "SP" or v == "sp" of {
+        true -> "SP";
+        false -> case v == "XZR" or v == "WZR" of {
+            true -> "ZR";
+            false -> case n >= 2 and n <= 3 and all_digits_from(v, 1) of {
+                false -> "";
+                true -> {
+                    c: string <- substring(v, 0, 1);
+                    case c == "X" or c == "W" or c == "D" or c == "S" or c == "H" of {
+                        true -> c;
+                        false -> ""
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn vr_num(v: string) -> int64 {
+    string_parse@string_to_int64(substring(v, 1, length_bytes(v)))
+}
+
+fn vr_is_int(v: string) -> boolean {
+    c: string <- vr_class(v);
+    c == "X" or c == "W"
+}
+
+fn vr_is_float(v: string) -> boolean {
+    c: string <- vr_class(v);
+    c == "D" or c == "S" or c == "H"
+}
+
+fn phys_lo_of(n: int64) -> string {
+    case n of {
+        0 -> "a10"; 1 -> "a12"; 2 -> "a14"; 9 -> "a4"; 10 -> "a6";
+        _: int64 -> ""
+    }
+}
+
+fn phys_hi_of(n: int64) -> string {
+    case n of {
+        0 -> "a11"; 1 -> "a13"; 2 -> "a15"; 9 -> "a5"; 10 -> "a7";
+        _: int64 -> ""
+    }
+}
+
+fn vr_is_phys(v: string) -> boolean {
+    case vr_is_int(v) of {
+        false -> false;
+        true -> length_bytes(phys_lo_of(vr_num(v))) > 0
+    }
+}
+
+fn vr_phys_lo(v: string) -> string {
+    phys_lo_of(vr_num(v))
+}
+
+fn vr_phys_hi(v: string) -> string {
+    phys_hi_of(vr_num(v))
+}
+
+fn vr_is_fp(v: string) -> boolean {
+    v == "X29" or v == "W29"
+}
+
+// X3-X8 and D/S/H0-7 live in the global transfer block.
+fn vr_is_global(v: string) -> boolean {
+    case vr_is_int(v) of {
+        true -> vr_num(v) >= 3 and vr_num(v) <= 8;
+        false -> vr_is_float(v) and vr_num(v) <= 7
+    }
+}
+
+fn global_off(v: string) -> int64 {
+    case vr_is_int(v) of {
+        true -> (vr_num(v) - 3) * 8;
+        false -> 48 + vr_num(v) * 8
+    }
+}
+
+fn global_addr(v: string, plus: int64) -> string {
+    concat("silica_rt_vrg+", xt_itos(global_off(v) + plus))
+}
+
+// Frame-home symbol of a frame-homed VR ("SVR_X19", "SVR_D09").
+fn vr_home(v: string) -> string {
+    case vr_is_float(v) of {
+        true -> concat("SVR_D", two_digits(vr_num(v)));
+        false -> concat("SVR_X", two_digits(vr_num(v)))
+    }
+}
+
+fn has_hi_word(v: string) -> boolean {
+    c: string <- vr_class(v);
+    (c == "X" or c == "D") and vr_is_fp(v) == false
+}
+
+fn vsp_load(scratch: string) -> string {
+    concat(xt_ins("movi", concat(scratch, ", silica_rt_vsp")), xt_ins("l32i", concat(scratch, concat(", ", concat(scratch, ", 0")))))
+}
+
+// Word `plus` (0 = low, 4 = high) of a memory-homed VR into `scratch`.
+fn mem_word_load(v: string, scratch: string, plus: int64) -> string {
+    case vr_is_global(v) of {
+        true -> concat(xt_ins("movi", concat(scratch, concat(", ", global_addr(v, plus)))), xt_ins("l32i", concat(scratch, concat(", ", concat(scratch, ", 0")))));
+        false -> xt_ins("l32i", concat(scratch, concat(", a1, ", case plus == 0 of { true -> vr_home(v); false -> concat(vr_home(v), "+4") })))
+    }
+}
+
+// Register that holds v's low word after vr_lo_load(v, scratch) has run.
+fn vr_lo_reg(v: string, scratch: string) -> string {
+    case vr_is_phys(v) of {
+        true -> vr_phys_lo(v);
+        false -> scratch
+    }
+}
+
+fn vr_lo_load(v: string, scratch: string) -> string {
+    c: string <- vr_class(v);
+    case vr_is_phys(v) of {
+        true -> "";
+        false -> case c == "ZR" of {
+            true -> xt_ins("movi", concat(scratch, ", 0"));
+            false -> case c == "SP" of {
+                true -> vsp_load(scratch);
+                false -> case vr_is_fp(v) of {
+                    true -> xt_ins("XADDR", concat(scratch, ", SFP"));
+                    false -> mem_word_load(v, scratch, 0)
+                }
+            }
+        }
+    }
+}
+
+fn vr_hi_reg(v: string, scratch: string) -> string {
+    case vr_is_phys(v) of {
+        true -> vr_phys_hi(v);
+        false -> scratch
+    }
+}
+
+// High word: 0 for W, S, H, SP, X29 and the zero registers.
+fn vr_hi_load(v: string, scratch: string) -> string {
+    case vr_is_phys(v) of {
+        true -> "";
+        false -> case has_hi_word(v) of {
+            true -> mem_word_load(v, scratch, 4);
+            false -> xt_ins("movi", concat(scratch, ", 0"))
+        }
+    }
+}
+
+// A scratch register that is neither `x` nor `y`.
+fn temp_not(x: string, y: string) -> string {
+    case x != "a9" and y != "a9" of {
+        true -> "a9";
+        false -> case x != "a8" and y != "a8" of {
+            true -> "a8";
+            false -> case x != "a3" and y != "a3" of {
+                true -> "a3";
+                false -> "a2"
+            }
+        }
+    }
+}
+
+fn mov_unless_same(d: string, s: string) -> string {
+    case d == s of {
+        true -> "";
+        false -> xt_ins("mov", concat(d, concat(", ", s)))
+    }
+}
+
+// Write a result held in registers lo / hi to VR dst. A W (or S/H) destination takes the low word and
+// clears the high word of its X home; X and D take both words. hi is ignored for 32-bit destinations.
+fn vr_put(dst: string, lo: string, hi: string) -> string {
+    c: string <- vr_class(dst);
+    wide: boolean <- has_hi_word(dst);
+    case c == "ZR" or c == "" or vr_is_fp(dst) of {
+        true -> "";
+        false -> case c == "SP" of {
+            true -> {
+                t: string <- temp_not(lo, lo);
+                concat(xt_ins("movi", concat(t, ", silica_rt_vsp")), xt_ins("s32i", concat(lo, concat(", ", concat(t, ", 0")))))
+            };
+            false -> case vr_is_phys(dst) of {
+                true -> case wide of {
+                    true -> concat(mov_unless_same(vr_phys_lo(dst), lo), mov_unless_same(vr_phys_hi(dst), hi));
+                    false -> concat(mov_unless_same(vr_phys_lo(dst), lo), xt_ins("movi", concat(vr_phys_hi(dst), ", 0")))
+                };
+                false -> case vr_is_global(dst) of {
+                    true -> put_global(dst, lo, hi, wide);
+                    false -> put_frame(dst, lo, hi, wide)
+                }
+            }
+        }
+    }
+}
+
+fn put_global(dst: string, lo: string, hi: string, wide: boolean) -> string {
+    t: string <- temp_not(lo, hi);
+    addr: string <- xt_ins("movi", concat(t, concat(", ", global_addr(dst, 0))));
+    st_lo: string <- xt_ins("s32i", concat(lo, concat(", ", concat(t, ", 0"))));
+    case wide of {
+        true -> concat(addr, concat(st_lo, xt_ins("s32i", concat(hi, concat(", ", concat(t, ", 4"))))));
+        false -> case vr_class(dst) == "W" of {
+            // clear the X home's high word: a zero in a register that is neither lo nor t
+            true -> {
+                z: string <- temp_not(lo, t);
+                concat(addr, concat(st_lo, concat(xt_ins("movi", concat(z, ", 0")), xt_ins("s32i", concat(z, concat(", ", concat(t, ", 4")))))))
+            };
+            false -> concat(addr, st_lo)
+        }
+    }
+}
+
+fn put_frame(dst: string, lo: string, hi: string, wide: boolean) -> string {
+    home: string <- vr_home(dst);
+    st_lo: string <- xt_ins("s32i", concat(lo, concat(", a1, ", home)));
+    case wide of {
+        true -> concat(st_lo, xt_ins("s32i", concat(hi, concat(", a1, ", concat(home, "+4")))));
+        false -> case vr_class(dst) == "W" of {
+            true -> {
+                z: string <- temp_not(lo, lo);
+                concat(st_lo, concat(xt_ins("movi", concat(z, ", 0")), xt_ins("s32i", concat(z, concat(", a1, ", concat(home, "+4"))))))
+            };
+            false -> st_lo
+        }
+    }
+}
+
+// Low word only, leaving the high word as it is (an S/H destination, whose home has no high word
+// to clear, or the low half of a value assembled word by word).
+fn vr_put_lo(dst: string, lo: string) -> string {
+    c: string <- vr_class(dst);
+    case c == "ZR" or c == "" or vr_is_fp(dst) of {
+        true -> "";
+        false -> case c == "SP" of {
+            true -> vr_put(dst, lo, lo);
+            false -> case vr_is_phys(dst) of {
+                true -> mov_unless_same(vr_phys_lo(dst), lo);
+                false -> case vr_is_global(dst) of {
+                    true -> {
+                        t: string <- temp_not(lo, lo);
+                        concat(xt_ins("movi", concat(t, concat(", ", global_addr(dst, 0)))), xt_ins("s32i", concat(lo, concat(", ", concat(t, ", 0")))))
+                    };
+                    false -> xt_ins("s32i", concat(lo, concat(", a1, ", vr_home(dst))))
+                }
+            }
+        }
+    }
+}
+
+// Frame-home symbol names by register number. emitter_core walks X11..X28 (X9/X10 are registers,
+// X3-X8 global) and D8..D31, tests each name against the body text, and gives a slot to those it finds.
+// Two-digit names keep one from being a prefix of another.
+fn vr_x_home_name(n: int64) -> string {
+    concat("SVR_X", two_digits(n))
+}
+
+fn vr_d_home_name(n: int64) -> string {
+    concat("SVR_D", two_digits(n))
+}
+
+// Frame-access macros every emitted module defines once, in its prelude. SFP and SVR_* are only known
+// after a function body is emitted, so the short/long instruction form is chosen by the assembler from
+// the final offset: l32i reaches 0..1020, l16* 0..510, l8* 0..255, addi -128..127.
+fn xt_prelude_macros() -> string {
+    m1: string <- ".macro XADDR r, off\n.if ((\\off) >= -128) && ((\\off) <= 127)\naddi \\r, a1, \\off\n.else\nmovi \\r, \\off\nadd \\r, \\r, a1\n.endif\n.endm\n";
+    m2: string <- ".macro XL32 r, off\n.if ((\\off) >= 0) && ((\\off) <= 1020)\nl32i \\r, a1, \\off\n.else\nmovi \\r, \\off\nadd \\r, \\r, a1\nl32i \\r, \\r, 0\n.endif\n.endm\n";
+    m3: string <- ".macro XS32 r, off, t\n.if ((\\off) >= 0) && ((\\off) <= 1020)\ns32i \\r, a1, \\off\n.else\nmovi \\t, \\off\nadd \\t, \\t, a1\ns32i \\r, \\t, 0\n.endif\n.endm\n";
+    m4: string <- ".macro XL16U r, off\n.if ((\\off) >= 0) && ((\\off) <= 510)\nl16ui \\r, a1, \\off\n.else\nmovi \\r, \\off\nadd \\r, \\r, a1\nl16ui \\r, \\r, 0\n.endif\n.endm\n";
+    m5: string <- ".macro XL16S r, off\n.if ((\\off) >= 0) && ((\\off) <= 510)\nl16si \\r, a1, \\off\n.else\nmovi \\r, \\off\nadd \\r, \\r, a1\nl16si \\r, \\r, 0\n.endif\n.endm\n";
+    m6: string <- ".macro XS16 r, off, t\n.if ((\\off) >= 0) && ((\\off) <= 510)\ns16i \\r, a1, \\off\n.else\nmovi \\t, \\off\nadd \\t, \\t, a1\ns16i \\r, \\t, 0\n.endif\n.endm\n";
+    m7: string <- ".macro XL8U r, off\n.if ((\\off) >= 0) && ((\\off) <= 255)\nl8ui \\r, a1, \\off\n.else\nmovi \\r, \\off\nadd \\r, \\r, a1\nl8ui \\r, \\r, 0\n.endif\n.endm\n";
+    m8: string <- ".macro XS8 r, off, t\n.if ((\\off) >= 0) && ((\\off) <= 255)\ns8i \\r, a1, \\off\n.else\nmovi \\t, \\off\nadd \\t, \\t, a1\ns8i \\r, \\t, 0\n.endif\n.endm\n";
+    concat(concat(concat(m1, m2), concat(m3, m4)), concat(concat(m5, m6), concat(m7, m8)))
+}

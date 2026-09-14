@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
 # Install a freshly built compiler into binaries/ and repoint its stable link at it.
 #
-#   install_compiler.bash seed     <path-to-built-binary>   ->  binaries/seed-compiler
-#   install_compiler.bash selfhost <path-to-built-binary>   ->  binaries/silica-compiler
+#   install_compiler.bash seed     <path-to-built-binary>            ->  binaries/seed-compiler
+#   install_compiler.bash selfhost <path-to-built-binary>            ->  binaries/silica-compiler
+#   install_compiler.bash target <emit-target> <path-to-built-binary> ->  binaries/silica-compiler-<emit-target>
 #
 # Naming follows the convention documented in update_silica_compiler_link.bash:
 #
-#     seed      silica-<NNNNNN>-seed-<platform>    reached through binaries/seed-compiler
-#     selfhost  silica-<NNNNNN>-<platform>         reached through binaries/silica-compiler
+#     seed      silica-<NNNNNN>-seed-<platform>      reached through binaries/seed-compiler
+#     selfhost  silica-<NNNNNN>-<platform>           reached through binaries/silica-compiler
+#     target    silica-<NNNNNN>-<token>-<platform>   reached through binaries/silica-compiler-<emit-target>
+#
+# A `target` build is a selfhost compiler that runs on this host but emits code for another
+# target (src_selfhost `make TARGET=<emit-target>`, e.g. ESP32-S3_raw). <token> is the emit-target
+# name with each hyphen turned into an underscore (ESP32-S3_raw -> ESP32_S3_raw), because the
+# naming convention allows only a single hyphen-free kind token before the platform.
 #
 # A LOWER NNNNNN is the newer build, so installing takes (lowest existing for this kind)
-# minus one. The two kinds are numbered independently and their links never cross: the
+# minus one. Every kind -- seed, selfhost, and each emit target -- is numbered independently
+# and their links never cross: the
 # selfhost tree is compiled by seed-compiler and base's .silica files are compiled by
 # silica-compiler, so letting one link resolve to the other kind would silently compile a
 # tree with the wrong compiler -- which is precisely the mistake that differential testing
@@ -70,14 +78,25 @@ detect_local_platform() {
     esac
 }
 
-[[ $# -eq 2 ]] || die "usage: install_compiler.bash <seed|selfhost> <built-binary>"
+usage="usage: install_compiler.bash <seed|selfhost> <built-binary>  |  install_compiler.bash target <emit-target> <built-binary>"
+[[ $# -ge 2 ]] || die "$usage"
 
 kind="$1"
-built="$2"
-
+emit_target=""
 case "$kind" in
-    seed|selfhost) ;;
-    *) die "kind must be 'seed' or 'selfhost', got '$kind'" ;;
+    seed|selfhost)
+        [[ $# -eq 2 ]] || die "$usage"
+        built="$2"
+        ;;
+    target)
+        [[ $# -eq 3 ]] || die "$usage"
+        emit_target="$2"
+        built="$3"
+        [[ "$emit_target" =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid emit target name '$emit_target'"
+        token="${emit_target//-/_}"
+        [[ "$token" != "seed" ]] || die "emit target name '$emit_target' collides with the seed kind"
+        ;;
+    *) die "kind must be 'seed', 'selfhost' or 'target', got '$kind'" ;;
 esac
 
 [[ -f "$built" ]] || die "built binary not found: $built"
@@ -90,6 +109,10 @@ if [[ "$kind" == "seed" ]]; then
     # silica-NNNNNN-seed-<platform>
     pattern="^silica-([0-9]{6})-seed-${platform}\$"
     link="seed-compiler"
+elif [[ "$kind" == "target" ]]; then
+    # silica-NNNNNN-<token>-<platform>: its own countdown, separate from seed and selfhost.
+    pattern="^silica-([0-9]{6})-${token}-${platform}\$"
+    link="silica-compiler-${emit_target}"
 else
     # silica-NNNNNN-<platform>, with no kind token, so this cannot match a seed name.
     pattern="^silica-([0-9]{6})-${platform}\$"
@@ -120,6 +143,8 @@ fi
 
 if [[ "$kind" == "seed" ]]; then
     target="silica-${next}-seed-${platform}"
+elif [[ "$kind" == "target" ]]; then
+    target="silica-${next}-${token}-${platform}"
 else
     target="silica-${next}-${platform}"
 fi
@@ -130,5 +155,5 @@ fi
 install -m 755 "$built" "$SCRIPT_DIR/$target"
 ln -sfn "$target" "$SCRIPT_DIR/$link"
 
-echo "✅ Installed $kind compiler: binaries/$target"
+echo "✅ Installed $kind${emit_target:+ ($emit_target)} compiler: binaries/$target"
 echo "   binaries/$link -> $target"
