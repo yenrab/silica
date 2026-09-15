@@ -71,7 +71,7 @@ instead of Xtensa text, so the failure is immediate and legible.
 | Construct | `.error` text | Why |
 | --- | --- | --- |
 | Actors: `spawn`, `send`, `recv`, `call`, `cast`, `link`, `monitor`, registration, supervisors | `ESP32-S3: actors are not supported yet (<prim> -> <reg>)` | No actor runtime on the board (`rt_actors_stub.S` only initialises the registries). The host runtime is pthreads, `os_unfair_lock`, `__ulock`; the board needs a cooperative single-core scheduler (design pending). |
-| Foreign calls (`ffi`) | `ESP32-S3: foreign (C) calls are not supported on this target` | No C runtime; the host's guarded FFI is setjmp / signal based. |
+| Foreign calls (`ffi`) | `ESP32-S3: foreign (C) calls are not supported on this target` | No C runtime; the host's guarded FFI is setjmp / signal based. **Planned, not implemented:** Fifi on OS-free targets per [porting_for_os_free_targets.md §9.1](../porting_for_os_free_targets.md), with archives built against the board pack and faults caught by the trap vector. |
 | File io | `ESP32-S3: file io is not supported on this target (<prim> -> <reg>)` | No filesystem. |
 | A frame ENTRY cannot allocate | `frame larger than ENTRY can allocate (32760 bytes)` | Xtensa windowed-ABI limit; not hit by any trial so far. |
 
@@ -83,7 +83,7 @@ instead of Xtensa text, so the failure is immediate and legible.
 | --- | --- | --- |
 | Actor runtime (spawn / send / recv / call / cast / link / monitor, mailboxes, the pid registry, `remove_actor`, exit reporting) | `actors_addition` (294), `actor_registration_addition` (3), `supervisors_addition` (106) | A cooperative scheduler on one core: per-actor stacks in SRAM, mailboxes, `recv` as a yield point, the failure / unwind reports the host prints, then the supervisor trampolines in `module_linkage.silica` and `prims_actors.silica` re-targeted from `.error` to `silica_rt_actor_*` routines (the AArch64 dispatcher is kept as `emit_prim_op_aarch64` for reference). Chunk 1's growable actor stacks apply here too. |
 | CPU topology and core placement | `cpu_discovery_and_spawn_pinning` (4) | Follows the actor runtime; the ESP32-S3 has two LX7 cores (roadmap chunk 2). Today the port is single core with interrupts off. |
-| Foreign calls | `ffi_addition` (16 apps), `warning_enforcement_addition` (its fixtures build C archives) | Not applicable on bare metal unless a C runtime is brought in; record as not applicable per [porting_for_os_free_targets.md §4](../porting_for_os_free_targets.md). |
+| Foreign calls | `ffi_addition` (16 apps), `warning_enforcement_addition` (its fixtures build C archives) | **Planned:** Fifi on OS-free targets, per [porting_for_os_free_targets.md §9.1](../porting_for_os_free_targets.md). That needs a board-pack C runtime for wrapper archives, and a trap-vector path that ends only the faulting FFI worker. It also needs the actor runtime above. Until then, record these suites as not applicable on the board. |
 | File io | no dedicated suite; used inside some trials | Not applicable without a filesystem. |
 | Host fault semantics (status 70 and the `[silica] fault at …` line) | any trial whose golden encodes a host fault | Either teach `rt_console.S`'s fatal report the host's line and status, or keep 139 and record per-target `.scout` files as such trials appear. |
 | Memory release | none directly; long-running allocation loops | A free list or region release in `rt_heap.S` (the host's release entry points are the model). |

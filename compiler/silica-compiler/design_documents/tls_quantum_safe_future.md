@@ -2,6 +2,13 @@
 
 **Status:** Future development. Not implemented. Not normative for the current compiler. When this work starts, [silica-specification.md](silica-specification.md) §20.4, [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md), and the supervisor plan gain a TLS section; this document stays the design authority until then.
 
+**TLS is not planned as a built-in at first.** Until the intrinsics in this document exist, programs that need TLS
+wrap an engine themselves through Fifi: a `dangerous_*` module and a `spawn_dangerous` worker, with every engine
+output leaving the worker's handler only through re-creation (FFI spec §7.7). For example, the BEES project wraps
+rustls behind a C interface that owns no sockets: ciphertext goes in and ciphertext and plaintext come out, while
+Silica's own TCP/IP carries the bytes. The profile, identity and peer-information requirements in §4–§5 apply to
+such wrappers as well, so that moving to the built-in later changes no wire behaviour.
+
 ## Related Documents
 
 | Document | Purpose |
@@ -41,7 +48,7 @@ First-class does **not** mean “looks pure.” Each connection still follows Fi
 - Implementing TLS in the current compiler or runtime
 - Transpiling or lifting OpenSSL / BoringSSL
 - HTTP, QUIC, or DTLS (later documents may sit on `tls_session_ref`)
-- Validator-based de-taint (Fifi does not define it)
+- Any new de-taint mechanism. Decrypted data is de-tainted only by Fifi's re-creation rule ([silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §7.7).
 - Using TLS to authenticate a local broker or supervisor
 - Encrypting `IPC_Bare` / `IPC_OS` datagrams with this stack
 
@@ -67,6 +74,15 @@ Symmetric 256-bit is the Grover floor. Hybrid KEM is the harvest-now-decrypt-lat
 
 Trust material is a Silica `TrustBundleId` (named CA set or SPKI pins). The worker must not use “the library default store” unless the policy names a platform bundle id.
 
+**Own identity.** A node's own certificate chain and private key are a Silica `TlsIdentityId`: named key material
+that the runtime loads. User code never holds the private key as a value. A `tls_server` policy must name an
+identity. A `tls_client` policy names one when it presents a client certificate.
+
+**Mutual TLS.** A `tls_server` policy with `client_auth = client_auth_required` requires the client to present a
+certificate, and verifies it against the policy's `trust` bundle. A handshake without a valid client certificate
+fails with `CertUntrusted`. The default for `tls_server` is `client_auth_required`; `client_auth_none` must be named
+explicitly.
+
 **Clock:** certificate expiry needs trusted time. OS-hosted: kernel clock. Bare metal: board clock, or pins plus a documented “no expiry check.” No silent skip.
 
 ---
@@ -87,6 +103,8 @@ tls_policy: {
     kem_mode: kem_hybrid | kem_pq_strict,
     signature_mode: sig_transition | sig_pq_only,
     role: tls_client | tls_server,
+    identity: TlsIdentityId | no_identity,
+    client_auth: client_auth_required | client_auth_none,
     reconnect: reconnect_never | reconnect_transient
 }
 
@@ -96,7 +114,6 @@ tls_error:
   | CertUntrusted
   | Closed
   | Timeout
-  | MailboxFull
   | SessionDead
 ```
 
@@ -123,6 +140,31 @@ cast(session, TlsClose {})
 ```
 
 There is no `tls_write` that takes a `tcp_connection`. There is no “AEAD this buffer and `net.tcp.write`.”
+
+### 5.3 Peer information
+
+Once the handshake completes, a client of the session can ask for what the handshake established:
+
+```text
+cast(session, TlsPeerInfo { reply_to })
+```
+
+The result cast carries:
+
+```silica
+{
+    peer_cert_der: buf(L, normal, uint8, N),               // the peer's leaf certificate, DER-encoded
+    peer_fingerprint_sha512: buf(L, normal, uint8, 64),    // SHA-512 of peer_cert_der
+    alpn: string,                                           // the negotiated ALPN protocol; empty if none
+    kem_group: uint16,                                      // IANA group id, e.g. 0x11EC for X25519MLKEM768
+    cipher_suite: uint16                                    // IANA cipher-suite id
+}
+```
+
+Like every engine output, this is external-danger-touched. The receiving handler re-creates it
+([silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §7.7) before storing it, comparing it
+against an allowlist kept in actor state, or sending it on. A policy that lists ALPN protocols rejects a handshake
+whose negotiated protocol is not in the list.
 
 ---
 
@@ -163,14 +205,14 @@ Existing Fifi rules apply unchanged.
 | Structural taint | Every value that comes from the engine — including decrypted plaintext — is external-danger-touched |
 | No tainted data in `produces pure` | Session state stays pure; payload goes out on the result cast |
 | No tainted data in `device_io` / `network_io` / `hot_swap` / `register_rwr` | `TlsRecv` bytes cannot be used with `print`, file prims, or another socket in those sequences |
-| No ordinary `call` / `cast` of tainted data except the designated result cast | App-to-app forwarding of raw recv bytes is rejected until a later de-taint spec exists |
+| No ordinary `call` / `cast` of tainted data except the designated result cast | Received bytes leave the result-cast handler only after re-creation ([silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §7.7). The re-created value may be forwarded, stored, or written to another socket. |
 | No coercion | `tls_session_ref` is not an `actor_ref` |
 
 **Module naming:** Application modules that only use TLS **intrinsics** are **not** required to take the `dangerous_` prefix. That matches `spawn_dangerous` today (install is not a `use dangerous_*`). The engine module, if it is a real `dangerous_*` archive, is used only by the compiler/runtime, not by application `use`. If application code `use`s that engine module directly, the existing cascade applies all the way to the application root.
 
 **Trust:** Worker crypto authenticates the **remote peer** (certificates + hybrid/PQ handshake). It does **not** authenticate a local broker. Broker and TLS-supervisor identity stay OS identity or MPU/linker identity ([brokered_ipc_isolation_architecture.md](brokered_ipc_isolation_architecture.md), Broker Authenticity).
 
-Decrypted bytes are useful and still tainted. Writing them to disk or another network hop requires another dangerous worker or a future validator-based de-taint. Do not weaken taint to make HTTPS easier.
+Decrypted bytes are useful and still tainted. To write them to disk or another network hop, the receiving handler first re-creates them (Fifi §7.7); the re-created value is pure. Do not weaken taint in any other way to make HTTPS easier.
 
 ---
 
@@ -181,7 +223,7 @@ Decrypted bytes are useful and still tainted. Writing them to disk or another ne
 | Application `cast` to a session | `concurrency` |
 | `tls_connect` / `tls_listen` / `tls_close` | `concurrency` |
 | Session actor engine I/O | `external_danger` (and `network_io` only **inside** that worker if the backend uses kernel sockets — never on the application sequence) |
-| Application using recv payload in `print` / file / `network_io` | Compile error (taint × restricted effect) |
+| Application using recv payload in `print` / file / `network_io` | Compile error (taint × restricted effect), unless the payload was first re-created (Fifi §7.7) |
 
 `device_io` stays print, file, and console. TLS is not `device_io`.
 
@@ -205,9 +247,10 @@ Same types and actor tree. Only the backend changes.
 3. Reject `call` on a TLS session (cast-only).
 4. Reject one session actor bound to two connections.
 5. Reject `external_danger` at `tls_connect` / `tls_listen`.
-6. Taint recv payloads; enforce Fifi §7.3.
-7. Intrinsic lowering: spawn a supervisor child, install the worker, never expose engine types in `.iface`.
-8. Trials: handshake policy reject, taint-to-`print` error, supervisor `SessionDead`, no TLS 1.2 suite.
+6. Taint recv payloads; enforce Fifi §7.3. Allow re-created payloads (Fifi §7.7) out of the handler.
+7. Require `identity` for `tls_server`; default `client_auth` to `client_auth_required`; implement `TlsPeerInfo`.
+8. Intrinsic lowering: spawn a supervisor child, install the worker, never expose engine types in `.iface`.
+9. Trials: handshake policy reject, taint-to-`print` error, supervisor `SessionDead`, no TLS 1.2 suite, a client without a certificate rejected by a `client_auth_required` server, and `TlsPeerInfo` returning the fingerprint.
 
 ---
 

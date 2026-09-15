@@ -157,7 +157,7 @@ Both sides of the request path are cast-shaped. The client actor that initiates 
 
 Data returned from `dangerous_*` modules is external-danger-touched. Taint is structural: any record, tuple, list, sum, buffer, or nested value containing dangerous data is also dangerous.
 
-Current design uses strict structural taint. Validator-based de-taint is not defined in this version.
+Current design uses strict structural taint. The one validator-based de-taint path is **re-creation**: a compiler-derived `recreate` for types that declare `Recreatable` limits ([silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §7.7). User-written validators still never clear taint.
 
 Key restrictions:
 
@@ -239,7 +239,7 @@ The design is trying to preserve these invariants:
 6. FFI worker references are typed as `dangerous_actor_ref` and use separate registry routes.
 7. Raw foreign bindings are not exported as ordinary Silica APIs.
 8. C-facing pointer authority is confined to wrapper/adaptor/runtime machinery and dangerous-actor scratch or arena storage, not exposed to ordinary Silica source.
-9. Foreign results remain structurally tainted unless a future spec defines a validator-based de-taint path.
+9. Foreign results remain structurally tainted unless they are re-created ([silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §7.7). Re-created values are still barred from code loading and command execution.
 10. Same-process guarded FFI may fail closed by terminating the current dangerous actor/task or process; it must not resume silently after untrusted corruption.
 11. A supervised dangerous actor that dies from a recognized guarded FFI fault is restarted, stopped, or escalated according to its supervisor's normal policy.
 

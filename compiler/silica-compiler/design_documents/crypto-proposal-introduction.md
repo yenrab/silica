@@ -59,6 +59,23 @@ If you try to write insecure code, the compiler rejects it. For example:
 
 The compiler guides you toward safe patterns.
 
+### Random Bytes and Hash Functions
+
+Cryptographically secure random bytes and hash functions (the SHA-2 family and HMAC) are expected to become Silica
+built-ins later. They are not built-ins at first.
+
+Until they are:
+- **Programs reach them through Fifi:** a `dangerous_*` wrapper called from a `spawn_dangerous` worker, like any
+  other foreign library.
+- **Their results are external-danger-touched.** A random token, a digest or a MAC leaves the handler that receives
+  the FFI result cast only through re-creation
+  ([silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §7.7). Only the re-created value may
+  be stored in actor state, sent to other actors, or written to a socket.
+- **Constant-time comparison** of secrets (a token check, for example) also happens inside the wrapper until
+  `CtMask` exists. Its result only decides what the handler does next, so it needs no re-creation.
+
+When these become built-ins, their results are ordinary Silica values subject to the `Secret` / `Public` rules above.
+
 ### The Big Picture
 
 This shifts security from "hope developers follow guidelines" to "the compiler prevents mistakes." It's like a seatbelt: you can't forget to use it because it's built into the system.

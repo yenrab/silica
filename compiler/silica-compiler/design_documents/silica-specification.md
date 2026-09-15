@@ -3038,6 +3038,8 @@ type atom
 
 Atoms are interned at compile time into a global atom table. Each unique atom name maps to a fixed integer index, so atom equality is a single integer comparison rather than a string comparison. Atoms require no runtime heap allocation.
 
+**One table per program (normative).** The atom table is program-wide. An atom has the same index in every compilation unit, so atoms passed between modules, in messages, in actor state, or matched in `case` patterns compare equal whenever their names are equal. An implementation that assigns atom indices per compilation unit must reconcile them when it links the program. No atom is created at run time.
+
 **Atom Literal Syntax:**
 ```silica
 :ok                // atom representing success
@@ -3291,13 +3293,21 @@ device_actor_ref                     // device-worker actor reference (primitive
 supervisor_ref                       // supervisor reference (primitive type)
 ```
 
-The `actor_ref` type is not parameterized by message type. It is a primitive type that represents a reference to an ordinary actor, created by the `spawn()` function.
+The `actor_ref` type is not parameterized by message type. It is a primitive type that represents a reference to an ordinary actor, created by the `spawn()` function. Every actor reference denotes its actor by a 64-bit identity that is never reused. Equality and ordering on actor references compare that identity (§15.1.4).
 
 The `dangerous_actor_ref` type is distinct from `actor_ref`. It represents a reference to an FFI worker actor that executes outbound foreign calls inside `external_danger` sequences in its behavior. It is created only by `spawn_dangerous(...)`. There is no subtyping or coercion between `actor_ref` and `dangerous_actor_ref`.
 
 The `device_actor_ref` type is distinct from `actor_ref` and from `dangerous_actor_ref`. It represents a reference to a device worker actor that calls `map_device`, `peek`, and `poke` inside `register_rwr` sequences in its behavior. It is created only by `spawn_device(...)` or `spawn_device_registered(...)`. There is no subtyping or coercion among the three reference types. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md).
 
 The `supervisor_ref` type is distinct from `actor_ref`. It represents a runtime-managed supervisor created by `spawn_registered_supervisor(...)`. It is not accepted by ordinary `call()` or `cast()`; supervisor maintenance uses `call_supervisor(...)`.
+
+#### 4.5.2 Timer References
+
+```
+timer_ref                            // pending timer (primitive type)
+```
+
+A `timer_ref` is an opaque primitive value returned by `send_after` (§22.14). It identifies one pending timer, and it may be held in variables, state and messages like any other primitive. `==` and `!=` are defined on it. Its only other use is `cancel_timer`.
 
 ### 4.6 Core Affinity Types
 
@@ -3626,6 +3636,22 @@ get_cpu_topology_info() -> string proc[device_io]
 ```
 
 Get CPU topology information as a JSON string. Requires the `device_io` effect.
+
+### 5.7 Checked Integer Arithmetic
+
+```
+checked_int64_add(a: int64, b: int64) -> (boolean, int64)
+checked_int64_mul(a: int64, b: int64) -> (boolean, int64)
+checked_int64_add1(a: int64) -> (boolean, int64)
+checked_int64_byte_size(count: int64, element_size: int64) -> (boolean, int64)
+```
+
+These are pure built-ins (no effects). Each computes a signed 64-bit result and reports whether it fits:
+
+- `(true, result)` when the exact result is representable as `int64`.
+- `(false, _)` when the operation overflows. The second element is then unspecified and must not be used.
+
+`checked_int64_add1(a)` is `checked_int64_add(a, 1)`. `checked_int64_byte_size(count, element_size)` computes the byte size `count × element_size` of a buffer; it also returns `false` when either argument is negative. The runtime uses the same checks when it sizes buffers (`alloc_buf`).
 
 ## 6. Language Features
 
@@ -3977,6 +4003,8 @@ r <= s      // less than or equal
 m > n       // greater than
 u >= v      // greater than or equal
 ```
+
+On the actor reference types (`actor_ref`, `dangerous_actor_ref`, `device_actor_ref`, `supervisor_ref`), all six operators compare actor identity (§15.1.4). Both operands must have the same reference type.
 
 ### 7.5 Logical Expressions
 Logical operators work on booleans:
@@ -6604,7 +6632,7 @@ Understanding the performance trade-offs between write-back (`normal`) and write
 - See Section 12.1.1.1 (AArch64 Memory Attribute Mapping) for memory attribute configuration
 - See Section 12.1.1.2 (Memory Space Runtime Guarantees) for detailed runtime guarantees
 - See Section 18.2.3 (AArch64 Memory Model Mapping) for memory ordering implications
-- See Section 15.1.2.2 (Actor Migration Overhead and Behavior) for cache performance during migration
+- See Section 15.1.2.4 (Message Delivery During Migration) for cache performance during migration
 
 **Performance Guarantees:**
 
@@ -7398,6 +7426,9 @@ spawn_device(initial_state, behavior_fn [, core_id]) -> device_actor_ref proc[co
 spawn_device_registered(initial_state, behavior_fn, name: atom [, core_id]) -> device_actor_ref proc[concurrency]
 spawn_registered(initial_state, behavior_fn, name: atom [, core_id]) -> actor_ref proc[concurrency]
 spawn_registered_supervisor(supervisor_impl_type, initial_state, name: atom [, core_id]) -> supervisor_ref proc[concurrency]
+spawn_state_machine(state_machine_impl_type, initial_state [, core_id]) -> actor_ref proc[concurrency]
+stop_self(reason: :normal | (:explicit, atom)) -> :ok  proc[concurrency]
+fail_self(reason: atom) -> !  proc[concurrency]
 link(target: actor_ref) -> :ok  proc[concurrency]
 monitor(target: actor_ref) -> monitor_ref  proc[concurrency]
 demonitor(ref: monitor_ref) -> :ok  proc[concurrency]
@@ -7409,7 +7440,7 @@ demonitor(ref: monitor_ref) -> :ok  proc[concurrency]
 
 `spawn_device` creates a device worker actor whose behavior calls `map_device`, `peek`, and `poke` inside `sequence proc[register_rwr] ... produces pure ... end`. It returns `device_actor_ref`, requires `concurrency` at the call site, and must **not** be used from a sequence block that declares `register_rwr`. Installing a worker with `spawn_device` does not execute MMIO; the worker executes poke when it receives casts. Its behavior must not contain `external_danger` or call `dangerous_*` functions. `spawn_device_registered` is the same install, registered under an atom in the **device** registry; clients look it up with `cast_device_registered`, not `cast_registered`. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md).
 
-`spawn_registered` creates an ordinary actor and registers it under an atom name; it does not create a supervisor and does not imply a supervision link. `spawn_registered_supervisor` creates a runtime-managed supervisor, registers it under an atom name, calls the required `Supervisor.init/1` implementation for the named supervisor implementation type, and returns a `supervisor_ref`; see **§15.4.8** and **§15.4.13**. `link`, `monitor`, and `demonitor` operate on already-running ordinary actors; see **§15.4.8.5–§15.4.8.7**.
+`spawn_registered` creates an ordinary actor and registers it under an atom name; it does not create a supervisor and does not imply a supervision link. `spawn_registered_supervisor` creates a runtime-managed supervisor, registers it under an atom name, calls the required `Supervisor.init/1` implementation for the named supervisor implementation type, and returns a `supervisor_ref`; see **§15.4.8** and **§15.4.13**. `link`, `monitor`, and `demonitor` operate on already-running ordinary actors; see **§15.4.8.5–§15.4.8.7**. `spawn_state_machine` starts a runtime-managed state-machine actor from an implementation of the `StateMachine` trait; see **§15.5**. `stop_self` and `fail_self` end the calling actor; see **§15.1.2.3**.
 
 When `initial_state` contains a region handle, the handle is moved from `spawn` to the actor. The actor receives exclusive ownership of the region.
 
@@ -7433,7 +7464,7 @@ The `initial_state` parameter must implement the `ActorState` trait (for named t
 
 **Calling Convention Tracking:** The compiler infers and tracks whether an `actor_ref` is **call-only** (behavior returns `(:reply, ...)`) or **cast-only** (behavior returns `(:no_reply, ...)`). This information is used for compile-time type checking of `call()` and `cast()` operations.
 
-**State Type Constraints:** The initial state can be **any valid Silica type**, including:
+**State Type Constraints:** The initial state must be a type that implements `ActorState`; §16.3.1 says which types do. Within such a type, the state may be built from:
 - Primitive types: `int64`, `boolean`, `string`, etc.
 - Composite types: tuples, records, unions
 - Region handles: `region(R, normal)`, `region(R, atomic)`, etc.
@@ -7555,6 +7586,36 @@ actor_loop(state, behavior) {
 - The runtime owns the message loop; user code does not implement recursion over messages
 - If recursive logic is needed, structure it as non-recursive message-driven state machines
 
+**Actor Pinning Policy (normative):**
+
+Every actor is **pinned** to a core from the moment it is spawned until it terminates.
+
+- **Initial core**: the core passed as `spawn`'s third argument or, when none is passed, the core the runtime assigns at spawn time.
+- **Changing core**: an actor's core changes **only** when the program migrates it with `migrate_actor()` (the `pin_actor_to_*` helpers of §22.10 are shorthands for migrating to a chosen core). After a migration the actor is pinned to the new core.
+- **End of pinning**: pinning ends **only** when the actor terminates: normal exit, `remove_actor()`, `kill_abnormal()`, termination by its supervisor, or failure.
+- **No unpinned state**: there is no operation that unpins an actor.
+- **No runtime movement**: the runtime **never** moves an actor on its own: not for load balancing, thermal throttling, core parking, power management, NUMA locality, or region allocation. A program that wants any such policy implements it with `migrate_actor()`.
+- **When a move takes effect**: nothing interrupts a dispatch to move the actor. A move requested while the actor is running takes effect at its next dispatch boundary; migration is handled by the runtime outside the behavior function (§16.2.6.6), and message order is preserved (§15.1.2.4.1).
+- **Dispatch boundary and scheduler yield point (definitions)**:
+  - A **dispatch boundary** is the moment a behavior function returns. A pending migration, and a stop requested by `stop_self` or `remove_actor`, take effect only there.
+  - A **scheduler yield point** is a dispatch boundary, or a point where the running actor suspends to wait: a `call()` or `call_with_timeout()` awaiting its reply, or any other operation this specification says suspends only the calling actor (for example a socket that is not ready, §20.4, or a foreign call on a thread-isolated target, §15.4.13.5). At a yield point the runtime's per-core scheduler may run another actor on the same core. A suspended actor resumes on the same core, inside the same dispatch.
+  - Between yield points an actor is never preempted. A program that wants long computation to share its core ends its dispatch early and continues the work by sending itself a message with `cast(self(), …)` (§16.2.6.5).
+  - **Ending is the exception.** `fail_self`, `kill_abnormal`, a failure, and a supervisor's kill (§15.4.12.2) end an actor where it stands, even in the middle of a dispatch. The dispatch is abandoned, never resumed.
+
+**What "pinned" guarantees depends on the host** (compare the OS-free / OS-hosted split for memory spaces in §12.1.1.0):
+
+- **OS-free** (the Silica runtime owns the chip's cores; applications, libraries and firmware images running on raw cores): pinning is **exclusive and hard**. The actor executes exclusively on its core, and nothing but the program moves it.
+- **OS-hosted** (macOS, Linux, Windows, and analogous OSes): the actor is bound to the runtime's carrier thread for its logical core, and the runtime never moves it to another carrier on its own. The runtime requests affinity for that carrier thread from the OS where the OS allows it, but the OS still owns the cores: it may run other threads on the same core, may migrate the carrier thread, and on some hosts treats affinity only as a hint (Apple Silicon macOS offers no hard thread-to-core binding). Exclusive or hard placement is therefore **not** guaranteed on an OS-hosted target. On such a target `migrate_actor()` transfers the actor between carrier threads, as the BEAM migrates processes between its scheduler threads.
+
+**Migration API** (`proc[concurrency]`; details in §22.10):
+
+- `migrate_actor(actor_ref, target_core: uint64) -> :ok | :invalid_target | :actor_not_found | :migration_blocked`: moves the actor from whatever core it is on to `target_core` and pins it there.
+  - `:ok` means the move has been **requested**; it takes effect at the actor's next dispatch boundary.
+  - `:invalid_target` means the core does not exist or is unavailable.
+  - `:actor_not_found` means the actor has terminated.
+  - `:migration_blocked` means the actor cannot be moved right now.
+  - On any error atom, the actor stays pinned to its current core.
+
 <a id="spec-actor-stack-architecture"></a>
 
 #### 15.1.2.2 Actor Stack Architecture
@@ -7607,20 +7668,32 @@ fn main() -> atom {
 
 **Important**: The behavior function returns a tagged tuple `(:reply, Reply, State) | (:no_reply, State)` that encodes both the reply and new state. This keeps each message handler a finite call stack on the actor’s stack (see `actor_growable_stack_design.md`).
 
-#### 15.1.2.1 Actor Termination
+#### 15.1.2.3 Actor Termination
 
-**Graceful Shutdown Protocol:** Actors do not have an explicit built-in termination function. Instead, termination is accomplished by delivering **shutdown messages** (via `call` or `cast`) to the actor. The behavior function must:
+An actor ends in one of these ways:
 
-1. Handle shutdown message types (application-defined, e.g., `:shutdown`, `(:terminate, reason)`)
-2. Perform cleanup operations as needed
-3. Return a state update that signals the actor to stop processing messages
+- **Stopping itself.** A behavior ends its own actor with one of two built-ins:
 
-When a behavior function detects a shutdown signal and returns, the runtime:
+  ```
+  stop_self(reason: :normal | (:explicit, atom)) -> :ok   proc[concurrency]
+  fail_self(reason: atom) -> !                            proc[concurrency]
+  ```
+
+  - `stop_self` is an **orderly stop**. The current dispatch runs to completion: a call-only behavior still returns its `(:reply, …)` and the caller receives the reply. The runtime then ends the actor with the given `failure_reason` (§15.4.11.2).
+  - `fail_self` is an **immediate abnormal stop**. It never returns. The actor ends at once with `failure_reason` `(:explicit, reason)`, and the current dispatch is abandoned. With `stop_self((:explicit, reason))`, it is how a program produces an `(:explicit, atom)` reason; the runtime produces a few itself (§15.4.11.2).
+  - An actor ends itself only with `stop_self` or `fail_self`. `remove_actor` and `kill_abnormal` must not name the calling actor: the compiler rejects the call where it can tell, and otherwise the calling actor fails with `failure_reason` `:language_error`.
+- **Being removed.** `remove_actor(target)` (§22.10) ends another actor with `failure_reason` `:normal` at its next dispatch boundary. A call in progress still receives its reply.
+- **Being killed.** `kill_abnormal(target)` (§22.4) ends another actor immediately with `failure_reason` `(:explicit, :killed)`.
+- **Being shut down by its supervisor** (§15.4.12.2).
+- **Failing:** a runtime trap, `panic` (§22.16) or a contained fault (§15.4).
+
+When an actor ends, the runtime:
 - Stops the actor’s message loop
 - Notifies its owning supervisor, if any (see §15.1.3)
 - Completes any outstanding synchronous `call()` wrappers with the actor-death result before teardown finishes
 - Drops all remaining non-call messages in the mailbox
-- Terminates the actor thread
+- Removes the actor's registered name, if it has one (§20.3.1)
+- Releases the actor's stack and resources
 
 **Failure and outstanding calls:** If an actor terminates for any reason before replying to a synchronous `call()`--including runtime traps, explicit abnormal kill, supervisor cascade termination, or ordinary shutdown--the runtime must wake every affected caller before actor teardown completes. This includes the call currently being processed, if any, and any queued call messages that have not yet been processed. Each wrapper is completed exactly once with the actor-death result; queued cast/send messages are discarded without reply. A restarted actor does not inherit or replay the failed actor's pending calls.
 
@@ -7631,46 +7704,15 @@ When a behavior function detects a shutdown signal and returns, the runtime:
 fn server(msg: atom, state: int64) -> (:no_reply, int64) {
     case msg of {
         :shutdown -> {
-            // Cleanup happens here
-            // Return a special marker or simply stop processing
-            (:no_reply, state)  // Last message - actor terminates after this
+            sequence proc[concurrency]
+                // Cleanup happens here, then the actor stops once this dispatch returns.
+                _: atom <- stop_self(:normal)
+            produces pure (:no_reply, state) end
         }
         _ -> (:no_reply, state)
     }
 }
 ```
-
-#### 15.1.3 Supervisor Notification
-
-**Supervisor Registration:** When an actor terminates (either via shutdown message or due to an error), its owning runtime-managed supervisor, if any, is notified through the supervision ingress.
-
-**Supervisor Semantics:**
-- A supervisor is a runtime-managed process referenced by `supervisor_ref`
-- When a supervised actor terminates, the runtime enqueues a structured notification on the supervisor ingress
-- The runtime-owned supervisor behavior inspects the termination reason and applies restart, removal, termination, or escalation policy
-- This enables supervisor trees and fault tolerance (OTP-style supervision)
-
-**Supervisor Specification:** Full details of supervisor registration, failure notification delivery, the high-priority supervision ingress, restart protocols, and the required `Supervisor` trait are specified in **§15.4 Supervision and Fault Tolerance**.
-
-**Actor Pinning Policy (normative):**
-
-Every actor is **pinned** to a core from the moment it is spawned until it terminates.
-
-- **Initial core**: the core passed as `spawn`'s third argument or, when none is passed, the core the runtime assigns at spawn time.
-- **Changing core**: an actor's core changes **only** when the program migrates it with `migrate_actor()` (the `pin_actor_to_*` helpers of §22.10 are shorthands for migrating to a chosen core). After a migration the actor is pinned to the new core.
-- **End of pinning**: pinning ends **only** when the actor terminates: normal exit, `remove_actor()`, `kill_abnormal()`, termination by its supervisor, or failure.
-- **No unpinned state**: there is no operation that unpins an actor.
-- **No runtime movement**: the runtime **never** moves an actor on its own: not for load balancing, thermal throttling, core parking, power management, NUMA locality, or region allocation. A program that wants any such policy implements it with `migrate_actor()`.
-- **When a move takes effect**: nothing interrupts an actor in the middle of a message dispatch. A move requested while the actor is running takes effect at its next dispatch boundary or scheduler yield point; migration is handled by the runtime outside the behavior function (§16.2.6.6), and message order is preserved (§15.1.2.2.1).
-
-**What "pinned" guarantees depends on the host** (compare the OS-free / OS-hosted split for memory spaces in §12.1.1.0):
-
-- **OS-free** (the Silica runtime owns the chip's cores; applications, libraries and firmware images running on raw cores): pinning is **exclusive and hard**. The actor executes exclusively on its core, and nothing but the program moves it.
-- **OS-hosted** (macOS, Linux, Windows, and analogous OSes): the actor is bound to the runtime's carrier thread for its logical core, and the runtime never moves it to another carrier on its own. The runtime requests affinity for that carrier thread from the OS where the OS allows it, but the OS still owns the cores: it may run other threads on the same core, may migrate the carrier thread, and on some hosts treats affinity only as a hint (Apple Silicon macOS offers no hard thread-to-core binding). Exclusive or hard placement is therefore **not** guaranteed on an OS-hosted target. On such a target `migrate_actor()` transfers the actor between carrier threads, as the BEAM migrates processes between its scheduler threads.
-
-**Migration API** (`proc[concurrency]`; details in §22.10):
-
-- `migrate_actor(actor_ref, target_core) -> atom`: moves the actor from whatever core it is on to `target_core` and pins it there. It returns `:ok` on success. On failure it returns an error atom and the actor stays pinned to its current core.
 
 #### 15.1.2.1 AArch64 Runtime Integration
 
@@ -8079,7 +8121,7 @@ actor_ref: actor_ref <- spawn_on_numa(initial_state, behavior, 0);
 // minimizing cross-NUMA memory access latency
 ```
 
-#### 15.1.2.2 Message Delivery During Migration
+#### 15.1.2.4 Message Delivery During Migration
 
 When the program migrates an actor with `migrate_actor()`, message delivery guarantees ensure correct actor semantics and message ordering.
 - **NUMA Cache Effects**: Cross-NUMA migration may cause cache misses if data is not local to target core
@@ -8092,10 +8134,11 @@ Actor migration is **program-only**: an actor changes core only when the program
 
 ```silica
 // Move an actor from whatever core it is on to target_core, and pin it there
-migrate_actor(actor_ref: actor_ref, target_core: int) -> atom proc[concurrency]
+migrate_actor(actor_ref: actor_ref, target_core: uint64)
+    -> :ok | :invalid_target | :actor_not_found | :migration_blocked proc[concurrency]
 
 // Also a move: re-pins the actor to core_id (every actor is always pinned)
-pin_actor_to_core(actor_ref: actor_ref, core_id: int) -> (int64, affinity_error) proc[concurrency]
+pin_actor_to_core(actor_ref: actor_ref, core_id: uint64) -> (int64, affinity_error) proc[concurrency]
 ```
 
 **Migration Policy:**
@@ -8316,11 +8359,11 @@ Developers implementing manual migration should consider:
 **Cross-References:**
 - See Section 15.1.2.1 (AArch64 Runtime Integration) for core topology and scheduling details
 - See Section 12.1.1.1 (AArch64 Memory Attribute Mapping) for NUMA memory configuration
-- See Section 15.1.2.2.1 (Message Delivery During Migration) for message delivery guarantees during migration
+- See Section 15.1.2.4.1 (Message Delivery During Migration) for message delivery guarantees during migration
 - See Section 23.1.3 (CPU Scheduling and Affinity) for scheduling and affinity controls
 - See Section 18.2.3.2 (Memory Barrier Instruction Selection Strategy) for NUMA-aware barrier selection
 
-#### 15.1.2.2.1 Message Delivery During Migration
+#### 15.1.2.4.1 Message Delivery During Migration
 
 When an actor migrates between cores, message delivery guarantees ensure correct actor semantics and message ordering.
 
@@ -8337,7 +8380,7 @@ During actor migration, the actor's message queue is preserved:
 
 Message ordering is preserved across migration:
 
-1. **Pre-Migration Messages**: Messages received before migration starts are processed before migration begins
+1. **Pre-Migration Messages**: Messages already queued when the migration takes effect, at a dispatch boundary, move with the queue and are processed on the target core, in their original order
 2. **Migration Messages**: Messages received during migration are queued and processed after migration completes
 3. **Post-Migration Messages**: Messages received after migration completes are processed in order
 4. **FIFO Preservation**: The relative order of all messages is preserved across migration
@@ -8399,23 +8442,68 @@ If migration fails:
 1. **Migration Rollback**: Actor remains on source core, migration is rolled back
 2. **Message Queue**: Message queue remains on source core, no messages are lost
 3. **No Automatic Retry**: The runtime does not retry; the actor stays pinned to its source core, and retrying is the program's decision
-4. **Error Reporting**: The failure is returned to the caller as the error atom from `migrate_actor()`
+4. **Error Reporting**: A failure detected when the move is requested is returned as the error atom from `migrate_actor()`. A move that fails when it takes effect, after `:ok` was returned, leaves the actor pinned to its source core
 
 **Cross-References:**
 - See Section 16.1.3 (Message Ordering) for general message ordering guarantees
-- See Section 15.1.2.2 (Actor Migration Overhead and Behavior) for migration performance characteristics
+- See Section 15.1.2.4 (Message Delivery During Migration) for migration performance characteristics
 - See Section 18.1.1 (Actor Message Ordering) for happens-before relationships
 
-#### 15.1.3 Actor Identity
+#### 15.1.3 Supervisor Notification
+
+**Supervisor Registration:** When an actor terminates, for any of the reasons in §15.1.2.3, its owning runtime-managed supervisor, if any, is notified through the supervision ingress.
+
+**Supervisor Semantics:**
+- A supervisor is a runtime-managed process referenced by `supervisor_ref`
+- When a supervised actor terminates, the runtime enqueues a structured notification on the supervisor ingress
+- The runtime-owned supervisor behavior inspects the termination reason and applies restart, removal, termination, or escalation policy
+- This enables supervisor trees and fault tolerance (OTP-style supervision)
+
+**Supervisor Specification:** Full details of supervisor registration, failure notification delivery, the high-priority supervision ingress, restart protocols, and the required `Supervisor` trait are specified in **§15.4 Supervision and Fault Tolerance**. A supervisor can also forward a report of every child exit to a report sink actor (§15.4.10.5).
+
+#### 15.1.4 Actor Identity
 Each actor has a unique identity. The built-in function `self()` returns the current actor's reference:
 
 ```
-self() -> actor_ref
+self() -> actor_ref                       proc[concurrency]
+actor_id(ref: actor_ref | dangerous_actor_ref | device_actor_ref | supervisor_ref) -> uint64
+                                          proc[concurrency]
 ```
 
-(This is a built-in function that returns the actor reference directly, with no effects.)
+The `actor_ref` type is a primitive type (like `int` or `boolean`), representing a reference to an actor. An `actor_ref` denotes its actor by the actor's **identity**.
 
-The `actor_ref` type is a primitive type (like `int` or `boolean`), representing a reference to an actor.
+**Identity value (normative).** Every actor's identity is a **64-bit value**, fixed for the actor's lifetime and never reused while the program runs:
+
+| Bits | Field | Meaning |
+|------|-------|---------|
+| High 32 | **Position** | The spawner that numbered the actor |
+| Low 32 | **Child number** | The number that spawner gave the actor |
+
+`actor_id` returns the value, for printing, hashing, and putting on the wire. It is conventionally printed as `<position.child_number>`. A distribution layer carries it as two 32-bit fields; for example, the BEAM distribution protocol's id and serial.
+
+**Positions.** A position identifies a **spawner**: a supervisor, any other actor that spawns actors, or the program's `main` (which is not an actor).
+
+- The compiler numbers the positions of every spawner visible in the program at build time, in tree order.
+  - Position 0 belongs to `main`.
+  - Root supervisors, which `main` starts with `spawn_registered_supervisor`, take the next positions. A root supervisor is addressed by its registered name as well as by its position.
+- A spawner that starts other spawners at run time owns a **block of positions**. The compiler sizes the block at build time. A spawner that is itself started at run time receives a slice of its parent's block, for any spawners it starts in turn.
+- A spawner hands out positions only from its own block. No counter is shared between actors.
+- A spawner's position is **stable across its restarts**.
+
+**Child numbers.** A spawner numbers the actors it spawns from 0 upward and never reuses a number.
+
+- A restarted child gets the spawner's next number, so it has a new identity.
+- When a spawner is itself restarted, its numbering **continues**. Its supervisor keeps the high-water mark in the spawner's child-table row and hands it back on restart (§15.4.12.1).
+
+**Exhaustion.** A spawner can run out of child numbers (2^32) or of positions in its block. When either happens, its next spawn fails and the spawner fails with `failure_reason` `(:explicit, :identity_exhausted)`. For a supervisor, that is handled like a breach of its restart intensity (§15.4.13.2).
+
+**Equality and order.** `==`, `!=`, `<`, `<=`, `>` and `>=` are defined on each actor reference type (§4.5.1). They compare identities as the pair (position, child number).
+
+- Two references are equal exactly when they denote the same actor.
+- A reference to an actor that has ended **never equals** a reference to a live actor.
+- Sending to such a reference behaves as §16.1 specifies. The runtime must never read the ended actor's released memory to do so.
+
+**Named actors** compare by identity, never by name. A name is only a lookup (§20.3.1). When a supervised child registered under a name is restarted, the name refers to the new actor, and the new actor's identity differs from the old one's.
 
 ### 15.2 Actor Behavior Functions
 
@@ -8831,7 +8919,7 @@ A supervisor may itself be a child of another supervisor through that parent sup
 
 Each child actor has **at most one** supervisor — the runtime-managed supervisor that spawned it from a `child_spec` returned by `init/1` or accepted through `call_supervisor(..., { op: :add_child, ... })`. This simplifies failure delivery addressing and matches the single-parent supervision tree model (cf. OTP).
 
-An actor that has no supervisor is a **root actor**. When a root actor dies, the unwind report (§15.4.6.4) is written to stderr.
+An actor that has no supervisor is a **root actor**. When a root actor dies, its unwind report (§15.4.6.4) goes to the `FailureReporter` like every other report, and falls back to stderr only when no `FailureReporter` is running (§15.4.13.4).
 
 ##### 15.4.8.3 Supervisor Maintenance Calls
 
@@ -8870,9 +8958,11 @@ SupervisorMessage =
   | { op: :remove_child, id: atom }
   | { op: :restart_child, id: atom }
   | { op: :terminate_child, id: atom }
+  | { op: :terminate_actor, child: actor_ref }
   | { op: :which_children }
   | { op: :count_children }
   | { op: :get_child, id: atom }
+  | { op: :set_report_sink, sink: actor_ref }
 ```
 
 The expected replies are:
@@ -8883,11 +8973,17 @@ The expected replies are:
 | `{ op: :remove_child, id: atom }` | `{ tag: :ok, status: :removed, ... }` |
 | `{ op: :restart_child, id: atom }` | `{ tag: :child_started, child: actor_ref, ... }` |
 | `{ op: :terminate_child, id: atom }` | `{ tag: :ok, status: :terminated, ... }` |
+| `{ op: :terminate_actor, child: actor_ref }` | `{ tag: :ok, status: :terminated, ... }` |
+| `{ op: :set_report_sink, sink: actor_ref }` | `{ tag: :ok, status: :sink_set, ... }` |
 | `{ op: :which_children }` | `{ tag: :children, children: List[child_info, mem(normal)], ... }` |
 | `{ op: :count_children }` | `{ tag: :count, count: int64, ... }` |
 | `{ op: :get_child, id: atom }` | `{ tag: :child_info, child_info: child_info, ... }` |
 
 Any operation can return `{ tag: :error, error: reason_atom, ... }`.
+
+**`:terminate_actor`** names the child by its actor reference (§15.1.4), not by its `id`. If the row with that reference no longer holds it, because the child has since ended or been restarted, the reply is `{ tag: :error, error: :not_found, ... }` and nothing is terminated. A request aimed at an old reference therefore never reaches that child's replacement.
+
+**`:set_report_sink`** names the actor that receives this supervisor's exit reports (§15.4.10.5).
 
 There is no `cast_supervisor`, and `cast(supervisor_ref, ...)` is invalid. `call(supervisor_ref, ...)` is invalid; ordinary actor `call()` accepts `actor_ref`, not `supervisor_ref`.
 
@@ -8946,7 +9042,7 @@ A monitor is a **unidirectional** observation: the monitoring actor is notified 
 
 - Cancels the monitor identified by `ref`; no further `DOWN` messages are delivered for it.
 - Safe to call after the monitored actor has already died (idempotent for already-fired monitors).
-- Safe to call with a `monitor_ref` that was never created by the calling actor: raises `actor_not_found`.
+- A `monitor_ref` is non-transferable. Calling `demonitor` with one that the calling actor did not create returns `:ok` and has no effect.
 
 ##### 15.4.8.7 Links vs. Monitors — When to Use Each
 
@@ -8976,7 +9072,7 @@ Each supervisor maintains a **supervision ingress** — a separate, bounded-prio
 
 The supervision ingress is a runtime-internal structure. It is not a second "mailbox" that user code can address directly as an `actor_ref` or `supervisor_ref`.
 
-**Note**: This extends the single-mailbox model described in §16.2.2. Supervisors have a runtime-maintained ingress plus their synchronous supervisor-call queue; ordinary actors have only the standard mailbox (see §15.4.16.2).
+**Note**: This extends the single-mailbox model described in §16.2.2. Supervisors have a runtime-maintained ingress plus their synchronous supervisor-call queue; ordinary actors have only the standard mailbox (see §16.2.2).
 
 ##### 15.4.9.3 How the Ingress is Populated
 
@@ -9020,7 +9116,30 @@ On the trap path, `handle_actor_crash` runs after `siglongjmp` returns the runti
 
 ##### 15.4.10.4 Dead Supervisor
 
-If the supervisor is also dead when the notification is enqueued, the notification is silently dropped. The unwind report is written to stderr in this case.
+If the supervisor is also dead when the notification is enqueued, the notification is silently dropped. The unwind report is still delivered to the `FailureReporter` (§15.4.13.4).
+
+##### 15.4.10.5 Exit Reports to a Report Sink
+
+A supervisor may name a **report sink**: an ordinary cast-only actor that receives a report of every child exit the supervisor handles. The sink is named with `call_supervisor(sup, { op: :set_report_sink, sink: actor_ref })` (§15.4.8.3).
+
+After the supervisor has processed a child's exit notification and applied its restart decision, the runtime casts an `exit_report` to the sink:
+
+```
+exit_report ::= {
+    child:          actor_ref,        -- the child that ended
+    child_id:       atom,             -- its child_spec id
+    failure_reason: failure_reason,   -- §15.4.11.2
+    restarted:      boolean,
+    new_child:      actor_ref         -- the replacement when restarted is true; equal to child otherwise
+}
+```
+
+**Rules:**
+- `exit_report` implements `ActorMessage`. The sink's behavior takes `exit_report` as its message type.
+- Reports are cast in the order the supervisor processes its supervision ingress (§15.4.9.4). The supervisor never waits for the sink.
+- A supervisor started as a child of a supervisor that has a sink **inherits** that sink, unless it names its own.
+- Exits handled before any sink is named are not reported. If the sink has ended, reports are dropped.
+- A report is the only way an actor other than the supervisor learns of a child's exit through supervision. It does not replace the supervision ingress, which stays runtime-internal (§15.4.9).
 
 ---
 
@@ -9041,26 +9160,27 @@ Every failure notification delivered to a supervisor's supervision ingress carri
 The failure reason is an **inline sum type** — a built-in language construct, not defined in any module. It is written inline wherever it appears in a type signature:
 
 ```
-:normal | :language_error | :memory_fault | (:explicit, atom) | :unknown
+:normal | :language_error | :memory_fault | (:explicit, atom) | :noproc | :unknown
 ```
 
 | Variant | Meaning |
 |---------|---------|
-| `:normal` | Actor shut down normally (shutdown message handled cleanly) |
-| `:language_error` | Language-level failure: pattern match exhaustion, type mismatch, or similar |
+| `:normal` | The actor ended normally, through `stop_self(:normal)` or `remove_actor` (§15.1.2.3) |
+| `:language_error` | Language-level failure: pattern-match exhaustion, a type mismatch, `panic` (§22.16), or similar |
 | `:memory_fault` | Hardware-detected memory fault (MTE tag mismatch, guard page violation) |
-| `(:explicit, atom)` | Explicit termination with a caller-supplied reason atom |
+| `(:explicit, atom)` | Termination with a reason atom: `fail_self(reason)` or `stop_self((:explicit, reason))` (§15.1.2.3). The runtime uses `(:explicit, :killed)` for `kill_abnormal`, `(:explicit, :shutdown)` for a supervisor's orderly shutdown (§15.4.12.2), and `(:explicit, :identity_exhausted)` for exhausted identities (§15.1.4). |
+| `:noproc` | Used only in a `DOWN` message: the monitored actor had already ended when `monitor` was called (§15.4.8.6) |
 | `:unknown` | Runtime could not determine the reason |
 
 **Note**: `:oom` is intentionally absent. Actor stacks grow without bound (§15.1.2.2); stack growth is not a failure condition and does not produce a supervision notification. System-level host memory exhaustion that prevents stack growth fails the containment gate (§15.4.4) and aborts the process rather than delivering a per-actor exit notification.
 
 ##### 15.4.11.4 Unwind Report Delivery
 
-The unwind report is generated by the runtime before the actor's stack is reclaimed (§15.4.6.4). It reaches the root `FailureReporter` actor as a `String` (and accompanying `region_dumps` list when enabled) via **`FailureReporter.handle_report`** (§15.4.13.4) using **asynchronous delivery** onto the `FailureReporter` actor—not as part of synchronous teardown code on the dead actor's thread. It is **not** included as a field in the failure notification payload sent to the supervisor's ingress; the two channels are independent.
+The unwind report is generated by the runtime before the actor's stack is reclaimed (§15.4.6.4). It reaches the root `FailureReporter` actor as a `string` (and accompanying `region_dumps` list when enabled) via **`FailureReporter.handle_report`** (§15.4.13.4) using **asynchronous delivery** onto the `FailureReporter` actor—not as part of synchronous teardown code on the dead actor's thread. It is **not** included as a field in the failure notification payload sent to the supervisor's ingress; the two channels are independent.
 
 The supervisor ingress receives the structured notification fields (§15.4.11.1, §15.4.11.2) for restart-policy decisions. The `FailureReporter` receives the human-readable report for logging and debugging.
 
-For **root actors** (no supervisor), this field has no recipient — the runtime writes the report to **stderr** instead.
+For an actor with no supervisor, the structured notification has no recipient. Its unwind report still goes to the root `FailureReporter` like any other (§15.4.13.4), and to **stderr** only when no `FailureReporter` is running.
 
 ---
 
@@ -9073,6 +9193,7 @@ When a child exits and the **row** in the internal child table (§15.4.13.3) for
 1. Extracts the `initial_state` and `behavior` fields from the **stored** `child_spec` for that row.
 2. Uses the supervisor runtime's internal child-spawn operation to create the replacement child, attach it to the same `supervisor_ref`, and record the row metadata needed for future exit notifications.
 3. Updates that row in the **heap child table** with the new `actor_ref`; the old ref is permanently dead.
+4. Numbers the replacement with the supervisor's next child number, so the replacement's identity differs from the old child's (§15.1.4). If the child is itself a spawner, its position and the high-water mark of its child numbering are kept in this row and handed to the replacement, so its numbering continues (§15.1.4).
 
 `call()` or `cast()` to a dead `actor_ref` raises `actor_not_found` (§16.1.4). User code is not involved in the restart; the runtime-owned supervisor behavior applies the strategy from `supervisor_flags` directly.
 
@@ -9082,9 +9203,15 @@ When a supervisor is tearing down children for restart or termination:
 
 1. For each live child whose `actor_ref` is held in the supervisor child table, the runtime-owned supervisor behavior applies the child row's `shutdown` policy.
 2. If `shutdown` is `0`, the child is killed immediately.
-3. If `shutdown` is greater than `0`, the runtime requests orderly termination and waits up to that many milliseconds before killing the child.
+3. If `shutdown` is greater than `0`, the runtime performs an **orderly shutdown**:
+   - It stops dispatching further messages to the child.
+   - It lets the dispatch in progress, if any, run to completion; a call in progress still receives its reply.
+   - It then ends the child with `failure_reason` `(:explicit, :shutdown)`.
+   - No message is delivered to the child for this.
+   - If the dispatch in progress has not completed within `shutdown` milliseconds, the child is killed.
 4. If the child is already dead, the child is treated as successfully stopped.
 5. After the affected children are stopped, the supervisor may respawn them or remove their rows according to the operation and restart strategy.
+6. When a `:temporary` child ends, for any reason, its row is **removed** from the child table. Rows of `:permanent` and `:transient` children are kept.
 
 This protocol is supervisor-runtime behavior. It does not expose public shutdown supervisor messages and does not interact with the §15.4.6 trap recovery path.
 
@@ -9150,15 +9277,17 @@ child_spec ::= {
 | `:temporary` | Never restart. |
 | `:transient` | Restart only if the child exited with a reason other than `:normal`. |
 
+`ChildReturn` is the child behavior's return form: `(:reply, Reply, ActorState)` for a call-only child, or `(:no_reply, ActorState)` for a cast-only child. Each behavior uses exactly one form (§15.1.2). A state-machine child gives `behavior: state_machine_behavior(ImplType)`, the runtime-provided cast-only behavior for that `StateMachine` implementation, and its `initial_state` is the value passed to `init` (§15.5.6).
+
 `shutdown` controls how the runtime stops a live child before replacing it:
 - `0` — kill immediately without waiting.
-- `> 0` — send a shutdown signal, then wait up to that many milliseconds; kill if the child has not stopped by then.
+- `> 0` — orderly shutdown (§15.4.12.2): no further messages are dispatched, the dispatch in progress may finish for up to that many milliseconds, and the child is then ended or killed.
 
 ##### 15.4.13.3 Internal child table: heap layout, declarative and dynamic children
 
 **Representation.** For each supervisor actor, the runtime maintains an **internal child table** that is **heap-allocated** and **growable** (explicit pointer, length, and capacity, or equivalent). The table is not required to live inside a fixed-size inline control block; the actor control block stores at least a **pointer** to the table and metadata needed to find it. Implementation may reallocate the buffer when the number of **supervised** children grows. This matches the usual Erlang/OTP model where the supervisor process holds a variable-size structure for its child specs, while still allowing a compact fixed header for schedulers and fast paths.
 
-**Row contents.** Each row must contain at least: the current `actor_ref`; the **`child_spec` fields** required to apply the restart protocol (§15.4.12.1) — in particular `initial_state`, `behavior`, `restart`, `agent_type`, and `id` where needed for **`:rest_for_one` ordering**; **per-child** (or per-supervisor, per spec) data for `shutdown` and for restart-intensity / escalation (`allowed_restart_count` / `restarts_time_frame` are taken from `supervisor_flags` returned by `init` and apply to **all** rows unless the language adds a more granular rule later).
+**Row contents.** Each row must contain at least: the current `actor_ref`; the **`child_spec` fields** required to apply the restart protocol (§15.4.12.1) — in particular `initial_state`, `behavior`, `restart`, `agent_type`, and `id` where needed for **`:rest_for_one` ordering**; **per-child** (or per-supervisor, per spec) data for `shutdown` and for restart-intensity / escalation (`allowed_restart_count` / `restarts_time_frame` are taken from `supervisor_flags` returned by `init` and apply to **all** rows unless the language adds a more granular rule later). For a child that is itself a spawner, the row also keeps the child's position and the high-water mark of its child numbering, so that both survive the child's restarts (§15.1.4). Rows of `:temporary` children are removed when those children end (§15.4.12.2).
 
 **Declarative children.** For each `child_spec` in the list returned from **`init`**, the runtime (typically via the **supervisor start trampoline**; see implementation plan) spawns the child, **appends** a row, and records the resulting ref. The order of spawns and rows **must** match the order of the `init` list so that **`:rest_for_one`** (§15.4.13.2) is well-defined.
 
@@ -9205,17 +9334,27 @@ The runtime must:
 
 ##### 15.4.13.4 FailureReporter Trait
 
-`FailureReporter` is a **root trait** — it defines the system-wide delivery point for all unwind reports, analogous to OTP's Logger. There is one root `FailureReporter` actor per system, alongside the root supervisor actor.
+`FailureReporter` is a **root trait** — it defines the system-wide delivery point for all unwind reports, analogous to OTP's Logger. There is one root `FailureReporter` actor per system, alongside the root supervisors.
+
+`main`, which is not an actor, spawns the reporter actor and registers it before it starts any other actor:
+
+```
+register_failure_reporter(reporter: actor_ref) -> atom   proc[concurrency]
+```
+
+Registration calls `region_dump_limit()` once and caches the result.
 
 ```silica
 trait FailureReporter {
-    fn region_dump_limit() -> int;
-    fn handle_report(report: String, region_dumps: [(atom, Bytes)]) -> :ok;
+    fn region_dump_limit() -> int64;
+    fn handle_report(report: string, region_dumps: List[(uint64, string), mem(normal)]) -> :ok;
 }
 ```
 
+In `handle_report`, `report` is the formatted unwind report, and each `region_dumps` entry pairs a region identifier with that region's raw bytes, carried in a `string` (§4.1.6).
+
 - `region_dump_limit` — required; returns the maximum number of bytes to capture per region. `0` disables region dumps entirely. The runtime calls this once at startup and caches the result.
-- `handle_report` — required; **`handle_report` is invoked once on the root `FailureReporter` actor's OS thread per actor death** once the textual report (`report`) and structured `region_dumps` (if applicable) have been prepared; see **Asynchronous delivery** and **Transport vs. typed report** below. `report` is the fully-formatted unwind report string (§15.4.6.4), including the hex dump section when region dumps are enabled. `region_dumps` is a list of `(region_id, raw_bytes)` pairs — one per region handle the dying actor held — delivering the same data as raw `Bytes` for programmatic processing (**Transport vs. typed report** milestone **(a)** may pass **`[]`**; milestone **(b)** fills **`region_dumps`** per §15.4.13.6). On AArch64 with MTE the raw bytes include the tag granule data appended after the memory data (see §15.4.13.6). On x86-64 the tag section is absent.
+- `handle_report` — required; **`handle_report` is invoked once on the root `FailureReporter` actor's OS thread per actor death** once the textual report (`report`) and structured `region_dumps` (if applicable) have been prepared; see **Asynchronous delivery** and **Transport vs. typed report** below. `report` is the fully-formatted unwind report string (§15.4.6.4), including the hex dump section when region dumps are enabled. `region_dumps` is a list of `(region_id, raw_bytes)` pairs — one per region handle the dying actor held — delivering the same data as raw bytes for programmatic processing (**Transport vs. typed report** milestone **(a)** may pass **`[]`**; milestone **(b)** fills **`region_dumps`** per §15.4.13.6). On AArch64 with MTE the raw bytes include the tag granule data appended after the memory data (see §15.4.13.6). On x86-64 the tag section is absent.
 
 **Asynchronous delivery**
 
@@ -9225,11 +9364,11 @@ The runtime prepares the unwind report during trusted teardown routines (§15.4.
 
 There are **two descriptive layers**:
 
-1. **Transport** — what the teardown path emits and enqueues: at minimum the **formatted textual report bytes** (**§15.4.6.4**); the enqueue may carry an **opaque** envelope (pointer, NUL-terminated **`char*`**, length — e.g. the **cast** mailbox node layout relied on prior to building SILICA values). This layer is deliberately **narrow** — it **does not** require constructing **`String`** or **`[(atom, Bytes)]`** heap values **on** the exiting actor's thread: **Asynchronous delivery** plus **bounded** teardown work (**bounded** buffering and restrained allocator use until handoff enqueue completes).
+1. **Transport** — what the teardown path emits and enqueues: at minimum the **formatted textual report bytes** (**§15.4.6.4**); the enqueue may carry an **opaque** envelope (pointer, NUL-terminated **`char*`**, length — e.g. the **cast** mailbox node layout relied on prior to building SILICA values). This layer is deliberately **narrow** — it **does not** require constructing **`string`** or **`List[(uint64, string), mem(normal)]`** heap values **on** the exiting actor's thread: **Asynchronous delivery** plus **bounded** teardown work (**bounded** buffering and restrained allocator use until handoff enqueue completes).
 
-2. **Typed report** — the SILICA **`handle_report(report, region_dumps)`** invocation on the **`FailureReporter` actor's OS thread**, where **`report`** becomes a **`String`** and **`region_dumps`** **`[(atom, Bytes)]`** as defined in **`FailureReporter`**.
+2. **Typed report** — the SILICA **`handle_report(report, region_dumps)`** invocation on the **`FailureReporter` actor's OS thread**, where **`report`** becomes a **`string`** and **`region_dumps`** **`List[(uint64, string), mem(normal)]`** as defined in **`FailureReporter`**.
 
-An implementation **may realize** the **typed** layer **in milestones**: (**a**) **`handle_report`** with a full textual **`report`** **`String`** and **`region_dumps` = `[]`** (empty list) once the **`String`** bridge from **transport** exists; (**b**) **non-empty** **`region_dumps`** per **§15.4.13.6** when the runtime **captures** region binary payloads and attaches them to the enqueue handoff. While **(`b`)** is not yet present, **(`a`)** still conforms to this section if **`report`** carries the complete **§15.4.6.4** **text**, including hex and region narratives **rendered into the string** when enabled; **`region_dumps`** then supplies **programmatic** raw **Bytes** once **(`b`)** lands. Neither milestone **runs** **`handle_report`** **synchronously** from the dying actor's stack (**Asynchronous delivery**).
+An implementation **may realize** the **typed** layer **in milestones**: (**a**) **`handle_report`** with a full textual **`report`** **`string`** and **`region_dumps` = `[]`** (empty list) once the **`string`** bridge from **transport** exists; (**b**) **non-empty** **`region_dumps`** per **§15.4.13.6** when the runtime **captures** region binary payloads and attaches them to the enqueue handoff. While **(`b`)** is not yet present, **(`a`)** still conforms to this section if **`report`** carries the complete **§15.4.6.4** **text**, including hex and region narratives **rendered into the string** when enabled; **`region_dumps`** then supplies **programmatic** raw bytes once **(`b`)** lands. Neither milestone **runs** **`handle_report`** **synchronously** from the dying actor's stack (**Asynchronous delivery**).
 
 **Rules**:
 
@@ -9292,17 +9431,17 @@ The `reason` field is `:memory_fault` (or `:language_error` if the fault was a l
 
 When `FailureReporter.region_dump_limit()` returns a value greater than zero, the runtime captures all region handles held by the dying actor before their memory is reclaimed.
 
-**`Bytes` layout in `region_dumps`**
+**Raw-byte layout in `region_dumps`**
 
-Each `Bytes` value in the `region_dumps` list delivered to `handle_report` has the following layout:
+The `string` in each `region_dumps` entry delivered to `handle_report` has the following layout:
 
 ```
 [ memory data: N bytes ][ tag data: N/16 bytes (AArch64 MTE only) ]
 ```
 
 - `N` is `min(region_dump_limit(), actual_region_size)` rounded down to the nearest 16-byte granule boundary.
-- Tag data is present only on AArch64 with MTE enabled. Each byte of tag data encodes one MTE tag nibble (0x0–0xF) for the corresponding 16-byte granule of memory data. Tag data is absent on x86-64; the `Bytes` value contains only the memory data.
-- The `atom` key in each `(atom, Bytes)` pair is a runtime-assigned region identifier of the form `:region_N` where N is a monotonically increasing integer assigned at region creation time.
+- Tag data is present only on AArch64 with MTE enabled. Each byte of tag data encodes one MTE tag nibble (0x0–0xF) for the corresponding 16-byte granule of memory data. Tag data is absent on x86-64; the `string` contains only the memory data.
+- The `uint64` in each `(uint64, string)` pair is a runtime-assigned region identifier, a monotonically increasing integer assigned at region creation time. It is an integer, not an atom, because atoms are never created at run time (§4.1.7). The report string prints it as `region:N`.
 
 **Hex dump in the report string**
 
@@ -9358,11 +9497,7 @@ In release builds the runtime should:
 
 #### 15.4.16 Conflicts with the Current Specification
 
-The following conflicts exist between this section and other parts of `silica-specification.md` and must be resolved before implementation.
-
-##### 15.4.16.1 `recv()` in §16.2.8 (pre-existing error)
-
-§16.2.8 contains an example calling `recv()` directly in user code, which contradicts §16.2.1. This is a pre-existing error unrelated to this section; it should be corrected separately.
+No conflicts remain between this section and other parts of `silica-specification.md`. The one previously listed, an example in §16.2.8 that called `recv()` from user code, has been corrected.
 
 ---
 
@@ -9389,6 +9524,98 @@ No open items. All previously deferred decisions have been resolved and their sp
 
 ---
 
+### 15.5 State-Machine Actors
+
+A **state-machine actor** is a runtime-managed actor whose behavior comes from an implementation of the `StateMachine` trait. It is Silica's counterpart of Erlang/OTP's `gen_statem`, as gen_server-style behaviors (§15.1.2) correspond to `gen_server` and the `Supervisor` trait (§15.4.13) to `supervisor`. The programmer implements the trait. The runtime provides the behavior function, which keeps the event queues, applies postponement and runs the timeouts described below.
+
+#### 15.5.1 The `StateMachine` Trait
+
+```silica
+trait StateMachine {
+    fn init(initial_state: ActorState) -> (atom, ActorState, List[sm_action, mem(normal)]);
+    fn handle_event(event: sm_event, state: atom, data: ActorState) -> sm_result;
+}
+```
+
+- `init` is called exactly once, when the actor starts and before it handles any event. It returns the initial **state name**, the initial **data**, and a list of actions (§15.5.3).
+- `handle_event` is called once per event, with the current state name and data. It is a behavior function in the sense of §15.1.2: it is not recursive, it runs to completion, and its return is a scheduler yield point.
+- A state name is an atom. Atoms are fixed when the program is built (§4.1.7), so the set of possible states is known at build time.
+- The data must implement `ActorState`. Like actor state, it is moved, not copied (§15.1.1).
+- There are no state-enter calls. An implementation that needs one handles it at the transition, for example with a `:next_event` action.
+
+#### 15.5.2 Events and Results
+
+```
+sm_event ::= (:cast, ActorMessage)       -- a message taken from the mailbox
+           | (:internal, ActorMessage)   -- an event inserted by a :next_event action
+           | (:state_timeout, atom)      -- the state timeout fired; carries its content
+           | (:event_timeout, atom)      -- the event timeout fired; carries its content
+           | (:timeout, atom, atom)      -- the generic timeout with this name fired; carries its content
+```
+
+```
+sm_result ::= (:next_state, atom, ActorState, List[sm_action, mem(normal)])
+            | (:keep_state, ActorState, List[sm_action, mem(normal)])
+            | (:stop, :normal | (:explicit, atom))
+```
+
+- `:next_state` sets the state name and the data, then applies the actions. The state **changes** only when the new name differs from the current one. Returning the current name is not a change.
+- `:keep_state` keeps the state name, replaces the data, and applies the actions.
+- `:stop` ends the actor as `stop_self` does (§15.1.2.3), with the given reason, once this event has been handled.
+
+`stop_self` and `fail_self` may also be called from `handle_event`.
+
+#### 15.5.3 Actions
+
+```
+sm_action ::= :postpone
+            | (:next_event, ActorMessage)
+            | (:state_timeout, uint64, atom)       -- milliseconds, content
+            | :cancel_state_timeout
+            | (:event_timeout, uint64, atom)       -- milliseconds, content
+            | (:timeout, atom, uint64, atom)       -- name, milliseconds, content
+            | (:cancel_timeout, atom)              -- name
+```
+
+The actions in a list are applied in order, after `handle_event` or `init` returns. `:postpone` is not valid in the list `init` returns. The compiler rejects it there when it can tell; otherwise the actor fails with `failure_reason` `:language_error`.
+
+#### 15.5.4 Event Order and Postponement
+
+The runtime keeps three sources of events for each state-machine actor: the **inserted events** added by `:next_event` actions, the **postponed events**, and the **mailbox** (§16.2.2). It takes the next event as follows:
+
+1. **Inserted events first.** Events inserted by the last handled event's actions are handled next, before any other event, in the order the actions list them.
+2. **Then postponed events, after a state change.** `:postpone` keeps the current event instead of discarding it. When the state changes, every postponed event is handled again before any mailbox message, in the order they were first received. A postponed event is handled again only after a state change; postponing it again keeps it for the next change.
+3. **Then the mailbox**, in FIFO order (§16.1.3). Timeout events are placed in the mailbox when they fire.
+
+Postponement is something a behavior asks for, for one event at a time. The runtime never defers or reorders messages on its own, and the protocol typing of [silica_actor_capabilities_specification.md](silica_actor_capabilities_specification.md) does not rely on postponement.
+
+#### 15.5.5 Timeouts
+
+All timeouts use the monotonic clock (§22.14). A timeout fires no earlier than its time and may fire later.
+
+| Kind | Set by | Cancelled when | Event delivered |
+|------|--------|----------------|-----------------|
+| State timeout | `(:state_timeout, ms, content)`; setting one replaces the previous one | The state changes, or `:cancel_state_timeout` | `(:state_timeout, content)` |
+| Event timeout | `(:event_timeout, ms, content)`; setting one replaces the previous one | Any event is handled before it fires | `(:event_timeout, content)` |
+| Generic timeout | `(:timeout, name, ms, content)`; one per name, and setting one replaces the previous one with that name | `(:cancel_timeout, name)` | `(:timeout, name, content)` |
+
+- A time of `0` fires at once: the event goes into the mailbox behind the messages already there.
+- Once a timeout has been cancelled or replaced, its event is never delivered, even if it had already fired.
+- Every pending timeout ends with the actor.
+
+#### 15.5.6 Starting, Supervision and Calling
+
+```
+spawn_state_machine(state_machine_impl_type, initial_state [, core_id]) -> actor_ref   proc[concurrency]
+state_machine_behavior(state_machine_impl_type)                                          -- compile time
+```
+
+- `spawn_state_machine` starts the actor, which calls `init` with `initial_state`. The optional core id is as for `spawn` (§15.1.1).
+- `state_machine_behavior(ImplType)` is a compile-time built-in that denotes the runtime-provided behavior for that implementation type. A supervisor starts a state-machine child from a `child_spec` whose `behavior` is `state_machine_behavior(ImplType)` and whose `initial_state` is the value passed to `init` (§15.4.13.2).
+- A state-machine actor is **cast-only**. `cast()` delivers `(:cast, message)`. `call()` on a state-machine actor is a compile-time error. A request that needs an answer carries a reply-to `actor_ref` in its message (§16.3.4).
+- A state-machine actor is named with `register` (§20.3.1).
+- If `init` or `handle_event` fails, the actor fails and its supervisor is notified as for any actor (§15.4.10). Its inserted events, postponed events and timeouts are discarded. A restarted state machine starts again at `init`.
+
 ## 16. Message Passing
 
 ### 16.1 Call and cast semantics
@@ -9402,7 +9629,8 @@ call(actor: actor_ref, message: ActorMessage) -> Reply proc[concurrency]
 
 **Semantics:**
 - **Blocking**: The caller is suspended until the target actor returns a reply via the `(:reply, reply_value, new_state)` tuple
-- **Immediate Death Detection**: If the target actor is dead or terminates before returning a reply, `call()` immediately raises `actor_not_found` (not `timeout_error`)
+- **No Timeout**: `call()` has no timeout. The caller stays blocked until the target replies or ends. A caller that must stop waiting uses `call_with_timeout` (§16.1.1.2).
+- **Immediate Death Detection**: If the target actor is dead, or ends before returning a reply, `call()` raises `actor_not_found` at once (§15.1.2.3).
 - **Message Delivery**: The message is queued in the target actor's mailbox like any other message (if the actor is alive)
 - **Reply Value**: The return type is determined by the `reply_value` in the behavior's `(:reply, reply_value, new_state)` return tuple, verified at compile time to match the `call()` return type
 
@@ -9457,6 +9685,21 @@ call_supervisor(supervisor: supervisor_ref, message: SupervisorMessage) -> {
 
 `call_supervisor` accepts only `supervisor_ref`, not `actor_ref`. Its return type is the concrete record shown above; it is not inferred from the message variant. Supervisors do not accept ordinary `call()` or `cast()`.
 
+#### 16.1.1.2 Call with a Timeout
+
+```
+call_with_timeout(actor: actor_ref, message: ActorMessage, timeout_ms: uint64)
+    -> (:reply, Reply) | :timeout   proc[concurrency]
+```
+
+`call_with_timeout` is `call()` with a limit on how long the caller waits. Every type rule of §16.1.1 and §16.2.6 applies to it unchanged, including the rule against calling `self()`.
+
+- If the reply arrives within `timeout_ms` milliseconds of the message being enqueued, the result is `(:reply, reply_value)`.
+- Otherwise the result is `:timeout`. The request is not withdrawn: if it is still queued, the target still handles it. The runtime discards the reply the target returns later. That reply never reaches the caller, its mailbox, or any later call.
+- If the target is dead, or ends before replying within the timeout, `call_with_timeout` raises `actor_not_found`, as `call()` does. Once `:timeout` has been returned, nothing further happens to the caller.
+- A `timeout_ms` of `0` enqueues the message and returns `:timeout` without waiting.
+- Time is measured on the monotonic clock (§22.14).
+
 #### 16.1.2 Asynchronous Cast
 Messages can be sent asynchronously without blocking, with success/failure indication:
 
@@ -9508,7 +9751,7 @@ When a message is sent to an actor that has terminated, the following behavior a
 **Termination Detection:**
 
 An actor is considered terminated when:
-- The actor's behavior function explicitly terminates (e.g., returns a termination signal)
+- The actor stops itself with `stop_self` or `fail_self`, or another actor ends it with `remove_actor` or `kill_abnormal` (§15.1.2.3)
 - The actor encounters an unrecoverable error and the runtime terminates it
 - The actor is explicitly terminated by the runtime (e.g., via supervisor actions)
 
@@ -9618,7 +9861,7 @@ Unbounded mailboxes provide predictable performance characteristics:
 **Cross-References:**
 - See Section 16.1.2 (Asynchronous Cast) for `cast()` exception handling semantics
 - See Section 16.1.1 (Asynchronous cast) for `cast()` behavior
-- See Section 15.1.2.2 (Actor Migration Overhead and Behavior) for message delivery during migration
+- See Section 15.1.2.4 (Message Delivery During Migration) for message delivery during migration
 - See Section 12.1 (Region-Based Memory Management) for memory management details
 
 #### 16.2.3 Message Type Validation
@@ -9723,6 +9966,10 @@ The compiler tracks the calling convention of each `actor_ref` based on:
 
 This information is used at call sites of `call()` and `cast()` to enforce the type checking rules above.
 
+**Where the convention travels.** The compiler follows the convention wherever a reference flows and it can see the flow: through variables, function parameters and results, tuple and record fields, list elements, actor state and message fields. `spawn_state_machine` and `state_machine_behavior` give cast-only references (§15.5.6). A `supervisor_ref` has no calling convention; it is used only with `call_supervisor`.
+
+**Run-time check where the convention is unknown.** Some references reach a call site with no convention the compiler can determine: a reference returned by `whereis` (§20.3.1), a `child` field in a `call_supervisor` reply, a reference in an exit report (§15.4.10.5), or a reference read from a message or state field whose type does not record where it came from. The runtime records each actor's calling convention when the actor is spawned. A `call()`, `call_with_timeout()` or `cast()` through a reference whose convention is unknown at compile time compares that recorded convention with the operation before enqueuing anything. On a mismatch, nothing is enqueued and the calling actor fails with `failure_reason` `:language_error`.
+
 #### 16.2.6.5 Self-Call Deadlock Prevention
 
 **Rule**: `call(self(), message)` is a **compiler error**. An actor cannot call itself synchronously, as this would cause a deadlock.
@@ -9747,7 +9994,7 @@ error: cannot call(self(), ...)
 - Migration messages are processed **outside** the normal message handler
 - The behavior function does not see or handle migration messages
 - During migration, the actor's state is preserved and moved to the target core
-- Message ordering and reply guarantees still hold (see §15.1.2.2)
+- Message ordering and reply guarantees still hold (see §15.1.2.4)
 
 **Programmer Perspective**: Migrations appear as transparent core movements. The behavior function continues processing messages normally; state transfers are handled by the runtime.
 
@@ -9772,19 +10019,32 @@ error: cannot call(self(), ...)
 - **Priority Queues**: Route critical messages separately from bulk messages
 
 **Example: Backpressure via Acknowledgments**
-```silica
-// actormessage.silica declares: impl (:work, int64); impl (:ack);
 
-fn worker(msg: (:ack), state: int64) -> (:no_reply, int64) {
-    (:no_reply, state)
+The producer sends the next unit of work only after the worker acknowledges the previous one. Neither behavior waits: each handles one message and returns (§16.2.1).
+
+```silica
+// actormessage.silica declares: impl (:work, int64, actor_ref); impl (:ack);
+
+// Worker: handles one unit, then acknowledges it to the producer.
+fn worker(msg: (:work, int64, actor_ref), state: int64) -> (:no_reply, int64) {
+    case msg of {
+        (:work, n: int64, producer: actor_ref) -> {
+            sequence proc[concurrency]
+                _: atom <- cast(producer, (:ack) impl ActorMessage {});
+            produces pure (:no_reply, state + n) end
+        }
+    }
 }
 
-fn producer(worker_ref: actor_ref) -> atom {
-    sequence proc[concurrency]
-        _: boolean <- cast(worker_ref, (:work, 42) impl ActorMessage {});
-        // Wait for acknowledgment before the next cast
-        ack_msg: (:ack) <- recv();
-    produces pure :ok end
+// Producer: state is (worker, next unit). Each :ack releases the next unit.
+fn producer(msg: (:ack), state: (actor_ref, int64)) -> (:no_reply, (actor_ref, int64)) {
+    case state of {
+        (w: actor_ref, next: int64) -> {
+            sequence proc[concurrency]
+                _: atom <- cast(w, (:work, next, self()) impl ActorMessage {});
+            produces pure (:no_reply, (w, next + 1)) end
+        }
+    }
 }
 ```
 
@@ -11753,21 +12013,44 @@ Assertions check for programming errors during development and testing. When an 
 ### 20.3 Actor Utilities
 
 #### 20.3.1 Actor Registry
+
 ```
-fn register(name: string, actor: actor_ref<Msg>) -> atom proc[concurrency]
-fn lookup(name: string) -> Some(actor_ref<Msg>) | None proc[concurrency]
+register(name: atom, actor: actor_ref)
+    -> :ok | :name_taken | :already_registered | :actor_not_found   proc[concurrency]
+whereis(name: atom) -> Some(actor_ref) | None                        proc[concurrency]
+unregister(name: atom) -> :ok | :not_registered                      proc[concurrency]
+cast_registered(name: atom, message: ActorMessage) -> atom           proc[concurrency]
+call_registered(name: atom, message: ActorMessage) -> Reply          proc[concurrency]
 ```
+
+The **ordinary registry** maps a name to a live ordinary actor. Names are atoms, and atoms are fixed when the program is built (§4.1.7), so every name a program can use is known at build time. FFI workers and device workers have their own registries, with their own rules ([silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4.9, [silica_device_actor_specification.md](silica_device_actor_specification.md)). Names held by supervisors, through `spawn_registered_supervisor`, are in the same namespace.
+
+- **`register`** names an actor that is already running, whether it was started by `spawn`, `spawn_state_machine` or a supervisor.
+  - `:name_taken`: the name is held by a live actor or supervisor.
+  - `:already_registered`: the actor already holds a name. An actor holds at most one name in the ordinary registry.
+  - `:actor_not_found`: the actor has ended.
+  - A name whose spelling begins with `dangerous_` is a compile-time error (FFI wrapper specification §4.9.4).
+- **`spawn_registered`** (§15.1.1) is `spawn` followed by `register`, done as one step. If the name is taken, no actor is spawned and the calling actor fails with `failure_reason` `:language_error`.
+- **`whereis`** returns the actor that holds the name, or `None`. It never returns a supervisor. The calling convention of the reference it returns is checked at run time (§16.2.6.4).
+- **`unregister`** removes a name. It returns `:not_registered` when no actor holds the name.
+- **`cast_registered`** and **`call_registered`** send to the actor that holds the name when the message is sent. They raise `actor_not_found` when no actor holds it, as `cast()` and `call()` do for an ended actor.
+
+**Removal when an actor ends.** When an actor ends for any reason, its name is removed as part of its teardown (§15.1.2.3), before its supervisor handles the exit. A name therefore never refers to an ended actor.
+
+**Names across restarts.** When a supervisor restarts a child that held a name at the moment it ended, the runtime registers the replacement under the same name before the replacement handles its first message. A name reaches the replacement, but a reference to the old actor never equals the replacement (§15.1.4).
 
 #### 20.3.2 Message Broadcasting
 ```
-fn broadcast(actors: list<actor_ref<Msg>>, message: Msg) -> atom proc[concurrency]
+broadcast(actors: List[actor_ref, mem(normal)], message: ActorMessage) -> atom proc[concurrency]
 ```
 
 #### 20.3.3 Actor Monitoring
 ```
-fn monitor(target: actor_ref, monitor: actor_ref<down_msg>)
-    -> atom proc[concurrency]
+monitor(target: actor_ref) -> monitor_ref   proc[concurrency]
+demonitor(ref: monitor_ref) -> :ok          proc[concurrency]
 ```
+
+Monitors are specified in §15.4.8.6 and §15.4.8.7. When the target ends, the monitoring actor receives `(:down, monitor_ref, actor_ref, failure_reason)`.
 
 ### 20.4 Networking (core language)
 
@@ -14206,7 +14489,14 @@ Creates a new actor with the given initial state and behavior function. The beha
 call(actor: actor_ref, message: ActorMessage) -> Reply proc[concurrency]
 ```
 
-**Calls** an actor with a message and **blocks** until a reply is received. The target behavior must return `(:reply, reply_value, new_state)`. Returns the `reply_value` from the behavior. Raises `timeout_error` if no reply is received within the timeout period (default 5 seconds), or `actor_not_found` if the actor has terminated.
+**Calls** an actor with a message and **blocks** until a reply is received. The target behavior must return `(:reply, reply_value, new_state)`. Returns the `reply_value` from the behavior. There is no timeout (§16.1.1). Raises `actor_not_found` if the actor has terminated or terminates before replying.
+
+```
+call_with_timeout(actor: actor_ref, message: ActorMessage, timeout_ms: uint64)
+    -> (:reply, Reply) | :timeout   proc[concurrency]
+```
+
+As `call()`, but returns `:timeout` if no reply arrives within `timeout_ms` milliseconds. A reply that arrives later is discarded (§16.1.1.2).
 
 #### Asynchronous Cast (Fire-and-Forget)
 ```
@@ -14228,6 +14518,23 @@ self() -> actor_ref proc[concurrency]
 ```
 
 Returns the current actor's reference. Can be used to `call` or `cast` back to the caller (for reply patterns in behaviors, or to include in message payloads).
+
+```
+actor_id(ref: actor_ref | dangerous_actor_ref | device_actor_ref | supervisor_ref) -> uint64   proc[concurrency]
+```
+
+Returns the 64-bit identity (§15.1.4) of the actor any reference type denotes.
+
+#### Ending Actors
+```
+stop_self(reason: :normal | (:explicit, atom)) -> :ok   proc[concurrency]
+fail_self(reason: atom) -> !                            proc[concurrency]
+kill_abnormal(target: actor_ref | atom) -> :ok          proc[concurrency]
+```
+
+- `stop_self` ends the calling actor once its current dispatch returns (§15.1.2.3).
+- `fail_self` ends the calling actor at once, with `failure_reason` `(:explicit, reason)`.
+- `kill_abnormal` ends `target` at once, with `failure_reason` `(:explicit, :killed)`. The target's supervisor, if any, applies its restart policy. It returns `:ok` whether or not the target was still alive. `target` may be a registered name, resolved in the ordinary registry (§20.3.1); `:ok` is returned when no actor holds the name. `target` must not be the calling actor (§15.1.2.3).
 
 **Note**: `call()` and `cast()` may be used from within actor behavior functions (and elsewhere) when the enclosing `sequence` declares the required effects (see §15.1.2, §16.1).
 
@@ -14388,6 +14695,8 @@ type affinity_error =
   | CoreUnavailable
   | PermissionDenied
   | ResourceExhausted
+
+type priority_level = :low | :normal | :high
 ```
 
 **CPU Affinity Functions:**
@@ -14403,9 +14712,9 @@ get_core_capabilities(core_id: int) -> core_info
 // Actor placement. Every actor is pinned from spawn until it terminates (§15.1.2).
 // Each of the following moves the actor to another core; none of them unpins it.
 // migrate_actor: moves the actor from whatever core it is on to target_core; returns :ok or an error atom
-migrate_actor(actor: actor_ref, target_core: int) -> atom
+migrate_actor(actor: actor_ref, target_core: uint64) -> :ok | :invalid_target | :actor_not_found | :migration_blocked
 // pin_actor_* helpers return (int64, affinity_error): (1, _) on success, (0, error) on failure
-pin_actor_to_core(actor: actor_ref, core_id: int) -> (int64, affinity_error)        // move to core_id
+pin_actor_to_core(actor: actor_ref, core_id: uint64) -> (int64, affinity_error)     // move to core_id
 pin_actor_to_efficiency_core(actor: actor_ref) -> (int64, affinity_error)          // move to an efficiency core
 pin_actor_to_performance_core(actor: actor_ref) -> (int64, affinity_error)         // move to a performance core
 pin_actor_realtime(actor: actor_ref, priority: int) -> (int64, affinity_error)     // real-time priority on its current core
@@ -14414,13 +14723,15 @@ pin_actor_realtime(actor: actor_ref, priority: int) -> (int64, affinity_error)  
 remove_actor(actor: actor_ref) -> (int64, affinity_error)
 
 // Advanced scheduling hints
-set_actor_priority(actor: actor_ref, priority: priority_level) -> atom
+set_actor_priority(actor: actor_ref, priority: priority_level) -> :ok | :actor_not_found
 ```
 
 **Error Handling:**
-The `pin_actor_*` helpers and `remove_actor` return a tuple `(int64, affinity_error)` (`migrate_actor` returns an atom, `:ok` on success):
+The `pin_actor_*` helpers and `remove_actor` return a tuple `(int64, affinity_error)` (`migrate_actor` returns `:ok` or one of the error atoms listed in §15.1.2). `remove_actor` must not name the calling actor (§15.1.2.3).
 - On success: `(1, affinity_error)` where `affinity_error` is empty/unused
 - On failure: `(0, affinity_error)` where `affinity_error` indicates the failure reason
+
+**Priority levels.** `priority_level` is a hint to the per-core scheduler (§23.1.1). Among the actors on one core that have messages waiting, the scheduler starts dispatches for `:high` actors before `:normal` ones, and `:normal` before `:low`. It must still start a dispatch for every actor with a waiting message within a bounded number of dispatches, so no priority starves another. Every actor starts at `:normal`. A priority changes which actor runs next, never how an actor's own messages are ordered, and never interrupts a dispatch.
 
 **`get_core_capabilities(core_id)` result contract:**
 
@@ -14497,10 +14808,30 @@ type_name<T>() -> string               // type name as string
 
 ### 22.14 Runtime Operations
 ```
-current_time() -> int proc[]           // milliseconds since epoch
 random_int(min: int, max: int) -> int proc[]
 hash<T>(value: T) -> int               // stable hash function
 ```
+
+#### 22.14.1 Clocks
+```
+monotonic_time() -> int64   proc[concurrency]   // nanoseconds since an arbitrary origin
+current_time() -> int64     proc[concurrency]   // milliseconds since the Unix epoch
+```
+
+- `monotonic_time` never decreases while the program runs. Its origin is fixed when the program starts, and the value means nothing across program runs. All timeouts and timers use it.
+- `current_time` is wall-clock time. It can jump forwards or backwards when the system clock is set, so it is never used to measure intervals.
+- Both read state outside the actor, so both need `concurrency`.
+
+#### 22.14.2 Timers
+```
+send_after(delay_ms: uint64, target: actor_ref, message: ActorMessage) -> timer_ref   proc[concurrency]
+cancel_timer(timer: timer_ref) -> :cancelled | :not_found                             proc[concurrency]
+```
+
+- `send_after` casts `message` to `target` once `delay_ms` milliseconds have passed on the monotonic clock. The message is delivered no earlier than that, and may be later. The type rules for `cast()` apply at the `send_after` call (§16.2.6.3). A `delay_ms` of `0` enqueues the message at once.
+- If `target` has ended when the timer fires, the message is dropped and nothing is raised. A timer is cancelled automatically when its target ends.
+- `cancel_timer` returns `:cancelled` when the message had not yet been delivered; it then never will be. It returns `:not_found` when the timer has already fired or been cancelled. Any actor holding the `timer_ref` may cancel it.
+- There is no `sleep`. Nothing blocks a dispatch waiting for time to pass (§15.1.2); an actor that must wait ends its dispatch and continues when a timer's message arrives.
 
 **Note**: The `hash<T>()` function uses generic-like syntax for documentation, but requires concrete type arguments at compile time.
 
@@ -14569,6 +14900,16 @@ net.utils.create_network_buffer(size: int) -> buf(R, normal_noncacheable, uint8,
 net.utils.optimize_buffer_for_nic(buffer: buf(R, normal_noncacheable, T, size), nic_device: device_ref) -> buf(R, normal_noncacheable, T, size) proc[network_io]
 ```
 
+### 22.18 Checked Integer Arithmetic
+```
+checked_int64_add(a: int64, b: int64) -> (boolean, int64)
+checked_int64_mul(a: int64, b: int64) -> (boolean, int64)
+checked_int64_add1(a: int64) -> (boolean, int64)
+checked_int64_byte_size(count: int64, element_size: int64) -> (boolean, int64)
+```
+
+Pure. `(true, result)` when the result fits in `int64`; `(false, _)` on overflow (§5.7).
+
 ## 23. Runtime System
 
 ### 23.1 Execution Environment
@@ -14576,9 +14917,9 @@ net.utils.optimize_buffer_for_nic(buffer: buf(R, normal_noncacheable, T, size), 
 #### 23.1.1 Process Scheduler
 The runtime provides a scheduler for process execution:
 
-- **Fair Scheduling**: Processes are scheduled fairly on each core
-- **Preemptive**: Long-running processes can be preempted
-- **Priority Support**: Optional priority hints for process scheduling
+- **Fair Scheduling**: Actors on each core are scheduled fairly, one dispatch at a time
+- **Switching at yield points only**: The scheduler switches to another actor only at a scheduler yield point: when a behavior returns, or when the running actor suspends to wait, for example for a call's reply (§15.1.2). It never preempts computation in the middle of a dispatch. Fairness is therefore between yield points: an actor with work waiting runs within a bounded number of other actors' turns, and long computation shares its core by splitting itself into several dispatches with `cast(self(), …)`
+- **Priority Support**: `priority_level` hints (§22.10) choose which waiting actor is dispatched next
 - **Placement**: Each actor runs on the core it is pinned to (§15.1.2); the scheduler shares a core's time among its actors and never balances load by moving actors between cores
 
 #### 23.1.2 Actor Runtime
@@ -14587,7 +14928,7 @@ Actors are managed by the runtime:
 - **Mailbox Management**: Each actor has a dedicated message queue
 - **Message Delivery**: Asynchronous message delivery with ordering guarantees
 - **Failure Isolation**: Actor failures don't affect the runtime or other actors
-- **Resource Limits**: Optional memory and message queue limits per actor
+- **Resource Limits**: An implementation may limit an actor's memory. Mailboxes are unbounded (§16.2.2): no message is ever rejected because a queue is long
 
 #### 23.1.3 CPU Scheduling and Affinity
 The runtime provides intelligent CPU scheduling with optional affinity controls:
@@ -14812,17 +15153,16 @@ For unrecoverable errors:
 
 ```
 fn panic(message: string) -> ! {
-    // terminates the current process with error message
+    // ends the current actor with failure_reason :language_error (§15.4.11.2);
+    // the message goes into the unwind report
     // '!' indicates this function never returns normally
 }
 ```
 
 #### 25.2.3 Actor Failure
-Actors can fail and notify monitors:
+An actor that fails is reported to its supervisor (§15.4.10) and to any actor monitoring it, which receives `(:down, monitor_ref, actor_ref, failure_reason)` (§15.4.8.6):
 
 ```
-type down_message = Down(actor_ref, exit_reason)
-
 fn failing_actor(msg: unit, state: unit) -> atom proc[concurrency] {
     case msg of
         () -> panic("intentional failure")
@@ -15604,7 +15944,7 @@ Actor communication leverages AArch64 hardware:
 
 **Interrupt and Signal Handling:**
 Modern chips have advanced interrupt controllers. Silica uses these for:
-- **Actor Preemption**: Hardware-assisted actor scheduling
+- **Timer Ticks**: Hardware timers drive the monotonic clock, timeouts and `send_after` (§22.14). They never preempt a dispatch (§23.1.1)
 - **Real-Time Guarantees**: Direct hardware timer integration
 - **Power Management**: Chip-level sleep state coordination
 

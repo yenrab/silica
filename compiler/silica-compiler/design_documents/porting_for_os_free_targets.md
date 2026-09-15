@@ -81,7 +81,7 @@ Raw-metal *applications* need device MMIO. Raw-metal *runtimes* also need privil
 | Atomic `ref` | Plain `LDR`/`STR` | `LDAR`/`STLR` (AArch64) or Xtensa equivalents |
 | Boot / vectors / linker script | Darwin crt | Board reset, exception table, stack, `.text`/`.bss` placement |
 | Console / `device_io` print | Hosted stdout | UART (or semihosting) under board pack |
-| Time / preemption | Hosted | Timer IRQ, tick for actors |
+| Time and timers | Hosted | Timer IRQ for the monotonic clock, timeouts and `send_after` (spec §22.14); no preemption of a dispatch (spec §23.1.1) |
 | Object / image | `.sams` + clang → Mach-O | `aarch64-none-elf` / Xtensa ELF or firmware image; later [direct object emitter](direct_machine_object_emitter_future.md) |
 | Privileged CPU regs | — | Runtime-only access at EL1 (or ESP32 equivalent); not app MMIO |
 | Actors | Hosted runtime | [IPC_Bare](IPC_Bare.md) scheduling, no Darwin threads |
@@ -190,7 +190,7 @@ A first bring-up image must:
 1. Reset → set SP → `.bss` → call `main` (or a tiny runtime `start`).
 2. Link at the board’s load address (ELF `aarch64-none-elf`, Xtensa ELF, or a raw firmware blob).
 3. Provide **one** early console for panic/bring-up (UART in the **reset stub**, or semihosting in QEMU). After the scheduler is up, application print uses a **device worker**, not `main` poke.
-4. Provide a **tick** if actors run (timer IRQ). Cooperative single-thread bring-up may defer preemption.
+4. Provide a **timer IRQ** for the monotonic clock and timers (spec §22.14). Scheduling is cooperative on every target: the scheduler switches actors only at yield points (spec §15.1.2).
 
 The current `.sams` + clang Mach-O path does not produce this image. Either a hosted cross toolchain (`clang -target aarch64-none-elf`) or the [direct object emitter](direct_machine_object_emitter_future.md) ELF/firmware writer is required. Assembly text may remain during bring-up; the port must not depend on macOS `ld` or libSystem.
 
@@ -203,6 +203,31 @@ Hosted actor spawn uses OS threads and Darwin-backed stacks. OS-free must use th
 Minimum for “actors on metal”: timer tick, mailbox in normal or atomic RAM, and MMIO only through a **device worker** (`spawn_device` / `device_actor_ref`). Ordinary `spawn` and `main` must not poke. IRQ handlers only enqueue to the owning worker.
 
 Normative rules, registries, `device_*` vs `dangerous_*`, and the boot/panic/IRQ exceptions: [silica_device_actor_specification.md](silica_device_actor_specification.md).
+
+### 9.1 Fifi on OS-free targets (normative)
+
+Fifi is optional for a port. A port that provides it follows these rules.
+
+1. **Archives are built against the board pack, not an OS C library.** A wrapper's `lib<name>.a` is compiled for the
+   pack's triple (for example `aarch64-none-elf` or `xtensa-esp32s3-elf`). It links only against the minimal C
+   runtime the pack declares: memory functions, an allocator backed by a Silica pool, and nothing that assumes an
+   OS. A wrapper that needs anything else is rejected at link time.
+2. **A fault in foreign code ends only the FFI worker.** There is no `setjmp`, no signal delivery and no signal
+   stack. Instead, the port's exception or trap vector recognizes a fault raised while an FFI worker is executing
+   foreign code, and ends that worker. The worker's supervisor then handles the exit exactly as on a hosted target
+   (spec §15.4.13.5). A fault that the vector cannot attribute to an FFI worker falls through to the port's panic
+   path.
+3. **Blocking foreign code holds its core.** An FFI worker blocked in foreign code holds the core it is pinned to.
+   Programs keep such workers on cores they reserve for them.
+4. **The `dangerous_*` naming rule and the taint rules are unchanged**
+   ([silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §2.4, §3.1, §7). This includes
+   re-creation (FFI wrapper specification §7.7) as the only way for a result to leave its handler.
+
+### 9.2 Runtime-internal device drivers
+
+Device drivers that the runtime itself uses do not impose the `device_*` naming cascade on application modules. An
+example is the network driver under the built-in TCP/IP stack (spec §20.4). The cascade applies when an application
+module `use`s a `device_*` module. It does not apply when the runtime starts a driver for its own built-ins.
 
 ---
 
@@ -220,6 +245,7 @@ Each pack is a named directory or fragment (exact layout later) that states:
 | Timer | IRQ number, programming sequence |
 | IRQ → worker | Which `device_actor_ref` / registered atom owns each IRQ |
 | Privileged boot | who sets MAIR/PTE or IDF cache mode |
+| Fifi (optional, §9.1) | The C runtime that wrapper archives link against, and the trap vector that ends a faulting FFI worker |
 
 The port's emitter refuses a constant `map_device` outside the pack’s windows (the pack is per port, so this check is not in the shared compiler). A pack is how “raw metal” stays typed instead of `uint64` everywhere.
 
@@ -229,16 +255,18 @@ The port's emitter refuses a constant `map_device` outside the pack’s windows 
 
 From [ROADMAP.md](../../../ROADMAP.md), not a schedule:
 
-1. **QEMU virt AArch64 OS-free** — MAIR, UART MMIO, ELF, no vendor IDF.
-2. **ESP32-S3** — Xtensa emit + IDF-style pools + peripheral bus.
-3. **Other AArch64 boards** — new packs, same `chip/arm64`.
+1. **ESP32-S3**: Xtensa emit, IDF-style pools, peripheral bus. This path exists and went first.
+2. **QEMU virt AArch64 OS-free**: MAIR, UART MMIO, ELF, no vendor IDF. It is the first board pack of the planned bare-metal AArch64 path, which starts from ESP32-S3's fixed point.
+3. **Other AArch64 boards**: new packs, same `chip/arm64`.
 4. Hosted Linux AArch64 can share chip lowering but **not** OS-free `Space` guarantees.
 
-Do not generalize the object layer across chips before one OS-free AArch64 image runs.
+Do not generalize the object layer across chips before one OS-free AArch64 image runs on QEMU.
 
 ---
 
 ## 12. Phased plan
+
+These phases were written for a QEMU-first bring-up. ESP32-S3 went through the equivalent steps first ([ports/esp32s3_port_status.md](ports/esp32s3_port_status.md)), so Phase G's chip work is already under way. Phases B–F now describe the bare-metal AArch64 path (§11).
 
 ### Phase A — Inventory freeze
 

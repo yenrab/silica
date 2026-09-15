@@ -83,7 +83,7 @@ Actor Virtual Memory Layout (Per Actor):
 └──────────────────────────────────────────┘
 
 Key Points:
-- Virtual space: 1 GB per actor (doesn't cost physical memory)
+- Virtual space: 1 GB per actor (doesn't cost physical memory). This reservation is a detail of this design, not a limit the spec allows: ROADMAP chunk 1 replaces it with segmented stacks that have no fixed reserve
 - Physical pages: Allocated on demand (8 MB initial)
 - Guard page: Marks stack limit; triggers page fault on overflow
 - All stack pages initially allocated on actor's creation NUMA node
@@ -97,7 +97,7 @@ struct ActorStackMetadata {
     virtual_base: int64,              // Start address of 1 GB virtual region
     current_sp: int64,                // Current stack pointer
     guard_page_addr: int64,           // Address of guard page (growth trigger)
-    stack_limit: int64,               // Maximum allowed stack size (e.g., 512 MB)
+    stack_limit: int64,               // Optional explicit limit; 0 = unlimited (bounded only by machine memory)
 
     // Physical page tracking
     allocated_pages: ListPageInfo,    // List of allocated pages with NUMA info
@@ -117,7 +117,7 @@ struct ActorStackMetadata {
     priority: int64,                  // Scheduling priority
 
     // Limits and monitoring
-    max_stack_size: int64,            // Default: 50% of available RAM per actor
+    max_stack_size: int64,            // Optional explicit limit; 0 = none (see stack_limit)
     total_allocations: int64,         // Bytes allocated (for monitoring)
 }
 
@@ -283,7 +283,8 @@ void handle_stack_growth(int actor_id, void *guard_page_addr, int current_core) 
     void *new_page_addr = guard_page_addr + PAGE_SIZE;
 
     // Check stack limit
-    if ((int64)new_page_addr - (int64)meta->virtual_base > meta->stack_limit) {
+    if (meta->stack_limit != 0 &&
+        (int64)new_page_addr - (int64)meta->virtual_base > meta->stack_limit) {
         // Stack overflow - actor exceeded its limit
         send_error_to_actor(actor_id, "StackOverflow");
         return;  // Actor handles error or terminates
@@ -454,7 +455,7 @@ actor_ref spawn(initial_state, behavior_fn, core_affinity):
         virtual_base: virtual_base,
         current_sp: virtual_base + 8_MB - sizeof(initial_state),
         guard_page_addr: guard_page_addr,
-        stack_limit: 512_MB,  // Default: 512 MB per actor
+        stack_limit: 0,  // Default: unlimited, bounded only by machine memory (spec §15.1.2.2)
 
         actor_id: actor_id,
         core_id: current_core,
@@ -522,7 +523,8 @@ void actor_execution_loop(int actor_id):
 ### 5.3 Actor Migration
 
 ```silica
-migrate_actor(actor_ref: actor_ref, target_core: int) -> atom proc[concurrency]
+migrate_actor(actor_ref: actor_ref, target_core: uint64)
+    -> :ok | :invalid_target | :actor_not_found | :migration_blocked proc[concurrency]
 ```
 
 **Execution Steps**:
@@ -1271,7 +1273,8 @@ Scenario 4: Dynamic Workload (Mixed Migration Frequency)
 **Built-in Function**:
 
 ```silica
-migrate_actor(processid: ProcessId; to: int64) -> atom proc[concurrency]
+migrate_actor(actor_ref: actor_ref, target_core: uint64)
+    -> :ok | :invalid_target | :actor_not_found | :migration_blocked proc[concurrency]
 ```
 
 **Purpose**: Explicitly move an actor from whatever CPU core it is on to another. `migrate_actor` is the user-facing function for actor migration; every actor stays pinned to its core until the program migrates it or it terminates (spec §15.1.2, Actor Pinning Policy).
@@ -1540,19 +1543,19 @@ fn process_list(items: ListItem, acc: int64) -> int64 {
 // At spawn time
 actor1: actor_ref <- spawn(state1, behavior1,
                            core_affinity: performance_core,
-                           stack_size: 256_MB);  // Explicit limit
+                           stack_size: 256_MB);  // Optional explicit limit
 
 // Or use defaults
-actor2: actor_ref <- spawn(state2, behavior2);  // Default: 512 MB
+actor2: actor_ref <- spawn(state2, behavior2);  // Default: no limit; grows until machine memory runs out
 ```
 
 **System-Wide Defaults**:
 
 ```
 Configuration (via settings or command line):
-- Default stack per actor: 512 MB
+- Default stack limit per actor: none. A stack grows on demand, bounded only by machine memory (spec §15.1.2.2:
+  "no hard max size limit"). An explicit per-actor limit at spawn is this design's proposal; the spec's `spawn` (§15.1.1) has no such parameter yet.
 - Min stack: 8 MB (initial allocation)
-- Max stack: 50% of system RAM per actor
 - Guard page size: 4 KB
 - Page size: 4 KB (AArch64 standard)
 ```
@@ -1582,7 +1585,7 @@ fn get_actor_page_locations(actor_ref: actor_ref) -> MapInt64ToInt64 {
 
 **Actor Stack Overflow**:
 ```silica
-// Actor exceeds stack limit (e.g., 512 MB)
+// Actor exceeds an explicit stack limit given at spawn (there is none by default)
 // Runtime sends error message to actor
 
 fn safe_actor_behavior(msg: Message, state: State) -> State {
@@ -1699,7 +1702,7 @@ After lazy migration (pages moved):
 | Metric | Scalability |
 |--------|-------------|
 | **Number of actors** | ~100,000 (limited by virtual address space + RAM) |
-| **Actor stack size** | 8 MB - 512 MB (configurable per actor) |
+| **Actor stack size** | 8 MB initial; grows on demand with no default maximum; an optional per-actor limit |
 | **Concurrent actors on one core** | ~1-10 (depends on workload) |
 | **Actor creation rate** | ~10,000-100,000 per second (limited by malloc/virtual allocation) |
 | **Message throughput per actor** | ~1M - 100M messages/sec (depends on message processing) |
@@ -1994,9 +1997,10 @@ memory_used: int64 <- get_actor_memory_usage(actor);
 - A: Fixed per-actor-type (e.g., "type LargeActor" → 1 GB stack)
 - B: Dynamic at spawn time (e.g., `spawn(..., stack_size: 256MB)`)
 - C: System heuristics (analyze behavior function statically)
-- D: Hybrid (default 512 MB, override at spawn time)
+- D: Hybrid (no default limit; an optional explicit limit at spawn time)
 
-**Recommendation**: Option D (hybrid)
+**Recommendation**: Option D (hybrid). The default is **unlimited**, bounded only by machine memory, which matches
+spec §15.1.2.2. An explicit limit is opt-in.
 
 ### 13.2 Proactive Growth Hints
 

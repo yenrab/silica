@@ -455,6 +455,8 @@ For `call()` actors, the protocol discipline is interpreted globally over the ac
 
 For `cast()` actors, the discipline remains per-capability and static: casts are not buffered or delayed by the runtime to force a protocol phase order.
 
+State-machine actors (core specification §15.5) can **postpone** an event. That is not protocol-driven deferral: the behavior asks for it, for one event at a time, and the runtime never postpones on its own. Protocol typing does not rely on postponement, and a postponed message has still been received for the purposes of this specification.
+
 ### 9.3 Recommended Source-Level Style
 Protocol actors should be written using explicit state records whose `phase` field mirrors the protocol phase.
 

@@ -35,7 +35,7 @@ Silica does not call arbitrary external APIs directly. Every external operation 
 - **Typed Danger Boundary**: `dangerous_actor_ref` is distinct from `actor_ref`. A `dangerous_actor_ref` may be obtained only from `spawn_dangerous(...)` or `spawn_dangerous_registered(...)`; it cannot be coerced from `actor_ref` or obtained from `spawn_registered(...)`.
 - **Split Actor Registries**: Process-global actor registration uses **two** atom-keyed slot tables—one for ordinary `actor_ref` values and one for `dangerous_actor_ref` values. Registration stores the same opaque runtime handle in either table; retrieval is typed by **which table and which lookup primitive** are used (§4.9).
 - **No Retained Dangerous Data in `produces pure`**: A completed `external_danger` sequence produces only structurally pure Silica values. Foreign results leave the worker through designated FFI result casts, not through a tainted `produces pure` value.
-- **Strict Structural Taint**: Values returned from `dangerous_*` modules remain external-danger-touched at every depth. This specification version does not define validator-based de-taint.
+- **Strict Structural Taint**: Values returned from `dangerous_*` modules remain external-danger-touched at every depth. User code cannot clear taint. The only way to clear it is **re-creation**: a compiler-derived `Recreatable` trait that validates a tainted value and builds a new, pure one (§7.7).
 - **Strong Typing at the Boundary**: Silica foreign declarations, explicit `wrapper_meta` references, and sidecar metadata define the Silica-facing ABI; compile time verifies that named prebuilt archives exist; link time verifies that required wrapper symbols are defined in those archives.
 - **Two-Layer String Declarations**: Raw foreign bindings use pointer-plus-length arguments; exported adapter wrappers accept Silica `string` and perform the copy before calling the raw binding.
 - **No Raw Pointer Exposure**: Raw pointers, `void *`, and opaque C structs must not be exposed directly to Silica source types.
@@ -692,6 +692,12 @@ uint64_t text_len
 
 When the call site is an adapter wrapper with a `string` parameter, the adapter body calls the raw binding; the compiler performs the same copy lowering for that call.
 
+**The `_ptr` / `_len` declaration form.** In a raw foreign binding, a parameter pair written `name_ptr: uint8,
+name_len: uint64` is a pointer-plus-length declaration form, not two scalars.
+- The compiler lowers the pair to `const uint8_t *name_ptr, uint64_t name_len`.
+- At the call site, the pair is supplied by one Silica argument: a `string`, or a byte buffer `buf(L, Space, uint8, N)` (§6.2).
+- A plain `uint8` value is never accepted there. The pointer is therefore never exposed as an ordinary scalar (§6.3).
+
 The copied memory resides in the expandable stack of the encompassing Silica actor (the FFI worker actor executing the foreign call). It is not allocated in the general heap.
 
 The original Silica string is not modifiable from C. The C wrapper must treat `text_ptr` as read-only memory.
@@ -705,6 +711,12 @@ If the external library needs to retain the string data after the wrapper return
 ### 6.2 Buffers
 
 Mutable buffers must be represented explicitly as pointer-plus-length pairs.
+
+Silica buffers use the canonical form `buf(L, Space, T, N)`: region lifetime `L`, memory space `Space`, element
+type `T`, and length `N`. A buffer crosses the boundary as a typed pointer plus a `uint64_t` element count.
+**`buf(L, Space, uint8, N)` is the byte-payload form**: raw bytes cross as `uint8_t *` plus a `uint64_t` byte
+length. This is the form for binary data such as network payloads, digests and encoded records, and binary data
+does not have to be carried as `string`.
 
 A wrapper that writes into a buffer must document:
 
@@ -726,6 +738,9 @@ A C pointer argument must not be exposed to Silica as:
 
 The wrapper signature and Silica foreign declaration must agree on the concrete data shape being passed.
 
+The pointer-plus-length declaration form in §6.1 and the buffer form in §6.2 are the permitted ways to pass a
+pointer. Neither exposes the pointer to Silica as a value.
+
 ### 6.4 C pointer return values
 
 For C function return values, C arrays and non-array C pointers have different Silica mappings.
@@ -735,7 +750,7 @@ A C return value that represents an array must be mapped to a Silica buffer. The
 Canonical array return mapping:
 
 ```text
-T * returned as array data -> buf(region, T) with length
+T * returned as array data -> buf(L, Space, T, N), where N is the returned length
 ```
 
 If the C API returns a pointer to array data without a length, the wrapper must obtain the length from the library contract, an out-parameter, a companion function, a sentinel convention, or wrapper-maintained metadata. If the wrapper cannot determine the length, it must return an explicit error result instead of exposing the array to Silica.
@@ -881,7 +896,7 @@ A string or byte buffer returned from a `dangerous_*` module is external-danger-
 
 The compiler is not required to prove whether such data is executable binary content or system command text.
 
-Instead, Silica treats such values as tainted external data. They must not be passed to APIs that execute commands, load dynamic code, write executable files, spawn processes, evaluate scripts, or cross ordinary actor `call` or `cast` message boundaries. The sole exception is the **FFI result cast** path defined in §4.2 and §7.6.
+Instead, Silica treats such values as tainted external data. They must not be passed to APIs that execute commands, load dynamic code, write executable files, spawn processes, evaluate scripts, or cross ordinary actor `call` or `cast` message boundaries. There are two exceptions: the **FFI result cast** path defined in §4.2 and §7.6, and a value **re-created** under §7.7, which crosses those boundaries but still never reaches the APIs listed above.
 
 Command execution APIs must not accept raw string commands. They must accept structured command values, such as an allowlisted program identifier plus an argument list.
 
@@ -921,7 +936,7 @@ Silica retains no external-danger-touched data in the `produces pure` value of a
 
 The value produced by the `produces pure` clause must contain only structurally pure Silica values. It must not contain external-danger-touched data at any depth.
 
-**Strict structural taint**: In this specification version, external-danger-touched data is not cleared by destructuring, tag matching, field projection, copying into fresh records, or user-defined helper functions. A value returned from a `dangerous_*` module remains external-danger-touched at every depth until it is consumed entirely inside the `external_danger` sequence block without appearing in `produces pure`.
+**Strict structural taint**: In this specification version, external-danger-touched data is not cleared by destructuring, tag matching, field projection, copying into fresh records, or user-defined helper functions. A value returned from a `dangerous_*` module remains external-danger-touched at every depth until it is consumed entirely inside the `external_danger` sequence block without appearing in `produces pure`, or until it is re-created (§7.7), the one compiler-written validator.
 
 Foreign outcomes leave an FFI worker actor through the designated **FFI result cast** to the receiver named in the request (§4.2). The cast payload may contain external-danger-touched data. The worker's `produces pure` value must contain only structurally pure actor state.
 
@@ -929,7 +944,12 @@ Before the sequence block completes, every external-danger-touched value inside 
 
 - consumed entirely within the block without appearing in `produces pure`;
 - delivered to the designated receiver by an FFI result cast executed inside the block;
-- rejected through explicit control flow that does not place tainted data in `produces pure`.
+- rejected through explicit control flow that does not place tainted data in `produces pure`;
+- re-created into a structurally pure value by a compiler-derived `recreate` call (§7.7). The re-created value, not
+  the tainted original, may then appear in `produces pure`.
+
+Re-creation (§7.7) is the one permitted way to turn external-danger-touched data into a pure value. Destructuring,
+copying and user-defined helpers remain ineffective, as stated above.
 
 The sequence boundary is a taint boundary for `produces pure`. External-danger-touched data may exist inside the dynamic and lexical extent of the `external_danger` sequence block, and may appear only in FFI result casts executed from that block, except for region values explicitly converted into actor-state-owned region references under §7.5.
 
@@ -977,7 +997,7 @@ This prohibition is structural. Wrapping the region inside records, tuples, list
 
 **FFI result cast exception**: An FFI worker actor may include external-danger-touched data, including memory-region references, in a cast payload sent to the receiver named in a foreign-call request, provided the cast is executed inside the requesting worker's `external_danger` sequence block. No other cast or call path may carry external-danger-touched memory regions.
 
-A client actor that receives an FFI result cast must consume or discard any external-danger-touched payload within that cast handler. It must not place external-danger-touched memory regions into actor state, ordinary outbound casts, or `call` replies.
+A client actor that receives an FFI result cast must consume, discard, or re-create any external-danger-touched payload within that cast handler. It must not place external-danger-touched data, memory regions included, into actor state, ordinary outbound casts, or `call` replies. The only way for a result to leave the handler is re-creation (§7.7): the pure value that `recreate` returns may go into actor state, ordinary casts and `call` replies.
 
 **Type-check failure**:
 
@@ -986,11 +1006,69 @@ ExternalDangerMessageBoundaryError:
 Memory regions created, modified, or used inside sequence proc[external_danger] cannot appear at any depth in an ordinary call reply or cast payload. Only FFI result casts from an FFI worker actor to the designated receiver are permitted.
 ```
 
-### 7.7 Validator rule
+### 7.7 Validator rule: re-creation
 
-Validator-based de-taint is **out of scope** for this specification version. External-danger-touched data remains tainted structurally until consumed inside an permitted `external_danger` sequence block or delivered through an FFI result cast as defined in §4.2 and §7.6.
+External-danger-touched data stays tainted until it is consumed inside a permitted `external_danger` sequence block,
+delivered through an FFI result cast (§4.2, §7.6), or **re-created**. Re-creation is the only validator this
+specification defines, and it is written by the compiler, never by the program. User-defined helpers still never
+clear taint (§7.4).
 
-A future specification may define explicit validators that convert external-danger-touched data into non-tainted values.
+**Declaring a re-creatable type.** A program establishes the `Recreatable` marker trait on an inline type. The
+body carries only limits, never code:
+
+```silica
+// A 64-byte digest.
+impl Recreatable for buf(L, normal, uint8, 64) { max_bytes: 64 };
+
+// A decoded record from a foreign parser.
+impl Recreatable for { tag: :ok | :error, value: int64, name: string } { max_bytes: 4096, max_depth: 4 };
+```
+
+Limits are optional keyword fields: `max_bytes` (total size of the value), `max_depth` (nesting depth), and
+`max_length` (maximum element count of any list or buffer). A type without a limit field uses the type's own fixed
+bounds, and a variable-sized type with no applicable limit is rejected at compile time.
+
+**The derived function.** For each such type `T`, the compiler derives:
+
+```silica
+recreate(x: T) -> (:ok, T) | (:rejected, atom)
+```
+
+The derived code does the following, in this order:
+
+1. **It checks the declared limits** (total size, depth, lengths) before it reads the contents.
+2. **It walks the value and builds a new one** in a fresh region owned by the caller. No part of the result refers
+   to worker, wrapper or C-owned memory.
+3. **It rebuilds every enumerated value** (atoms in an atom union, sum tags) from the type's own literals. An input
+   value that is not one of the declared literals is rejected.
+4. **It range-checks** every integer and float against its type and any declared bounds, and every buffer length
+   against its type and limits. For `string` fields it may also check UTF-8 validity, when the declaration asks
+   for it (`utf8: true`).
+5. **It returns `(:ok, T)` with the new value, or `(:rejected, reason)`.** It never returns partial data. The
+   `reason` atom names the first check that failed (for example `:too_large`, `:too_deep`, `:bad_tag`,
+   `:out_of_range`, `:bad_utf8`).
+
+**Where it may be called.** Only where external-danger-touched data may legally be: inside the `external_danger`
+sequence block of an FFI worker, or inside the handler that receives an FFI result cast (§7.6).
+
+**What the result may do.** The re-created value is structurally pure.
+- It may go into actor state, ordinary casts and `call` replies.
+- It may be used in sequence blocks that declare `device_io` or `network_io`.
+- It **remains barred** from `hot_swap`, command execution, and code loading (§7.2). Re-created bytes are still
+  foreign content.
+
+**Auditability.** Every `impl Recreatable` is a visible de-taint point. The compiler reports each one as an advisory
+warning, alongside the W4001 warning emitted for every foreign binding.
+
+**Type-check failures**:
+
+```text
+RecreateCallSiteError:
+recreate may be called only inside an external_danger sequence block or an FFI result-cast handler.
+
+RecreatableLimitError:
+Recreatable on a variable-sized type requires max_bytes, max_length, or another applicable limit.
+```
 
 ---
 
@@ -1017,7 +1095,7 @@ When Silica calls a C wrapper function, Silica values are lowered into the wrapp
 | `boolean`          | `uint8_t`, where `0 = false` and `1 = true`                          |
 | `string` (adapter) | adapter parameter only; lowered at raw call to actor-stack copy as `const uint8_t *` plus `uint64_t` length |
 | `string` (raw foreign binding) | not permitted; raw bindings use pointer-plus-length arguments |
-| `buf(region, T)`   | typed pointer plus `uint64_t` length                                 |
+| `buf(L, Space, T, N)` | typed pointer plus `uint64_t` element count; `buf(L, Space, uint8, N)` is the byte-payload form (§6.2) |
 | inline record      | C struct with matching field order and verified layout               |
 | inline sum         | C struct with explicit `tag` and payload fields                      |
 
@@ -1048,7 +1126,7 @@ When a C wrapper returns values to Silica, C ABI values are raised into Silica v
 | `double`                         | `float64`                                                             |
 | `uint8_t` used as boolean        | `boolean`, only when value is `0` or `1`                              |
 | C struct result                  | inline Silica record or sum with verified non-recursive shape         |
-| C array return                   | Silica buffer, `buf(region, T)`, with known element type and length   |
+| C array return                   | Silica buffer, `buf(L, Space, T, N)`, with known element type and length |
 | non-array typed C pointer return | copied or decoded pointee value of type `T`                           |
 | `void *` from underlying library | de-opaqueified record, sum, buffer, string, scalar, or explicit error |
 | opaque C struct                  | de-opaqueified Silica-compatible contents or explicit error           |
@@ -1423,7 +1501,7 @@ silica_i64_buffer_result silica_values_get_all(void);
 Required wrapper behavior:
 
 - `items_ptr` and `items_len` describe array data.
-- The Silica binding maps the pair to `buf(region, int64)`.
+- The Silica binding maps the pair to `buf(L, normal, int64, N)`, with `N` taken from `items_len`.
 - If the wrapper cannot determine `items_len`, it must return an error result.
 
 Silica dangerous module:
@@ -1436,9 +1514,9 @@ export get_all/0;
 wrapper_meta "dangerous_exposure_source/values/silica_values_wrapper.meta";
 
 foreign c_wrapper "silica_values_get_all"
-fn get_all_raw() -> { tag: int64, items: buf(region, int64), error_code: int64 };
+fn get_all_raw() -> { tag: int64, items: buf(L, normal, int64, N), error_code: int64 };
 
-fn get_all() -> { tag: int64, items: buf(region, int64), error_code: int64 } {
+fn get_all() -> { tag: int64, items: buf(L, normal, int64, N), error_code: int64 } {
     get_all_raw()
 }
 ```
@@ -1455,7 +1533,7 @@ fn values_actor_behavior(
     state: { count: int64 }
 ) -> { count: int64 } {
     sequence proc[external_danger]
-        raw: { tag: int64, items: buf(region, int64), error_code: int64 } <- dangerous_values@get_all();
+        raw: { tag: int64, items: buf(L, normal, int64, N), error_code: int64 } <- dangerous_values@get_all();
         count_value: int64 <- buffer_length(raw.items);
     produces
         pure case raw.tag of {
@@ -1781,8 +1859,18 @@ Required failure:
 
 ```text
 WrapperMetaPathError:
-wrapper_meta and meta paths must be located under dangerous_exposure_source at the root of the Silica project.
+wrapper_meta and meta paths must be located under dangerous_exposure_source at the root of the Silica project,
+or at the root of the library that declares them.
 ```
+
+**Libraries.** A library, meaning a set of Silica sources consumed by other projects, may root its own
+`dangerous_exposure_source` directory at the library's root.
+- `wrapper_meta` and `meta` paths in the library's modules are resolved relative to the library that declares them.
+- The same applies to sidecar files and `lib<name>.a` archives (§14.2) named by those sidecars.
+- The consuming project does not need to copy them into its own tree.
+- The project-root rule above remains the default for application modules.
+- Every path, whether library-rooted or project-rooted, must still lie under a `dangerous_exposure_source` directory.
+- The `dangerous_*` naming cascade (§2.4, §3.1) is unchanged. A project that uses a library's `dangerous_*` modules still has a `dangerous_*` root module.
 
 ### 14.2 Prebuilt wrapper libraries and link manifest (initial implementation)
 
@@ -1798,7 +1886,7 @@ Conventions:
 
 - A sidecar file names the library to link: `link_library: "silica_db"`.
 - Prebuilt archives live under `dangerous_exposure_source/lib/`, for example `dangerous_exposure_source/lib/libsilica_db.a`.
-- The resolved archive path for a `link_library` name `<name>` is `dangerous_exposure_source/lib/lib<name>.a`.
+- The resolved archive path for a `link_library` name `<name>` is `dangerous_exposure_source/lib/lib<name>.a`, relative to the root (project or library, §14.1) that holds the sidecar naming it.
 - The linker must resolve every `foreign c_wrapper "symbol"` used by the program against the archives named in `silica.link`.
 
 **Link manifest (`silica.link`)**
@@ -1844,7 +1932,8 @@ This failure is reported by the external linker when a declared `foreign c_wrapp
 
 ### 14.3 Package declarations (future)
 
-A future Silica package format may additionally declare:
+Library-rooted `dangerous_exposure_source` directories (§14.1) are available without a package format. A future
+Silica package format may additionally declare:
 
 - wrapper header files located under `dangerous_exposure_source`;
 - wrapper implementation files;
@@ -2098,9 +2187,10 @@ The following questions remain open:
 1. Exact sidecar `.meta` field syntax details beyond the initial required fields in §13.2.
 2. Standard foreign-call request and FFI result cast message shapes.
 3. How many FFI worker actors a program should spawn by convention (shared vs per-domain workers).
-4. How client actors derive structurally pure actor state from external-danger-touched FFI result casts under strict structural taint.
-5. How region values returned through FFI result casts may be converted into actor-state-owned region references.
-6. When the build tool should compile C wrapper sources and support dynamic linking (§14.3).
+4. When the build tool should compile C wrapper sources and support dynamic linking (§14.3).
+
+**Resolved and moved to §16.1:** how client actors derive pure actor state from FFI result casts, and how region
+values returned through FFI result casts become actor-owned. Both are answered by re-creation (§7.7).
 
 **Removed from open questions:** mechanical wrapper-side checks in §15.2 — out of scope; Silica validates Silica declarations, sidecar metadata, and link manifest only; wrapper authors follow the §15.2 authoring guidelines without compiler C parsing.
 
@@ -2121,7 +2211,9 @@ The following decisions are fixed by this specification version:
 | Metadata | Sidecar `.meta` files under `dangerous_exposure_source/`, referenced explicitly by `wrapper_meta` or per-binding `meta` in Silica source. |
 | Toolchain validation | No C parsing; Silica declarations + sidecar metadata + compile-time archive existence (`E4034`) + link-time symbol resolution. §15.2 wrapper-side C checks are authoring guidelines only. |
 | Build integration | Prebuilt static wrapper libraries under `dangerous_exposure_source/lib/`; compiler emits `silica.link`; project Makefiles pass manifest `archive:` paths to the external linker. |
-| De-taint | Strict structural taint; no validator-based clearing in this version. |
+| De-taint | Strict structural taint. The only way to clear it is re-creation: a compiler-derived `recreate` for a type that declares `Recreatable` (§7.7). User-defined helpers never clear taint. |
+| Pure actor state from FFI result casts | A client re-creates the payload inside the result-cast handler (§7.7). Only the re-created value may enter actor state, ordinary casts or `call` replies. |
+| Region values from FFI result casts | Re-creation builds the value in a fresh region owned by the caller (§7.7). That region, not the worker's, becomes actor state. |
 | Foreign call scheduling | Architecturally non-blocking via cast-only client and FFI worker actors; no `blocking` sidecar field. |
 
 Questions about external languages calling into Silica are intentionally excluded from this specification and belong in a separate inbound-interop specification.
@@ -2140,4 +2232,4 @@ Raw foreign bindings declare pointer-plus-length arguments for string data; expo
 
 Any C array return maps to a Silica buffer. Any non-array C pointer must be converted to type before being sent to Silica. Any `void *` from the underlying library must be translated by wrapper code into an approved concrete Silica-facing representation before Silica sees it. Opaque C structs must be de-opaqueified into Silica-compatible contents, not exposed as handles, raw pointers, or opaque external types.
 
-External-danger-touched data must not appear in the `produces pure` value of an `external_danger` sequence. It may appear only in FFI result casts executed from that sequence. Strict structural taint applies in this specification version. External-danger-touched data must not cross ordinary actor `call` or `cast` boundaries and must not be used in sequence blocks declaring `device_io`, `network_io`, `hot_swap`, or `register_rwr`.
+External-danger-touched data must not appear in the `produces pure` value of an `external_danger` sequence. It may appear only in FFI result casts executed from that sequence. Strict structural taint applies. External-danger-touched data must not cross ordinary actor `call` or `cast` boundaries and must not be used in sequence blocks declaring `device_io`, `network_io`, `hot_swap`, or `register_rwr`. The single exception is re-creation (§7.7): a compiler-derived `recreate` validates the data and builds a new, pure value, which may then go anywhere except `hot_swap`, command execution and code loading.
