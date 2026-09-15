@@ -71,12 +71,12 @@ Raw-metal *applications* need device MMIO. Raw-metal *runtimes* also need privil
 
 | Area | Present | Missing |
 | --- | --- | --- |
-| Language names | `mem(device)`, `region(R, device)`, `register_rwr`, `spawn_device`, `device_actor_ref` in the spec | Checker does **not** yet enforce device-worker rules |
-| Device actors | Spec: [silica_device_actor_specification.md](silica_device_actor_specification.md) | No `spawn_device` runtime, third registry, or E2201–E2215 |
+| Language names | `mem(device)`, `region(R, device)`, `device_window`, `register_rwr`, `spawn_device`, `device_actor_ref`, `DeviceDescription`, `Register8`…`Register64` in the spec | Checker does **not** yet enforce device-worker rules |
+| Device actors | Spec: [silica_device_actor_specification.md](silica_device_actor_specification.md) | No `spawn_device` runtime, third registry, device descriptions, or E2201-family checks |
 | `alloc_region(device)` | Type-checks; trial exists | Still a **heap arena** (`malloc`). Space operand **unused** on emit |
 | `register_rwr` | Emitter can emit `DSB SY` / `ISB` around calls if the effect string contains the name; FFI taint forbids mixing with `external_danger` data | Nothing that **maps** or **touches** MMIO; effect still usable in `main` until the checker lands |
-| Volatile MMIO load/store | — | Prim or `read_ref`/`write_ref` lowering that is **device-volatile** and ordered |
-| Bind physical/bus range | — | Map known address + size → `region(R, device)` (not bump-malloc) |
+| Volatile MMIO load/store | — | `peek` / `poke` prims lowered **device-volatile** and ordered (§5.2) |
+| Bind physical/bus range | — | `map_device`: device tag + base address → `device_window` (not bump-malloc) |
 | `Space` → hardware | Spec + [memory-effects plan](memory-effects-aarch64-implementation-plan.md) | `MAIR_EL1`, PTEs or ESP32-S3 pools; wire `alloc_region` space tag to runtime |
 | Atomic `ref` | Plain `LDR`/`STR` | `LDAR`/`STLR` (AArch64) or Xtensa equivalents |
 | Boot / vectors / linker script | Darwin crt | Board reset, exception table, stack, `.text`/`.bss` placement |
@@ -103,34 +103,40 @@ Who may call these prims is **not** this document: [silica_device_actor_specific
 
 `alloc_region(device)` must **not** be the way to get UART registers. Those addresses are fixed by the SoC, not carved from a heap.
 
-Need a **bind**, not an allocate, for example:
+Need a **bind**, not an allocate:
 
 ```text
-map_device(base: uint64, size: uint64)
-    -> region(R, device)
+map_device(device: D, base: uint64)
+    -> device_window(R, D)
     proc[register_rwr]
 ```
 
-Constraints (normative intent; exact names can change):
+`D` is a device tag whose programmer-supplied device description gives the register layout, and so the window's size. The prim's language rules are in [silica_device_actor_specification.md](silica_device_actor_specification.md) §4.7 and §4.9. Constraints on the port:
 
-- `base` and `size` must be board-legal (alignment, peripheral window). Illegal maps fail at compile time when the board pack can prove it, otherwise at initialization with a hard halt.
-- The region is **not** bump-allocated RAM. Loads/stores go to that physical/bus range.
+- `base` and the described size must be board-legal (alignment, peripheral window). Illegal maps fail at compile time in the port's emitter when the board pack can prove it, otherwise at initialization with a hard halt.
+- The window is **not** bump-allocated RAM. Loads/stores go to that physical/bus range.
 - Only a **device worker** behavior (and the boot/panic/IRQ exceptions) may call this. Modules that export poke use the `device_` prefix, **not** `dangerous_` ([silica_device_actor_specification.md](silica_device_actor_specification.md) §3).
-- The mapped region is moved into that worker’s `initial_state` (or transferred by message). Clients never hold the window.
-- OS-hosted targets: either reject `map_device` or require a platform mmap of a real device; **do not** pretend `malloc` is MMIO.
+- The window is moved into that worker’s `initial_state` (or transferred by message). Clients never hold it.
+- OS-hosted targets: the hosted emitter rejects `map_device` (§5.5); **do not** pretend `malloc` is MMIO. A hosted port that maps a real device through its OS may later implement it in its own emitter.
 
 Board packs publish the legal windows (e.g. `0x40000000`–`0x400FFFFF` on a given STM32-class map, or the ESP32-S3 peripheral bus).
 
-### 5.2 Volatile load and store
+### 5.2 Volatile load and store: `peek` and `poke`
 
-Once a `region(R, device)` exists, access must not be optimized as normal RAM (no inventing loads, no merging stores that the device requires to be separate, no cacheable path).
+```text
+peek(window: device_window(R, D), register: atom) -> T proc[register_rwr]
+poke(window: device_window(R, D), register: atom, value: T) -> atom proc[register_rwr]
+```
 
-Two acceptable designs (pick one per port, do not ship both):
+Registers are named, never addressed by offset, and every access carries a required width marker, `Register8`, `Register16`, `Register32`, or `Register64`, whose one type (`uint8` … `uint64`) is `T`: `peek(uart, :status) impl Register32 {}`, `poke(uart, :fifo, value impl Register32 {})`. The shared compiler checks the name, width, and access mode against the device description and resolves the name to an offset. Language rules (markers, descriptions, access modes, discarded reads, name resolution): [silica_device_actor_specification.md](silica_device_actor_specification.md) §4.7–§4.9.
 
-1. **Reuse** `read_ref` / `write_ref` / `buf_load` / `buf_store` when the static `Space` is `device`. Emitter selects volatile device forms. The enclosing `sequence` must declare `register_rwr`, and that sequence must be in a device-worker behavior.
-2. **Dedicated prims** (`device_load32`, `device_store32`, …) that only accept `ref(R, device, T)` or a typed offset into a mapped region.
+The design is dedicated prims, for every port. The lexer through the SIR generator are shared by all ports, so the access design cannot differ per port; an earlier option of reusing `read_ref` / `write_ref` / `buf_load` / `buf_store` on the `device` space was dropped. Dedicated prims let a hosted emitter reject device access by prim name (§5.5), and they keep `read_ref` and friends RAM-only on every target.
 
-Widths: start with 32-bit aligned access (typical MMIO). 8/16/64 where the board pack allows. Unaligned device access is a compile error unless the pack says the bus allows it.
+What the port's emitter must produce:
+
+- Each `peek` is exactly one load, and each `poke` exactly one store, of the marked width, at `base + offset`, where the SIR prim node carries the offset resolved from the description. None is invented, removed (including a `peek` whose result is unused or bound to `_`), merged, split, or moved past another `peek` or `poke`, and none takes a cacheable path.
+- Widths: `uint32` first (typical MMIO); `uint8`, `uint16`, and `uint64` where the board pack allows. The emitter rejects a width its pack does not allow.
+- Alignment and bounds need no code: the shared compiler validates them once, on the description, and every access names a validated register.
 
 ### 5.3 Ordering
 
@@ -140,7 +146,19 @@ Spec §9.1.1: `register_rwr` → `DSB SY` before and `ISB` after on AArch64. ESP
 
 - Not user-facing CPU GPR moves.
 - Not `device_io` (print/file/console as hosted syscalls).
-- Not a vendor HAL. A later **generated register map** (CMSIS-like headers in Silica) may sit **on** these prims.
+- Not a vendor HAL. The register map is the programmer-supplied **device description** ([silica_device_actor_specification.md](silica_device_actor_specification.md) §4.9); a later generator may produce descriptions from vendor files (SVD, CMSIS-like headers).
+
+### 5.5 Where the checks live
+
+The lexer, parser, checkers, and SIR generator are the same for every port; a port's differences live only in its own `emitter/<T>/` tree.
+
+| Stage | What it does with the poke prims |
+| --- | --- |
+| Shared (lexer → SIR) | Reads and validates device descriptions, types `map_device`, `peek`, and `poke`, enforces every language rule in the device spec §11, and lowers each call to a SIR prim node carrying `[register_rwr]` (as `spawn` carries `[concurrency]`) with the register's resolved offset and width. Identical on every port. |
+| OS-free emitter (ESP32-S3, later bare-metal AArch64) | Emits the mapping, the volatile accesses, and the port's barriers (§5.3); rejects widths the board pack does not allow. |
+| OS-hosted emitter (Apple Silicon, Linux AArch64, later hosted ports) | Rejects each poke prim in its `emit_prim_op` with a compile-time error naming the module, the enclosing function, and the prim. The rejection is explicit: the AArch64 emitters' catch-all for an unknown prim writes only a comment, which would compile the access into nothing. |
+
+Today the emitter has no way to report a compile error: it returns assembly text, and the ESP32-S3 emitter's refusals are `.error` lines that fail only when the file is assembled, with no Silica source location. Delivering the poke prims therefore includes a shared, target-neutral diagnostic channel from `emitter_core` to the driver, which prints through the normal compiler diagnostics and exits non-zero without writing a `.sams`. The first version reports the module, function, and prim, which the emitter already knows; line and column need source locations on SIR nodes, which can follow. The ESP32-S3 refusals (foreign calls, file io) can move onto the same channel.
 
 ---
 
@@ -203,7 +221,7 @@ Each pack is a named directory or fragment (exact layout later) that states:
 | IRQ → worker | Which `device_actor_ref` / registered atom owns each IRQ |
 | Privileged boot | who sets MAIR/PTE or IDF cache mode |
 
-The compiler refuses `map_device` outside the pack’s windows when the pack is selected. A pack is how “raw metal” stays typed instead of `uint64` everywhere.
+The port's emitter refuses a constant `map_device` outside the pack’s windows (the pack is per port, so this check is not in the shared compiler). A pack is how “raw metal” stays typed instead of `uint64` everywhere.
 
 ---
 
@@ -232,7 +250,7 @@ Wire `alloc_region(Space)` to a real allocator on one QEMU image. `device` pool 
 
 ### Phase C — MMIO prims
 
-`map_device` + volatile 32-bit load/store (or `read_ref`/`write_ref` on mapped `device`). First QEMU trial may use the **reset-stub** UART exception. Application poke waits for Phase F.
+Device descriptions, `map_device`, and 32-bit `peek` / `poke`, with the hosted emitters' rejection (§5.5). First QEMU trial may use the **reset-stub** UART exception. Application poke waits for Phase F.
 
 ### Phase D — Console and panic
 
@@ -264,7 +282,8 @@ ESP32-S3 pack and Xtensa port table. Same Silica MMIO surface; different encodin
 
 ## 14. Risks
 
-- `read_ref` on `device` without volatile lowering will be optimized wrong.
+- A device description that does not match the silicon passes every check and drives the wrong register. Descriptions must come from the vendor's register documentation (or, later, a generator over vendor files).
+- A hosted emitter that lets a poke prim reach its catch-all compiles the access into nothing; the rejection must be explicit and covered by a trial on each hosted path.
 - Mapping `malloc` memory as `device` will look like a port and fail on hardware.
 - Page-table `device` attributes and MMIO windows must agree or the CPU will cache or fault.
 - QEMU UART is not a real SoC; packs must not hard-code virt addresses as if they were ESP32-S3.

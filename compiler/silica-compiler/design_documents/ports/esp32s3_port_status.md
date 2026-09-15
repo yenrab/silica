@@ -90,11 +90,15 @@ instead of Xtensa text, so the failure is immediate and legible.
 
 ### 4.2 ESP32-S3 FP1 items beyond Apple Silicon FP1
 
-The roadmap defines ESP32-S3 FP1 as Apple Silicon FP1 **plus peek and poke** (`map_device`, volatile
-`device_load*` / `device_store*`, `spawn_device`, `register_rwr` ordering; [ROADMAP.md](../../../../ROADMAP.md),
+The roadmap defines ESP32-S3 FP1 as Apple Silicon FP1 **plus peek and poke** (device descriptions,
+`map_device`, the `peek` / `poke` prims, `spawn_device`, `register_rwr` ordering; [ROADMAP.md](../../../../ROADMAP.md),
+[silica_device_actor_specification.md §4.7](../silica_device_actor_specification.md),
 [porting_for_os_free_targets.md §5](../porting_for_os_free_targets.md)). Nothing of it exists yet in the
 emitter or the runtime: GPIO, delays and the cycle counter are reachable only from hand-written assembly
 (`rt_board.S`, the `asm_*` apps). This is the first board-specific addition after the trial tree is green.
+The prims come in through the shared lexer-to-SIR stages, so Apple Silicon and Linux AArch64 take the same change,
+with their emitters rejecting the prims. The same work gives the emitter a diagnostic channel, after which the refusals
+in §3 can be reported as compile errors instead of `.error` lines.
 
 ### 4.3 Trial suites not yet run on the board
 

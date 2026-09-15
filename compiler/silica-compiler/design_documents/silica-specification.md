@@ -227,7 +227,7 @@ The following identifiers are reserved keywords:
 
 ```
 actor      actor_ref  atom      atomic    boolean      buf       case
-call_supervisor cast   char      concurrency core_id    core_set dangerous_actor_ref device_actor_ref device_io effect
+call_supervisor cast   char      concurrency core_id    core_set dangerous_actor_ref device_actor_ref device_io device_window effect
 efficiency_cores else end        enum      export    false     float16   float32
 float64    fn         for        from      hot_swap   if        impl      import    int8
 int16      int32      int64      lifetime  mailbox  mem       module    network_io normal    not
@@ -1852,7 +1852,7 @@ impl_fn_decl ::= "impl" "fn" identifier "(" parameter_list ")" "->" type "{" exp
 ```
 
 **Rules:**
-- `impl fn` declarations appear only in the trait's own file (the file named after the trait)
+- `impl fn` declarations appear only in the trait's own file (the file named after the trait). The one exception is the built-in `DeviceDescription` trait, whose implementations are written in `device_*` modules ([silica_device_actor_specification.md](silica_device_actor_specification.md) §4.9)
 - The compiler matches `impl fn name` to `required fn name/arity` by name and arity
 - The concrete type of the first parameter determines which type this implementation covers
 - All `required` methods must have at least one `impl fn` per concrete type, or the compiler errors
@@ -2073,7 +2073,7 @@ Note: Modules are typically inferred from filenames, but explicit module declara
 
 Modules that declare or use outbound foreign (FFI) wrapper bindings must follow the `dangerous_*` naming and dependency rules in [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §3.
 
-Modules that declare or use device-register (MMIO) poke APIs or device-worker behaviors must follow the `device_*` naming and dependency rules in [silica_device_actor_specification.md](silica_device_actor_specification.md) §3. A module must not depend on both a `device_*` module and a `dangerous_*` module.
+Modules that call the device poke prims (`map_device`, `peek`, `poke`) or define device-worker behaviors must follow the `device_*` naming and dependency rules in [silica_device_actor_specification.md](silica_device_actor_specification.md) §3. A module must not depend on both a `device_*` module and a `dangerous_*` module.
 
 ### 3.5 Patterns
 ```
@@ -3231,7 +3231,7 @@ device                              // Device memory (reserved for future driver
 - **atomic**: Memory space specifically for atomic operations. Provides hardware support for atomic read-modify-write operations.
 
 **Device Memory:**
-- **device**: Memory-mapped I/O space for device registers. Reserved for future device driver library. Application code should use normal memory variants.
+- **device**: Memory-mapped I/O space for device registers. Reserved for future device driver library. Application code should use normal memory variants. Device registers are not reached through a `region(L, device)`: they are mapped as a `device_window` (§4.4.6) and read and written only with `peek` and `poke`, on OS-free targets (§9.2.2).
 
 ```
 region(L1, normal)                  // normal memory region (write-back), lifetime L1
@@ -3271,6 +3271,14 @@ Atomic-capable cells use **`ref(L, atomic, T)`**. The **`atomic`** memory space 
 ref(L1, atomic, int)                  // reference in atomic memory space
 ```
 
+#### 4.4.6 Device window type
+
+`device_window(L, D)` is the mapped register range of one device. `L` is a lifetime identifier and `D` is a **device tag**, a one-atom tagged tuple type such as `(:esp32s3_uart)` that names the device's description. It is created only by `map_device` (§9.2.2), is move-only like a region handle, and is accepted only by `peek` and `poke`; `alloc_ref`, `alloc_buf`, `read_ref`, `write_ref`, and the other region prims reject it. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md) §4.7, §4.9.
+
+```
+device_window(L1, (:esp32s3_uart))    // mapped registers of the device tagged :esp32s3_uart
+```
+
 ### 4.5 Actor Types
 
 #### 4.5.1 Actor Reference Types
@@ -3287,7 +3295,7 @@ The `actor_ref` type is not parameterized by message type. It is a primitive typ
 
 The `dangerous_actor_ref` type is distinct from `actor_ref`. It represents a reference to an FFI worker actor that executes outbound foreign calls inside `external_danger` sequences in its behavior. It is created only by `spawn_dangerous(...)`. There is no subtyping or coercion between `actor_ref` and `dangerous_actor_ref`.
 
-The `device_actor_ref` type is distinct from `actor_ref` and from `dangerous_actor_ref`. It represents a reference to a device worker actor that executes MMIO poke inside `register_rwr` sequences in its behavior. It is created only by `spawn_device(...)` or `spawn_device_registered(...)`. There is no subtyping or coercion among the three reference types. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md).
+The `device_actor_ref` type is distinct from `actor_ref` and from `dangerous_actor_ref`. It represents a reference to a device worker actor that calls `map_device`, `peek`, and `poke` inside `register_rwr` sequences in its behavior. It is created only by `spawn_device(...)` or `spawn_device_registered(...)`. There is no subtyping or coercion among the three reference types. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md).
 
 The `supervisor_ref` type is distinct from `actor_ref`. It represents a runtime-managed supervisor created by `spawn_registered_supervisor(...)`. It is not accepted by ordinary `call()` or `cast()`; supervisor maintenance uses `call_supervisor(...)`.
 
@@ -4645,7 +4653,7 @@ Silica defines several built-in effects that track different kinds of side effec
 - `device_io` - Limited to: print (stdout), read from file, write to file, read from console
 - `network_io` - Network communications of all kinds (sockets, HTTP, etc.)
 - `hot_swap` - Code loading (dynamic loading, JIT, self-modifying code). On AArch64, requires `ISB` barrier to ensure instruction fetch sees code writes.
-- `register_rwr` - Direct device register (MMIO) access. On AArch64, requires `DSB SY` before and `ISB` after for device ordering. This effect authorizes **execution** of poke inside a **device worker** behavior installed by `spawn_device` / `spawn_device_registered`; it does **not** authorize `main`, ordinary `spawn` behaviors, or the spawn install site. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md). Named exceptions (reset, early panic, IRQ enqueue) are listed in that document §7.
+- `register_rwr` - Direct device register (MMIO) access. On AArch64, requires `DSB SY` before and `ISB` after for device ordering. This effect authorizes **execution** of the poke prims `map_device`, `peek`, and `poke` (§9.2.2) inside a **device worker** behavior installed by `spawn_device` / `spawn_device_registered`; it does **not** authorize `main`, ordinary `spawn` behaviors, or the spawn install site. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md). Named exceptions (reset, early panic, IRQ enqueue) are listed in that document §7.
 - `external_danger` - Outbound calls to `dangerous_*` FFI wrapper modules inside an FFI worker actor's `external_danger` sequence. This effect authorizes **execution** of foreign calls inside the worker behavior installed by `spawn_dangerous`; it does **not** authorize callers at the `spawn_dangerous` install site. Full rules: [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4. On macOS, same-process guarded-FFI crash handling is best-effort and platform-specific; see [macos_crash_handling_for_silica.md](macos_crash_handling_for_silica.md). Other platform-specific crash-handling notes will be added as Silica expands to support those targets.
 
 **Memory effect guarantees (hosting; normative at this time):** The **distinct hardware behaviors** associated with each `mem(Space)` and region `Space` (write-back, write-through, non-cacheable normal, device, and atomic backing rules in **§12.1.1** and following) are **fully supported and guaranteed only on OS-free executions**—for example bare-metal **boards**, firmware, or any environment where the **Silica runtime and linker script control** how memory regions are mapped and which **cacheability / ordering attributes** apply. On **OS-hosted** programs—**macOS**, **Linux**, **Windows**, **Solaris**, and comparable multiprogramming systems—application memory is exposed through the **traditional flat virtual address model** historically rooted in Unix and the **PDP-11** view of a process: ordinary allocations receive **uniform, OS-chosen** attributes, not a portable, per-allocation choice of Silica memory spaces. Because the **operating system controls and shares physical RAM** among processes, that model **cannot be sidestepped** by a portable application runtime to obtain, for all Silica regions, the same per-space **page-table / MAIR-class** distinctions the language describes. On OS-hosted targets, `mem(Space)` and `region(R, Space)` remain in the **type and effect system** for static discipline, documentation, and integration with **non-portable** or **driver-mediated** buffers where available, but **this specification does not guarantee**, at this time, that each memory space maps to **different hardware attributes** on those OSes. See **§12.1.1.0**.
@@ -4700,6 +4708,24 @@ write_ref(Ref, Value) -> atom proc[mem(Space)]
 ```
 
 These operations are not function calls but fundamental language primitives for memory management.
+
+**Device operations (OS-free targets):**
+
+```
+map_device(device: D, base: uint64) -> device_window(R, D) proc[register_rwr]
+peek(window: device_window(R, D), register: atom) -> T proc[register_rwr]
+poke(window: device_window(R, D), register: atom, value: T) -> atom proc[register_rwr]
+```
+
+`D` is a device tag (§4.4.6). Every device needs a **device description**: the programmer's implementation of the built-in `DeviceDescription` trait for that tag, listing each register's name, offset, width, and access mode (`:read_write`, `:read_only`, `:write_only`, `:write_one_to_clear`). The compiler reads it as data and checks every access against it; a `map_device` whose tag has no description is a compile-time error.
+
+`map_device((:esp32s3_uart), base)` binds the device's registers at `base` (a bind, not an allocation); the window's size comes from the description. `peek` is one volatile load and `poke` one volatile store of a register named by an atom literal, never by offset. The programmer states every access width with one of four closed built-in marker traits, `Register8`, `Register16`, `Register32`, and `Register64`, each implemented only by `uint8`, `uint16`, `uint32`, or `uint64` respectively. The marker is required: `peek(uart, :status) impl Register32 {}` and `poke(uart, :fifo, value impl Register32 {})`. The marked expression's type must be the marker's type, and the marker's width must be the register's described width. A `poke` to a read-only register or a `peek` of a write-only one is a compile-time error. Every `peek` is performed even when its result is unused; a read done only for its effect binds to `_`. There is no read-modify-write prim.
+
+- **Where they may appear:** only in a `register_rwr` sequence of a device-worker behavior installed by `spawn_device` / `spawn_device_registered`, in a `device_*` module.
+- **Names:** `map_device`, `peek`, and `poke` are not reserved words. An unqualified call inside a `device_*` module is the prim; elsewhere, and when module-qualified, the name is an ordinary identifier.
+- **Targets:** every port checks these rules the same way. An OS-hosted target rejects each call at compile time in its code generator, naming the module, function, and prim.
+
+Full rules (markers, device descriptions, access modes, handle movement, enforcement): [silica_device_actor_specification.md](silica_device_actor_specification.md) §4.7–§4.9, §10, §11.
 
 #### 9.2.3 Process Composition
 Processes compose through monadic binding:
@@ -7381,7 +7407,7 @@ demonitor(ref: monitor_ref) -> :ok  proc[concurrency]
 
 `spawn_dangerous` creates an FFI worker actor whose behavior executes outbound foreign calls inside `sequence proc[external_danger] ... produces pure ... end`. It returns `dangerous_actor_ref`, requires `concurrency` at the call site, and must **not** be used from a sequence block that declares `external_danger`. Installing a worker with `spawn_dangerous` does not execute foreign calls; the worker executes them when it receives casts. Its behavior must not contain `register_rwr` or poke prims.
 
-`spawn_device` creates a device worker actor whose behavior executes MMIO poke inside `sequence proc[register_rwr] ... produces pure ... end`. It returns `device_actor_ref`, requires `concurrency` at the call site, and must **not** be used from a sequence block that declares `register_rwr`. Installing a worker with `spawn_device` does not execute MMIO; the worker executes poke when it receives casts. Its behavior must not contain `external_danger` or call `dangerous_*` functions. `spawn_device_registered` is the same install, registered under an atom in the **device** registry; clients look it up with `cast_device_registered`, not `cast_registered`. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md).
+`spawn_device` creates a device worker actor whose behavior calls `map_device`, `peek`, and `poke` inside `sequence proc[register_rwr] ... produces pure ... end`. It returns `device_actor_ref`, requires `concurrency` at the call site, and must **not** be used from a sequence block that declares `register_rwr`. Installing a worker with `spawn_device` does not execute MMIO; the worker executes poke when it receives casts. Its behavior must not contain `external_danger` or call `dangerous_*` functions. `spawn_device_registered` is the same install, registered under an atom in the **device** registry; clients look it up with `cast_device_registered`, not `cast_registered`. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md).
 
 `spawn_registered` creates an ordinary actor and registers it under an atom name; it does not create a supervisor and does not imply a supervision link. `spawn_registered_supervisor` creates a runtime-managed supervisor, registers it under an atom name, calls the required `Supervisor.init/1` implementation for the named supervisor implementation type, and returns a `supervisor_ref`; see **§15.4.8** and **§15.4.13**. `link`, `monitor`, and `demonitor` operate on already-running ordinary actors; see **§15.4.8.5–§15.4.8.7**.
 

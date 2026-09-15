@@ -16,12 +16,19 @@ a chunk is closed by a new fixed point, never by a build that merely compiles. D
 | Linux AArch64 | `emitter/linux_aarch64/` | **Lock-step** with Apple Silicon: fixed point *n* on Linux contains exactly the Silica behaviours of fixed point *n* on Apple Silicon. Apple leads inside a chunk; the chunk is not closed until Linux has caught up and both fixed points are re-established. Port notes: [linux_aarch64_port_checklist.md](compiler/silica-compiler/design_documents/ports/linux_aarch64_port_checklist.md). |
 | ESP32-S3 (Xtensa LX7, OS-free) | `emitter/ESP32-S3_raw/` | **Not** in lock-step. Its first fixed point has all the behaviours of Apple Silicon FP1 **plus peek and poke** (device memory access, below). It then works through the same chunks at its own pace, skipping hosted-only items. Port notes: [esp32s3_xtensa_port.md](compiler/silica-compiler/design_documents/ports/esp32s3_xtensa_port.md), [porting_for_os_free_targets.md](compiler/silica-compiler/design_documents/porting_for_os_free_targets.md). |
 
-**Peek and poke (ESP32-S3 FP1 only).** `map_device(base, size) -> region(R, device)` binds a board-legal MMIO window
-(a bind, not an allocation), volatile device load and store go through it (either `read_ref`/`write_ref`/`buf_*` specialised
-on the `device` space, or dedicated `device_load*`/`device_store*` prims; one design per port), only a `spawn_device` worker in a
-`device_*` module may call them, and `register_rwr` ordering follows the port table.
-Details: [porting_for_os_free_targets.md §5](compiler/silica-compiler/design_documents/porting_for_os_free_targets.md) and
-[silica_device_actor_specification.md](compiler/silica-compiler/design_documents/silica_device_actor_specification.md).
+**Peek and poke (first delivered in ESP32-S3 FP1).** Every device has a programmer-supplied **device description**, an
+implementation of the built-in `DeviceDescription` trait that lists its registers with offsets, widths, and access modes.
+`map_device(device, base) -> device_window(R, D)` binds that device's registers at a board-legal address (a bind, not an
+allocation); `peek(window, :register)` and `poke(window, :register, value)` are the volatile device load and store, dedicated
+prims that name registers rather than offsets, with the width stated at every access by a required `Register8`…`Register64`
+marker and checked against the description. Only a `spawn_device` worker in a `device_*` module may call them, and
+`register_rwr` ordering follows the port table. The lexer through the SIR generator are the same on every path, so
+the prims are part of every path's compiler: ESP32-S3 implements them in its emitter, and each hosted emitter rejects them with
+a compile error naming the module, function, and prim. That rejection needs a diagnostic channel from the emitter, which it
+does not have today. When ESP32-S3 reaches FP1, Apple Silicon and Linux AArch64 take the same shared change and the rejection
+and re-establish their fixed points; nothing they already run changes.
+Details: [silica_device_actor_specification.md §4.7–§4.9, §10](compiler/silica-compiler/design_documents/silica_device_actor_specification.md) and
+[porting_for_os_free_targets.md §5](compiler/silica-compiler/design_documents/porting_for_os_free_targets.md).
 
 ## Raw paths: chip features in chunk 2
 
@@ -41,7 +48,7 @@ already has ([cpu_topology_implementation_plan.md](compiler/silica-compiler/desi
 
 - **Apple Silicon FP1** — the current behaviour set: every trial suite green under the selfhost built by the selfhost, and `make fixpoint` passing. Progress and open items: [self-host plan](compiler/silica-compiler/design_documents/Phase1_TODOs/bootstrap_retirement_and_self_host_plan.md), [open defects](compiler/silica-compiler/design_documents/HIGH_PRIORITY_compiler_defects_and_diagnostic_gaps_2026-09-08.md). Reaching it retires the Rust bootstrap for this path.
 - **Linux AArch64 FP1** — the same behaviours, same trials, on Linux.
-- **ESP32-S3 FP1** — the same behaviours plus peek and poke, with the hosted-only pieces (console and file `device_io` syscalls, sysctl CPU topology, Fifi against OS libraries) replaced by their board-pack equivalents.
+- **ESP32-S3 FP1** — the same behaviours plus peek and poke (and, on Apple Silicon and Linux AArch64, a new fixed point that rejects them; see above), with the hosted-only pieces (console and file `device_io` syscalls, sysctl CPU topology, Fifi against OS libraries) replaced by their board-pack equivalents.
 
 ## The chunks after FP1: enhancement requests
 

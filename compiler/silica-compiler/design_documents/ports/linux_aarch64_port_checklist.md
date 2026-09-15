@@ -24,7 +24,7 @@
 
 **Out of scope, deliberately:**
 
-- Board packs, linker scripts, reset stubs, `map_device`, volatile MMIO. Hosted Linux is a process under a kernel; none of the [OS-free port](../porting_for_os_free_targets.md) apparatus applies.
+- Board packs, linker scripts, reset stubs, volatile MMIO. Hosted Linux is a process under a kernel; none of the [OS-free port](../porting_for_os_free_targets.md) apparatus applies. The one exception: when ESP32-S3 reaches FP1, this emitter must reject the poke prims (`map_device`, `peek`, `poke`) with a compile error, in lock-step with Apple Silicon ([porting_for_os_free_targets.md §5.5](../porting_for_os_free_targets.md)).
 - Per-`Space` hardware guarantees. On a hosted target `mem(Space)` is discipline and API clarity, not a cache-attribute promise (spec §12.1.1.0).
 - Cross-linking from macOS. §6 avoids needing a cross toolchain at all.
 - 32-bit ARM. `armv7l` is not this port and not on the roadmap.
