@@ -22,7 +22,7 @@ TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
 MSG_PREFIX := $(TRIAL_DIR)/
 
 # Multi-file trials (subdir Makefile generates silica.config on integrate).
-SUB_TRIALS      := ffi_addition module_nonexported_callee_trial module_cycle_trial qualified_call_module_name_case_mismatch_trial qualified_call_wrong_arg_count_trial supervisor_agent_type_invalid_atom_trial standard_data_structures
+SUB_TRIALS      := ffi_addition module_nonexported_callee_trial module_cycle_trial qualified_call_module_name_case_mismatch_trial qualified_call_wrong_arg_count_trial sd1_qualified_call_too_many_args_trial supervisor_agent_type_invalid_atom_trial standard_data_structures
 
 # Single-file trial sources: every *.silica directly in this directory. $(wildcard)
 # rather than $(shell find): the tree holds ~20k files and this file is parsed several times.

@@ -27,7 +27,9 @@
 // Lowers SIR kind-6 prims to BL of compiler-bundled runtime (_silica_rt_*), appended by emitter_core
 // from prims_actors_runtime_asm.silica (AArch64 assembly strings, compiler-owned).
 // Operands: binary prims expect inner -> X9, right_expr -> X10 (same as arithmetic).
-// spawn 3-arg form: right_expr is tuple_make(behavior, placement); X10 points at flat pair.
+// spawn: right_expr is the flat chain tuple_make(behavior, stack_policy[, placement]); X10 points at the flat words
+// [beh, policy(, core)] and X11 holds the initial state (§15.1.2.2: the stack policy is a required argument; the
+// runtime takes it in X4 as (reserve & ~15) | algorithm). stack_policy(reserve, release) itself is packed inline.
 // Structured returns (cpu_topology, core_info, List[...]): runtime passes a heap pointer in X0 per AAPCS; Phase G fills layout in prims_actors_runtime_asm.silica.
 
 use reg_conventions;
@@ -212,6 +214,7 @@ fn is_actor_prim(name: string) -> bool {
         or name == "migrate_actor" or name == "move"
         or name == "register_failure_reporter"
         or name == "wait_for_exit"
+        or name == "stack_policy"
 }
 
 fn actor_prim_is_nullary(name: string) -> bool {
@@ -395,36 +398,55 @@ fn emit_spawn_linked(dest: string, term: { nodes: List[{ kind: int64, type_name:
     }
 }
 
-fn emit_spawn(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
-    e3b_pfx: string <- e3b_trampoline_x3_prefix(sir_term_root_node(term).value);
-    three: bool <- sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).kind == 6 and sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).name == "tuple_make";
-    case three of {
-        true -> concat(concat(concat(concat(e3b_pfx, "    MOV X0, X11\n    LDR X1, [X10]\n    LDR X12, [X10, #8]\n    MOV W2, W12\n"), asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name)), "");
-        false -> {
-            nb: int64 <- spawn_init_stack_bytes(sir_term_at(term, sir_term_root_node(term).inner));
-            copy_init: bool <- spawn_init_needs_heap_copy(sir_term_at(term, sir_term_root_node(term).inner)) and nb > 0;
-            case copy_init of {
-                true -> {
-                    promote: string <- heap_promote_stack_aggregate_x0(nb);
-                    pop_stack: string <- "";
-                    // The behaviour pointer must survive the heap-promote call: X12 is caller-saved and
-                    // _silica_rt_region_alloc clobbers it (the actor then BLRs to garbage, A3). Keep it on the stack.
-                    pre: string <- concat("    STR X10, [SP, #-16]!\n    MOV X0, X9\n", promote);
-                    mid: string <- concat(pre, concat("    MOV X9, X0\n    LDR X10, [SP], #16\n", concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n")));
-                    after_spawn: string <- concat(mid, asm_bl("_silica_rt_actor_spawn"));
-                    with_dest: string <- concat(after_spawn, mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name));
-                    concat(with_dest, pop_stack)
-                };
-                false -> concat(concat(concat(concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n"), asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name)), "")
-            }
-        }
+fn spawn_right_is_tuple(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> bool {
+    sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).kind == 6 and sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).name == "tuple_make"
+}
+
+fn spawn_right_count(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
+    prims_tuple@count_flat_elements(sir_term_at(term, sir_term_root_node(term).right_expr))
+}
+
+// Optional core id is the word after the policy: MOV W2 from it, else W2 = 0 (default placement).
+fn spawn_core_from_flat(count: int64, core_idx: int64) -> string {
+    case count > core_idx of {
+        true -> concat(concat("    LDR X12, [X10, #", atom_table@int64_to_decimal_string(core_idx * 8)), "]\n    MOV W2, W12\n");
+        false -> "    MOV W2, WZR\n"
     }
 }
 
+// The initial state is held in X11 while the flat argument words are built into X10. A stack-built
+// aggregate initial state is promoted to the heap first, so the actor never keeps a pointer into the
+// spawning frame; the promote clobbers X1..X4 and X9..X17, so X10 is parked on the stack around it.
+fn spawn_promote_init_x11(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    nb: int64 <- spawn_init_stack_bytes(sir_term_at(term, sir_term_root_node(term).inner));
+    copy_init: bool <- spawn_init_needs_heap_copy(sir_term_at(term, sir_term_root_node(term).inner)) and nb > 0;
+    case copy_init of {
+        true -> concat(concat("    STR X10, [SP, #-16]!\n    MOV X0, X11\n", heap_promote_stack_aggregate_x0(nb)), "    MOV X11, X0\n    LDR X10, [SP], #16\n");
+        false -> ""
+    }
+}
+
+// spawn / spawn_dangerous: X0 init, X1 beh, W2 core (0 default), X3 supervisor trampoline, X4 stack_policy.
+fn emit_spawn(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    e3b_pfx: string <- e3b_trampoline_x3_prefix(sir_term_root_node(term).value);
+    case spawn_right_is_tuple(term) of {
+        true -> {
+            count: int64 <- spawn_right_count(term);
+            loads: string <- concat("    MOV X0, X11\n    LDR X1, [X10]\n    LDR X4, [X10, #8]\n", spawn_core_from_flat(count, 2));
+            concat(concat(concat(concat(spawn_promote_init_x11(term), e3b_pfx), loads), asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+        };
+        // No policy word (not reachable from source: the type checker requires one). X4 = 0 inherits.
+        false -> concat(concat(concat(concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n    MOV X4, XZR\n"), asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name)), "")
+    }
+}
+
+// spawn_registered / spawn_dangerous_registered: X10 -> [beh, name, policy(, core)], X11 = init.
 fn emit_spawn_registered(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, register_label: string) -> string {
     e3b_pfx: string <- e3b_trampoline_x3_prefix(sir_term_root_node(term).value);
+    count: int64 <- spawn_right_count(term);
     save_name: string <- "    SUB SP, SP, #16\n    LDR X12, [X10, #8]\n    STR X12, [SP, #8]\n";
-    spawn_asm: string <- concat(concat(e3b_pfx, "    MOV X0, X11\n    LDR X1, [X10]\n    MOV W2, WZR\n"), asm_bl("_silica_rt_actor_spawn"));
+    loads: string <- concat("    MOV X0, X11\n    LDR X1, [X10]\n    LDR X4, [X10, #16]\n", spawn_core_from_flat(count, 3));
+    spawn_asm: string <- concat(concat(e3b_pfx, loads), asm_bl("_silica_rt_actor_spawn"));
     save_actor: string <- "    STR X0, [SP, #0]\n";
     reg_tail: string <- concat(register_label, "\n    LDR X0, [SP, #0]\n    ADD SP, SP, #16\n");
     reg: string <- concat("    LDR X1, [SP, #8]\n    BL ", reg_tail);
@@ -436,11 +458,40 @@ fn emit_spawn_registered(dest: string, term: { nodes: List[{ kind: int64, type_n
 // materializes the returned child specs before _silica_rt_actor_spawn returns to user code.
 fn emit_spawn_registered_supervisor(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
     e3b_pfx: string <- e3b_trampoline_x3_prefix(sir_term_root_node(term).value);
-    save_name: string <- "    SUB SP, SP, #16\n    STR X10, [SP, #8]\n";
-    spawn_asm: string <- concat(e3b_pfx, concat("    MOV X0, X9\n    MOV X1, XZR\n    MOV W2, WZR\n", asm_bl("_silica_rt_actor_spawn")));
+    count: int64 <- spawn_right_count(term);
+    save_name: string <- "    SUB SP, SP, #16\n    LDR X12, [X10]\n    STR X12, [SP, #8]\n";
+    loads: string <- concat("    MOV X0, X11\n    MOV X1, XZR\n    LDR X4, [X10, #8]\n", spawn_core_from_flat(count, 2));
+    spawn_asm: string <- concat(concat(e3b_pfx, loads), asm_bl("_silica_rt_actor_spawn"));
     save_actor: string <- "    STR X0, [SP, #0]\n";
     reg: string <- "    LDR X1, [SP, #8]\n    BL _silica_rt_register_actor_named\n    LDR X0, [SP, #0]\n    ADD SP, SP, #16\n";
     concat(concat(concat(concat(save_name, spawn_asm), save_actor), reg), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+}
+
+// stack_policy(reserve, release) -> one word: (reserve rounded up to 16) | algorithm index. The
+// release atom is a literal (the type checker requires one), so the index is fixed here.
+fn release_algorithm_index(lexeme: string) -> int64 {
+    case lexeme of {
+        ":release_on_return" -> 1;
+        "release_on_return" -> 1;
+        ":keep_last_message" -> 2;
+        "keep_last_message" -> 2;
+        ":track_recent_peak" -> 3;
+        "track_recent_peak" -> 3;
+        ":release_when_idle" -> 4;
+        "release_when_idle" -> 4;
+        ":keep_high_water" -> 5;
+        "keep_high_water" -> 5;
+        _: string -> 0
+    }
+}
+
+fn emit_stack_policy(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    alg: int64 <- release_algorithm_index(sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).value);
+    pack: string <- concat(concat("    ADD X9, X9, #15\n    AND X9, X9, #0xfffffffffffffff0\n    MOV X10, #", atom_table@int64_to_decimal_string(alg)), "\n    ORR X9, X9, X10\n");
+    case gpr_x_view(dest) == "X9" of {
+        true -> pack;
+        false -> concat(pack, concat(concat("    MOV ", gpr_x_view(dest)), ", X9\n"))
+    }
 }
 
 fn emit_send(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
@@ -622,6 +673,7 @@ fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: str
         "kill_abnormal" -> emit_runtime_unary(dest, term);
         "register_failure_reporter" -> emit_register_failure_reporter(dest, term);
         "wait_for_exit" -> emit_runtime_nullary(dest, term);
+        "stack_policy" -> emit_stack_policy(dest, term);
         _: string -> concat(concat("    ; unsupported actor prim: ", sir_term_root_node(term).name), "\n")
     }
 }

@@ -44,6 +44,7 @@ FAIL_CASES := \
 	error_app_cast_worker/dangerous_nested_external_danger_deep \
 	error_app_cast_worker/dangerous_external_danger_at_spawn_site \
 	error_app_cast_worker/dangerous_direct_call_fail \
+	error_app_cast_worker/dangerous_sd15_adapter_called_from_main \
 	error_app_cast_worker/dangerous_spawn_plain_bad \
 	error_app_cast_worker/dangerous_spawn_dangerous_requires_external \
 	error_app_cast_worker/dangerous_spawn_dangerous_wrong_type \

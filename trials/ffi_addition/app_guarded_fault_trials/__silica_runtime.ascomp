@@ -5031,7 +5031,13 @@ _silica_rt_ffi_arena_ensure:
 	ldr	x8, [x19, #352]
 	cbnz	x8, L_arena_ensure_done
 	mov	x0, xzr
+; The arena is 256 KB followed by one inaccessible 16 KB guard page. Without the guard,
+; whether a write just past the arena faults depended on whether the kernel happened to
+; place another mapping directly after it; under a loaded trial run on the Pi it did, and
+; the arena-bounds fault vanished. The guard is not part of the arena: [x19, #360] still
+; marks the arena end, so the guard reads as past-the-end to the fault handler.
 	mov	x1, #262144
+	add	x1, x1, #16384
 	mov	x2, #3
 	mov	x3, #4098
 	mov	x4, #-1
@@ -5042,6 +5048,12 @@ _silica_rt_ffi_arena_ensure:
 	cbz	x0, L_arena_ensure_fail
 	mov	x8, x0
 	add	x9, x8, #262144
+	stp	x8, x9, [sp, #-16]!
+	mov	x0, x9
+	mov	x1, #16384
+	mov	x2, xzr
+	bl	_mprotect
+	ldp	x8, x9, [sp], #16
 	str	x8, [x19, #352]
 	str	x9, [x19, #360]
 	str	x8, [x19, #368]
@@ -5611,6 +5623,13 @@ Lloh_gk0:
 Lloh_gk1:
 	add	x8, x8, _silica_guarded_ffi_pthread_key@PAGEOFF
 	ldr	x0, [x8]
+; The key is zero until the first guarded region creates it. Reading a thread-specific
+; value for key zero does NOT fail: on Darwin it returns a live pointer from a slot the C
+; library reserves for itself. Without this check a fault raised before any guarded call
+; took that pointer for the per-thread guarded state, wrote the fault record over the
+; library's memory, and jumped through a sigjmp_buf made of unrelated bytes, which hung
+; the process inside longjmp instead of reporting the fault and exiting.
+	cbz	x0, L_gft_no
 	bl	_pthread_getspecific
 	cbz	x0, L_gft_no
 	mov	x20, x0
@@ -5684,6 +5703,13 @@ Lloh_gff0:
 Lloh_gff1:
 	add	x8, x8, _silica_guarded_ffi_pthread_key@PAGEOFF
 	ldr	x0, [x8]
+; The key is zero until the first guarded region creates it. Reading a thread-specific
+; value for key zero does NOT fail: on Darwin it returns a live pointer from a slot the C
+; library reserves for itself. Without this check a fault raised before any guarded call
+; took that pointer for the per-thread guarded state, wrote the fault record over the
+; library's memory, and jumped through a sigjmp_buf made of unrelated bytes, which hung
+; the process inside longjmp instead of reporting the fault and exiting.
+	cbz	x0, L_gff_actor
 	bl	_pthread_getspecific
 	mov	x20, x0
 	cbz	x20, L_gff_actor

@@ -181,11 +181,11 @@ _silica_rt_sync_fault_handler:
 	add	x8, x8, _silica_rt_fault_actor@PAGEOFF
 	str	x0, [x8]
 	cbz	x0, Lsfh_no_actor
-	ldr	x9, [x0, #160]
+	ldr	x9, [x0, #384]
 	adrp	x8, _silica_rt_fault_sbase@PAGE
 	add	x8, x8, _silica_rt_fault_sbase@PAGEOFF
 	str	x9, [x8]
-	ldr	x9, [x0, #184]
+	ldr	x9, [x0, #392]
 	adrp	x8, _silica_rt_fault_ssize@PAGE
 	add	x8, x8, _silica_rt_fault_ssize@PAGEOFF
 	str	x9, [x8]
@@ -205,56 +205,42 @@ Lsfh_no_actor:
 ; reported as an actor failure, so printing the site first would add a line that the
 ; caller never sees on a healthy recovery. The unrecoverable paths below still print it.
 Lsfh_pc_done:
+; Stack growth is established first (spec §15.1.2.2): a fault at an address inside the current
+; actor's reservation is growth, and only afterwards is a guarded foreign fault considered.
+	bl	_silica_rt_tls_current_actor_get
+	mov	x20, x0
+	cbz	x20, Lsfh_not_stack
+	ldr	x21, [x20, #384]
+	cbz	x21, Lsfh_not_stack
+	ldr	x19, [x23, #24]
+	cmp	x19, x21
+	b.lo	Lsfh_not_stack
+	ldr	x9, [x20, #392]
+	add	x9, x21, x9
+	cmp	x19, x9
+	b.hs	Lsfh_not_stack
+	mov	x0, x20
+	mov	x1, x19
+	bl	_silica_rt_stack_grow_to
+	cbz	x0, L_sfh_done
+	cmp	x0, #1
+	b.eq	L_sfh_exhausted
+	cmp	x0, #2
+	b.eq	L_sfh_unrecoverable
+Lsfh_not_stack:
 	mov	x0, x22
 	mov	x1, x23
 	bl	_silica_rt_ffi_guarded_fault_handler_try
 	cbnz	w0, L_sfh_done
-	cmp	w22, #11
-	b.ne	L_sfh_crash
-	mov	x19, x23
-	ldr	x19, [x19, #24]
-	bl	_silica_rt_tls_current_actor_get
-	mov	x20, x0
-	cbz	x20, L_sfh_crash
-	ldr	x21, [x20, #160]
-	cbz	x21, L_sfh_crash
-	ldr	x22, [x20, #184]
-	add	x22, x21, x22
-	cmp	x19, x21
-	b.lo	L_sfh_crash
-	cmp	x19, x22
-	b.hs	L_sfh_overflow
-	bic	x0, x19, #0xfff
-	mov	x1, #0x1000
-	mov	w2, #3
-	bl	_mprotect
-	cmp	w0, #0
-	b.ne	L_sfh_unrecoverable
-	ldr	x8, [x20, #160]
-	bic	x9, x19, #0xfff
-	add	x9, x9, #0x1000
-	sub	x9, x9, x8
-	ldr	x10, [x20, #168]
-	cmp	x9, x10
-	b.ls	L_sfh_stack_done
-	str	x9, [x20, #168]
-L_sfh_stack_done:
-	ldp	x29, x30, [sp, #48]
-	ldp	x20, x19, [sp, #32]
-	ldp	x22, x21, [sp, #16]
-	ldp	x24, x23, [sp], #64
-	ret
-L_sfh_overflow:
-	ldr	w9, [x20, #152]
-	cbz	w9, L_sfh_crash
-	str	wzr, [x20, #152]
-	add	x0, x20, #80
-	bl	_silica_rt_cv_signal
-	ldp	x29, x30, [sp, #48]
-	ldp	x20, x19, [sp, #32]
-	ldp	x22, x21, [sp, #16]
-	ldp	x24, x23, [sp], #64
-	ret
+	b	L_sfh_crash
+L_sfh_exhausted:
+; The end of a reservation the program lowered: (:explicit, :stack_exhausted) for this actor only.
+	mov	x0, x20
+	adrp	x8, _silica_rt_stack_exhausted_atom@PAGE
+	add	x8, x8, _silica_rt_stack_exhausted_atom@PAGEOFF
+	ldr	x1, [x8]
+	bl	_silica_rt_actor_fail_current
+	b	L_sfh_crash
 L_sfh_unrecoverable:
 	bl	_silica_rt_print_fault_site
 	mov	w0, #70
@@ -409,6 +395,17 @@ L_gff_after_report:
 	bl	_silica_rt_actor_signal_pending_call_deaths
 	ldr	x20, [x19, #208]
 	ldr	x21, [x19, #192]
+; The recovery siglongjmp'd back onto the actor stack; this thread ends here, so move onto its alt
+; stack (top; nothing there is needed again) before that stack is unmapped, as fail_current does.
+	ldr	x9, [x19, #464]
+	cbz	x9, L_gff_keep_stack
+	mov	x10, #65536
+	add	x9, x9, x10
+	mov	sp, x9
+	mov	x0, x19
+	mov	x1, #1
+	bl	_silica_rt_actor_stack_free
+L_gff_keep_stack:
 	cbz	x21, L_gff_thread_exit
 	mov	x0, x19
 	bl	_silica_rt_ffi_arena_teardown

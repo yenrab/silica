@@ -2414,31 +2414,13 @@ fn esf_tuple_ret_dealloc(fn_val: { name: string, return_type: string, effects: s
         }
 }
 
-// The program entry on Linux. Darwin links every executable with a 256 MB main stack
-// (-Wl,-stack_size in the Makefile), and the compiler's parser recurses deeply enough to need
-// it; Linux instead gives the main thread whatever `ulimit -s` allows, 8 MB by default, and the
-// first large unit faulted at that limit on the Pi. A program must not depend on the caller's
-// shell limits, so `main` here is a trampoline: it reserves a private 256 MB stack (lazily, the
-// pages cost nothing until touched), moves SP onto it, and calls the real entry, which is
-// emitted as silica_program_main. If the reservation fails the program runs on the stack it was
-// given. X19/X20 carry argc/argv across the system call; X29 keeps the original SP for the
-// return, so the body's own frame handling is untouched.
-fn program_main_stack_trampoline(is_program_main: boolean) -> string {
-    case is_program_main of {
-        false -> "";
-        true -> "main:\n    STP X29, X30, [SP, #-32]!\n    STP X19, X20, [SP, #16]\n    MOV X29, SP\n    MOV X19, X0\n    MOV X20, X1\n    MOV X0, #0\n    MOV X1, #0x10000000\n    MOV X2, #3\n    MOV X3, #0x4022\n    MOV X4, #-1\n    MOV X5, #0\n    MOV X8, #222\n    SVC #0\n    TBNZ X0, #63, L_main_stack_ready\n    MOV X1, #0x10000000\n    ADD X0, X0, X1\n    MOV SP, X0\nL_main_stack_ready:\n    MOV X0, X19\n    MOV X1, X20\n    BL silica_program_main\n    MOV SP, X29\n    LDP X19, X20, [SP, #16]\n    LDP X29, X30, [SP], #32\n    RET\n"
-    }
-}
-
 fn emit_sir_function(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, all_functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], ctx: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }, debug: boolean, module_name: string, foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] }, arena_ok: boolean, region_ok: boolean) -> string {
-    entry_is_program_main: boolean <- fn_val.name == "main" or fn_val.name == "main.main" or fn_val.name == "main.m";
-    // The program entry is emitted as silica_program_main behind the `main` trampoline above.
-    entry_label: string <- case entry_is_program_main of {
-        true -> "silica_program_main";
-        false -> module_linkage@asm_symbol_for_definition(ctx.module_name, fn_val.name)
-    };
+    // `main` is an ordinary function on the platform's stack (spec §15.1.2.2): the private
+    // 256 MB main-stack trampoline this emitter once wrapped it in is gone, because a program
+    // whose work needs a deep stack spawns an actor for it.
+    entry_label: string <- module_linkage@asm_symbol_for_definition(ctx.module_name, fn_val.name);
         eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
-        prologue: string <- concat(program_main_stack_trampoline(entry_is_program_main), control@function_prologue_with_effects(entry_label, fn_val.effects));
+        prologue: string <- control@function_prologue_with_effects(entry_label, fn_val.effects);
         dest_reg: string <- case fn_val.return_type == "float32" of {
             true -> "S0";
             false -> case fn_val.return_type == "float64" of {

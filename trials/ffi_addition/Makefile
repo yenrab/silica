@@ -53,7 +53,9 @@ APP_DIRS := \
 	$(APP_GUARDED_TWICE_DIR) \
 	$(APP_TEXT_ECHO_DIR) \
 	$(APP_TEXT_ECHO_TWICE_DIR) \
-	$(APP_SUPERVISOR_DANGEROUS_FAULT_DIR)
+	$(APP_SUPERVISOR_DANGEROUS_FAULT_DIR) \
+	app_sd18_worker_second_message \
+	app_foreign_call_from_deep_stack
 
 GUARDED_APP_DIRS := \
 	$(APP_GUARDED_ONCE_DIR) \

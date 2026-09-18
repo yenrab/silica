@@ -5,10 +5,11 @@
 _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	.cfi_startproc
 ; %bb.0:
-	stp	x24, x23, [sp, #-64]!           ; 16-byte Folded Spill
+	stp	x24, x23, [sp, #-80]!           ; 16-byte Folded Spill
 	stp	x22, x21, [sp, #16]             ; 16-byte Folded Spill
 	stp	x20, x19, [sp, #32]             ; 16-byte Folded Spill
 	stp	x29, x30, [sp, #48]             ; 16-byte Folded Spill
+	str	x25, [sp, #64]
 	add	x29, sp, #48
 	.cfi_def_cfa w29, 16
 	.cfi_offset w30, -8
@@ -19,13 +20,14 @@ _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	.cfi_offset w22, -48
 	.cfi_offset w23, -56
 	.cfi_offset w24, -64
+	mov	x25, x4
 	mov	x24, x3
 	mov	x23, x2
 	mov	x20, x1
 	mov	x21, x0
 	mov	w22, #1                         ; =0x1
 	mov	w0, #1                          ; =0x1
-	mov	w1, #384
+	mov	w1, #512
 	bl	_calloc
 	mov	x19, x0
 	cbz	x0, LBB0_4
@@ -54,25 +56,49 @@ _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 ; Phase E e4f: ACB+16 is now an os_unfair_lock (4 B) and ACB+80 is a 4 B futex seq word.
 ; Both are zero from calloc above (OS_UNFAIR_LOCK_INIT == 0); no init call needed.
 	str	w22, [x19, #152]
+; The reservation, the fault handlers and the arena bookkeeping exist before the thread does:
+; its first instruction on the actor stack faults, and the handler must already be installed.
+	mov	x0, x19
+	mov	x1, x25
+	bl	_silica_rt_actor_stack_reserve
+	cbnz	x0, LBB0_reserve_failed
+	bl	_silica_rt_install_sync_fault_handlers
+	mov	x0, x19
+	bl	_silica_rt_actor_init_region
+	sub	sp, sp, #64
+	mov	x0, sp
+	bl	_pthread_attr_init
+	mov	x0, sp
+	movz	x1, #0x2, lsl #16
+	bl	_pthread_attr_setstacksize
 Lloh0:
 	adrp	x2, _actor_thread_main@PAGE
 Lloh1:
 	add	x2, x2, _actor_thread_main@PAGEOFF
 	add	x0, x19, #144
-	mov	x1, #0                          ; =0x0
+	mov	x1, sp
 	mov	x3, x19
 	bl	_pthread_create
-	cbz	w0, LBB0_3
+	mov	w23, w0
+	mov	x0, sp
+	bl	_pthread_attr_destroy
+	add	sp, sp, #64
+	cbz	w23, LBB0_3
 ; %bb.2:
+	mov	x0, x19
+	mov	x1, xzr
+	bl	_silica_rt_actor_stack_free
 	mov	x0, x19
 	bl	_free
 	mov	x19, #0                         ; =0x0
 	b	LBB0_4
+LBB0_reserve_failed:
+	mov	x0, x19
+	bl	_free
+	bl	_silica_rt_spawn_reserve_failed
 LBB0_3:
 	ldur	x0, [x19, #144]
 	bl	_pthread_detach
-	mov	x0, x19
-	bl	_silica_rt_actor_init_region
 ; Phase E: supervisor trampoline (ACB#280) runs on the new thread; wait until #288 is set so
 ; callers see a materialized child table before receiving the actor_ref.
 	cbz	x24, LBB0_4
@@ -92,10 +118,11 @@ LBB0_wr_page:
 	str	x19, [x8]
 LBB0_wr_skip:
 	mov	x0, x19
+	ldr	x25, [sp, #64]
 	ldp	x29, x30, [sp, #48]             ; 16-byte Folded Reload
 	ldp	x20, x19, [sp, #32]             ; 16-byte Folded Reload
 	ldp	x22, x21, [sp, #16]             ; 16-byte Folded Reload
-	ldp	x24, x23, [sp], #64             ; 16-byte Folded Reload
+	ldp	x24, x23, [sp], #80             ; 16-byte Folded Reload
 	ret
 	.loh AdrpAdd	Lloh0, Lloh1
 	.loh AdrpAdd	LBB0_wr_try, LBB0_wr_page
@@ -125,7 +152,7 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	mov	x20, x1
 	mov	x21, x0
 	mov	w0, #1
-	mov	w1, #384
+	mov	w1, #512
 	bl	_calloc
 	mov	x19, x0
 	cbz	x0, LBBsl_4
@@ -171,24 +198,47 @@ Lslp_skip_list:
 ; OS_UNFAIR_LOCK_INIT == 0, seq baseline 0; no init call required.
 	mov	w8, #1
 	str	w8, [x19, #152]
+; Children started from child specs inherit the spawning actor's stack policy (X1 = 0).
+	mov	x0, x19
+	mov	x1, xzr
+	bl	_silica_rt_actor_stack_reserve
+	cbnz	x0, LBBsl_reserve_failed
+	bl	_silica_rt_install_sync_fault_handlers
+	mov	x0, x19
+	bl	_silica_rt_actor_init_region
+	sub	sp, sp, #64
+	mov	x0, sp
+	bl	_pthread_attr_init
+	mov	x0, sp
+	movz	x1, #0x2, lsl #16
+	bl	_pthread_attr_setstacksize
 Lslp_tm0:
 	adrp	x2, _actor_thread_main@PAGE
 Lslp_tm1:
 	add	x2, x2, _actor_thread_main@PAGEOFF
 	add	x0, x19, #144
-	mov	x1, #0
+	mov	x1, sp
 	mov	x3, x19
 	bl	_pthread_create
-	cbz	w0, LBBsl_3
+	mov	w23, w0
+	mov	x0, sp
+	bl	_pthread_attr_destroy
+	add	sp, sp, #64
+	cbz	w23, LBBsl_3
+	mov	x0, x19
+	mov	x1, xzr
+	bl	_silica_rt_actor_stack_free
 	mov	x0, x19
 	bl	_free
 	mov	x19, #0
 	b	LBBsl_4
+LBBsl_reserve_failed:
+	mov	x0, x19
+	bl	_free
+	bl	_silica_rt_spawn_reserve_failed
 LBBsl_3:
 	ldur	x0, [x19, #144]
 	bl	_pthread_detach
-	mov	x0, x19
-	bl	_silica_rt_actor_init_region
 ; Phase E e4f: spin until the new actor's thread has finished its TLS init / trampoline
 ; (signalled by ACB[+288] == 1 in actor_thread_main). Keeps spawn ordering strictly
 ; sequential — the supervisor never overlaps two children's startup, eliminating the
@@ -228,13 +278,30 @@ _actor_thread_main:                     ; @actor_thread_main
 	mov	x19, x0
 	bl	_silica_rt_ensure_actor_tls_key
 	bl	_silica_rt_tls_actor_set_from_x19
-; Phase E e3b: first-schedule supervisor trampoline hook
+	mov	x0, x19
+	bl	_silica_rt_actor_altstack_install
+; Phase E e3b: first-schedule supervisor trampoline hook. It runs on the actor's stack, like a
+; behavior: the top of the reservation is the empty stack, and the runtime keeps this thread's
+; own SP in ACB+480 while user code runs there.
 	ldr	x8, [x19, #280]
 	cbz	x8, LBB1_skip_tramp
 	ldr	x9, [x19, #288]
 	cbnz	x9, LBB1_skip_tramp
 	mov	x0, x19
+	ldr	x9, [x19, #384]
+	cbz	x9, LBB1_sw_none_0
+	ldr	x10, [x19, #392]
+	add	x9, x9, x10
+	mov	x10, sp
+	str	x10, [x19, #480]
+	mov	sp, x9
+LBB1_sw_none_0:
 	blr	x8
+	ldr	x10, [x19, #480]
+	cbz	x10, LBB1_sw_back_0
+	mov	sp, x10
+	str	xzr, [x19, #480]
+LBB1_sw_back_0:
 LBB1_skip_tramp:
 ; Phase E e4f: mark actor as started (post TLS init + post any first-schedule trampoline) so
 ; spawn / spawn_linked callers can serialize on +288 == 1 for both supervisors and workers.
@@ -269,9 +336,14 @@ LBB1_try_std:
 ; Phase E e4f: blocking _silica_rt_cv_wait (os_unfair_lock + ___ulock_wait UL_COMPARE_AND_WAIT_SHARED).
 ; Earlier pthread_cond_timedwait_relative_np drove libpthread kwq malloc churn racing TLS instantiation
 ; (mfm_alloc SIGBUS). Wake paths hold ACB+16, signal ACB+80, then unlock before _silica_rt_cv_wait.
+; A :release_when_idle actor waits with a timeout while it still holds committed stack; the
+; check releases it once a second has passed since its last message (spec §15.1.2.2).
+	mov	x0, x19
+	bl	_silica_rt_stack_idle_check
+	mov	x2, x0
 	add	x0, x19, #80
 	add	x1, x19, #16
-	bl	_silica_rt_cv_wait
+	bl	_silica_rt_cv_wait_timeout
 	b	LBB1_wait
 LBB1_process:
 	add	x0, x19, #16
@@ -292,7 +364,20 @@ LBB1_active_call_set:
 	ldp	x1, x8, [x19]
 	cbz	x8, LBB1_ingress_no_beh
 	mov	x2, sp
+	ldr	x9, [x19, #384]
+	cbz	x9, LBB1_sw_none_1
+	ldr	x10, [x19, #392]
+	add	x9, x9, x10
+	mov	x10, sp
+	str	x10, [x19, #480]
+	mov	sp, x9
+LBB1_sw_none_1:
 	blr	x8
+	ldr	x10, [x19, #480]
+	cbz	x10, LBB1_sw_back_1
+	mov	sp, x10
+	str	xzr, [x19, #480]
+LBB1_sw_back_1:
 	ldr	x10, [x0]
 	ldr	w8, [sp, #32]
 	cbz	w8, LBB1_no_reply_result
@@ -317,7 +402,20 @@ LBB1_ingress_user_beh:
 	ldp	x1, x8, [x19]
 	cbz	x8, LBB1_ingress_no_beh
 	mov	x2, sp
+	ldr	x9, [x19, #384]
+	cbz	x9, LBB1_sw_none_2
+	ldr	x10, [x19, #392]
+	add	x9, x9, x10
+	mov	x10, sp
+	str	x10, [x19, #480]
+	mov	sp, x9
+LBB1_sw_none_2:
 	blr	x8
+	ldr	x10, [x19, #480]
+	cbz	x10, LBB1_sw_back_2
+	mov	sp, x10
+	str	xzr, [x19, #480]
+LBB1_sw_back_2:
 	ldr	x10, [x0]
 	ldr	w8, [sp, #32]
 	cbz	w8, LBB1_ingress_no_reply_result
@@ -331,6 +429,12 @@ LBB1_ingress_no_reply_result:
 	mov	w22, #0
 	b	LBB1_post_beh
 LBB1_post_beh:
+; Message boundary: the behavior has returned and its stack is empty, so the release algorithm
+; runs now, before the reply is handed to the caller (spec §15.1.2.2).
+	mov	x23, x9
+	mov	x0, x19
+	bl	_silica_rt_stack_on_message_return
+	mov	x9, x23
 	ldr	x20, [sp, #24]
 	ldr	w8, [sp, #32]
 	add	sp, sp, #48
@@ -442,6 +546,9 @@ LBB1_exit_wait_new_child:
 LBB1_exit_no_sup_drain:
 	mov	x0, x19
 	bl	_silica_rt_actor_signal_pending_call_deaths
+	mov	x0, x19
+	mov	x1, xzr
+	bl	_silica_rt_actor_stack_free
 	cbz	x20, LBB1_exit_skip_legacy_root
 	mov	w0, #2
 Lloh_rn0:
@@ -2161,82 +2268,47 @@ _silica_rt_tls_actor_set_from_x19:
 	ret
 	.cfi_endproc
 	.p2align	2
-_silica_rt_actor_init_region:           ; init growable stack region for actor
+_silica_rt_actor_init_region:           ; arena bookkeeping for the actor's implicit heap
 	.cfi_startproc
-; X0=actor_ptr. Reserves 1GB VA, maps first 8MB, stores region metadata at [160..184]. Supervision fields [192..224] unused here.
-; Also installs synchronous fault handlers (Phase 13) on first call.
-	stp	x22, x21, [sp, #-48]!
-	stp	x20, x19, [sp, #16]
-	stp	x29, x30, [sp, #32]
-	add	x29, sp, #32
-	.cfi_def_cfa w29, 16
-	.cfi_offset w30, -8
-	.cfi_offset w29, -16
-	.cfi_offset w19, -24
-	.cfi_offset w20, -32
-	.cfi_offset w21, -40
-	.cfi_offset w22, -48
-	mov	x19, x0
-Lloh_ir0:
-	adrp	x8, _silica_rt_sync_fault_handlers_installed@PAGE
-Lloh_ir1:
-	add	x8, x8, _silica_rt_sync_fault_handlers_installed@PAGEOFF
-	ldr	w9, [x8]
-	cbnz	w9, LBBir_skip_handler
-	bl	_silica_rt_install_sync_fault_handlers
-LBBir_skip_handler:
-	mov	x0, #0
-	movz	x1, #0x4000, lsl #16
-	mov	w2, #0
-	movz	w3, #0x1002
-	mov	w4, #-1
-	mov	x5, #0
-	bl	_mmap
-	cmn	x0, #1
-	b.eq	LBBir_fail
-	mov	x20, x0
-	movz	x1, #0x80, lsl #16
-	mov	w2, #3
-	bl	_mprotect
-	str	x20, [x19, #160]
-	movz	x8, #0x80, lsl #16
-	str	x8, [x19, #168]
-	add	x8, x20, #256
-	str	x8, [x19, #176]
-	movz	x8, #0x4000, lsl #16
-	str	x8, [x19, #184]
-	ldp	x29, x30, [sp, #32]
-	ldp	x20, x19, [sp, #16]
-	ldp	x22, x21, [sp], #48
+; X0=actor_ptr. The arena is a chain of anonymous blocks allocated on demand by
+; _silica_rt_region_alloc, so nothing is mapped here: #160 newest block (header: prev, size),
+; #168 bytes mapped so far, #176 bump pointer, #184 limit of the newest block.
+	str	xzr, [x0, #160]
+	str	xzr, [x0, #168]
+	str	xzr, [x0, #176]
+	str	xzr, [x0, #184]
 	ret
-LBBir_fail:
-	str	xzr, [x19, #160]
-	str	xzr, [x19, #168]
-	str	xzr, [x19, #176]
-	str	xzr, [x19, #184]
-	ldp	x29, x30, [sp, #32]
-	ldp	x20, x19, [sp, #16]
-	ldp	x22, x21, [sp], #48
-	ret
-	.loh AdrpAdd	Lloh_ir0, Lloh_ir1
 	.cfi_endproc
                                         ; -- End function
 	.p2align	2
-_silica_rt_actor_dealloc_region:        ; release actor's growable stack region
+_silica_rt_actor_dealloc_region:        ; release every arena block of an actor
 	.cfi_startproc
-; X0=actor_ptr. munmap(region_base, total_size).
-	stp	x29, x30, [sp, #-16]!
+; X0=actor_ptr. Walks the block chain from #160 and munmaps each block.
+	stp	x29, x30, [sp, #-48]!
 	mov	x29, sp
 	.cfi_def_cfa w29, 16
 	.cfi_offset w30, -8
 	.cfi_offset w29, -16
-	ldr	x8, [x0, #184]
-	ldr	x0, [x0, #160]
-	cbz	x0, LBBdr_skip
-	mov	x1, x8
+	stp	x19, x20, [sp, #16]
+	str	x21, [sp, #32]
+	mov	x20, x0
+	ldr	x19, [x20, #160]
+LBBdr_loop:
+	cbz	x19, LBBdr_done
+	ldr	x21, [x19]
+	ldr	x1, [x19, #8]
+	mov	x0, x19
 	bl	_munmap
-LBBdr_skip:
-	ldp	x29, x30, [sp], #16
+	mov	x19, x21
+	b	LBBdr_loop
+LBBdr_done:
+	str	xzr, [x20, #160]
+	str	xzr, [x20, #168]
+	str	xzr, [x20, #176]
+	str	xzr, [x20, #184]
+	ldr	x21, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #48
 	ret
 	.cfi_endproc
                                         ; -- End function
@@ -2310,15 +2382,7 @@ _silica_rt_move_actor:                  ; @silica_rt_move_actor
 	.cfi_endproc
                                         ; -- End function
 	.section	__TEXT,__text,regular,pure_instructions
-	.globl	_silica_rt_get_actor_memory_usage ; -- Begin function silica_rt_get_actor_memory_usage
-	.p2align	2
-_silica_rt_get_actor_memory_usage:      ; @silica_rt_get_actor_memory_usage
-	.cfi_startproc
-; X0=actor_ref -> X0=bytes mapped in actor's growable region
-	ldr	x0, [x0, #168]
-	ret
-	.cfi_endproc
-                                        ; -- End function
+; get_actor_memory_usage lives in prims_actors_stack_asm.silica (four-field record).
 	.globl	_silica_rt_region_alloc         ; -- Begin function silica_rt_region_alloc
 	.p2align	2
 _silica_rt_region_alloc:                ; @silica_rt_region_alloc
@@ -2333,17 +2397,57 @@ _silica_rt_region_alloc:                ; @silica_rt_region_alloc
 	.cfi_offset w29, -16
 	.cfi_offset w19, -24
 	.cfi_offset w20, -32
-	mov	x19, x0
+	add	x19, x0, #7
+	and	x19, x19, #0xfffffffffffffff8
 	bl	_silica_rt_tls_current_actor_get
 	mov	x20, x0
 	cbz	x20, LBBra_fallback
 	ldr	x8, [x20, #176]
-	cbz	x8, LBBra_fallback
-	add	x9, x8, x19
-	add	x9, x9, #7
-	bic	x9, x9, #7
-	str	x9, [x20, #176]
+	cbz	x8, LBBra_grow
+	ldr	x9, [x20, #184]
+	add	x10, x8, x19
+	cmp	x10, x9
+	b.hi	LBBra_grow
+	str	x10, [x20, #176]
 	mov	x0, x8
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+LBBra_grow:
+; New block: 64 MB, or the request plus its header when larger. Anonymous RW mappings cost
+; nothing until touched, so an idle actor still holds no arena memory.
+	add	x9, x19, #32
+	movz	x10, #0x400, lsl #16
+	cmp	x9, x10
+	csel	x1, x9, x10, hi
+	str	x1, [sp, #-16]!
+	mov	x0, xzr
+	mov	w2, #3
+	movz	w3, #0x1002
+	mov	w4, #-1
+	mov	x5, xzr
+	bl	_mmap
+	ldr	x1, [sp], #16
+	cmn	x0, #1
+	b.eq	LBBra_grow_failed
+	ldr	x8, [x20, #160]
+	str	x8, [x0]
+	str	x1, [x0, #8]
+	str	x0, [x20, #160]
+	add	x9, x0, x1
+	str	x9, [x20, #184]
+	ldr	x10, [x20, #168]
+	add	x10, x10, x1
+	str	x10, [x20, #168]
+	add	x8, x0, #16
+	add	x10, x8, x19
+	str	x10, [x20, #176]
+	mov	x0, x8
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+LBBra_grow_failed:
+	mov	x0, xzr
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
 	ret
@@ -4340,7 +4444,8 @@ _silica_rt_actor_deliver_exit:          ; X0=child self; X0 out: 0 delivered, 1 
 	str	x19, [x21]
 	ldr	x9, [x19, #336]
 	str	x9, [x21, #8]
-	str	xzr, [x21, #16]
+	ldr	x9, [x19, #496]
+	str	x9, [x21, #16]
 	ldr	x8, [x19, #200]
 	str	x8, [x21, #24]
 	add	x0, x20, #16
@@ -5031,7 +5136,13 @@ _silica_rt_ffi_arena_ensure:
 	ldr	x8, [x19, #352]
 	cbnz	x8, L_arena_ensure_done
 	mov	x0, xzr
+; The arena is 256 KB followed by one inaccessible 16 KB guard page. Without the guard,
+; whether a write just past the arena faults depended on whether the kernel happened to
+; place another mapping directly after it; under a loaded trial run on the Pi it did, and
+; the arena-bounds fault vanished. The guard is not part of the arena: [x19, #360] still
+; marks the arena end, so the guard reads as past-the-end to the fault handler.
 	mov	x1, #262144
+	add	x1, x1, #16384
 	mov	x2, #3
 	mov	x3, #4098
 	mov	x4, #-1
@@ -5042,6 +5153,12 @@ _silica_rt_ffi_arena_ensure:
 	cbz	x0, L_arena_ensure_fail
 	mov	x8, x0
 	add	x9, x8, #262144
+	stp	x8, x9, [sp, #-16]!
+	mov	x0, x9
+	mov	x1, #16384
+	mov	x2, xzr
+	bl	_mprotect
+	ldp	x8, x9, [sp], #16
 	str	x8, [x19, #352]
 	str	x9, [x19, #360]
 	str	x8, [x19, #368]
@@ -5199,6 +5316,7 @@ _silica_rt_guarded_ffi_state_get_or_create:
 	.cfi_startproc
 	stp	x29, x30, [sp, #-16]!
 	mov	x29, sp
+	stp	x19, x20, [sp, #-16]!
 	.cfi_def_cfa w29, 16
 	.cfi_offset w30, -8
 	.cfi_offset w29, -16
@@ -5208,21 +5326,30 @@ _silica_rt_guarded_ffi_state_get_or_create:
 	ldr	x0, [x8]
 	bl	_pthread_getspecific
 	cbnz	x0, L_gffi_state_have
-	mov	x0, #512
+; calloc(count, size): both arguments must be set; this site passed only the size.
+	mov	x0, #1
+	mov	x1, #512
 	bl	_calloc
 	cbz	x0, L_gffi_state_fail
-	mov	x9, x0
+; X9 is caller-saved, so _pthread_setspecific may clobber it and the function would return a
+; garbage pointer while the real block sits in thread-local storage. The caller then
+; writes depth into that garbage, the depth check below reads 0 from the real block,
+; and the guarded region is left without a recovery point. Keep it in a callee-saved
+; register (X20 is saved by this function's prologue).
+	mov	x20, x0
 	adrp	x8, _silica_guarded_ffi_pthread_key@PAGE
 	add	x8, x8, _silica_guarded_ffi_pthread_key@PAGEOFF
 	ldr	x0, [x8]
-	mov	x1, x9
+	mov	x1, x20
 	bl	_pthread_setspecific
-	mov	x0, x9
+	mov	x0, x20
 L_gffi_state_have:
+	ldp	x19, x20, [sp], #16
 	ldp	x29, x30, [sp], #16
 	ret
 L_gffi_state_fail:
 	mov	x0, xzr
+	ldp	x19, x20, [sp], #16
 	ldp	x29, x30, [sp], #16
 	ret
 	.cfi_endproc
@@ -5273,10 +5400,41 @@ _silica_rt_ffi_guarded_setjmp:
 	cmp	x9, #1
 	b.ne	L_gffi_sj_zero
 	bl	_silica_rt_install_sync_fault_handlers
+; Stash this frame -- the caller's return address, the frame pointer and the two callee-saved
+; registers -- in the state block before arming the recovery point. The foreign call runs at
+; the stack depth this frame occupies, so it overwrites these slots; by the time a fault
+; longjmps back here they hold the foreign call's frame. Reloading them from the stack
+; returned into the middle of the guarded block, past the fault branch, and the actor walked
+; away from a fault it should have died on.
+	ldr	x9, [sp, #0]
+	str	x9, [x19, #448]
+	ldr	x9, [sp, #8]
+	str	x9, [x19, #456]
+	ldr	x9, [sp, #16]
+	str	x9, [x19, #464]
+	ldr	x9, [sp, #24]
+	str	x9, [x19, #472]
 	add	x0, x19, #64
 	mov	x1, xzr
 	bl	_sigsetjmp
+	cbz	x0, L_gffi_sj_done
+; Longjmp return. siglongjmp has already restored X19-X28, the frame pointer and SP, so the
+; frame is rebuilt from the state block and this returns straight into the guarded block
+; with X0 set to 1, which is the caller's signal to take the fault branch.
+	ldr	x30, [x19, #472]
+	ldr	x29, [x19, #464]
+	ldr	x10, [x19, #456]
+	ldr	x9, [x19, #448]
+	add	sp, sp, #32
+	mov	x0, #1
+	mov	x20, x10
+	mov	x19, x9
+	ret
 L_gffi_sj_zero:
+; Not a longjmp return: paths that skip the setjmp must report 0, or the
+; caller's CBNZ takes the fault path on a healthy call.
+	mov	x0, #0
+L_gffi_sj_done:
 	ldp	x19, x20, [sp], #16
 	ldp	x29, x30, [sp], #16
 	ret
@@ -5467,11 +5625,11 @@ _silica_rt_sync_fault_handler:
 	add	x8, x8, _silica_rt_fault_actor@PAGEOFF
 	str	x0, [x8]
 	cbz	x0, Lsfh_no_actor
-	ldr	x9, [x0, #160]
+	ldr	x9, [x0, #384]
 	adrp	x8, _silica_rt_fault_sbase@PAGE
 	add	x8, x8, _silica_rt_fault_sbase@PAGEOFF
 	str	x9, [x8]
-	ldr	x9, [x0, #184]
+	ldr	x9, [x0, #392]
 	adrp	x8, _silica_rt_fault_ssize@PAGE
 	add	x8, x8, _silica_rt_fault_ssize@PAGEOFF
 	str	x9, [x8]
@@ -5487,58 +5645,46 @@ Lsfh_no_actor:
 	adrp	x3, _silica_rt_own_image_base@PAGE
 	add	x3, x3, _silica_rt_own_image_base@PAGEOFF
 	str	x2, [x3]
-	bl	_silica_rt_print_fault_site
+; No diagnostic here: a fault inside a guarded FFI region is recovered just below and
+; reported as an actor failure, so printing the site first would add a line that the
+; caller never sees on a healthy recovery. The unrecoverable paths below still print it.
 Lsfh_pc_done:
+; Stack growth is established first (spec §15.1.2.2): a fault at an address inside the current
+; actor's reservation is growth, and only afterwards is a guarded foreign fault considered.
+	bl	_silica_rt_tls_current_actor_get
+	mov	x20, x0
+	cbz	x20, Lsfh_not_stack
+	ldr	x21, [x20, #384]
+	cbz	x21, Lsfh_not_stack
+	ldr	x19, [x23, #24]
+	cmp	x19, x21
+	b.lo	Lsfh_not_stack
+	ldr	x9, [x20, #392]
+	add	x9, x21, x9
+	cmp	x19, x9
+	b.hs	Lsfh_not_stack
+	mov	x0, x20
+	mov	x1, x19
+	bl	_silica_rt_stack_grow_to
+	cbz	x0, L_sfh_done
+	cmp	x0, #1
+	b.eq	L_sfh_exhausted
+	cmp	x0, #2
+	b.eq	L_sfh_unrecoverable
+Lsfh_not_stack:
 	mov	x0, x22
 	mov	x1, x23
 	bl	_silica_rt_ffi_guarded_fault_handler_try
 	cbnz	w0, L_sfh_done
-	cmp	w22, #11
-	b.ne	L_sfh_crash
-	mov	x19, x23
-	ldr	x19, [x19, #24]
-	bl	_silica_rt_tls_current_actor_get
-	mov	x20, x0
-	cbz	x20, L_sfh_crash
-	ldr	x21, [x20, #160]
-	cbz	x21, L_sfh_crash
-	ldr	x22, [x20, #184]
-	add	x22, x21, x22
-	cmp	x19, x21
-	b.lo	L_sfh_crash
-	cmp	x19, x22
-	b.hs	L_sfh_overflow
-	bic	x0, x19, #0xfff
-	mov	x1, #0x1000
-	mov	w2, #3
-	bl	_mprotect
-	cmp	w0, #0
-	b.ne	L_sfh_unrecoverable
-	ldr	x8, [x20, #160]
-	bic	x9, x19, #0xfff
-	add	x9, x9, #0x1000
-	sub	x9, x9, x8
-	ldr	x10, [x20, #168]
-	cmp	x9, x10
-	b.ls	L_sfh_stack_done
-	str	x9, [x20, #168]
-L_sfh_stack_done:
-	ldp	x29, x30, [sp, #48]
-	ldp	x20, x19, [sp, #32]
-	ldp	x22, x21, [sp, #16]
-	ldp	x24, x23, [sp], #64
-	ret
-L_sfh_overflow:
-	ldr	w9, [x20, #152]
-	cbz	w9, L_sfh_crash
-	str	wzr, [x20, #152]
-	add	x0, x20, #80
-	bl	_silica_rt_cv_signal
-	ldp	x29, x30, [sp, #48]
-	ldp	x20, x19, [sp, #32]
-	ldp	x22, x21, [sp, #16]
-	ldp	x24, x23, [sp], #64
-	ret
+	b	L_sfh_crash
+L_sfh_exhausted:
+; The end of a reservation the program lowered: (:explicit, :stack_exhausted) for this actor only.
+	mov	x0, x20
+	adrp	x8, _silica_rt_stack_exhausted_atom@PAGE
+	add	x8, x8, _silica_rt_stack_exhausted_atom@PAGEOFF
+	ldr	x1, [x8]
+	bl	_silica_rt_actor_fail_current
+	b	L_sfh_crash
 L_sfh_unrecoverable:
 	bl	_silica_rt_print_fault_site
 	mov	w0, #70
@@ -5568,6 +5714,13 @@ Lloh_gk0:
 Lloh_gk1:
 	add	x8, x8, _silica_guarded_ffi_pthread_key@PAGEOFF
 	ldr	x0, [x8]
+; The key is zero until the first guarded region creates it. Reading a thread-specific
+; value for key zero does NOT fail: on Darwin it returns a live pointer from a slot the C
+; library reserves for itself. Without this check a fault raised before any guarded call
+; took that pointer for the per-thread guarded state, wrote the fault record over the
+; library's memory, and jumped through a sigjmp_buf made of unrelated bytes, which hung
+; the process inside longjmp instead of reporting the fault and exiting.
+	cbz	x0, L_gft_no
 	bl	_pthread_getspecific
 	cbz	x0, L_gft_no
 	mov	x20, x0
@@ -5610,12 +5763,13 @@ L_gft_store_arena:
 	add	x3, x3, _silica_rt_own_image_base@PAGEOFF
 	ldr	x3, [x3]
 	cbz	x3, Lgft_do_jmp
+; The fault image used to be compared against our own image, and a fault inside it was
+; treated as not-a-foreign-fault and left unrecovered. That only distinguishes anything
+; when the dangerous library is a separate dylib. The trials, and any static archive,
+; link the foreign code into this image, so every guarded fault was declined and the
+; process died instead of reporting reason_tag 5. Being inside the guarded window,
+; which the depth and inside flags above establish, is what makes a fault ours.
 	cmp	x2, x3
-	b.ne	Lgft_do_jmp
-	mov	x0, xzr
-	ldp	x19, x30, [sp], #16
-	ldp	x21, x20, [sp], #16
-	ret
 Lgft_do_jmp:
 	add	x0, x20, #64
 	mov	w1, #1
@@ -5640,6 +5794,13 @@ Lloh_gff0:
 Lloh_gff1:
 	add	x8, x8, _silica_guarded_ffi_pthread_key@PAGEOFF
 	ldr	x0, [x8]
+; The key is zero until the first guarded region creates it. Reading a thread-specific
+; value for key zero does NOT fail: on Darwin it returns a live pointer from a slot the C
+; library reserves for itself. Without this check a fault raised before any guarded call
+; took that pointer for the per-thread guarded state, wrote the fault record over the
+; library's memory, and jumped through a sigjmp_buf made of unrelated bytes, which hung
+; the process inside longjmp instead of reporting the fault and exiting.
+	cbz	x0, L_gff_actor
 	bl	_pthread_getspecific
 	mov	x20, x0
 	cbz	x20, L_gff_actor
@@ -5678,6 +5839,17 @@ L_gff_after_report:
 	bl	_silica_rt_actor_signal_pending_call_deaths
 	ldr	x20, [x19, #208]
 	ldr	x21, [x19, #192]
+; The recovery siglongjmp'd back onto the actor stack; this thread ends here, so move onto its alt
+; stack (top; nothing there is needed again) before that stack is unmapped, as fail_current does.
+	ldr	x9, [x19, #464]
+	cbz	x9, L_gff_keep_stack
+	mov	x10, #65536
+	add	x9, x9, x10
+	mov	sp, x9
+	mov	x0, x19
+	mov	x1, #1
+	bl	_silica_rt_actor_stack_free
+L_gff_keep_stack:
 	cbz	x21, L_gff_thread_exit
 	mov	x0, x19
 	bl	_silica_rt_ffi_arena_teardown
@@ -6158,4 +6330,709 @@ L_ci64_mul_zero:
     MOV W0, #1
     MOV X1, X2
     RET
+	.section	__DATA,__bss
+	.p2align	3
+_silica_rt_stack_page:
+	.zero	8
+_silica_rt_stack_default_reserve:
+	.zero	8
+_silica_rt_stack_init_done:
+	.zero	8
+	.section	__DATA,__data
+	.p2align	3
+	.globl	_silica_rt_stack_exhausted_atom
+_silica_rt_stack_exhausted_atom:
+	.quad	-1
+	.globl	_silica_rt_stack_reserve_failed_atom
+_silica_rt_stack_reserve_failed_atom:
+	.quad	-1
+	.section	__TEXT,__cstring,cstring_literals
+L_srt_hw_memsize:
+	.asciz	"hw.memsize"
+L_srt_vm_swapusage:
+	.asciz	"vm.swapusage"
+L_srt_reserve_failed_msg:
+	.asciz	"stack_reserve_failed\n"
+	.section	__TEXT,__text,regular,pure_instructions
+	.globl	_silica_rt_stack_runtime_init
+	.p2align	2
+_silica_rt_stack_runtime_init:
+; Read the platform page and the default reservation (physical memory + swap) once.
+	stp	x29, x30, [sp, #-96]!
+	mov	x29, sp
+	stp	x19, x20, [sp, #16]
+	adrp	x19, _silica_rt_stack_init_done@PAGE
+	add	x19, x19, _silica_rt_stack_init_done@PAGEOFF
+	ldr	x8, [x19]
+	cbnz	x8, Lsri_done
+	mov	w0, #29
+	bl	_sysconf
+	cmp	x0, #0
+	b.gt	Lsri_have_page
+	mov	x0, #16384
+Lsri_have_page:
+	mov	x20, x0
+	adrp	x8, _silica_rt_stack_page@PAGE
+	add	x8, x8, _silica_rt_stack_page@PAGEOFF
+	str	x20, [x8]
+	str	xzr, [sp, #32]
+	mov	x8, #8
+	str	x8, [sp, #40]
+	adrp	x0, L_srt_hw_memsize@PAGE
+	add	x0, x0, L_srt_hw_memsize@PAGEOFF
+	add	x1, sp, #32
+	add	x2, sp, #40
+	mov	x3, xzr
+	mov	x4, xzr
+	bl	_sysctlbyname
+	ldr	x9, [sp, #32]
+	str	x9, [sp, #88]
+	str	xzr, [sp, #48]
+	mov	x8, #32
+	str	x8, [sp, #80]
+	adrp	x0, L_srt_vm_swapusage@PAGE
+	add	x0, x0, L_srt_vm_swapusage@PAGEOFF
+	add	x1, sp, #48
+	add	x2, sp, #80
+	mov	x3, xzr
+	mov	x4, xzr
+	bl	_sysctlbyname
+	cbz	w0, Lsri_swap_ok
+	str	xzr, [sp, #48]
+Lsri_swap_ok:
+	ldr	x9, [sp, #88]
+	ldr	x10, [sp, #48]
+	add	x9, x9, x10
+	cbnz	x9, Lsri_have_total
+	mov	x9, #1
+	lsl	x9, x9, #34
+Lsri_have_total:
+	sub	x10, x20, #1
+	add	x9, x9, x10
+	bic	x9, x9, x10
+	adrp	x8, _silica_rt_stack_default_reserve@PAGE
+	add	x8, x8, _silica_rt_stack_default_reserve@PAGEOFF
+	str	x9, [x8]
+	mov	x8, #1
+	str	x8, [x19]
+Lsri_done:
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #96
+	ret
+	.globl	_silica_rt_stack_prefix_for
+	.p2align	2
+_silica_rt_stack_prefix_for:
+; X0 = bytes to keep -> X0 = the smallest chunk-sequence prefix sum >= X0, X1 = the chunk after it.
+	adrp	x8, _silica_rt_stack_page@PAGE
+	add	x8, x8, _silica_rt_stack_page@PAGEOFF
+	ldr	x9, [x8]
+	mov	x10, xzr
+	movz	x11, #0x10, lsl #16
+Lspf_loop:
+	cmp	x10, x0
+	b.hs	Lspf_done
+	add	x10, x10, x9
+	cmp	x9, x11
+	b.hs	Lspf_loop
+	lsl	x9, x9, #1
+	b	Lspf_loop
+Lspf_done:
+	mov	x0, x10
+	mov	x1, x9
+	ret
+	.globl	_silica_rt_stack_now_ns
+	.p2align	2
+_silica_rt_stack_now_ns:
+	stp	x29, x30, [sp, #-32]!
+	mov	x29, sp
+	mov	w0, #6
+	add	x1, sp, #16
+	bl	_clock_gettime
+	ldr	x0, [sp, #16]
+	ldr	x1, [sp, #24]
+	movz	x2, #0xCA00
+	movk	x2, #0x3B9A, lsl #16
+	mul	x0, x0, x2
+	add	x0, x0, x1
+	ldp	x29, x30, [sp], #32
+	ret
+	.globl	_silica_rt_actor_stack_reserve
+	.p2align	2
+_silica_rt_actor_stack_reserve:
+; X0 = ACB, X1 = packed stack_policy (0 = inherit the spawning actor's, else the default with
+; :keep_last_message). Returns X0 = 0 on success, 1 when no reservation could be made.
+	stp	x29, x30, [sp, #-64]!
+	mov	x29, sp
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	stp	x23, x24, [sp, #48]
+	mov	x19, x0
+	mov	x20, x1
+	bl	_silica_rt_stack_runtime_init
+	cbnz	x20, Lasr_have_policy
+	bl	_silica_rt_tls_current_actor_get
+	cbz	x0, Lasr_default_policy
+	ldr	x20, [x0, #472]
+	cbnz	x20, Lasr_have_policy
+Lasr_default_policy:
+	mov	x20, #2
+Lasr_have_policy:
+	and	x21, x20, #0xf
+	cbnz	x21, Lasr_alg_ok
+	mov	x21, #2
+Lasr_alg_ok:
+	and	x22, x20, #0xfffffffffffffff0
+	adrp	x8, _silica_rt_stack_page@PAGE
+	add	x8, x8, _silica_rt_stack_page@PAGEOFF
+	ldr	x23, [x8]
+	mov	x24, xzr
+	cbz	x22, Lasr_default
+	mov	x24, #1
+	sub	x9, x23, #1
+	add	x22, x22, x9
+	bic	x22, x22, x9
+	b	Lasr_try
+Lasr_default:
+	adrp	x8, _silica_rt_stack_default_reserve@PAGE
+	add	x8, x8, _silica_rt_stack_default_reserve@PAGEOFF
+	ldr	x22, [x8]
+Lasr_try:
+	mov	x0, xzr
+	mov	x1, x22
+	mov	w2, #0
+	movz	w3, #0x1042
+	mov	w4, #-1
+	mov	x5, xzr
+	bl	_mmap
+	cmn	x0, #1
+	b.ne	Lasr_mapped
+	cbnz	x24, Lasr_fail
+; The host refused the whole-machine reservation by heuristic: reserve just under it, in
+; sixteenths, down to half of the default.
+	adrp	x8, _silica_rt_stack_default_reserve@PAGE
+	add	x8, x8, _silica_rt_stack_default_reserve@PAGEOFF
+	ldr	x9, [x8]
+	lsr	x10, x9, #4
+	sub	x11, x23, #1
+	add	x10, x10, x11
+	bic	x10, x10, x11
+	sub	x22, x22, x10
+	lsr	x9, x9, #1
+	cmp	x22, x9
+	b.lo	Lasr_fail
+	b	Lasr_try
+Lasr_mapped:
+	str	x0, [x19, #384]
+	str	x22, [x19, #392]
+	str	xzr, [x19, #400]
+	str	xzr, [x19, #408]
+	str	x23, [x19, #416]
+	str	x21, [x19, #424]
+	str	xzr, [x19, #432]
+	str	xzr, [x19, #440]
+	str	xzr, [x19, #448]
+	str	xzr, [x19, #456]
+	str	xzr, [x19, #464]
+	and	x9, x20, #0xfffffffffffffff0
+	orr	x9, x9, x21
+	str	x9, [x19, #472]
+	str	xzr, [x19, #480]
+	str	x24, [x19, #488]
+	str	xzr, [x19, #496]
+	cmp	x21, #3
+	b.ne	Lasr_no_ring
+	mov	w0, #32
+	mov	w1, #8
+	bl	_calloc
+	str	x0, [x19, #440]
+Lasr_no_ring:
+	mov	x0, xzr
+	b	Lasr_ret
+Lasr_fail:
+	str	xzr, [x19, #384]
+	mov	x0, #1
+Lasr_ret:
+	ldp	x23, x24, [sp, #48]
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #64
+	ret
+	.globl	_silica_rt_actor_altstack_install
+	.p2align	2
+_silica_rt_actor_altstack_install:
+; X0 = ACB. Every actor thread faults with SP inside its own inaccessible reservation, so the
+; handler needs an alternate stack of its own on this thread.
+	stp	x29, x30, [sp, #-48]!
+	mov	x29, sp
+	str	x19, [sp, #16]
+	mov	x19, x0
+	mov	x0, xzr
+	mov	x1, #65536
+	mov	w2, #3
+	movz	w3, #0x1002
+	mov	w4, #-1
+	mov	x5, xzr
+	bl	_mmap
+	cmn	x0, #1
+	b.eq	Lsai_ret
+	str	x0, [x19, #464]
+	str	x0, [sp, #24]
+	mov	x8, #65536
+	str	x8, [sp, #32]
+	str	wzr, [sp, #40]
+	add	x0, sp, #24
+	mov	x1, xzr
+	bl	_sigaltstack
+Lsai_ret:
+	ldr	x19, [sp, #16]
+	ldp	x29, x30, [sp], #48
+	ret
+	.globl	_silica_rt_actor_stack_free
+	.p2align	2
+_silica_rt_actor_stack_free:
+; X0 = ACB, X1 = 1 when called on the alt stack (keep it mapped). Unmaps the reservation.
+	stp	x29, x30, [sp, #-48]!
+	mov	x29, sp
+	stp	x19, x20, [sp, #16]
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x0, [x19, #384]
+	cbz	x0, Lsaf_alt
+	ldr	x1, [x19, #392]
+	bl	_munmap
+	str	xzr, [x19, #384]
+Lsaf_alt:
+	cbnz	x20, Lsaf_ring
+	ldr	x0, [x19, #464]
+	cbz	x0, Lsaf_ring
+	mov	x1, #65536
+	bl	_munmap
+	str	xzr, [x19, #464]
+Lsaf_ring:
+	ldr	x0, [x19, #440]
+	cbz	x0, Lsaf_done
+	bl	_free
+	str	xzr, [x19, #440]
+Lsaf_done:
+	str	xzr, [x19, #400]
+	str	xzr, [x19, #432]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #48
+	ret
+	.globl	_silica_rt_stack_grow_to
+	.p2align	2
+_silica_rt_stack_grow_to:
+; X0 = ACB, X1 = faulting address inside the reservation. Commits chunks below the committed run
+; until the address is covered. X0 = 0 grown, 1 the lowered reservation is exhausted, 2 the host
+; refused the commit, 3 the address was already committed (not stack growth).
+	stp	x29, x30, [sp, #-64]!
+	mov	x29, sp
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	str	x23, [sp, #48]
+	mov	x19, x0
+	mov	x20, x1
+	mov	x23, xzr
+Lsgt_loop:
+	ldr	x8, [x19, #384]
+	ldr	x9, [x19, #392]
+	add	x9, x8, x9
+	ldr	x10, [x19, #400]
+	sub	x21, x9, x10
+	cmp	x20, x21
+	b.hs	Lsgt_covered
+; The lowest page of the reservation is never committed: reaching it is the end of the
+; reservation whatever mapping sits below (the remainder stays a second, inaccessible mapping).
+	ldr	x22, [x19, #416]
+	sub	x11, x21, x8
+	adrp	x12, _silica_rt_stack_page@PAGE
+	add	x12, x12, _silica_rt_stack_page@PAGEOFF
+	ldr	x12, [x12]
+	subs	x11, x11, x12
+	b.ls	Lsgt_exhausted
+	cmp	x22, x11
+	csel	x22, x11, x22, hi
+	sub	x0, x21, x22
+	mov	x1, x22
+	mov	w2, #3
+	bl	_mprotect
+	cbnz	w0, Lsgt_commit_failed
+	mov	x23, #1
+	ldr	x10, [x19, #400]
+	add	x10, x10, x22
+	str	x10, [x19, #400]
+	ldr	x11, [x19, #408]
+	cmp	x10, x11
+	b.ls	Lsgt_no_hw
+	str	x10, [x19, #408]
+Lsgt_no_hw:
+	ldr	x11, [x19, #416]
+	movz	x12, #0x10, lsl #16
+	cmp	x11, x12
+	b.hs	Lsgt_loop
+	lsl	x11, x11, #1
+	str	x11, [x19, #416]
+	b	Lsgt_loop
+Lsgt_covered:
+	cbz	x23, Lsgt_not_ours
+	mov	x0, xzr
+	b	Lsgt_ret
+Lsgt_not_ours:
+	mov	x0, #3
+	b	Lsgt_ret
+Lsgt_exhausted:
+	mov	x0, #1
+	b	Lsgt_ret
+Lsgt_commit_failed:
+	mov	x0, #2
+Lsgt_ret:
+	ldr	x23, [sp, #48]
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #64
+	ret
+	.globl	_silica_rt_stack_measure
+	.p2align	2
+_silica_rt_stack_measure:
+; X0 = ACB -> X0 = bytes from the top down to the lowest page holding a nonzero word (0 = none).
+	ldr	x8, [x0, #384]
+	ldr	x9, [x0, #392]
+	add	x9, x8, x9
+	ldr	x10, [x0, #400]
+	sub	x11, x9, x10
+	adrp	x12, _silica_rt_stack_page@PAGE
+	add	x12, x12, _silica_rt_stack_page@PAGEOFF
+	ldr	x12, [x12]
+Lsm_page:
+	cmp	x11, x9
+	b.hs	Lsm_none
+	mov	x13, x11
+	add	x14, x11, x12
+Lsm_word:
+	ldp	x15, x16, [x13], #16
+	orr	x15, x15, x16
+	cbnz	x15, Lsm_found
+	cmp	x13, x14
+	b.lo	Lsm_word
+	mov	x11, x14
+	b	Lsm_page
+Lsm_found:
+	sub	x0, x9, x11
+	ret
+Lsm_none:
+	mov	x0, xzr
+	ret
+	.globl	_silica_rt_stack_release_to
+	.p2align	2
+_silica_rt_stack_release_to:
+; X0 = ACB, X1 = bytes to keep, X2 = bytes at the top the last message used (zeroed if kept).
+; Releases whole chunks below the smallest chunk prefix that covers X1, in the sizes they grew by.
+	stp	x29, x30, [sp, #-48]!
+	mov	x29, sp
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	mov	x19, x0
+	mov	x21, x2
+	mov	x0, x1
+	cbz	x0, Lsrt_zero_keep
+	bl	_silica_rt_stack_prefix_for
+	b	Lsrt_have
+Lsrt_zero_keep:
+	mov	x0, xzr
+	adrp	x8, _silica_rt_stack_page@PAGE
+	add	x8, x8, _silica_rt_stack_page@PAGEOFF
+	ldr	x1, [x8]
+Lsrt_have:
+	mov	x20, x0
+	mov	x22, x1
+	ldr	x10, [x19, #400]
+	cmp	x20, x10
+	b.hs	Lsrt_zero
+	ldr	x8, [x19, #384]
+	ldr	x9, [x19, #392]
+	add	x9, x8, x9
+	sub	x0, x9, x10
+	sub	x1, x10, x20
+	mov	w2, #0
+	movz	w3, #0x1052
+	mov	w4, #-1
+	mov	x5, xzr
+	bl	_mmap
+	str	x20, [x19, #400]
+	str	x22, [x19, #416]
+	cbnz	x20, Lsrt_zero
+	ldr	x0, [x19, #464]
+	cbz	x0, Lsrt_zero
+	mov	x1, #65536
+	mov	w2, #7
+	bl	_madvise
+Lsrt_zero:
+	ldr	x10, [x19, #400]
+	str	x10, [x19, #432]
+	cbz	x21, Lsrt_ret
+	cmp	x21, x10
+	csel	x21, x10, x21, hi
+	cbz	x21, Lsrt_ret
+	ldr	x8, [x19, #384]
+	ldr	x9, [x19, #392]
+	add	x9, x8, x9
+	sub	x0, x9, x21
+	mov	x1, xzr
+	mov	x2, x21
+	bl	_memset
+Lsrt_ret:
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #48
+	ret
+	.globl	_silica_rt_stack_on_message_return
+	.p2align	2
+_silica_rt_stack_on_message_return:
+; X0 = ACB. The behavior has returned and the stack is empty: apply the actor's release algorithm.
+	stp	x29, x30, [sp, #-48]!
+	mov	x29, sp
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	mov	x19, x0
+	ldr	x8, [x19, #384]
+	cbz	x8, Lsmr_ret
+	ldr	x9, [x19, #424]
+	cmp	x9, #5
+	b.eq	Lsmr_keep_all
+	cmp	x9, #4
+	b.eq	Lsmr_idle_stamp
+	cmp	x9, #1
+	b.eq	Lsmr_release_all
+	mov	x0, x19
+	bl	_silica_rt_stack_measure
+	mov	x20, x0
+	ldr	x9, [x19, #424]
+	cmp	x9, #3
+	b.ne	Lsmr_keep_depth
+	ldr	x10, [x19, #440]
+	cbz	x10, Lsmr_keep_depth
+	ldr	x11, [x19, #448]
+	and	x12, x11, #31
+	str	x20, [x10, x12, lsl #3]
+	add	x11, x11, #1
+	str	x11, [x19, #448]
+	mov	x12, xzr
+	mov	x21, xzr
+Lsmr_ring_max:
+	ldr	x13, [x10, x12, lsl #3]
+	cmp	x13, x21
+	csel	x21, x13, x21, hi
+	add	x12, x12, #1
+	cmp	x12, #32
+	b.lo	Lsmr_ring_max
+	b	Lsmr_release_keep
+Lsmr_keep_depth:
+	mov	x21, x20
+Lsmr_release_keep:
+	mov	x0, x19
+	mov	x1, x21
+	mov	x2, x20
+	bl	_silica_rt_stack_release_to
+	b	Lsmr_ret
+Lsmr_keep_all:
+	ldr	x10, [x19, #400]
+	str	x10, [x19, #432]
+	b	Lsmr_ret
+Lsmr_idle_stamp:
+	ldr	x10, [x19, #400]
+	str	x10, [x19, #432]
+	bl	_silica_rt_stack_now_ns
+	str	x0, [x19, #456]
+	b	Lsmr_ret
+Lsmr_release_all:
+	mov	x0, x19
+	mov	x1, xzr
+	mov	x2, xzr
+	bl	_silica_rt_stack_release_to
+Lsmr_ret:
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #48
+	ret
+	.globl	_silica_rt_stack_idle_check
+	.p2align	2
+_silica_rt_stack_idle_check:
+; X0 = ACB -> X0 = mailbox wait timeout in microseconds (0 = wait without a timeout). Only
+; :release_when_idle actors holding committed stack wait with a timeout; once a second has passed
+; since the last message the stack is released and the wait becomes untimed.
+	stp	x29, x30, [sp, #-32]!
+	mov	x29, sp
+	str	x19, [sp, #16]
+	mov	x19, x0
+	ldr	x9, [x19, #424]
+	cmp	x9, #4
+	b.ne	Lsic_none
+	ldr	x10, [x19, #400]
+	cbz	x10, Lsic_none
+	bl	_silica_rt_stack_now_ns
+	ldr	x11, [x19, #456]
+	sub	x12, x0, x11
+	movz	x13, #0xCA00
+	movk	x13, #0x3B9A, lsl #16
+	cmp	x12, x13
+	b.lo	Lsic_wait
+	mov	x0, x19
+	mov	x1, xzr
+	mov	x2, xzr
+	bl	_silica_rt_stack_release_to
+	b	Lsic_none
+Lsic_wait:
+	sub	x12, x13, x12
+	mov	x13, #1000
+	udiv	x0, x12, x13
+	add	x0, x0, #1
+	b	Lsic_ret
+Lsic_none:
+	mov	x0, xzr
+Lsic_ret:
+	ldr	x19, [sp, #16]
+	ldp	x29, x30, [sp], #32
+	ret
+	.globl	_silica_rt_cv_wait_timeout
+	.p2align	2
+_silica_rt_cv_wait_timeout:
+; X0 = cv_addr, X1 = lock_addr, X2 = timeout in microseconds (0 = none). Caller holds the lock;
+; the lock is held again on return, whether woken or timed out.
+	stp	x29, x30, [sp, #-48]!
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	add	x29, sp, #0
+	mov	x19, x0
+	mov	x20, x1
+	mov	x21, x2
+	ldr	w22, [x19]
+	mov	x0, x20
+	bl	_os_unfair_lock_unlock
+	mov	w0, #3
+	mov	x1, x19
+	mov	x2, x22
+	mov	w3, w21
+	bl	___ulock_wait
+	mov	x0, x20
+	bl	_os_unfair_lock_lock
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #48
+	ret
+	.globl	_silica_rt_actor_fail_current
+	.p2align	2
+_silica_rt_actor_fail_current:
+; X0 = the current actor's ACB, X1 = reason atom. Ends the actor with (:explicit, atom): wakes its
+; waiters, delivers the exit to its supervisor, frees what it owns and exits the thread. Runs on the
+; signal alt stack (stack exhaustion) or on the actor stack (a spawn whose reservation failed).
+	stp	x29, x30, [sp, #-48]!
+	mov	x29, sp
+	stp	x19, x20, [sp, #16]
+	str	x21, [sp, #32]
+	mov	x19, x0
+	str	x1, [x19, #496]
+; Move onto the thread's alt stack (its top; nothing there is needed again) so the actor stack
+; this may be running on can be unmapped below. On the exhaustion path we are already there.
+	ldr	x9, [x19, #464]
+	cbz	x9, Lafc_on_stack
+	mov	x10, #65536
+	add	x9, x9, x10
+	mov	sp, x9
+Lafc_on_stack:
+	add	x0, x19, #16
+	bl	_os_unfair_lock_lock
+	mov	x8, #4
+	str	x8, [x19, #336]
+	str	wzr, [x19, #152]
+	add	x0, x19, #80
+	bl	_silica_rt_cv_signal
+	add	x0, x19, #16
+	bl	_os_unfair_lock_unlock
+	ldr	x8, [x19, #272]
+	cbnz	x8, Lafc_report_done
+	mov	x0, x19
+	bl	_silica_rt_actor_deliver_exit
+	mov	x0, x19
+	bl	_silica_rt_actor_deliver_unwind_report
+Lafc_report_done:
+	mov	x0, x19
+	bl	_silica_rt_actor_signal_pending_call_deaths
+	ldr	x20, [x19, #208]
+	ldr	x21, [x19, #192]
+	mov	x0, x19
+	mov	x1, #1
+	bl	_silica_rt_actor_stack_free
+	cbz	x21, Lafc_thread_exit
+	mov	x0, x19
+	bl	_silica_rt_ffi_arena_teardown
+	mov	x0, x19
+	bl	_silica_rt_child_table_free
+	mov	x0, x19
+	bl	_silica_rt_actor_dealloc_region
+	mov	x0, x19
+	bl	_free
+	cbz	x20, Lafc_thread_exit
+	mov	x9, #1
+	str	x9, [x20, #56]
+Lafc_thread_exit:
+	mov	x0, xzr
+	bl	_pthread_exit
+	b	Lafc_thread_exit
+	.globl	_silica_rt_spawn_reserve_failed
+	.p2align	2
+_silica_rt_spawn_reserve_failed:
+; A spawn could not make its reservation. The spawning actor fails with
+; (:explicit, :stack_reserve_failed); `main` is not an actor, so there it is reported and the
+; program exits, as for any failure in non-actor code. Never returns.
+	stp	x29, x30, [sp, #-16]!
+	mov	x29, sp
+	bl	_silica_rt_tls_current_actor_get
+	cbz	x0, Lsrf_main
+	adrp	x8, _silica_rt_stack_reserve_failed_atom@PAGE
+	add	x8, x8, _silica_rt_stack_reserve_failed_atom@PAGEOFF
+	ldr	x1, [x8]
+	bl	_silica_rt_actor_fail_current
+Lsrf_main:
+	mov	w0, #2
+	adrp	x1, L_srt_reserve_failed_msg@PAGE
+	add	x1, x1, L_srt_reserve_failed_msg@PAGEOFF
+	mov	w2, #21
+	bl	_write
+	mov	w0, #1
+	bl	_exit
+	b	Lsrf_main
+	.globl	_silica_rt_get_actor_memory_usage
+	.p2align	2
+_silica_rt_get_actor_memory_usage:
+; X0 = actor_ref -> X0 = heap { reserved, committed, retained, high_water } (bytes; all zero once
+; the actor has ended).
+	stp	x29, x30, [sp, #-32]!
+	mov	x29, sp
+	str	x19, [sp, #16]
+	mov	x19, x0
+	mov	x0, #32
+	bl	_malloc
+	cbz	x0, Lgmu_ret
+	cmp	x19, #4096
+	b.lo	Lgmu_zero
+	ldr	x8, [x19, #384]
+	cbz	x8, Lgmu_zero
+	ldr	x8, [x19, #392]
+	str	x8, [x0]
+	ldr	x8, [x19, #400]
+	str	x8, [x0, #8]
+	ldr	x8, [x19, #432]
+	str	x8, [x0, #16]
+	ldr	x8, [x19, #408]
+	str	x8, [x0, #24]
+	b	Lgmu_ret
+Lgmu_zero:
+	str	xzr, [x0]
+	str	xzr, [x0, #8]
+	str	xzr, [x0, #16]
+	str	xzr, [x0, #24]
+Lgmu_ret:
+	ldr	x19, [sp, #16]
+	ldp	x29, x30, [sp], #32
+	ret
 

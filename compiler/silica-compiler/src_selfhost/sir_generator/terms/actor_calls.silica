@@ -35,11 +35,12 @@ use type_checker_core;
 
 export is_actor_sir_builtin/1;
 export actor_call_second_arg/1;
-export build_spawn_prim/4;
-export build_spawn_dangerous_prim/4;
-export build_spawn_registered_prim/3;
-export build_spawn_dangerous_registered_prim/3;
-export build_spawn_registered_supervisor_prim/3;
+export build_spawn_prim/5;
+export build_spawn_dangerous_prim/5;
+export build_spawn_registered_prim/6;
+export build_spawn_dangerous_registered_prim/6;
+export build_spawn_registered_supervisor_prim/6;
+export build_stack_policy_prim/2;
 export build_spawn_linked_prim/5;
 export build_send_prim/2;
 export build_actor_call_prim/3;
@@ -116,6 +117,7 @@ fn is_actor_sir_builtin(name: string) -> boolean {
         or base == "get_core_capabilities"
         or base == "get_actor_memory_usage"
         or base == "migrate_actor" or base == "move"
+        or base == "stack_policy"
 }
 
 // SIR text type field for runtime helper return (mirrors type_checker_expressions@actor_runtime_builtin_return_type).
@@ -136,7 +138,7 @@ fn actor_runtime_sir_return_type(name: string) -> string {
         "get_efficiency_cores" -> "List[int64,normal]";
         "get_performance_cores" -> "List[int64,normal]";
         "get_core_capabilities" -> "{ id: int64, core_type: atom, capabilities: List[string,normal], frequency_mhz: int64 }";
-        "get_actor_memory_usage" -> "i64";
+        "get_actor_memory_usage" -> "{ reserved: int64, committed: int64, retained: int64, high_water: int64 }";
         "migrate_actor" -> "atom";
         "move" -> "atom";
         "register_failure_reporter" -> "atom";
@@ -144,43 +146,60 @@ fn actor_runtime_sir_return_type(name: string) -> string {
     }
 }
 
-// spawn / spawn_dangerous: §7.9 — [concurrency]; optional third arg packed as tuple_make(behavior, placement) in the right slot.
-fn build_spawn_named_prim(init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, beh: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, place: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, three_args: boolean, prim_name: string, result_type: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    right_slot: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case three_args of {
-        true -> sir_ast@make_sir_term(6, "unit", "", "tuple_make", beh, place);
-        false -> beh
+// spawn / spawn_dangerous: §7.9 — [concurrency]. The right slot is the flat chain
+// tuple_make(behavior, stack_policy) or tuple_make(behavior, tuple_make(stack_policy, placement)):
+// the emitter reads [beh, policy(, core)] at X10 (§15.1.2.2: the stack policy is required).
+fn build_spawn_named_prim(init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, beh: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, policy: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, place: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, four_args: boolean, prim_name: string, result_type: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    right_slot: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case four_args of {
+        true -> sir_ast@make_sir_term(6, "unit", "", "tuple_make", beh, sir_ast@make_sir_term(6, "unit", "", "tuple_make", policy, place));
+        false -> sir_ast@make_sir_term(6, "unit", "", "tuple_make", beh, policy)
     };
     sir_ast@make_sir_term(6, result_type, "[concurrency]", prim_name, init, right_slot)
 }
 
-fn build_spawn_prim(init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, beh: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, place: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, three_args: boolean) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    build_spawn_named_prim(init, beh, place, three_args, "spawn", "actor_ref")
+fn build_spawn_prim(init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, beh: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, policy: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, place: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, four_args: boolean) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    build_spawn_named_prim(init, beh, policy, place, four_args, "spawn", "actor_ref")
 }
 
-fn build_spawn_dangerous_prim(init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, beh: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, place: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, three_args: boolean) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    build_spawn_named_prim(init, beh, place, three_args, "spawn_dangerous", "dangerous_actor_ref")
+fn build_spawn_dangerous_prim(init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, beh: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, policy: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, place: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, four_args: boolean) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    build_spawn_named_prim(init, beh, policy, place, four_args, "spawn_dangerous", "dangerous_actor_ref")
 }
 
-// spawn_registered / spawn_dangerous_registered: init + tuple_make(behavior_fn_ptr, name_atom) in right slot.
-fn build_spawn_registered_named_prim(init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, beh: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, prim_name: string, result_type: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    packed: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_ast@make_sir_term(6, "unit", "", "tuple_make", beh, name_term);
+// stack_policy(reserve, release) -> stack_policy (§15.1.2.2): a scalar prim, packed by the emitter.
+fn build_stack_policy_prim(reserve: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, release: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    sir_ast@make_sir_term(6, "stack_policy", "", "stack_policy", reserve, release)
+}
+
+// spawn_registered / spawn_dangerous_registered: init + the flat chain [behavior_fn_ptr, name_atom,
+// stack_policy(, core_id)] in the right slot.
+fn build_spawn_registered_named_prim(init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, beh: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, policy: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, place: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, five_args: boolean, prim_name: string, result_type: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    tail: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case five_args of {
+        true -> sir_ast@make_sir_term(6, "unit", "", "tuple_make", name_term, sir_ast@make_sir_term(6, "unit", "", "tuple_make", policy, place));
+        false -> sir_ast@make_sir_term(6, "unit", "", "tuple_make", name_term, policy)
+    };
+    packed: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_ast@make_sir_term(6, "unit", "", "tuple_make", beh, tail);
     sir_ast@make_sir_term(6, result_type, "[concurrency]", prim_name, init, packed)
 }
 
-fn build_spawn_registered_prim(init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, beh: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    build_spawn_registered_named_prim(init, beh, name_term, "spawn_registered", "actor_ref")
+fn build_spawn_registered_prim(init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, beh: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, policy: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, place: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, five_args: boolean) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    build_spawn_registered_named_prim(init, beh, name_term, policy, place, five_args, "spawn_registered", "actor_ref")
 }
 
-fn build_spawn_dangerous_registered_prim(init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, beh: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    build_spawn_registered_named_prim(init, beh, name_term, "spawn_dangerous_registered", "dangerous_actor_ref")
+fn build_spawn_dangerous_registered_prim(init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, beh: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, policy: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, place: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, five_args: boolean) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    build_spawn_registered_named_prim(init, beh, name_term, policy, place, five_args, "spawn_dangerous_registered", "dangerous_actor_ref")
 }
 
 // Phase C: spawn_registered_supervisor(T, initial_state, name) lowers to a runtime-managed
 // supervisor actor. The implementation type is carried in `value` so the emitter can install
 // _silica_supervisor_start_<T> as the first-schedule trampoline; `name` is kept as the right
 // operand for the registration step.
-fn build_spawn_registered_supervisor_prim(supervisor_type: string, init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    sir_ast@make_sir_term(6, "supervisor_ref", concat("[concurrency]|e3b:", supervisor_type), "spawn_registered_supervisor", init, name_term)
+// The right slot is the flat chain [name_atom, stack_policy(, core_id)] (§15.1.2.2).
+fn build_spawn_registered_supervisor_prim(supervisor_type: string, init: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, name_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, policy: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, place: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, five_args: boolean) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    packed: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case five_args of {
+        true -> sir_ast@make_sir_term(6, "unit", "", "tuple_make", name_term, sir_ast@make_sir_term(6, "unit", "", "tuple_make", policy, place));
+        false -> sir_ast@make_sir_term(6, "unit", "", "tuple_make", name_term, policy)
+    };
+    sir_ast@make_sir_term(6, "supervisor_ref", concat("[concurrency]|e3b:", supervisor_type), "spawn_registered_supervisor", init, packed)
 }
 
 // spawn_linked: §15.4.8.3 — same [concurrency] prim shape; name distinguishes runtime (supervisors_implementation_development_plan Phase A).

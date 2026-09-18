@@ -43,18 +43,18 @@ INSTALL_COMPILER_SH := $(BINARIES_DIR)/install_compiler.bash
 INSTALL_SELFHOST ?= 1
 
 # Host toolchain (where this build runs; HOST_UNAME_S comes from emit_target.mk).
-# macOS: clang + Apple ld; main_entry_alias.s supplies _main; the linker flag raises the
-# main-thread stack (lexer/parser recurse over whole files; default 8MB is too small).
+# macOS: clang + Apple ld; main_entry_alias.s supplies _main.
 # Linux (64-bit Raspberry Pi OS / Debian AArch64): cc + GNU ld from build-essential. No entry
-# alias (crt1 calls `main`), -no-pie (emitted data tables hold absolute pointers), and the
-# stack limit is a process setting instead of a link flag: run `ulimit -s unlimited` (or at
-# least 262144) in the shell before running silica-compiler on large units.
+# alias (crt1 calls `main`), -no-pie (emitted data tables hold absolute pointers).
+# Neither host raises the main-thread stack any more: `main` is not an actor and stays on the
+# platform's ordinary stack (spec §15.1.2.2); the compiler's pipeline runs in an actor whose
+# runtime-managed stack grows on demand (main.silica), so no link flag and no `ulimit -s` is needed.
 ifeq ($(HOST_UNAME_S),Darwin)
 ASSEMBLER := clang
 MACOS_MIN_VERSION ?= 26.0
 ASFLAGS_host := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LINKER_CLANG := $(or $(LINKER_CLANG), $(shell test -x /opt/homebrew/opt/llvm/bin/clang && echo "/opt/homebrew/opt/llvm/bin/clang" || echo "clang"))
-LDFLAGS_STACK := -Wl,-stack_size,0x10000000
+LDFLAGS_STACK :=
 HOST_RT_ASM := deviceio_link_thunks.s main_entry_alias.s silica_rt_shim.s
 else
 ASSEMBLER := cc

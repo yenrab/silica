@@ -31,7 +31,7 @@ pointers into frames cannot cross segments, every call pays a limit check, and t
 it abandoned it. The reservation is not a hidden maximum in the sense the earlier text meant: by default
 it exceeds what the machine can commit, and a program only sees a smaller one when it asked for one.
 
-## What the code does today (measured 2026-09-17)
+## What the code did before chunk 1 (measured 2026-09-17, morning)
 
 - `_silica_rt_actor_init_region` maps a 1 GB `PROT_NONE` reservation per actor with 8 MB committed and
   grows it a page at a time in the fault handler (`sbase`/`ssize` in the fault banner). It never shrinks.
@@ -68,6 +68,58 @@ it exceeds what the machine can commit, and a program only sees a smaller one wh
    the process-per-unit loop restarts the compiler hundreds of times per build.
 7. **NUMA.** Node-local commitment and lazy migration (design §4.3, §5.3) only on platforms that report
    NUMA nodes; nothing on the Mac or the Pi.
+
+## Implementation status (2026-09-17, evening; Apple Silicon)
+
+Work items 1 to 6 are implemented; 7 (NUMA) is not applicable on the Mac or the Pi. The runtime is
+`emitter/<target>/terms/prims/prims_actors_stack_asm.silica` on both hosted paths, with the spawn,
+thread-loop, arena and fault-handler changes in `prims_actors_runtime_asm.silica` and
+`ffi_fault_runtime_asm.silica`. The Linux port was written from the Apple module and assembles, but has
+not run on a Pi yet. Decisions the specification leaves open, taken here:
+
+- The runtime is still one OS thread per actor (carriers are chunk 12). The thread keeps a 128 KB
+  pthread stack for the mailbox loop and switches SP onto the reservation for every behavior call and
+  for the supervisor trampoline; because a growth fault happens with SP inside inaccessible memory,
+  every actor thread installs a 64 KB `sigaltstack`, which is given back with the stack on a full release.
+- A release is an anonymous `MAP_FIXED` remap to `PROT_NONE`. On Darwin `madvise(MADV_FREE*)` only
+  re-accounts and `mprotect(PROT_NONE)` keeps the contents; the remap is the one call that returns the
+  pages, and on Linux it also keeps the two mappings merged.
+- The lowest page of every reservation is never committed. Reaching it is the end of the reservation;
+  without it a lowered stack ran straight into whatever mapping sat below (the arena block did).
+- `:keep_last_message` and `:track_recent_peak` measure a message's usage instead of guessing it: the
+  committed run is zero at the start of every message (fresh pages are zero and the runtime zeroes the
+  range the last message used), so the lowest page holding a nonzero word after the behavior returns
+  is that message's depth; the scan touches only the pages about to be released.
+- `:release_when_idle` has no carrier thread to sweep for it: the actor's own mailbox wait carries a
+  one-second timeout while it holds committed stack, and releases on expiry.
+- The implicit heap that `region_alloc` served from a fault-grown 1 GB arena is now a chain of 64 MB
+  anonymous blocks with a bounds-checked bump pointer: no third mapping and no cap.
+- Children started from child specs inherit the spawning supervisor's stack policy; the child-spec
+  record has no policy field in the specification.
+- `stack_policy(reserve, release)` is one word, `(reserve rounded to 16) | algorithm index`, and the
+  release atom must be a literal: atoms are per-executable indices, so the runtime cannot name one.
+- `get_actor_memory_usage` is `proc[concurrency]` in the effect checker, as §22.4 says.
+
+Gate status: deep recursion far past 8 MB, shrink after a message under each algorithm, a lowered
+reservation reporting `(:explicit, :stack_exhausted)`, a reservation that cannot be made
+(`:stack_reserve_failed` on an actor, a reported exit from `main`), and a foreign call from deep inside
+a grown stack are covered by `trials/actor_stacks_addition`, `error_enforcement_addition/stack_policy_*`
+and `ffi_addition/app_foreign_call_from_deep_stack`. "A million idle actors" cannot be reached with one
+OS thread per actor (the host's thread limit, not the stacks, is the bound); the trial spawns a thousand
+with lowered reservations and checks that every one holds zero committed stack. The compiler runs its
+pipeline in an actor (`main.silica`); the 256 MB main stack (Darwin link flag, Linux trampoline) is gone.
+
+Result on 2026-09-18: Apple Silicon fixed point re-established (`make fixpoint`: 336 units emitted
+identically, the compiler binary byte-identical across generations). Note that the compiler now links
+its own actor runtime (`main` spawns the pipeline actor) and that runtime text is emitted by the
+*building* compiler, so an edit to the runtime assembly converges one generation later than an edit to
+compiler code: when `make fixpoint` reports no unit differences but a differing binary, copy the newest
+build to `binaries/silica-gen1` and run `make gen2`, `make fixpoint` again. The whole trial tree passes
+under that compiler except the project-bees defect trials (sd1, sd3, sd8, sd10, sd12, sd15, sd16, sd18,
+sd19), which document open defects unrelated to this chunk. Per-invocation cost of the compiler is
+unchanged (0.05 s warm for a small unit, before and after). Linux AArch64 has the port, builds as a
+cross compiler whose output assembles for `aarch64-linux-gnu`, and has refreshed goldens; it has not
+run on the Pi, so the lock-step fixed point on Linux is still to be re-established there.
 
 ## Insertion points
 

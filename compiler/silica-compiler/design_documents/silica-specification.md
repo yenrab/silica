@@ -1541,7 +1541,8 @@ fn main() -> int64 {
             fn(msg: Response, state: EchoState) -> EchoState {
                 print_string("Received message: ");
                 EchoState { received: state.received + 1 }
-            }
+            },
+            stack_policy(0, :keep_last_message)
         );
     produces
         pure 0
@@ -1572,7 +1573,8 @@ fn main() -> int {
                 produces
                     pure EchoState { received: state.received + msg.result }
                 end
-            }
+            },
+            stack_policy(0, :keep_last_message)
         );
     produces
         pure 0
@@ -3320,13 +3322,13 @@ performance_cores                     // Built-in: high-performance cores
 efficiency_cores                      // Built-in: low-power efficiency cores
 ```
 
-The `spawn()` function accepts **only** a single logical core index for placement: a **`uint64`** value or **`core_id(n)`** with **`n: uint64`**. Use `get_cpu_topology()`, `get_efficiency_cores()`, or `get_performance_cores()` to obtain ids, then pass one id.
+The `spawn()` function accepts **only** a single logical core index for placement, as its fourth argument after the stack policy (§15.1.2.2): a **`uint64`** value or **`core_id(n)`** with **`n: uint64`**. Use `get_cpu_topology()`, `get_efficiency_cores()`, or `get_performance_cores()` to obtain ids, then pass one id.
 
 `core_set`, lists of core ids, `performance_cores`, and `efficiency_cores` are **not** valid as `spawn`'s third argument.
 
 ```silica
-spawn(initial_state, behavior, 0)
-spawn(initial_state, behavior, core_id(0))
+spawn(initial_state, behavior, stack_policy(0, :keep_last_message), 0)
+spawn(initial_state, behavior, stack_policy(0, :keep_last_message), core_id(0))
 ```
 
 The core an actor is spawned on is the core it is pinned to for its whole life, unless the program moves it to another core (see **Actor Pinning Policy**, §15.1.2).
@@ -5014,7 +5016,7 @@ fn complex_operation() -> int {
         print_int(read_ref(ref));
         
         // Statement 3: concurrency
-        actor_ref: actor_ref <- spawn(initial_state, behavior_fn);
+        actor_ref: actor_ref <- spawn(initial_state, behavior_fn, stack_policy(0, :keep_last_message));
         cast(actor_ref, SomeMessage {});
     produces
         pure read_ref(ref)  // Combined: [mem(normal), device_io, concurrency]
@@ -5042,7 +5044,7 @@ fn actor_with_effects() -> actor_ref {
         
         // Spawn actor (concurrency effect)
     produces
-        pure spawn(initial_state, behavior_fn)  // Combined: [mem(normal), device_io, concurrency]
+        pure spawn(initial_state, behavior_fn, stack_policy(0, :keep_last_message))  // Combined: [mem(normal), device_io, concurrency]
     end
 }
 ```
@@ -5462,7 +5464,7 @@ fn create_actor() -> actor_ref {
         print_string("Received")  // Error: device_io effect not declared
         state
     };
-    spawn(initial_state, behavior_fn)
+    spawn(initial_state, behavior_fn, stack_policy(0, :keep_last_message))
 }
 ```
 
@@ -5507,7 +5509,7 @@ fn create_actor() -> actor_ref {
         print_string("Received")
         state
     };
-    spawn(initial_state, behavior_fn)
+    spawn(initial_state, behavior_fn, stack_policy(0, :keep_last_message))
 }
 ```
 
@@ -5627,7 +5629,7 @@ fn nested_example() -> atom {
         end;
         
         // Spawn actor (requires concurrency)
-        actor_ref: actor_ref <- spawn(initial_state, behavior);
+        actor_ref: actor_ref <- spawn(initial_state, behavior, stack_policy(0, :keep_last_message));
         
         // Result includes all effects: mem(normal), device_io, concurrency
     produces
@@ -7519,8 +7521,8 @@ use my_actors;
 
 fn main() -> atom {
     sequence proc[concurrency]
-        counter: actor_ref <- spawn(0, my_actors@counter_handler);
-        logger: actor_ref <- spawn(0, my_actors@log_handler);
+        counter: actor_ref <- spawn(0, my_actors@counter_handler, stack_policy(0, :keep_last_message));
+        logger: actor_ref <- spawn(0, my_actors@log_handler, stack_policy(0, :keep_last_message));
     produces pure :ok end
 }
 ```
@@ -7652,7 +7654,7 @@ Every actor is **pinned** to a core from the moment it is spawned until it termi
 
 `get_actor_memory_usage` reports the retained amount an algorithm currently holds (below).
 
-Spawn calls elsewhere in this specification that show no stack policy were written before the policy became a required argument; they are updated together with the compiler in chunk 1 of the roadmap.
+Every spawn example in this specification names its stack policy; the process-execution `spawn(process)` of §11 is a different construct and takes none.
 
 **Stack Policy at Spawn**: Every spawn form takes a stack policy as its last required argument, before the optional core id. There is no spawn without one: the program states, for every actor, how its stack is reserved and released, which is the nothing-hidden rule applied to memory.
 
@@ -8005,7 +8007,7 @@ When an actor is spawned with core affinity:
 
 ```silica
 // Pin actor to a specific logical core (uint64 id from topology)
-actor_ref: actor_ref <- spawn(initial_state, behavior, core_id(0))
+actor_ref: actor_ref <- spawn(initial_state, behavior, stack_policy(0, :keep_last_message), core_id(0))
 ```
 
 The runtime:
@@ -8333,7 +8335,7 @@ NUMA placement happens at exactly two kinds of moment:
 
 ```silica
 // Actor with data on NUMA node 0
-actor_ref: actor_ref <- spawn(initial_state, behavior_fn);
+actor_ref: actor_ref <- spawn(initial_state, behavior_fn, stack_policy(0, :keep_last_message));
 
 // Data region allocated on NUMA node 0
 sequence proc[mem(normal)]
@@ -8350,7 +8352,7 @@ migrate_actor(actor_ref, target_core_in_numa_0);  // Same NUMA, fast migration
 
 ```silica
 // Actor with data on NUMA node 0
-actor_ref: actor_ref <- spawn(initial_state, behavior_fn);
+actor_ref: actor_ref <- spawn(initial_state, behavior_fn, stack_policy(0, :keep_last_message));
 
 // Data region allocated on NUMA node 0
 sequence proc[mem(normal)]
@@ -8374,7 +8376,7 @@ sequence proc[mem(normal), concurrency]
     r: region(R, normal) <- alloc_region_on_numa(normal, numa_node_0);
     
     // Spawn actor - runtime places on core in NUMA node 0
-    actor_ref: actor_ref <- spawn(initial_state, behavior_fn);
+    actor_ref: actor_ref <- spawn(initial_state, behavior_fn, stack_policy(0, :keep_last_message));
     // Actor automatically placed on NUMA node 0 core (optimal)
 produces pure ()
 end
@@ -8576,7 +8578,7 @@ Actor state is private and can only be modified by the actor itself:
 
 ```
 // External code cannot access or modify actor state
-actor_ref: actor_ref <- spawn(0, counter)
+actor_ref: actor_ref <- spawn(0, counter, stack_policy(0, :keep_last_message))
 // No way to read or write the counter value directly
 ```
 
@@ -8601,8 +8603,8 @@ fn fragile_behavior(msg: string, state: unit) -> atom proc[concurrency] {
 Actor failures don't affect other actors:
 
 ```
-actor1: actor_ref <- spawn((), fragile_behavior)
-actor2: actor_ref <- spawn((), robust_behavior)
+actor1: actor_ref <- spawn((), fragile_behavior, stack_policy(0, :keep_last_message))
+actor2: actor_ref <- spawn((), robust_behavior, stack_policy(0, :keep_last_message))
 
 cast(actor1, "quit")    // actor1 terminates
 cast(actor2, "ping")    // actor2 continues normally
@@ -9649,7 +9651,7 @@ All timeouts use the monotonic clock (§22.14). A timeout fires no earlier than 
 #### 15.5.6 Starting, Supervision and Calling
 
 ```
-spawn_state_machine(state_machine_impl_type, initial_state [, core_id]) -> actor_ref   proc[concurrency]
+spawn_state_machine(state_machine_impl_type, initial_state, stack_policy [, core_id]) -> actor_ref   proc[concurrency]
 state_machine_behavior(state_machine_impl_type)                                          -- compile time
 ```
 
@@ -9802,7 +9804,7 @@ An actor is considered terminated when:
 
 ```silica
 // Actor A casts a message to Actor B
-actor_b_ref: actor_ref <- spawn(initial_state, behavior_fn);
+actor_b_ref: actor_ref <- spawn(initial_state, behavior_fn, stack_policy(0, :keep_last_message));
 
 // Actor B terminates (for any reason)
 // ... Actor B terminates ...
@@ -10248,7 +10250,7 @@ fn worker(msg: (:bob, int64), state: int64) -> int64 proc[concurrency] {
 Messages must satisfy `ActorMessage` through an **in-place** postfix on the operand (§3.3, §16.3.2) **or** a type-level `impl ConcreteType;` registered in `actormessage.silica`:
 
 ```silica
-actor_ref: actor_ref <- spawn(0, handler)
+actor_ref: actor_ref <- spawn(0, handler, stack_policy(0, :keep_last_message))
 cast(actor_ref, { data: 42, reply_to: some_actor } impl ActorMessage {})
 cast(actor_ref, 42 impl ActorMessage {})
 cast(actor, (1, true) impl ActorMessage {})
@@ -14279,7 +14281,7 @@ buffer_capacity(buffer) -> int
 
 #### Spawning Actors
 ```
-spawn(initial_state, behavior [, core_id]) -> actor_ref proc[concurrency]
+spawn(initial_state, behavior, stack_policy [, core_id]) -> actor_ref proc[concurrency]
 ```
 
 Creates a new actor with the given initial state and behavior function. The behavior function has type `(Msg, State) -> (:reply, Reply, State) | (:no_reply, State)`.
@@ -14961,7 +14963,7 @@ When an actor executes guarded FFI, a platform runtime may be able to convert a 
 Supervisors are runtime-managed and are created with `spawn_registered_supervisor`:
 
 ```silica
-sup: supervisor_ref <- spawn_registered_supervisor(MySup, initial_state, :my_sup);
+sup: supervisor_ref <- spawn_registered_supervisor(MySup, initial_state, :my_sup, stack_policy(0, :keep_last_message));
 
 reply: {
     tag: :child_started | :ok | :children | :count | :child_info | :error,

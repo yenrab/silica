@@ -17,9 +17,24 @@
 
 // Main entry: string-only facade. Fat parse/TC/SIR/emit live in dispatchers
 // (see thin_dispatchers_for_compile_ram.md).
+//
+// `main` is not an actor and runs on the platform's ordinary stack (spec §15.1.2.2), so it does
+// no compiling itself: it spawns one actor that holds the whole pipeline on a runtime-managed
+// stack, which grows as far as the lexer, parser and type checker recurse, and calls it. The
+// reply is the driver's exit code (75 between units in a process-per-unit batch).
 
 use main_driver;
 
+fn compile_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
+    code: int64 <- main_driver@run();
+    (:reply, code, state)
+}
+
 fn main() -> int64 {
-    main_driver@run()
+    sequence proc[concurrency]
+        pipeline: actor_ref <- spawn(0, compile_beh, stack_policy(0, :keep_high_water));
+        code: int64 <- call(pipeline, 0 impl ActorMessage {})
+    produces
+        pure code
+    end
 }
