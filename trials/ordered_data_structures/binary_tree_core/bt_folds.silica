@@ -1,0 +1,185 @@
+// binary_tree_trait.md §12 and persistent_binary_tree.md §10: fold_preorder visits node, left,
+// right; fold_inorder left, node, right; fold_postorder left, right, node. Every logical
+// occurrence is visited once, the callback receives a root-first path snapshot, the empty tree
+// returns the initial accumulator, and a physically shared subtree is visited (and counted) once
+// per occurrence. Fixtures: 1(2(4, 5), 3(6, 7)); left and right spines 1..5; 1(S, S) with
+// S = 2(4, 5).
+
+use tree_binary;
+use bt_trial_i64;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+
+fn complete_orders() -> boolean {
+    sequence
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@complete7();
+        pre_ok: boolean <- bt_trial_i64@seq_pre(t) == 1245367;
+        in_ok: boolean <- bt_trial_i64@seq_in(t) == 4251637;
+        post_ok: boolean <- bt_trial_i64@seq_post(t) == 4526731;
+        paths_ok: boolean <- bt_trial_i64@paths_pre(t) == 69 and bt_trial_i64@depth_sum_pre(t) == 10
+            and bt_trial_i64@sum_of(t) == 28
+    produces
+        pure pre_ok and in_ok and post_ok and paths_ok
+    end
+}
+
+// Left spine 1..5: paths 0, 1, 11, 111, 1111 (sum 1234); right spine: 0, 2, 22, 222, 2222 (2468).
+fn spines() -> boolean {
+    sequence
+        l: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@left_spine(5);
+        r: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@right_spine(5);
+        l_ok: boolean <- bt_trial_i64@seq_pre(l) == 12345 and bt_trial_i64@seq_in(l) == 54321 and bt_trial_i64@seq_post(l) == 54321
+            and bt_trial_i64@paths_pre(l) == 1234 and bt_trial_i64@depth_sum_pre(l) == 10 and tree_binary@node_count(l) == 5;
+        r_ok: boolean <- bt_trial_i64@seq_pre(r) == 12345 and bt_trial_i64@seq_in(r) == 12345 and bt_trial_i64@seq_post(r) == 54321
+            and bt_trial_i64@paths_pre(r) == 2468 and bt_trial_i64@depth_sum_pre(r) == 10 and tree_binary@node_count(r) == 5;
+        valid_ok: boolean <- bt_trial_i64@valid_count(l, 5) and bt_trial_i64@valid_count(r, 5)
+    produces
+        pure l_ok and r_ok and valid_ok
+    end
+}
+
+fn trivial() -> boolean {
+    sequence
+        e: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@new_empty();
+        one: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@leaf(9);
+        e_ok: boolean <- bt_trial_i64@seq_pre(e) == 0 and bt_trial_i64@seq_in(e) == 0 and bt_trial_i64@seq_post(e) == 0
+            and bt_trial_i64@sum_of(e) == 0 and bt_trial_i64@paths_pre(e) == 0;
+        one_ok: boolean <- bt_trial_i64@seq_pre(one) == 9 and bt_trial_i64@seq_in(one) == 9 and bt_trial_i64@seq_post(one) == 9
+            and bt_trial_i64@paths_pre(one) == 0 and bt_trial_i64@depth_sum_pre(one) == 0
+    produces
+        pure e_ok and one_ok
+    end
+}
+
+// 1(S, S): S is one physical subtree referenced from both roles; count 1 + 3 + 3 = 7,
+// preorder 1 245 245, inorder 425 1 425, postorder 452 452 1, item sum 1 + 2 * 11 = 23.
+fn shared() -> boolean {
+    sequence
+        four: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@leaf(4);
+        five: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@leaf(5);
+        sub: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@node_of(2, four, five);
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@node_of(1, sub, sub);
+        count_ok: boolean <- tree_binary@node_count(t) == 7 and bt_trial_i64@valid_count(t, 7) and tree_binary@node_count(sub) == 3;
+        order_ok: boolean <- bt_trial_i64@seq_pre(t) == 1245245 and bt_trial_i64@seq_in(t) == 4251425
+            and bt_trial_i64@seq_post(t) == 4524521;
+        paths_ok: boolean <- bt_trial_i64@paths_pre(t) == 69 and bt_trial_i64@sum_of(t) == 23
+            and bt_trial_i64@get_is(t, 12, 5) and bt_trial_i64@get_is(t, 22, 5)
+    produces
+        pure count_ok and order_ok and paths_ok
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@complete7();
+        four: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@leaf(4);
+        five: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@leaf(5);
+        sub: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@node_of(2, four, five);
+        sh: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@node_of(1, sub, sub);
+        pre: int64 <- bt_trial_i64@seq_pre(t);
+        ino: int64 <- bt_trial_i64@seq_in(t);
+        post: int64 <- bt_trial_i64@seq_post(t);
+        sh_pre: int64 <- bt_trial_i64@seq_pre(sh);
+        sh_in: int64 <- bt_trial_i64@seq_in(sh);
+        sh_post: int64 <- bt_trial_i64@seq_post(sh);
+        co: boolean <- complete_orders();
+        sp: boolean <- spines();
+        tr: boolean <- trivial();
+        shd: boolean <- shared();
+        println("preorder");
+        print_int64(pre);
+        println("");
+        println("inorder");
+        print_int64(ino);
+        println("");
+        println("postorder");
+        print_int64(post);
+        println("");
+        println("shared_preorder");
+        print_int64(sh_pre);
+        println("");
+        println("shared_inorder");
+        print_int64(sh_in);
+        println("");
+        println("shared_postorder");
+        print_int64(sh_post);
+        println("")
+    produces
+        pure pick(co, 1, pick(sp, 2, pick(tr, 3, pick(shd, 4, 0))))
+    end
+}

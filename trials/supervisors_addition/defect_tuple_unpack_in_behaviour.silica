@@ -1,0 +1,104 @@
+// Documented open defect (2026-09-18, found while writing docs/learn-programming.md): unpacking a
+// helper's (atom, int64) result with (status: atom, value: int64) <- ... INSIDE an actor behaviour
+// exits the process with status 70 on the path that uses `value`; the same code in main prints 20.
+// Expected output: "cannot divide by zero", then 20, then exit 0.
+use Supervisor;
+
+impl DivSup for Supervisor;
+
+fn divide_ok(x: int64, y: int64) -> (atom, int64) {
+    quotient: int64 <- x / y;
+    (:ok, quotient)
+}
+
+fn safe_divide(x: int64, y: int64) -> (atom, int64) {
+    case y == 0 of {
+        true -> (:error, 0);
+        false -> divide_ok(x, y)
+    }
+}
+
+fn print_answer(n: int64) -> atom {
+    sequence proc[device_io]
+        _: atom <- print_int64(n);
+        println("")
+    produces
+        pure :ok
+    end
+}
+
+fn careful_divider(msg: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        (status: atom, value: int64) <- safe_divide(100, msg);
+        _: atom <- case status of {
+            :ok -> print_answer(value);
+            :error -> println("cannot divide by zero");
+            _: atom -> println("unexpected")
+        }
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: int64, state: int64) -> (:no_reply, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+        {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:no_reply, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :divider,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: careful_divider,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        _: supervisor_ref <- spawn_registered_supervisor(DivSup, 0, :divsup, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_registered(:divider, 0 impl ActorMessage {});
+        _: boolean <- cast_registered(:divider, 5 impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

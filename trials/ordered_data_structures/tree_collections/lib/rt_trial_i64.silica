@@ -1,0 +1,730 @@
+// Trial-only int64 helpers for tree_collections: constructors, shape builders, path codes,
+// result checks, and fold-based sequences. Fold callbacks must be local to the module that passes
+// them, so every fold-based check lives here. Items are single digits where a fold concatenates
+// them (seq_pre), so the printed traversal reads as the visit order. Path codes are a leading 1
+// followed by the slot digits: root 1, [0] 10, [1, 0] 110, [0, 2] 102 (slots below 10 only).
+//
+// The comparator is the ItemType witness tree_rose resolves at every qualified call; find_first
+// and compare_item are the only operations that call it.
+
+use tree_rose;
+
+export cmp_i64/2;
+export cmp_mod10/2;
+export cmp_other/2;
+export new_tree/1;
+export new_tree_mod10/1;
+export new_tree_other/1;
+export add/3;
+export add_slot/3;
+export add_sub/3;
+export add_sub_slot/3;
+export add_sub_compatible/3;
+export remove/3;
+export remove_count/3;
+export replace/3;
+export replace_ok/3;
+export path_chain/1;
+export path_code/1;
+export found_is/2;
+export is_not_found/1;
+export get_is/3;
+export get_missing/2;
+export child_is/4;
+export child_missing/3;
+export child_path_code/3;
+export child_count_of/2;
+export slot_count_of/2;
+export seq_pre/1;
+export sum_of/1;
+export count_visited/1;
+export paths_pre/1;
+export depth_sum/1;
+export ascending_tail/1;
+export find_code/2;
+export find_value/2;
+export valid_count/2;
+export error_code_of/1;
+export chain/1;
+export fan/1;
+export gets_match/2;
+export tree_1_2_4_5_3/0;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+// Items are equal when their last decimal digits agree (comparator equality is tree identity).
+fn cmp_mod10(a: int64, b: int64) -> :less | :equal | :greater {
+    cmp_i64(a - (a / 10) * 10, b - (b / 10) * 10)
+}
+
+// A second comparator symbol: behaviourally cmp_i64, a different ordering identity.
+fn cmp_other(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn new_tree(item: int64) -> {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    tree_rose@with_root({ compare_item: cmp_i64 }, item)
+}
+
+fn new_tree_mod10(item: int64) -> {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    tree_rose@with_root({ compare_item: cmp_mod10 }, item)
+}
+
+fn new_tree_other(item: int64) -> {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    tree_rose@with_root({ compare_item: cmp_other }, item)
+}
+
+// add_leaf's tree (the old tree when the parent is missing).
+fn add(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], item: int64) -> {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    r: { tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, added: boolean, child_slot: int64 } <- tree_rose@add_leaf(tree, path, item);
+    r.tree
+}
+
+// add_leaf's slot, -1 when nothing was added.
+fn add_slot(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], item: int64) -> int64 {
+    r: { tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, added: boolean, child_slot: int64 } <- tree_rose@add_leaf(tree, path, item);
+    case r.added of {
+        true -> r.child_slot;
+        false -> -1
+    }
+}
+
+fn add_sub(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], sub: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    r: { tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, added: boolean, child_slot: int64, compatible: boolean } <- tree_rose@add_subtree(tree, path, sub);
+    r.tree
+}
+
+fn add_sub_slot(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], sub: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> int64 {
+    r: { tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, added: boolean, child_slot: int64, compatible: boolean } <- tree_rose@add_subtree(tree, path, sub);
+    case r.added of {
+        true -> r.child_slot;
+        false -> -1
+    }
+}
+
+fn add_sub_compatible(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], sub: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> boolean {
+    r: { tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, added: boolean, child_slot: int64, compatible: boolean } <- tree_rose@add_subtree(tree, path, sub);
+    r.compatible
+}
+
+fn remove(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], slot: int64) -> {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    r: { tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, removed: boolean, removed_node_count: int64 } <- tree_rose@remove_child(tree, path, slot);
+    r.tree
+}
+
+// remove_child's removed node count, -1 when nothing was removed.
+fn remove_count(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], slot: int64) -> int64 {
+    r: { tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, removed: boolean, removed_node_count: int64 } <- tree_rose@remove_child(tree, path, slot);
+    case r.removed of {
+        true -> r.removed_node_count;
+        false -> -1
+    }
+}
+
+fn replace(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], item: int64) -> {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    r: { tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, changed: boolean } <- tree_rose@replace_item(tree, path, item);
+    r.tree
+}
+
+fn replace_ok(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], item: int64) -> boolean {
+    r: { tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, changed: boolean } <- tree_rose@replace_item(tree, path, item);
+    r.changed
+}
+
+// The path of `depth` zero slots (the spine of a chain).
+fn path_chain(depth: int64) -> List[int64, mem(normal)] {
+    case depth <= 0 of {
+        true -> tree_rose@path_root();
+        false -> tree_rose@path_with(path_chain(depth - 1), 0)
+    }
+}
+
+fn path_code_go(path: List[int64, mem(normal)], acc: int64) -> int64 {
+    case path.is_nil of {
+        true -> acc;
+        false -> path_code_go(path.tail, acc * 10 + path.head)
+    }
+}
+
+fn path_code(path: List[int64, mem(normal)]) -> int64 {
+    path_code_go(path, 1)
+}
+
+fn found_is(res: { status: :not_found | :found, value: int64 }, expected: int64) -> boolean {
+    case res.status of {
+        :found -> res.value == expected;
+        :not_found -> false
+    }
+}
+
+fn is_not_found(res: { status: :not_found | :found, value: int64 }) -> boolean {
+    case res.status of {
+        :found -> false;
+        :not_found -> true
+    }
+}
+
+fn get_is(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], expected: int64) -> boolean {
+    found_is(tree_rose@get(tree, path, 0), expected)
+}
+
+fn get_missing(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)]) -> boolean {
+    is_not_found(tree_rose@get(tree, path, 0))
+}
+
+fn child_is(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], slot: int64, expected: int64) -> boolean {
+    r: { status: :not_found | :found, value: int64, child_path: List[int64, mem(normal)] } <- tree_rose@child_at(tree, path, slot, 0);
+    case r.status of {
+        :found -> r.value == expected;
+        :not_found -> false
+    }
+}
+
+fn child_missing(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], slot: int64) -> boolean {
+    r: { status: :not_found | :found, value: int64, child_path: List[int64, mem(normal)] } <- tree_rose@child_at(tree, path, slot, 0);
+    case r.status of {
+        :found -> false;
+        :not_found -> true
+    }
+}
+
+// The code of child_at's child_path, -1 when the child is missing.
+fn child_path_code(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)], slot: int64) -> int64 {
+    r: { status: :not_found | :found, value: int64, child_path: List[int64, mem(normal)] } <- tree_rose@child_at(tree, path, slot, 0);
+    case r.status of {
+        :found -> path_code(r.child_path);
+        :not_found -> -1
+    }
+}
+
+// child_count at a path, -1 when the path is missing.
+fn child_count_of(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)]) -> int64 {
+    r: { status: :not_found | :found, count: int64 } <- tree_rose@child_count(tree, path);
+    case r.status of {
+        :found -> r.count;
+        :not_found -> -1
+    }
+}
+
+fn slot_count_of(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, path: List[int64, mem(normal)]) -> int64 {
+    r: { status: :not_found | :found, count: int64 } <- tree_rose@child_slot_count(tree, path);
+    case r.status of {
+        :found -> r.count;
+        :not_found -> -1
+    }
+}
+
+// Single-digit items concatenated in visit order: 1(2, 3) in preorder is 123.
+fn digit_step(acc: int64, _: List[int64, mem(normal)], item: int64) -> int64 {
+    acc * 10 + item
+}
+
+fn seq_pre(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> int64 {
+    tree_rose@fold_preorder(tree, 0, digit_step)
+}
+
+fn sum_step(acc: int64, _: List[int64, mem(normal)], item: int64) -> int64 {
+    acc + item
+}
+
+fn sum_of(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> int64 {
+    tree_rose@fold_preorder(tree, 0, sum_step)
+}
+
+fn count_step(acc: int64, _: List[int64, mem(normal)], _: int64) -> int64 {
+    acc + 1
+}
+
+fn count_visited(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> int64 {
+    tree_rose@fold_preorder(tree, 0, count_step)
+}
+
+// Sum of the path codes handed to a preorder fold.
+fn path_code_step(acc: int64, path: List[int64, mem(normal)], _: int64) -> int64 {
+    acc + path_code(path)
+}
+
+fn paths_pre(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> int64 {
+    tree_rose@fold_preorder(tree, 0, path_code_step)
+}
+
+// Sum over every visited node of its depth (the length of the path handed to the callback).
+fn depth_step(acc: int64, path: List[int64, mem(normal)], _: int64) -> int64 {
+    acc + tree_rose@path_length(path)
+}
+
+fn depth_sum(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> int64 {
+    tree_rose@fold_preorder(tree, 0, depth_step)
+}
+
+// The last item when the (non-negative) preorder items strictly ascend, -1 as soon as one does
+// not; -2 is the not-started accumulator.
+fn ascending_step(acc: int64, _: List[int64, mem(normal)], item: int64) -> int64 {
+    case acc == -2 of {
+        true -> item;
+        false -> case acc == -1 of {
+            true -> -1;
+            false -> case item > acc of {
+                true -> item;
+                false -> -1
+            }
+        }
+    }
+}
+
+fn ascending_tail(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> int64 {
+    tree_rose@fold_preorder(tree, -2, ascending_step)
+}
+
+// find_first's path code, -1 when not found.
+fn find_code(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, item: int64) -> int64 {
+    r: { status: :not_found | :found, value: int64, path: List[int64, mem(normal)] } <- tree_rose@find_first(tree, item, 0);
+    case r.status of {
+        :found -> path_code(r.path);
+        :not_found -> -1
+    }
+}
+
+fn find_value(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, item: int64) -> int64 {
+    r: { status: :not_found | :found, value: int64, path: List[int64, mem(normal)] } <- tree_rose@find_first(tree, item, 0);
+    case r.status of {
+        :found -> r.value;
+        :not_found -> -1
+    }
+}
+
+fn valid_count(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, n: int64) -> boolean {
+    v: { valid: boolean, error: atom, logical_count: int64 } <- tree_rose@validate(tree);
+    case v.valid of {
+        false -> false;
+        true -> v.logical_count == n
+    }
+}
+
+// validate's error atoms are decoded by the unit that creates them (atoms are numbered per unit).
+fn error_code_of(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }) -> int64 {
+    v: { valid: boolean, error: atom, logical_count: int64 } <- tree_rose@validate(tree);
+    tree_rose@validate_error_code(v.error)
+}
+
+fn chain_go(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, i: int64, n: int64, depth: int64) -> {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    case i > n of {
+        true -> tree;
+        false -> chain_go(add(tree, path_chain(depth), i), i + 1, n, depth + 1)
+    }
+}
+
+// Items 1..n down one spine: root 1, its slot-0 child 2, ..., item i at depth i - 1.
+fn chain(n: int64) -> {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    chain_go(new_tree(1), 2, n, 0)
+}
+
+fn fan_go(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, i: int64, n: int64) -> {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    case i > n of {
+        true -> tree;
+        false -> fan_go(add(tree, tree_rose@path_root(), i), i + 1, n)
+    }
+}
+
+// Root 0 with children 1..n appended in order, so slot s holds s + 1.
+fn fan(n: int64) -> {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    fan_go(new_tree(0), 1, n)
+}
+
+fn gets_match_go(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, i: int64, n: int64) -> boolean {
+    case i >= n of {
+        true -> true;
+        false -> case get_is(tree, tree_rose@path_with(tree_rose@path_root(), i), i + 1) of {
+            false -> false;
+            true -> gets_match_go(tree, i + 1, n)
+        }
+    }
+}
+
+// Every root slot s in [0, n) holds s + 1 (a fan that lost no child).
+fn gets_match(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }, n: int64) -> boolean {
+    gets_match_go(tree, 0, n)
+}
+
+// 1(2(4, 5), 3): slots 0 and 1 at the root, slots 0 and 1 under 2. Preorder 12453.
+fn tree_1_2_4_5_3() -> {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } {
+    sequence proc[mem(normal)]
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        pa: List[int64, mem(normal)] <- [0];
+        t1: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } <- new_tree(1);
+        t2: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } <- add(t1, p0, 2);
+        t3: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } <- add(t2, p0, 3);
+        t4: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } <- add(t3, pa, 4);
+        t5: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    } <- add(t4, pa, 5)
+    produces
+        pure t5
+    end
+}

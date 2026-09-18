@@ -1,0 +1,66 @@
+use Supervisor;
+use adder;
+
+impl AdderSupervisor for Supervisor;
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: (int64, int64), state: int64) -> (:no_reply, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: (int64, int64), state: int64) -> (:no_reply, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :adder,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: adder@add_and_print,  // the mother gives birth to her calf, and will watch over it from now on
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        _: supervisor_ref <- spawn_registered_supervisor(AdderSupervisor, 0, :adder_supervisor, stack_policy(0, :keep_last_message));  // the elephant mother arrives, ready to have her calf
+        _: boolean <- cast_registered(:adder, (2, 3) impl ActorMessage {});  // something in the world nudges the calf: "here are two numbers"
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

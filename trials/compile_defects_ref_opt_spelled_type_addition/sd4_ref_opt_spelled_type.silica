@@ -1,0 +1,20 @@
+// SD-4: the optional-reference type with its tuple type spelled out,
+// ref?(L, normal, (atom, int64, ref?(L, normal, rec))), is not treated as equal to
+// ref?(L, normal, rec): passing such a field to alloc_rec is E2003 ("field has type
+// ref?(L,normal,(atom,...)), expected ref?(L, normal, rec)"), and storing a ref into such a
+// field is E2003 ("type mismatch"). The recursive-tuple specification (§2.2, §3) allows the
+// spelled form. Workaround: write every optional recursive reference as ref?(L, normal, rec).
+fn beh(msg: int64, state: { r: region(L, normal), root: ref?(L, normal, (atom, int64, ref?(L, normal, rec))) }) -> (:no_reply, { r: region(L, normal), root: ref?(L, normal, (atom, int64, ref?(L, normal, rec))) }) {
+    sequence proc[mem(normal)]
+        cell: ref(L, normal, (atom, int64, ref?(L, normal, rec))) <- alloc_rec(state.r, (:ok, msg, state.root))
+    produces pure (:no_reply, { r: state.r, root: :none }) end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        r: region(L, normal) <- alloc_region(normal);
+        a: actor_ref <- spawn({ r: r, root: :none }, beh, stack_policy(0, :keep_last_message));
+        _: boolean <- cast(a, 5 impl ActorMessage {})
+    produces pure 0 end
+}

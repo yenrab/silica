@@ -1,0 +1,39 @@
+// SD-14 (runtime part): float64 parameters do not survive a sequence binding or a call.
+// b3(1.5, 2.0) should print 5.0 and prints 4.5 (y read as x after the first bind); b4(1.5)
+// should print 3.0 and prints 4.0 (x overwritten by the call's D0 result). b1 and b2, single
+// expressions, are right. Silica's own case_float_compare_params trial records the same class.
+// The compile-time part: a float literal in a case arm of a non-main function is emitted as
+// `L_f64_-1` (assembler: local symbol not defined), and an int64 comparison inside a sequence of
+// a float64-returning function is emitted as `MOV X9, D0` (assembler: invalid operand); see the
+// S5 spike note for the sources.
+fn two() -> float64 { 2.0 }
+fn b1(x: float64) -> float64 {
+    x * two()
+}
+fn b2(x: float64) -> float64 {
+    x * 2.0
+}
+fn b3(x: float64, y: float64) -> float64 {
+    sequence
+        p: float64 <- x * y;
+        q: float64 <- p + y
+    produces pure q end
+}
+fn b4(x: float64) -> float64 {
+    sequence
+        t: float64 <- two();
+        r: float64 <- x * t
+    produces pure r end
+}
+fn main() -> int64 {
+    sequence proc[device_io]
+        _: atom <- print_float64(b1(1.5));
+        println("");
+        _: atom <- print_float64(b2(1.5));
+        println("");
+        _: atom <- print_float64(b3(1.5, 2.0));
+        println("");
+        _: atom <- print_float64(b4(1.5));
+        println("")
+    produces pure 0 end
+}

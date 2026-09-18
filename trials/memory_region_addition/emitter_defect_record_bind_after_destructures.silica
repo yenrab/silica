@@ -1,0 +1,147 @@
+// Staged emitter repro (2026-09-18, binaries/silica-compiler = the fixed point of that date),
+// found while writing binary_tree_core/bt_validate (count_cases). No trial covers it yet because
+// the fix is a compiler change; the trial keeps its sequences short instead.
+//
+// Defect: in a sequence that destructures six (region, ref?) pairs, binding a record whose fields
+// include a function value (`t <- record_of(r, big)`, a { root, compare_item, region, key }
+// record) AFTER the destructures clobbers the second destructured ref (`zero`): ref_in_region then
+// reports it outside its own arena. `without_record` is the same sequence minus the `t` binding.
+// Expected output: 1111 and 1111. Observed: 1011 and 1111 (the zero line of with_record is 0).
+// The trial hit it as validate reporting :wrong_arena (code 2) for a node it had just allocated.
+//
+// Documented open emitter defect (2026-09-18); this trial fails until the emitter is fixed. Origin: ordered_data_structures/binary_tree_core/staged. To run by hand:
+//   mkdir -p /tmp/rb && cp <this file> /tmp/rb/m.silica && cd /tmp/rb && echo m.silica > silica.config
+//   /Volumes/2T/silica/binaries/silica-compiler
+//   clang -mmacosx-version-min=26.0 -c -x assembler m.sams -o m.o
+//   clang -mmacosx-version-min=26.0 -c -x assembler __silica_runtime.sams -o rt.o
+//   clang m.o rt.o -o m -Wl,-e,main -Wl,-macos_version_min,26.0 && ./m
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn cell(
+    r: region(L, normal),
+    v: int64,
+    count: int64,
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> (region(L, normal), ref?(L, normal, rec)) {
+    sequence proc[mem(normal)]
+        c: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) <- alloc_rec(r, (v, count, left, right))
+    produces
+        pure (r, c)
+    end
+}
+
+fn inside_ref(
+    holder: { region: region(L, normal), key: int64 },
+    node_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> int64 {
+    sequence
+        ok: boolean <- ref_in_region(node_ref, holder.region)
+    produces
+        pure case ok of { true -> 1; false -> 0 }
+    end
+}
+
+fn inside(r: region(L, normal), node: ref?(L, normal, rec)) -> int64 {
+    holder: { region: region(L, normal), key: int64 } <- { region: r, key: 0 };
+    case node of {
+        :none -> 9;
+        node_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> inside_ref(holder, node_ref)
+    }
+}
+
+fn record_of(
+    r: region(L, normal),
+    root: ref?(L, normal, rec)
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    out: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    } <- { root: root, compare_item: cmp_i64, region: r, specialization_key: 0 };
+    out
+}
+
+fn with_record(r: region(L, normal)) -> int64 {
+    sequence
+        neg_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, -5, :none, :none);
+        (_: region(L, normal), neg: ref?(L, normal, rec)) <- neg_p;
+        zero_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, 0, :none, :none);
+        (_: region(L, normal), zero: ref?(L, normal, rec)) <- zero_p;
+        l1_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 2, 1, :none, :none);
+        (_: region(L, normal), l1: ref?(L, normal, rec)) <- l1_p;
+        l2_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 3, 1, :none, :none);
+        (_: region(L, normal), l2: ref?(L, normal, rec)) <- l2_p;
+        big_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, 7, l1, l2);
+        (_: region(L, normal), big: ref?(L, normal, rec)) <- big_p;
+        small_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, 2, l1, l2);
+        (_: region(L, normal), small: ref?(L, normal, rec)) <- small_p;
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- record_of(r, big);
+        a: int64 <- inside(r, neg);
+        b: int64 <- inside(r, zero);
+        c: int64 <- inside(r, big);
+        d: int64 <- inside(t.region, small)
+    produces
+        pure a * 1000 + b * 100 + c * 10 + d
+    end
+}
+
+fn without_record(r: region(L, normal)) -> int64 {
+    sequence
+        neg_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, -5, :none, :none);
+        (_: region(L, normal), neg: ref?(L, normal, rec)) <- neg_p;
+        zero_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, 0, :none, :none);
+        (_: region(L, normal), zero: ref?(L, normal, rec)) <- zero_p;
+        l1_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 2, 1, :none, :none);
+        (_: region(L, normal), l1: ref?(L, normal, rec)) <- l1_p;
+        l2_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 3, 1, :none, :none);
+        (_: region(L, normal), l2: ref?(L, normal, rec)) <- l2_p;
+        big_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, 7, l1, l2);
+        (_: region(L, normal), big: ref?(L, normal, rec)) <- big_p;
+        small_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, 2, l1, l2);
+        (_: region(L, normal), small: ref?(L, normal, rec)) <- small_p;
+        a: int64 <- inside(r, neg);
+        b: int64 <- inside(r, zero);
+        c: int64 <- inside(r, big);
+        d: int64 <- inside(r, small)
+    produces
+        pure a * 1000 + b * 100 + c * 10 + d
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal), device_io]
+        L: lifetime <- fresh_lifetime();
+        r: region(L, normal) <- canonical_arena_lookup(9085);
+        w: int64 <- with_record(r);
+        wo: int64 <- without_record(r);
+        println("with_record (expected 1111)");
+        print_int64(w);
+        println("");
+        println("without_record (expected 1111)");
+        print_int64(wo);
+        println("")
+    produces
+        pure 0
+    end
+}

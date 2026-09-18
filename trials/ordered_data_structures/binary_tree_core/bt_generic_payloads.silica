@@ -1,0 +1,265 @@
+// Overriding genericity rule (common_contract.md §1): ItemType is whatever the programmer declares.
+// String payloads go through with_root/node/get/root_item/replace_item/map/folds/zipper/validate;
+// tuple payloads through with_root/node/get/replace_item/zipper/validate. Folding with a
+// tuple-typed callback parameter is not exercised: the bootstrap emitter miscompiles
+// fn(int64, (int64, int64)) -> int64 callbacks (see skew_ral_core/ral_generic_payloads).
+// r(a, b): preorder "rab", inorder "arb", postorder "abr".
+
+use tree_binary;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+
+fn cmp_str(a: string, b: string) -> :less | :equal | :greater {
+    case a == b of {
+        true -> :equal;
+        false -> :less
+    }
+}
+
+fn cmp_pair(a: (int64, int64), b: (int64, int64)) -> :less | :equal | :greater {
+    (a1: int64, _: int64) <- a;
+    (b1: int64, _: int64) <- b;
+    case a1 < b1 of {
+        true -> :less;
+        false -> case a1 == b1 of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn concat_step(acc: string, _: List[:left | :right, mem(normal)], x: string) -> string {
+    concat(acc, x)
+}
+
+fn bang(x: string) -> string {
+    concat(x, "!")
+}
+
+fn string_is(res: { status: :not_found | :found, value: string }, expected: string) -> boolean {
+    case res.status of {
+        :found -> res.value == expected;
+        :not_found -> false
+    }
+}
+
+fn pair_is(res: { status: :not_found | :found, value: (int64, int64) }, a: int64, b: int64) -> boolean {
+    case res.status of {
+        :found -> {
+            (got_a: int64, got_b: int64) <- res.value;
+            got_a == a and got_b == b
+        };
+        :not_found -> false
+    }
+}
+
+fn string_tree() -> {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } {
+    a: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- tree_binary@with_root({ compare_item: cmp_str }, "a");
+    b: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- tree_binary@with_root({ compare_item: cmp_str }, "b");
+    made: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, compatible: boolean } <- tree_binary@node({ compare_item: cmp_str }, "r", a, b);
+    made.tree
+}
+
+fn strings_ok() -> boolean {
+    sequence
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- string_tree();
+        p0: List[:left | :right, mem(normal)] <- tree_binary@path_root();
+        p1: List[:left | :right, mem(normal)] <- tree_binary@path_left(p0);
+        p2: List[:left | :right, mem(normal)] <- tree_binary@path_right(p0);
+        count_ok: boolean <- tree_binary@node_count(t) == 3;
+        get_ok: boolean <- string_is(tree_binary@get(t, p1, ""), "a") and string_is(tree_binary@get(t, p2, ""), "b")
+            and string_is(tree_binary@root_item(t, ""), "r") and string_is(tree_binary@left_item(t, p0, ""), "a");
+        pre: string <- tree_binary@fold_preorder(t, "", concat_step);
+        ino: string <- tree_binary@fold_inorder(t, "", concat_step);
+        post: string <- tree_binary@fold_postorder(t, "", concat_step);
+        order_ok: boolean <- pre == "rab" and ino == "arb" and post == "abr";
+        rep: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, changed: boolean } <- tree_binary@replace_item(t, p2, "zz");
+        rep_pre: string <- tree_binary@fold_preorder(rep.tree, "", concat_step);
+        old_pre: string <- tree_binary@fold_preorder(t, "", concat_step);
+        rep_ok: boolean <- rep.changed and rep_pre == "razz" and old_pre == "rab";
+        m: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- tree_binary@map_preorder(t, bang);
+        m_pre: string <- tree_binary@fold_preorder(m, "", concat_step);
+        v: { valid: boolean, error: atom, logical_count: int64 } <- tree_binary@validate(rep.tree)
+    produces
+        pure count_ok and get_ok and order_ok and rep_ok and m_pre == "r!a!b!" and v.valid and v.logical_count == 3
+    end
+}
+
+fn strings_zip() -> string {
+    sequence
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- string_tree();
+        o: { status: :not_found | :found, zipper: {
+            focus: ref?(L, normal, rec),
+            breadcrumbs: List[(:from_left | :from_right, string, ref?(L, normal, rec)), mem(normal)],
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } } <- tree_binary@zipper_open(t);
+        d: { status: :not_found | :found, zipper: {
+            focus: ref?(L, normal, rec),
+            breadcrumbs: List[(:from_left | :from_right, string, ref?(L, normal, rec)), mem(normal)],
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } } <- tree_binary@zipper_down_right(o.zipper);
+        z2: {
+            focus: ref?(L, normal, rec),
+            breadcrumbs: List[(:from_left | :from_right, string, ref?(L, normal, rec)), mem(normal)],
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- tree_binary@zipper_replace_item(d.zipper, "q");
+        closed: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- tree_binary@zipper_close(z2)
+    produces
+        pure tree_binary@fold_preorder(closed, "", concat_step)
+    end
+}
+
+fn pairs_ok() -> boolean {
+    sequence
+        a: {
+            root: ref?(L, normal, rec),
+            compare_item: fn((int64, int64), (int64, int64)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- tree_binary@with_root({ compare_item: cmp_pair }, (1, 10));
+        b: {
+            root: ref?(L, normal, rec),
+            compare_item: fn((int64, int64), (int64, int64)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- tree_binary@with_root({ compare_item: cmp_pair }, (2, 20));
+        made: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn((int64, int64), (int64, int64)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, compatible: boolean } <- tree_binary@node({ compare_item: cmp_pair }, (0, 0), a, b);
+        p0: List[:left | :right, mem(normal)] <- tree_binary@path_root();
+        p1: List[:left | :right, mem(normal)] <- tree_binary@path_left(p0);
+        p2: List[:left | :right, mem(normal)] <- tree_binary@path_right(p0);
+        get_ok: boolean <- pair_is(tree_binary@get(made.tree, p2, (0, 0)), 2, 20) and pair_is(tree_binary@root_item(made.tree, (0, 0)), 0, 0)
+            and pair_is(tree_binary@right_item(made.tree, p0, (0, 0)), 2, 20);
+        rep: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn((int64, int64), (int64, int64)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, changed: boolean } <- tree_binary@replace_item(made.tree, p1, (7, 70));
+        rep_ok: boolean <- rep.changed and pair_is(tree_binary@get(rep.tree, p1, (0, 0)), 7, 70)
+            and pair_is(tree_binary@get(made.tree, p1, (0, 0)), 1, 10);
+        o: { status: :not_found | :found, zipper: {
+            focus: ref?(L, normal, rec),
+            breadcrumbs: List[(:from_left | :from_right, (int64, int64), ref?(L, normal, rec)), mem(normal)],
+            compare_item: fn((int64, int64), (int64, int64)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } } <- tree_binary@zipper_open(made.tree);
+        d: { status: :not_found | :found, zipper: {
+            focus: ref?(L, normal, rec),
+            breadcrumbs: List[(:from_left | :from_right, (int64, int64), ref?(L, normal, rec)), mem(normal)],
+            compare_item: fn((int64, int64), (int64, int64)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } } <- tree_binary@zipper_down_left(o.zipper);
+        z2: {
+            focus: ref?(L, normal, rec),
+            breadcrumbs: List[(:from_left | :from_right, (int64, int64), ref?(L, normal, rec)), mem(normal)],
+            compare_item: fn((int64, int64), (int64, int64)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- tree_binary@zipper_replace_item(d.zipper, (9, 90));
+        closed: {
+            root: ref?(L, normal, rec),
+            compare_item: fn((int64, int64), (int64, int64)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- tree_binary@zipper_close(z2);
+        zip_ok: boolean <- pair_is(tree_binary@get(closed, p1, (0, 0)), 9, 90) and pair_is(tree_binary@get(closed, p2, (0, 0)), 2, 20)
+            and tree_binary@node_count(closed) == 3;
+        v: { valid: boolean, error: atom, logical_count: int64 } <- tree_binary@validate(closed)
+    produces
+        pure made.compatible and get_ok and rep_ok and zip_ok and v.valid and v.logical_count == 3
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- string_tree();
+        pre: string <- tree_binary@fold_preorder(t, "", concat_step);
+        ino: string <- tree_binary@fold_inorder(t, "", concat_step);
+        post: string <- tree_binary@fold_postorder(t, "", concat_step);
+        m: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- tree_binary@map_preorder(t, bang);
+        m_pre: string <- tree_binary@fold_preorder(m, "", concat_step);
+        zipped: string <- strings_zip();
+        so: boolean <- strings_ok();
+        po: boolean <- pairs_ok();
+        println(pre);
+        println(ino);
+        println(post);
+        println(m_pre);
+        println(zipped)
+    produces
+        pure pick(so, 1, pick(po, 2, pick(zipped == "raq", 3, 0)))
+    end
+}

@@ -1,0 +1,144 @@
+// binary_tree_trait.md §8–§9 and persistent_binary_tree.md §6–§7: node({..}, item, left, right)
+// shares both child roots; get/left_item/right_item follow fixed left/right roles; a missing path
+// component or an empty selected child is :not_found. Fixture 1(2(4, 5), 3(6, 7)): preorder
+// 1245367, inorder 4251637, postorder 4526731; the preorder path codes 0+1+11+12+2+21+22 = 69.
+
+use tree_binary;
+use bt_trial_i64;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+
+fn shape_queries() -> boolean {
+    sequence
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@complete7();
+        count_ok: boolean <- tree_binary@node_count(t) == 7 and bt_trial_i64@root_is(t, 1);
+        get_ok: boolean <- bt_trial_i64@get_is(t, 0, 1) and bt_trial_i64@get_is(t, 1, 2) and bt_trial_i64@get_is(t, 2, 3)
+            and bt_trial_i64@get_is(t, 11, 4) and bt_trial_i64@get_is(t, 12, 5)
+            and bt_trial_i64@get_is(t, 21, 6) and bt_trial_i64@get_is(t, 22, 7);
+        missing_ok: boolean <- bt_trial_i64@get_missing(t, 111) and bt_trial_i64@get_missing(t, 112)
+            and bt_trial_i64@get_missing(t, 121) and bt_trial_i64@get_missing(t, 211)
+            and bt_trial_i64@get_missing(t, 222) and bt_trial_i64@get_missing(t, 1111);
+        left_ok: boolean <- bt_trial_i64@left_is(t, 0, 2) and bt_trial_i64@left_is(t, 1, 4) and bt_trial_i64@left_is(t, 2, 6);
+        right_ok: boolean <- bt_trial_i64@right_is(t, 0, 3) and bt_trial_i64@right_is(t, 1, 5) and bt_trial_i64@right_is(t, 2, 7);
+        absent_ok: boolean <- bt_trial_i64@left_missing(t, 11) and bt_trial_i64@right_missing(t, 22)
+            and bt_trial_i64@left_missing(t, 111) and bt_trial_i64@right_missing(t, 2222);
+        valid_ok: boolean <- bt_trial_i64@valid_count(t, 7)
+    produces
+        pure count_ok and get_ok and missing_ok and left_ok and right_ok and absent_ok and valid_ok
+    end
+}
+
+// The child trees handed to node stay independently usable (their roots are shared, not moved).
+fn children_stay_independent() -> boolean {
+    sequence
+        l: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@leaf(2);
+        r: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@leaf(3);
+        compat: boolean <- bt_trial_i64@node_compatible(1, l, r);
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@node_of(1, l, r);
+        t_ok: boolean <- tree_binary@node_count(t) == 3 and bt_trial_i64@left_is(t, 0, 2) and bt_trial_i64@right_is(t, 0, 3)
+            and bt_trial_i64@seq_pre(t) == 123;
+        l_ok: boolean <- tree_binary@node_count(l) == 1 and bt_trial_i64@root_is(l, 2) and bt_trial_i64@valid_count(l, 1);
+        r_ok: boolean <- tree_binary@node_count(r) == 1 and bt_trial_i64@root_is(r, 3) and bt_trial_i64@valid_count(r, 1)
+    produces
+        pure compat and t_ok and l_ok and r_ok
+    end
+}
+
+// A node with one empty child keeps the occupied child in its own role.
+fn one_sided() -> boolean {
+    sequence
+        e: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@new_empty();
+        eight: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@leaf(8);
+        lo: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@node_of(9, eight, e);
+        lo_ok: boolean <- tree_binary@node_count(lo) == 2 and bt_trial_i64@left_is(lo, 0, 8) and bt_trial_i64@right_missing(lo, 0)
+            and bt_trial_i64@get_is(lo, 1, 8) and bt_trial_i64@get_missing(lo, 2) and bt_trial_i64@valid_count(lo, 2);
+        ro: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@node_of(9, e, eight);
+        ro_ok: boolean <- tree_binary@node_count(ro) == 2 and bt_trial_i64@right_is(ro, 0, 8) and bt_trial_i64@left_missing(ro, 0)
+            and bt_trial_i64@get_is(ro, 2, 8) and bt_trial_i64@get_missing(ro, 1) and bt_trial_i64@valid_count(ro, 2);
+        seq_ok: boolean <- bt_trial_i64@seq_pre(lo) == 98 and bt_trial_i64@seq_in(lo) == 89 and bt_trial_i64@seq_post(lo) == 89
+            and bt_trial_i64@seq_pre(ro) == 98 and bt_trial_i64@seq_in(ro) == 98 and bt_trial_i64@seq_post(ro) == 89
+    produces
+        pure lo_ok and ro_ok and seq_ok
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@complete7();
+        count: int64 <- tree_binary@node_count(t);
+        pre: int64 <- bt_trial_i64@seq_pre(t);
+        ino: int64 <- bt_trial_i64@seq_in(t);
+        post: int64 <- bt_trial_i64@seq_post(t);
+        paths: int64 <- bt_trial_i64@paths_pre(t);
+        sq: boolean <- shape_queries();
+        ci: boolean <- children_stay_independent();
+        os: boolean <- one_sided();
+        println("count");
+        print_int64(count);
+        println("");
+        println("preorder");
+        print_int64(pre);
+        println("");
+        println("inorder");
+        print_int64(ino);
+        println("");
+        println("postorder");
+        print_int64(post);
+        println("");
+        println("path_code_sum");
+        print_int64(paths);
+        println("")
+    produces
+        pure pick(sq, 1, pick(ci, 2, pick(os, 3, 0)))
+    end
+}

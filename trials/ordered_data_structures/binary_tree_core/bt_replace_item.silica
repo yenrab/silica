@@ -1,0 +1,180 @@
+// binary_tree_trait.md §10 and persistent_binary_tree.md §8: replace_item path-copies the route
+// to the target, keeps the target's children, shares every unselected ancestor child, leaves shape
+// and counts unchanged and the old tree valid; changed = true whenever the path is found (no item
+// equality is consulted, so replacing 1 with 1 still reports changed); a missing path returns the
+// old tree with changed = false. Fixture 1(2(4, 5), 3(6, 7)) preorder 1245367.
+
+use tree_binary;
+use bt_trial_i64;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+
+fn replace_paths() -> boolean {
+    sequence
+        base: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@complete7();
+        p0: List[:left | :right, mem(normal)] <- bt_trial_i64@path_of(0);
+        p12: List[:left | :right, mem(normal)] <- bt_trial_i64@path_of(12);
+        p21: List[:left | :right, mem(normal)] <- bt_trial_i64@path_of(21);
+        r0: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, changed: boolean } <- tree_binary@replace_item(base, p0, 9);
+        r12: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, changed: boolean } <- tree_binary@replace_item(base, p12, 8);
+        r21: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, changed: boolean } <- tree_binary@replace_item(base, p21, 0);
+        r0_ok: boolean <- r0.changed and bt_trial_i64@seq_pre(r0.tree) == 9245367
+            and tree_binary@node_count(r0.tree) == 7 and bt_trial_i64@valid_count(r0.tree, 7);
+        r12_ok: boolean <- r12.changed and bt_trial_i64@seq_pre(r12.tree) == 1248367 and bt_trial_i64@get_is(r12.tree, 12, 8)
+            and bt_trial_i64@left_is(r12.tree, 1, 4) and bt_trial_i64@valid_count(r12.tree, 7);
+        r21_ok: boolean <- r21.changed and bt_trial_i64@seq_pre(r21.tree) == 1245307 and bt_trial_i64@get_is(r21.tree, 21, 0)
+            and bt_trial_i64@right_is(r21.tree, 2, 7) and bt_trial_i64@valid_count(r21.tree, 7);
+        base_ok: boolean <- bt_trial_i64@seq_pre(base) == 1245367 and bt_trial_i64@get_is(base, 12, 5)
+            and bt_trial_i64@get_is(base, 21, 6) and bt_trial_i64@valid_count(base, 7)
+    produces
+        pure r0_ok and r12_ok and r21_ok and base_ok
+    end
+}
+
+fn missing_and_equal() -> boolean {
+    sequence
+        base: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@complete7();
+        p111: List[:left | :right, mem(normal)] <- bt_trial_i64@path_of(111);
+        p222: List[:left | :right, mem(normal)] <- bt_trial_i64@path_of(222);
+        p0: List[:left | :right, mem(normal)] <- bt_trial_i64@path_of(0);
+        m1: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, changed: boolean } <- tree_binary@replace_item(base, p111, 9);
+        m2: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, changed: boolean } <- tree_binary@replace_item(base, p222, 9);
+        same: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, changed: boolean } <- tree_binary@replace_item(base, p0, 1);
+        m_ok: boolean <- m1.changed == false and m2.changed == false and bt_trial_i64@seq_pre(m1.tree) == 1245367
+            and bt_trial_i64@seq_pre(m2.tree) == 1245367 and tree_binary@node_count(m1.tree) == 7;
+        same_ok: boolean <- same.changed and bt_trial_i64@seq_pre(same.tree) == 1245367 and bt_trial_i64@valid_count(same.tree, 7)
+    produces
+        pure m_ok and same_ok
+    end
+}
+
+// Items 1..12 down a left spine (sum 78): the leaf at depth 11 becomes 99 (sum 165), the old
+// spine keeps 12 there, and the path one step below the leaf is missing.
+fn deep_spine() -> boolean {
+    sequence
+        spine: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@left_spine(12);
+        bottom: List[:left | :right, mem(normal)] <- bt_trial_i64@path_lefts(11);
+        below: List[:left | :right, mem(normal)] <- bt_trial_i64@path_lefts(12);
+        r: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, changed: boolean } <- tree_binary@replace_item(spine, bottom, 99);
+        miss: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, changed: boolean } <- tree_binary@replace_item(spine, below, 99);
+        r_ok: boolean <- r.changed and bt_trial_i64@get_at_is(r.tree, bottom, 99) and tree_binary@node_count(r.tree) == 12
+            and bt_trial_i64@sum_of(r.tree) == 165 and bt_trial_i64@valid_count(r.tree, 12);
+        old_ok: boolean <- bt_trial_i64@get_at_is(spine, bottom, 12) and bt_trial_i64@sum_of(spine) == 78
+            and bt_trial_i64@get_is(spine, 1, 2) and bt_trial_i64@valid_count(spine, 12);
+        miss_ok: boolean <- miss.changed == false and bt_trial_i64@sum_of(miss.tree) == 78
+    produces
+        pure r_ok and old_ok and miss_ok
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        base: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@complete7();
+        p0: List[:left | :right, mem(normal)] <- bt_trial_i64@path_of(0);
+        p12: List[:left | :right, mem(normal)] <- bt_trial_i64@path_of(12);
+        r0: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, changed: boolean } <- tree_binary@replace_item(base, p0, 9);
+        r12: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        }, changed: boolean } <- tree_binary@replace_item(base, p12, 8);
+        pre0: int64 <- bt_trial_i64@seq_pre(r0.tree);
+        pre12: int64 <- bt_trial_i64@seq_pre(r12.tree);
+        pre_base: int64 <- bt_trial_i64@seq_pre(base);
+        spine: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- bt_trial_i64@left_spine(12);
+        old_sum: int64 <- bt_trial_i64@sum_of(spine);
+        rp: boolean <- replace_paths();
+        me: boolean <- missing_and_equal();
+        ds: boolean <- deep_spine();
+        println("root_replaced");
+        print_int64(pre0);
+        println("");
+        println("leaf_replaced");
+        print_int64(pre12);
+        println("");
+        println("base_unchanged");
+        print_int64(pre_base);
+        println("");
+        println("spine_sum");
+        print_int64(old_sum);
+        println("")
+    produces
+        pure pick(rp, 1, pick(me, 2, pick(ds, 3, 0)))
+    end
+}

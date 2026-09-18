@@ -1,0 +1,83 @@
+// Documented open emitter defect (2026-09-18, promoted from a staged repro),
+// found while writing tree_collections (a mod-10 comparator written with lets).
+//
+// Defect: a let whose right-hand side is `<parameter> <op> <literal>` overwrites that parameter
+// with the let's own value, so a later read of the parameter sees the let. `q <- a / 10; a - q`
+// with a = 22 yields 0 (a read as 2); `q <- a + 1; a + q` yields 46 (a read as 23). The
+// parameter is intact when the let reads it through a call (`q <- id(a)`), when the let combines
+// two parameters (`q <- a + b`), or when the expression has no let (`a - (a / 10) * 10`).
+// A `sequence` body behaves the same as a bare let-spine.
+// Expected output: 2, 45, 20, -3, 0, 2. Observed: -18, 46, 0, -3, 0, 2.
+//
+// Documented open emitter defect (2026-09-18); this trial fails until the emitter is fixed.
+// Origin: ordered_data_structures/tree_collections/staged. To run by hand:
+//   mkdir -p /tmp/rb && cp <this file> /tmp/rb/m.silica && cd /tmp/rb && echo m.silica > silica.config
+//   /Volumes/2T/silica/binaries/silica-compiler
+//   clang -mmacosx-version-min=26.0 -c -x assembler m.sams -o m.o
+//   clang -mmacosx-version-min=26.0 -c -x assembler __silica_runtime.sams -o rt.o
+//   clang m.o rt.o -o m -Wl,-e,main -Wl,-macos_version_min,26.0 && ./m
+
+fn id(x: int64) -> int64 {
+    x
+}
+
+// 22 -> 2
+fn sub_after_div_let(a: int64) -> int64 {
+    q: int64 <- a / 10;
+    m: int64 <- q * 10;
+    a - m
+}
+
+// 22 -> 45
+fn add_after_add_let(a: int64) -> int64 {
+    q: int64 <- a + 1;
+    a + q
+}
+
+// 22 -> 20
+fn sub_let_directly(a: int64) -> int64 {
+    q: int64 <- a / 10;
+    a - q
+}
+
+// 22, 3 -> -3 (two parameters: intact)
+fn two_params(a: int64, b: int64) -> int64 {
+    q: int64 <- a + b;
+    a - q
+}
+
+// 22 -> 0 (through a call: intact)
+fn via_call(a: int64) -> int64 {
+    q: int64 <- id(a);
+    a - q
+}
+
+// 22 -> 2 (no let: intact)
+fn no_let(a: int64) -> int64 {
+    a - (a / 10) * 10
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        println("sub_after_div_let (expected 2)");
+        print_int64(sub_after_div_let(22));
+        println("");
+        println("add_after_add_let (expected 45)");
+        print_int64(add_after_add_let(22));
+        println("");
+        println("sub_let_directly (expected 20)");
+        print_int64(sub_let_directly(22));
+        println("");
+        println("two_params (expected -3)");
+        print_int64(two_params(22, 3));
+        println("");
+        println("via_call (expected 0)");
+        print_int64(via_call(22));
+        println("");
+        println("no_let (expected 2)");
+        print_int64(no_let(22));
+        println("")
+    produces
+        pure 0
+    end
+}

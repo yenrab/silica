@@ -1,0 +1,316 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// User-call term emission (open-recursive via emit_child).
+
+use term_call_helpers;
+use term_aggregate_helpers;
+use term_emit_kind_call_tail;
+use var;
+use call;
+use ffi_foreign;
+use reg_conventions;
+use term_sir_helpers;
+use term_user_call_abi;
+use term_user_call_helpers;
+use x86_isa;
+use x86_mem;
+
+export emit_generic_user_call_asm_inner/6;
+export emit_function_tail_user_call_root/6;
+export emit_function_non_tail_user_call_root/7;
+
+
+
+// Keep this out of emit_generic_user_call_asm_inner. A nested `case length_bytes(rest_asm)`
+// in that function was compiled so both arms were kept: dest-X0 tuple_make twice,
+// one ADD #16 (functions_addition/fn_tuple_decompose_in_decl hang).
+
+
+
+// Push the argument registers already staged (X0..X<g-1>, D0..D<f-1>) and pop them back in
+// the opposite order. Each push is a 16-byte slot so SP stays aligned.
+fn save_staged_arg_regs(g: int64, f: int64) -> string {
+    case g > 0 of {
+        true -> concat(save_staged_arg_regs(g - 1, f), x86_mem@x86_str(concat("X", term_call_helpers@dec_str(g - 1)), "[SP, #-16]!"));
+        false -> case f > 0 of {
+            true -> concat(save_staged_arg_regs(0, f - 1), x86_mem@x86_str(concat("D", term_call_helpers@dec_str(f - 1)), "[SP, #-16]!"));
+            false -> ""
+        }
+    }
+}
+
+fn restore_staged_arg_regs(g: int64, f: int64) -> string {
+    case g > 0 of {
+        true -> concat(x86_mem@x86_ldr(concat("X", term_call_helpers@dec_str(g - 1)), "[SP], #16"), restore_staged_arg_regs(g - 1, f));
+        false -> case f > 0 of {
+            true -> concat(x86_mem@x86_ldr(concat("D", term_call_helpers@dec_str(f - 1)), "[SP], #16"), restore_staged_arg_regs(0, f - 1));
+            false -> ""
+        }
+    }
+}
+
+fn emit_rest_args(rest: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, gpr_slot: int64, fp_slot: int64, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: boolean }, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, emit_child: fn({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, string, { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, { bound_name: string, bound_reg: string, outer_reg: string, debug: boolean }) -> string) -> string {
+    case term_sir_helpers@sir_term_root_node(rest).name == "user_call_rest" of {
+        true -> {
+            fpool_prev: string <- var@find_sp_binding(bound.outer_reg, "_fpool");
+            outer_f: string <- case gpr_slot >= 1 and length_bytes(fpool_prev) == 0 of {
+                true -> concat(bound.outer_reg, "|_fpool=X9");
+                false -> bound.outer_reg
+            };
+            cur_ty: string <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner)).type_name;
+            reg: string <- term_user_call_abi@user_call_arg_reg_for_type(cur_ty, gpr_slot, fp_slot);
+            gpr_after_cur: int64 <- term_user_call_abi@user_call_next_gpr_slot(cur_ty, gpr_slot);
+            fp_after_cur: int64 <- term_user_call_abi@user_call_next_fp_slot(cur_ty, fp_slot);
+            arg_raw: string <- emit_child(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner),  reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f, debug: bound.debug });
+            // Silica moves: the callee may keep this pointer for good (wbt_map stores a
+            // tuple-typed value straight into its node), but a make lives in this frame's
+            // region, which dies at our epilogue. Copy it to the region before the pointer
+            // leaves -- the same rule the return path follows, see
+            // aggregate_callee_return_promote_bytes.
+            // See trials/standard_data_structures/wbt_core/wbt_map_tuple_value_escapes_frame.
+            arg_promote: string <- case term_call_helpers@is_aggregate_make(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner)) of {
+                true -> term_aggregate_helpers@arg_aggregate_heap_promote(reg, term_aggregate_helpers@agg_promote_bytes(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner)));
+                false -> ""
+            };
+            // arg_raw carries no trailing newline (the join sites add it), so the
+            // promote must open its own line.
+            arg_asm: string <- case length_bytes(arg_promote) > 0 of {
+                true -> concat(concat(arg_raw, "\n"), arg_promote);
+                false -> arg_raw
+            };
+            rest_asm: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).kind < 0 of {
+                true -> "";
+                false -> emit_rest_args(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr), gpr_after_cur, fp_after_cur, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f, debug: bound.debug }, pools, emit_child)
+            };
+            // fib_iter(n-1, b, a+b): emitting var(b)→X1 after one GPR arg clobbers a(X1) before add(a,b) can read it.
+            next_ty: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).name == "user_call_rest" of {
+                true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).inner)).type_name;
+                false -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).type_name
+            };
+            next_is_add_or_mul: boolean <- case gpr_slot == 1 and fp_slot == 0 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).kind >= 0 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner)).kind == 1 of {
+                true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).name == "user_call_rest" of {
+                    true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).inner)).kind == 6
+                        and (term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).inner)).name == "add" or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).inner)).name == "mul");
+                    false -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).kind == 6
+                        and (term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).name == "add" or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).name == "mul")
+                };
+                false -> false
+            };
+            next_arg_node: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case next_is_add_or_mul of {
+                true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).name == "user_call_rest" of {
+                    true -> term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).inner);
+                    false -> term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)
+                };
+                false -> term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner)
+            };
+            next_has_matching_var: boolean <- case next_is_add_or_mul of {
+                true -> (term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(next_arg_node, term_sir_helpers@sir_term_root_node(next_arg_node).inner)).kind == 1 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(next_arg_node, term_sir_helpers@sir_term_root_node(next_arg_node).inner)).name == term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner)).name)
+                    or (term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(next_arg_node, term_sir_helpers@sir_term_root_node(next_arg_node).right_expr)).kind == 1 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(next_arg_node, term_sir_helpers@sir_term_root_node(next_arg_node).right_expr)).name == term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner)).name);
+                false -> false
+            };
+            use_save_next_for_current: boolean <- next_has_matching_var;
+            next_reg: string <- term_user_call_abi@user_call_arg_reg_for_type(next_ty, gpr_after_cur, fp_after_cur);
+            next_arg_asm: string <- case use_save_next_for_current of {
+                true -> emit_child(next_arg_node,  next_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f, debug: bound.debug });
+                false -> ""
+            };
+            gpr_after_next: int64 <- term_user_call_abi@user_call_next_gpr_slot(next_ty, gpr_after_cur);
+            fp_after_next: int64 <- term_user_call_abi@user_call_next_fp_slot(next_ty, fp_after_cur);
+                       further_rest_asm: string <- case use_save_next_for_current of {
+                true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).name == "user_call_rest" and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).right_expr)).kind >= 0 of {
+                    true -> emit_rest_args(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).right_expr)).right_expr), gpr_after_next, fp_after_next, { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f, debug: bound.debug }, pools, emit_child);
+                    false -> ""
+                };
+                false -> ""
+            };
+            save_src_reg: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner)).kind == 1 of {
+                true -> {
+                    bound: string <- var@find_sp_binding_bare_or_percent_param(outer_f, term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner)).name);
+                    case length_bytes(bound) > 0 and var@binding_is_physical_int_reg(bound) of {
+                        true -> bound;
+                        false -> next_reg
+                    }
+                };
+                false -> next_reg
+            };
+            save_next: string <- x86_mem@x86_str(save_src_reg, "[SP, #-16]!");
+            restore_current: string <- x86_mem@x86_ldr(reg, "[SP], #16");
+            // Arguments already staged in X0..X<gpr_slot-1> / D0..D<fp_slot-1> are caller-saved
+            // and die inside any call this argument makes (link(heap, digit_rank(d1), ..) passed
+            // the rank as the heap). Keep them on the stack across the argument's evaluation.
+            guard_prev: boolean <- (gpr_slot > 0 or fp_slot > 0) and term_user_call_helpers@term_subterm_has_user_call(term_sir_helpers@sir_term_at(rest, term_sir_helpers@sir_term_root_node(rest).inner));
+            arg_guarded: string <- case guard_prev of {
+                true -> concat(concat(concat(save_staged_arg_regs(gpr_slot, fp_slot), arg_asm), "\n"), restore_staged_arg_regs(gpr_slot, fp_slot));
+                false -> arg_asm
+            };
+            case use_save_next_for_current of {
+                true -> concat(concat(concat(concat(save_next, next_arg_asm), "\n"), restore_current), further_rest_asm);
+                false -> concat(concat(arg_guarded, "\n"), rest_asm)
+            }
+        };
+        false -> {
+            fpool_prev2: string <- var@find_sp_binding(bound.outer_reg, "_fpool");
+            outer_f2: string <- case gpr_slot >= 1 and length_bytes(fpool_prev2) == 0 of {
+                true -> concat(bound.outer_reg, "|_fpool=X9");
+                false -> bound.outer_reg
+            };
+            reg2: string <- term_user_call_abi@user_call_arg_reg_for_type(term_sir_helpers@sir_term_root_node(rest).type_name, gpr_slot, fp_slot);
+            emit_child(rest,  reg2, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_f2, debug: bound.debug })
+        }
+    }
+}
+
+// Stage GPR call args onto the stack (X16 temp). Parallel staging is inlined at the
+
+
+
+
+fn emit_generic_user_call_asm_inner(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: boolean }, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, emit_child: fn({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, string, { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, { bound_name: string, bound_reg: string, outer_reg: string, debug: boolean }) -> string, call_opts: { use_tail: boolean, fn_effects_for_tail: string, blr_effect_value_override: string, line_before_call_asm: string }) -> string {
+    (ffi_found: boolean, ffi_c_sym: string, ffi_param_types: string, ffi_return_type: string) <- ffi_foreign@lookup_from_outer(bound.outer_reg, term_sir_helpers@sir_term_root_node(term).name);
+    a1ty: string <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name;
+    sret_n: int64 <- case ffi_found of {
+        true -> ffi_foreign@foreign_call_sret_bytes(ffi_return_type);
+        false -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(term).type_name)
+    };
+    callee_sret_bind: string <- var@find_sp_binding(bound.outer_reg, "_callee_sret");
+    // Enclosing fn aggregate return: caller already passed X8 = sret buffer — do not SUB/MOV (record_make still uses stack).
+    use_pass_through_sret: boolean <- length_bytes(callee_sret_bind) > 0
+        and ffi_found == false
+        and sret_n > 0
+        and reg_conventions@is_aggregate_struct_or_tuple_return_type(term_sir_helpers@sir_term_root_node(term).type_name)
+        and (length_bytes(bound.bound_name) == 0 or call_opts.use_tail);
+    // Tuple-returning user calls write through caller X8 (AAPCS64 indirect result). Without SUB/MOV X8
+    // the callee stores into whatever X8 held. Record returns heap-promote in the
+    // callee and do not need a caller sret slab. Let-spines that end in a tuple call still own
+    // that slab (tuple_let_calltail): skip the reserve and the epilogue ADD SP pops 16 bytes
+    // nothing pushed, then RET jumps to a garbage LR.
+    sret_alloc_bytes: int64 <- case use_pass_through_sret or ffi_found of {
+        true -> 0;
+        false -> case reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(term).type_name) of {
+            true -> sret_n;
+            false -> 0
+        }
+    };
+    // Post-BLR ADD is 0: the sret slab is released at let-end via aggregate_callee_return_stack_bytes
+    // (immediate ADD here plus let-end ADD double-pops SP).
+    sret_stack_bytes: int64 <- 0;
+    sret_setup: string <- case ffi_found of {
+        true -> case sret_n > 0 of {
+            true -> ffi_foreign@emit_foreign_sret_setup(sret_n);
+            false -> case ffi_foreign@needs_string_in_marshal(ffi_param_types, a1ty) of {
+                true -> ffi_foreign@emit_foreign_scratch_setup_string_in_only();
+                false -> ""
+            }
+        };
+        false -> case sret_alloc_bytes > 0 of {
+            true -> concat(x86_isa@x86_sub("SP", "SP", concat("#", term_call_helpers@dec_str(sret_alloc_bytes))), x86_isa@x86_mov("X8", "SP"));
+            false -> ""
+        }
+    };
+    arg1_reg: string <- term_user_call_abi@user_call_arg_reg_for_type(a1ty, 0, 0);
+    gpr_after_a0: int64 <- term_user_call_abi@user_call_next_gpr_slot(a1ty, 0);
+    fp_after_a0: int64 <- term_user_call_abi@user_call_next_fp_slot(a1ty, 0);
+    arg2_reg: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind >= 0 of {
+        false -> "X1";
+        true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).name == "user_call_rest" of {
+            true -> term_user_call_abi@user_call_arg_reg_for_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).inner)).type_name, gpr_after_a0, fp_after_a0);
+            false -> term_user_call_abi@user_call_arg_reg_for_type(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).type_name, gpr_after_a0, fp_after_a0)
+        }
+    };
+    arg1_asm: string <- emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner),  arg1_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: bound.outer_reg, debug: bound.debug });
+    fpool_a0: string <- var@find_sp_binding(bound.outer_reg, "_fpool");
+    outer_arg2: string <- case gpr_after_a0 >= 1 and length_bytes(fpool_a0) == 0 of {
+        true -> concat(bound.outer_reg, "|_fpool=X9");
+        false -> bound.outer_reg
+    };
+    rest_asm: string <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind >= 0 of {
+        true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).name == "user_call_rest" of {
+            true -> emit_rest_args(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), gpr_after_a0, fp_after_a0, bound, pools, emit_child);
+            false -> emit_child(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr),  arg2_reg, pools,  { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: outer_arg2, debug: bound.debug })
+        };
+        false -> ""
+    };
+    call_eff_for_blr: string <- case length_bytes(call_opts.blr_effect_value_override) > 0 of {
+        true -> call_opts.blr_effect_value_override;
+        false -> term_sir_helpers@sir_term_root_node(term).value
+    };
+    indirect_via_x9: boolean <- call@sir_call_targets_bound_callee(bound.outer_reg, term_sir_helpers@sir_term_root_node(term).name);
+    // An indirect callee address in X17 must survive argument evaluation.
+    // X17 is caller-saved: nested calls, silica_rt_region_alloc (heap-promoted
+    // record/tuple args), and string/list helpers all BL and clobber it.
+    // Always capture X17 before args and reload after. For a kind-5 tail BR,
+    // pop the save slot before frame release — dealloc after BR is unreachable.
+    save_indirect_callee_around_args: boolean <- indirect_via_x9;
+    staged_arg_count: int64 <- 1 + term_user_call_helpers@simple_gpr_call_arg_count(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
+    use_simple_gpr_parallel_stage: boolean <- staged_arg_count <= 8
+        and term_user_call_helpers@simple_gpr_arg_tree_can_stage(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), bound.outer_reg)
+        and term_user_call_helpers@simple_gpr_rest_tree_can_stage(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), bound.outer_reg);
+    arg_stack_bytes_raw: int64 <- term_call_helpers@call_tuple_args_dealloc_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))
+        + term_call_helpers@call_tuple_args_dealloc_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr));
+    // Parallel staging reclaims aggregate-make slabs before the call.
+    arg_stack_bytes_before_call: int64 <- case use_simple_gpr_parallel_stage of {
+        true -> 0;
+        false -> arg_stack_bytes_raw
+    };
+    callee_prep: string <- case indirect_via_x9 of {
+        true -> case save_indirect_callee_around_args of {
+            true -> concat(call@emit_indirect_callee_address_to_x17(bound.outer_reg, term_sir_helpers@sir_term_root_node(term).name), x86_mem@x86_str("X17", "[SP, #-16]!"));
+            false -> call@emit_indirect_callee_address_to_x17(bound.outer_reg, term_sir_helpers@sir_term_root_node(term).name)
+        };
+        false -> ""
+    };
+    callee_reload_after_args: string <- case save_indirect_callee_around_args of {
+        false -> "";
+        true -> case arg_stack_bytes_before_call == 0 of {
+            true -> x86_mem@x86_ldr("X17", "[SP, #0]");
+            false -> x86_mem@x86_ldr("X17", concat("[SP, #", concat(term_call_helpers@dec_str(arg_stack_bytes_before_call), "]")))
+        }
+    };
+    call_asm: string <- case call_opts.use_tail of {
+        true -> case ffi_found and indirect_via_x9 == false of {
+            true -> {
+                frame_rel: string <- term_call_helpers@function_tail_frame_release(call_opts.fn_effects_for_tail);
+                ffi_foreign@emit_foreign_tail_call(ffi_c_sym, call_eff_for_blr, call_opts.fn_effects_for_tail, frame_rel)
+            };
+            false -> call@emit_tail_call_body(term, call_opts.fn_effects_for_tail, bound.outer_reg, indirect_via_x9)
+        };
+        false -> case ffi_found and indirect_via_x9 == false of {
+            true -> {
+                ffi_call_ctx: { call_effects: string, c_symbol: string, param_types: string, return_type: string, arg1_type: string, sret_setup: string, sret_bytes: int64, outer_reg: string } <- { call_effects: call_eff_for_blr, c_symbol: ffi_c_sym, param_types: ffi_param_types, return_type: ffi_return_type, arg1_type: a1ty, sret_setup: sret_setup, sret_bytes: sret_n, outer_reg: bound.outer_reg };
+                ffi_foreign@emit_foreign_user_call(term, dest, ffi_call_ctx)
+            };
+            false -> call@emit_call_body_effects(term, dest, call_eff_for_blr, bound.outer_reg, indirect_via_x9)
+        }
+    };
+    // Two GPR args (X0, X1): if arg1 is evaluated first it may clobber X0 while arg2 is a nested
+    // call that still needs the caller's first argument in X0 (e.g. ack(m-1, ack(m, n-1))). Then:
+    // STR X0; emit arg2 into X1; LDR X0; emit arg1 into X0. Only when arg2 is a call (kind 4): if arg2
+    // is a var/const, X0 may no longer hold the first param (e.g. after let inner <- ack(...)) and
+    // STR would save the wrong value. Skip 3+ arg chains (user_call_rest with non-dummy tail) and floats.
+    term_emit_kind_call_tail@emit_generic_user_call_asm_inner_tail(term, dest, bound, pools, emit_child, call_opts, { a1ty: a1ty, sret_stack_bytes: sret_stack_bytes, sret_setup: sret_setup, arg1_reg: arg1_reg, arg2_reg: arg2_reg, arg1_asm: arg1_asm, rest_asm: rest_asm, save_indirect_callee_around_args: save_indirect_callee_around_args, use_simple_gpr_parallel_stage: use_simple_gpr_parallel_stage, arg_stack_bytes_before_call: arg_stack_bytes_before_call, callee_prep: callee_prep, callee_reload_after_args: callee_reload_after_args, call_asm: call_asm })
+}
+
+// Root function body only: SIR kind 5 tail user call with enclosing function effects for frame release + barriers.
+fn emit_function_tail_user_call_root(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: boolean }, fn_effects: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, emit_child: fn({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, string, { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, { bound_name: string, bound_reg: string, outer_reg: string, debug: boolean }) -> string) -> string {
+    emit_generic_user_call_asm_inner(term, dest, bound, pools, emit_child, { use_tail: true, fn_effects_for_tail: fn_effects, blr_effect_value_override: "", line_before_call_asm: "" })
+}
+
+// Same as emit_function_tail_user_call_root but BLR + stack cleanup instead of tail BR (e.g. main returning float must FCVTZS before RET).
+fn emit_function_non_tail_user_call_root(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: boolean }, fn_effects: string, line_before_call_asm: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, emit_child: fn({ nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, string, { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }, { bound_name: string, bound_reg: string, outer_reg: string, debug: boolean }) -> string) -> string {
+    emit_generic_user_call_asm_inner(term, dest, bound, pools, emit_child, { use_tail: false, fn_effects_for_tail: fn_effects, blr_effect_value_override: "[]", line_before_call_asm: line_before_call_asm })
+}

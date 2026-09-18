@@ -1,0 +1,69 @@
+// Documented open emitter defect (2026-09-18, promoted from a staged repro),
+// found while writing tree_collections/rt_generic_payloads (find_first's path with tuple items).
+//
+// Defect: a record { status, value: ItemType, path: List[int64] } built in a generic unit
+// (lib/gen_rec.silica, one slot per field) and read in a concrete unit where ItemType is a
+// tuple (int64, int64): `value` reads back correctly, but `path` is read at the offset a
+// concrete record with an INLINE pair would use, so `path.is_nil` faults (addr 0x1). With
+// ItemType = int64 every field reads correctly. tree_rose's find_first (path after value) and
+// child_at (child_path after value) hit this for tuple payloads; get (value last) does not.
+// Expected output: "7 3", "7 70", "3". Observed: "7 3", "7 70", then a fault.
+//
+// Documented open emitter defect (2026-09-18); this trial fails until the emitter is fixed.
+// Origin: ordered_data_structures/tree_collections/staged. To run by hand:
+//   mkdir -p /tmp/rb/lib && cp <this file> /tmp/rb/m.silica && cp <staged>/lib/gen_rec.silica /tmp/rb/lib/
+//   cd /tmp/rb && printf 'lib/gen_rec.silica\nm.silica\n' > silica.config
+//   /Volumes/2T/silica/binaries/silica-compiler
+//   for s in lib/gen_rec.sams m.sams __silica_runtime.sams; do clang -mmacosx-version-min=26.0 -c -x assembler $s -o ${s%.sams}.o; done
+//   clang m.o lib/gen_rec.o __silica_runtime.o -o m -Wl,-e,main -Wl,-macos_version_min,26.0 && ./m
+
+use gen_rec;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn first_of(p: (int64, int64)) -> int64 {
+    (x: int64, _: int64) <- p;
+    x
+}
+
+fn cmp_pair(a: (int64, int64), b: (int64, int64)) -> :less | :equal | :greater {
+    cmp_i64(first_of(a), first_of(b))
+}
+
+fn list_len(path: List[int64, mem(normal)], acc: int64) -> int64 {
+    case path.is_nil of {
+        true -> acc;
+        false -> list_len(path.tail, acc + 1)
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        ri: { status: :not_found | :found, value: int64, path: List[int64, mem(normal)] } <- gen_rec@make({ compare_item: cmp_i64 }, 7);
+        println("int64 item: value 7, path length 3");
+        print_int64(ri.value);
+        print_string(" ");
+        print_int64(list_len(ri.path, 0));
+        println("");
+        rp: { status: :not_found | :found, value: (int64, int64), path: List[int64, mem(normal)] } <- gen_rec@make({ compare_item: cmp_pair }, (7, 70));
+        (a: int64, b: int64) <- rp.value;
+        println("pair item: value 7 70");
+        print_int64(a);
+        print_string(" ");
+        print_int64(b);
+        println("");
+        println("pair item: path length 3");
+        print_int64(list_len(rp.path, 0));
+        println("")
+    produces
+        pure 0
+    end
+}

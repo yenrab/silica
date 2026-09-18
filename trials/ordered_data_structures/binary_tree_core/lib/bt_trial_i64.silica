@@ -1,0 +1,465 @@
+// Trial-only int64 helpers for binary_tree_core: constructors, shape builders, path decoding,
+// result checks, and fold-based digit sequences. Fold callbacks must be local to the module that
+// passes them, so every fold-based check lives here. Items are single digits where a fold
+// concatenates them (seq_*), so the printed traversal reads as the visit order.
+//
+// The comparator is the ItemType witness tree_binary needs at every qualified call; it is never
+// consulted by the tree (see the tree_binary header).
+
+use tree_binary;
+
+export cmp_i64/2;
+export new_empty/0;
+export leaf/1;
+export node_of/3;
+export node_compatible/3;
+export left_spine/1;
+export right_spine/1;
+export complete7/0;
+export path_of/1;
+export path_lefts/1;
+export path_rights/1;
+export get_at_is/3;
+export get_at_missing/2;
+export found_is/2;
+export is_not_found/1;
+export root_is/2;
+export root_missing/1;
+export get_is/3;
+export get_missing/2;
+export left_is/3;
+export left_missing/2;
+export right_is/3;
+export right_missing/2;
+export seq_pre/1;
+export seq_in/1;
+export seq_post/1;
+export paths_pre/1;
+export sum_of/1;
+export depth_sum_pre/1;
+export valid_count/2;
+export error_code_of/1;
+export focus_is/2;
+export focus_missing/1;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn new_empty() -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    tree_binary@empty({ compare_item: cmp_i64 })
+}
+
+fn leaf(item: int64) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    tree_binary@with_root({ compare_item: cmp_i64 }, item)
+}
+
+// node(item, left, right): the tree field of tree_binary@node; the trials assert compatibility
+// separately through node_compatible.
+fn node_of(
+    item: int64,
+    left: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    right: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    made: {
+        tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        },
+        compatible: boolean
+    } <- tree_binary@node({ compare_item: cmp_i64 }, item, left, right);
+    made.tree
+}
+
+fn node_compatible(
+    item: int64,
+    left: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    },
+    right: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }
+) -> boolean {
+    made: {
+        tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        },
+        compatible: boolean
+    } <- tree_binary@node({ compare_item: cmp_i64 }, item, left, right);
+    made.compatible
+}
+
+fn left_spine_go(i: int64, n: int64) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    case i >= n of {
+        true -> leaf(n);
+        false -> node_of(i, left_spine_go(i + 1, n), new_empty())
+    }
+}
+
+// Items 1..n down the left spine: root 1, its left child 2, ..., leaf n; every right child empty.
+fn left_spine(n: int64) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    left_spine_go(1, n)
+}
+
+fn right_spine_go(i: int64, n: int64) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    case i >= n of {
+        true -> leaf(n);
+        false -> node_of(i, new_empty(), right_spine_go(i + 1, n))
+    }
+}
+
+// Items 1..n down the right spine; every left child empty.
+fn right_spine(n: int64) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    right_spine_go(1, n)
+}
+
+// The complete tree 1(2(4, 5), 3(6, 7)): root 1, left 2 with leaves 4 and 5, right 3 with 6 and 7.
+fn complete7() -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    two: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    } <- node_of(2, leaf(4), leaf(5));
+    three: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    } <- node_of(3, leaf(6), leaf(7));
+    node_of(1, two, three)
+}
+
+fn path_of_go(code: int64, acc: List[:left | :right, mem(normal)]) -> List[:left | :right, mem(normal)] {
+    case code <= 0 of {
+        true -> acc;
+        false -> case code % 10 == 1 of {
+            true -> path_of_go(code / 10, tree_binary@path_left(acc));
+            false -> path_of_go(code / 10, tree_binary@path_right(acc))
+        }
+    }
+}
+
+// Decodes tree_binary@path_code: 0 is the root, 12 is [:left, :right] (digit 1 = left, 2 = right).
+fn path_of(code: int64) -> List[:left | :right, mem(normal)] {
+    path_of_go(code, tree_binary@path_root())
+}
+
+fn path_lefts_go(n: int64, acc: List[:left | :right, mem(normal)]) -> List[:left | :right, mem(normal)] {
+    case n <= 0 of {
+        true -> acc;
+        false -> path_lefts_go(n - 1, tree_binary@path_left(acc))
+    }
+}
+
+// n consecutive :left components (deep spines exceed path_code's 18-digit range).
+fn path_lefts(n: int64) -> List[:left | :right, mem(normal)] {
+    path_lefts_go(n, tree_binary@path_root())
+}
+
+fn path_rights_go(n: int64, acc: List[:left | :right, mem(normal)]) -> List[:left | :right, mem(normal)] {
+    case n <= 0 of {
+        true -> acc;
+        false -> path_rights_go(n - 1, tree_binary@path_right(acc))
+    }
+}
+
+fn path_rights(n: int64) -> List[:left | :right, mem(normal)] {
+    path_rights_go(n, tree_binary@path_root())
+}
+
+fn found_is(res: { status: :not_found | :found, value: int64 }, expected: int64) -> boolean {
+    case res.status of {
+        :found -> res.value == expected;
+        :not_found -> false
+    }
+}
+
+fn is_not_found(res: { status: :not_found | :found, value: int64 }) -> boolean {
+    case res.status of {
+        :not_found -> true;
+        :found -> false
+    }
+}
+
+// Nested qualified generic calls cannot resolve ItemType inside another qualified call's argument
+// list, so trials compare through these local wrappers.
+fn root_is(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }, expected: int64) -> boolean {
+    found_is(tree_binary@root_item(tree, 0), expected)
+}
+
+fn root_missing(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }) -> boolean {
+    is_not_found(tree_binary@root_item(tree, 0))
+}
+
+fn get_is(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }, code: int64, expected: int64) -> boolean {
+    p: List[:left | :right, mem(normal)] <- path_of(code);
+    found_is(tree_binary@get(tree, p, 0), expected)
+}
+
+fn get_missing(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }, code: int64) -> boolean {
+    p: List[:left | :right, mem(normal)] <- path_of(code);
+    is_not_found(tree_binary@get(tree, p, 0))
+}
+
+fn get_at_is(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }, path: List[:left | :right, mem(normal)], expected: int64) -> boolean {
+    found_is(tree_binary@get(tree, path, 0), expected)
+}
+
+fn get_at_missing(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }, path: List[:left | :right, mem(normal)]) -> boolean {
+    is_not_found(tree_binary@get(tree, path, 0))
+}
+
+fn left_is(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }, code: int64, expected: int64) -> boolean {
+    p: List[:left | :right, mem(normal)] <- path_of(code);
+    found_is(tree_binary@left_item(tree, p, 0), expected)
+}
+
+fn left_missing(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }, code: int64) -> boolean {
+    p: List[:left | :right, mem(normal)] <- path_of(code);
+    is_not_found(tree_binary@left_item(tree, p, 0))
+}
+
+fn right_is(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }, code: int64, expected: int64) -> boolean {
+    p: List[:left | :right, mem(normal)] <- path_of(code);
+    found_is(tree_binary@right_item(tree, p, 0), expected)
+}
+
+fn right_missing(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }, code: int64) -> boolean {
+    p: List[:left | :right, mem(normal)] <- path_of(code);
+    is_not_found(tree_binary@right_item(tree, p, 0))
+}
+
+// Single-digit items concatenated in visit order: 1(2, 3) in preorder is 123.
+fn digit_step(acc: int64, _: List[:left | :right, mem(normal)], item: int64) -> int64 {
+    acc * 10 + item
+}
+
+fn seq_pre(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }) -> int64 {
+    tree_binary@fold_preorder(tree, 0, digit_step)
+}
+
+fn seq_in(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }) -> int64 {
+    tree_binary@fold_inorder(tree, 0, digit_step)
+}
+
+fn seq_post(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }) -> int64 {
+    tree_binary@fold_postorder(tree, 0, digit_step)
+}
+
+// Sum of the decimal path codes handed to a preorder fold (root 0, left child 1, right child 2, ...).
+fn path_code_step(acc: int64, path: List[:left | :right, mem(normal)], _: int64) -> int64 {
+    acc + tree_binary@path_code(path)
+}
+
+fn paths_pre(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }) -> int64 {
+    tree_binary@fold_preorder(tree, 0, path_code_step)
+}
+
+fn sum_step(acc: int64, _: List[:left | :right, mem(normal)], item: int64) -> int64 {
+    acc + item
+}
+
+fn sum_of(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }) -> int64 {
+    tree_binary@fold_preorder(tree, 0, sum_step)
+}
+
+// Sum over every visited node of its depth (the length of the path handed to the callback).
+fn depth_step(acc: int64, path: List[:left | :right, mem(normal)], _: int64) -> int64 {
+    acc + tree_binary@path_length(path)
+}
+
+fn depth_sum_pre(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }) -> int64 {
+    tree_binary@fold_preorder(tree, 0, depth_step)
+}
+
+fn valid_count(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }, n: int64) -> boolean {
+    v: { valid: boolean, error: atom, logical_count: int64 } <- tree_binary@validate(tree);
+    case v.valid of {
+        false -> false;
+        true -> v.logical_count == n
+    }
+}
+
+// validate's error atoms are decoded by the unit that creates them (atoms are numbered per unit).
+fn error_code_of(tree: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }) -> int64 {
+    v: { valid: boolean, error: atom, logical_count: int64 } <- tree_binary@validate(tree);
+    tree_binary@validate_error_code(v.error)
+}
+
+fn focus_is(z: {
+        focus: ref?(L, normal, rec),
+        breadcrumbs: List[(:from_left | :from_right, int64, ref?(L, normal, rec)), mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }, expected: int64) -> boolean {
+    found_is(tree_binary@zipper_focus_item(z, 0), expected)
+}
+
+fn focus_missing(z: {
+        focus: ref?(L, normal, rec),
+        breadcrumbs: List[(:from_left | :from_right, int64, ref?(L, normal, rec)), mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    }) -> boolean {
+    is_not_found(tree_binary@zipper_focus_item(z, 0))
+}

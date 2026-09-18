@@ -1,0 +1,137 @@
+// tree_trait.md §3, §7, §12: paths are stable child slots, root first; negative components, slots
+// past the end, vacant slots and descents through a leaf all answer :not_found (queries) or leave
+// the tree unchanged (updates); child_at reports the child's own path; a leaf accepts a child at
+// slot 0. Fixture 1(2(4, 5), 3).
+
+use tree_rose;
+use rt_trial_i64;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+fn queries() -> boolean {
+    sequence proc[mem(normal)]
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@tree_1_2_4_5_3();
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        pa: List[int64, mem(normal)] <- [0];
+        pb: List[int64, mem(normal)] <- [1];
+        p00: List[int64, mem(normal)] <- [0, 0];
+        pneg: List[int64, mem(normal)] <- [-1];
+        pneg2: List[int64, mem(normal)] <- [0, -1];
+        p3: List[int64, mem(normal)] <- [3];
+        p02: List[int64, mem(normal)] <- [0, 2];
+        p10: List[int64, mem(normal)] <- [1, 0];
+        p9: List[int64, mem(normal)] <- [9];
+        missing_ok: boolean <- rt_trial_i64@get_missing(t, pneg) and rt_trial_i64@get_missing(t, pneg2)
+            and rt_trial_i64@get_missing(t, p3) and rt_trial_i64@get_missing(t, p02)
+            and rt_trial_i64@get_missing(t, p10);
+        counts_ok: boolean <- rt_trial_i64@child_count_of(t, p00) == 0 and rt_trial_i64@slot_count_of(t, p00) == 0
+            and rt_trial_i64@child_count_of(t, p9) == -1 and rt_trial_i64@slot_count_of(t, pneg) == -1;
+        child_ok: boolean <- rt_trial_i64@child_missing(t, pa, -1) and rt_trial_i64@child_missing(t, pa, 2)
+            and rt_trial_i64@child_missing(t, pb, 0) and rt_trial_i64@child_missing(t, p00, 0)
+            and rt_trial_i64@child_missing(t, p9, 0);
+        paths_ok: boolean <- rt_trial_i64@child_is(t, p0, 1, 3) and rt_trial_i64@child_path_code(t, p0, 1) == 11
+            and rt_trial_i64@child_is(t, pa, 1, 5) and rt_trial_i64@child_path_code(t, pa, 1) == 101
+            and rt_trial_i64@child_path_code(t, pa, 2) == -1
+    produces
+        pure missing_ok and counts_ok and child_ok and paths_ok
+    end
+}
+
+fn updates() -> boolean {
+    sequence proc[mem(normal)]
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@tree_1_2_4_5_3();
+        pa: List[int64, mem(normal)] <- [0];
+        p00: List[int64, mem(normal)] <- [0, 0];
+        p000: List[int64, mem(normal)] <- [0, 0, 0];
+        p01: List[int64, mem(normal)] <- [0, 1];
+        deep: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(t, p00, 9);
+        leaf_ok: boolean <- rt_trial_i64@add_slot(t, p00, 9) == 0 and rt_trial_i64@get_is(deep, p000, 9)
+            and rt_trial_i64@child_count_of(deep, p00) == 1 and tree_rose@node_count(deep) == 6
+            and rt_trial_i64@seq_pre(deep) == 124953;
+        back: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(deep, p00, 0);
+        back_ok: boolean <- rt_trial_i64@remove_count(deep, p00, 0) == 1 and rt_trial_i64@seq_pre(back) == 12453
+            and rt_trial_i64@slot_count_of(back, p00) == 1 and rt_trial_i64@get_missing(back, p000);
+        vac: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(t, pa, 0);
+        vacant_ok: boolean <- rt_trial_i64@get_missing(vac, p00) and rt_trial_i64@get_missing(vac, p000)
+            and rt_trial_i64@get_is(vac, p01, 5) and rt_trial_i64@child_path_code(vac, pa, 1) == 101
+            and rt_trial_i64@add_slot(vac, p00, 9) == -1 and rt_trial_i64@replace_ok(vac, p000, 9) == false
+            and rt_trial_i64@remove_count(vac, p00, 0) == -1;
+        valid_ok: boolean <- rt_trial_i64@valid_count(deep, 6) and rt_trial_i64@valid_count(back, 5)
+            and rt_trial_i64@valid_count(vac, 4)
+    produces
+        pure leaf_ok and back_ok and vacant_ok and valid_ok
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@tree_1_2_4_5_3();
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        pa: List[int64, mem(normal)] <- tree_rose@path_with(p0, 0);
+        p00: List[int64, mem(normal)] <- tree_rose@path_with(pa, 0);
+        p000: List[int64, mem(normal)] <- tree_rose@path_with(p00, 0);
+        cp: int64 <- rt_trial_i64@child_path_code(t, p0, 1);
+        deep: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(t, p00, 9);
+        g: { status: :not_found | :found, value: int64 } <- tree_rose@get(deep, p000, 0);
+        s: int64 <- rt_trial_i64@seq_pre(deep);
+        q: boolean <- queries();
+        u: boolean <- updates();
+        println("child_at_path");
+        print_int64(cp);
+        println("");
+        println("leaf_child_item");
+        print_int64(g.value);
+        println("");
+        println("preorder_after_leaf_add");
+        print_int64(s);
+        println("")
+    produces
+        pure pick(q, 1, pick(u, 2, 0))
+    end
+}

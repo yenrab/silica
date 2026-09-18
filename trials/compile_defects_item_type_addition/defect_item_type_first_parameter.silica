@@ -1,0 +1,49 @@
+// Documented open type-checker defect (2026-09-18, promoted from a staged repro),
+// found while writing the PriorityQueue trait over brodal_okasaki_priority. It sits alone in this directory
+// because a compile rejection fails the whole directory; the stdlib spells the value type ValueType instead (see the
+// brodal_okasaki_priority header, deviation 1).
+//
+// Defect: for a PriorityQueue[P, V, mem(S)] receiver, type_checker_collections@
+// resolve_assoc_type_placeholder maps ItemType (and PriorityType) to bracket parameter 1, the
+// priority, and assoc_type_from_record_witness maps both to the compare_priority witness of a
+// record; the design (priority_queue_trait.md §1, common_contract.md §1) makes ItemType the second
+// parameter, the stored value. Expected: compiles and prints x. Observed: E2001 on the "x" argument
+// ("string literal requires string type, got int64": the value_only formal declared ItemType
+// resolved to the int64 priority).
+//
+// To run by hand (two units; the stub module beside this file):
+//   mkdir -p /tmp/ptp && cp StubPriorityQueue.silica item_type_first_parameter.silica /tmp/ptp/ && cd /tmp/ptp
+//   printf 'item_type_first_parameter.silica\nStubPriorityQueue.silica\n' > silica.config
+//   /Volumes/2T/silica/binaries/silica-compiler
+
+use StubPriorityQueue;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn cmp_str(a: string, b: string) -> :less | :equal | :greater {
+    case a == b of {
+        true -> :equal;
+        false -> :less
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        q: PriorityQueue[int64, string, mem(normal)] <- StubPriorityQueue@empty({
+            compare_priority: cmp_i64,
+            compare_item: cmp_str
+        });
+        v: string <- StubPriorityQueue@value_only(q, "x");
+        println(v)
+    produces
+        pure 0
+    end
+}

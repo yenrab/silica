@@ -1,0 +1,87 @@
+// Documented open emitter defect (2026-09-18, promoted from a staged repro),
+// found while writing tree_collections/rt_validate (valid_count_of(r, root, n)).
+//
+// Defect: the THIRD parameter of a function is clobbered by a let-bound call that returns a
+// record: `t <- mk(r, root); ... n` reads a pointer-sized garbage value for n (`returned` prints
+// it), so `v.logical_count == n` is false. The second parameter survives the same lets
+// (second_param), and copying the parameter into a let before the record call (copied) keeps it.
+// Expected output: 1, 1, 1, 1, 3. Observed: 0, 0, 1, 1, <garbage>.
+//
+// Documented open emitter defect (2026-09-18); this trial fails until the emitter is fixed.
+// Origin: ordered_data_structures/tree_collections/staged. To run by hand:
+//   mkdir -p /tmp/rb && cp <this file> /tmp/rb/m.silica && cd /tmp/rb && echo m.silica > silica.config
+//   /Volumes/2T/silica/binaries/silica-compiler
+//   clang -mmacosx-version-min=26.0 -c -x assembler m.sams -o m.o
+//   clang -mmacosx-version-min=26.0 -c -x assembler __silica_runtime.sams -o rt.o
+//   clang m.o rt.o -o m -Wl,-e,main -Wl,-macos_version_min,26.0 && ./m
+
+fn flag(b: boolean) -> int64 {
+    case b of { true -> 1; false -> 0 }
+}
+
+fn mk(r: int64, root: int64) -> { a: int64, b: int64, c: int64, d: int64, e: int64 } {
+    out: { a: int64, b: int64, c: int64, d: int64, e: int64 } <- { a: r, b: root, c: 0, d: 0, e: 0 };
+    out
+}
+
+fn second(t: { a: int64, b: int64, c: int64, d: int64, e: int64 }) -> { valid: boolean, error: atom, logical_count: int64 } {
+    out: { valid: boolean, error: atom, logical_count: int64 } <- { valid: true, error: :ok, logical_count: t.a + t.b };
+    out
+}
+
+// two record lets then the third parameter: (1, 2, 3) -> 1
+fn two_lets(r: int64, root: int64, n: int64) -> int64 {
+    t: { a: int64, b: int64, c: int64, d: int64, e: int64 } <- mk(r, root);
+    v: { valid: boolean, error: atom, logical_count: int64 } <- second(t);
+    flag(v.logical_count == n)
+}
+
+// one record let then the third parameter: (1, 2, 3) -> 1
+fn one_let(r: int64, root: int64, n: int64) -> int64 {
+    t: { a: int64, b: int64, c: int64, d: int64, e: int64 } <- mk(r, root);
+    flag(t.a + t.b == n)
+}
+
+// the third parameter copied before the record lets: (1, 2, 3) -> 1
+fn copied(r: int64, root: int64, n: int64) -> int64 {
+    m: int64 <- n;
+    t: { a: int64, b: int64, c: int64, d: int64, e: int64 } <- mk(r, root);
+    v: { valid: boolean, error: atom, logical_count: int64 } <- second(t);
+    flag(v.logical_count == m)
+}
+
+// the SECOND parameter after the same lets: (1, 3, 2) -> 1
+fn second_param(r: int64, n: int64, root: int64) -> int64 {
+    t: { a: int64, b: int64, c: int64, d: int64, e: int64 } <- mk(r, root);
+    v: { valid: boolean, error: atom, logical_count: int64 } <- second(t);
+    flag(v.logical_count == n)
+}
+
+// the third parameter's value itself: (1, 2, 3) -> 3
+fn returned(r: int64, root: int64, n: int64) -> int64 {
+    t: { a: int64, b: int64, c: int64, d: int64, e: int64 } <- mk(r, root);
+    v: { valid: boolean, error: atom, logical_count: int64 } <- second(t);
+    n + v.logical_count - 3
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        println("two_lets (expected 1)");
+        print_int64(two_lets(1, 2, 3));
+        println("");
+        println("one_let (expected 1)");
+        print_int64(one_let(1, 2, 3));
+        println("");
+        println("copied (expected 1)");
+        print_int64(copied(1, 2, 3));
+        println("");
+        println("second_param (expected 1)");
+        print_int64(second_param(1, 3, 2));
+        println("");
+        println("returned (expected 3)");
+        print_int64(returned(1, 2, 3));
+        println("")
+    produces
+        pure 0
+    end
+}

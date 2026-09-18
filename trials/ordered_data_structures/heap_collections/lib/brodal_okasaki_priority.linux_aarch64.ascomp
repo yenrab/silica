@@ -1,0 +1,1853 @@
+.bss
+.balign 8
+.lcomm silica_frame_depth, 8
+.lcomm silica_frame_max, 8
+.lcomm silica_fuel, 8
+.lcomm silica_saved_pc, 8
+
+.arch armv8.2-a+fp16
+.text
+    // use brodal_okasaki
+.global brodal_okasaki_priority_empty
+.global brodal_okasaki_priority_empty_priority_queue
+.global brodal_okasaki_priority_push_priority
+.global brodal_okasaki_priority_peek_priority_entry
+.global brodal_okasaki_priority_pop_priority
+.global brodal_okasaki_priority_meld_priority
+.global brodal_okasaki_priority_len
+.global brodal_okasaki_priority_is_empty
+.global brodal_okasaki_priority_from_entries
+.global brodal_okasaki_priority_validate
+.global brodal_okasaki_priority_validate_error_code
+.global brodal_okasaki_priority_compare_entry
+.extern silica_rt_ffi_guarded_enter
+.extern silica_rt_ffi_guarded_exit
+.extern silica_rt_ffi_guarded_setjmp
+.extern silica_rt_ffi_guarded_fault_finish
+.extern silica_rt_ffi_arena_bump
+
+    // --- recursion phases (recursion_implementation.jsonld) ---
+    // p1: explicit frame fields; p2: push/dispatch/pop; p3: fuel on back-edges
+    // p4: PC/source map hooks; p5: tail BR (see emit_tail_call_body); p6: trampoline fallback
+
+    // p4 observability: frame -> (fn id, source id) map; filter trampoline frames
+
+    // p6 trampoline fallback (optional):
+    // silica_trampoline_dispatch: load target from frame / BR X8
+    // never rely on unbounded native recursion for general calls
+
+
+
+.globl brodal_okasaki_priority_compare_raw
+brodal_okasaki_priority_compare_raw:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X17, X19
+    STR X17, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    LDR X17, [SP, #0]
+    // effects []|sir_rec:o4203|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    BLR X17
+    MOV X1, X0
+    ADD SP, SP, #16
+    MOV X0, X1
+    CMP X0, #23
+    B.EQ 1f
+    CMP X0, #24
+    B.EQ 1f
+    CMP X0, #25
+    B.EQ 1f
+    MOV X0, #26
+1:
+
+    MOV X22, X0
+    MOV X0, X22
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_compare_raw_value
+brodal_okasaki_priority_compare_raw_value:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X17, X19
+    STR X17, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    LDR X17, [SP, #0]
+    // effects []|sir_rec:o4442|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    BLR X17
+    MOV X1, X0
+    ADD SP, SP, #16
+    MOV X0, X1
+    CMP X0, #23
+    B.EQ 1f
+    CMP X0, #24
+    B.EQ 1f
+    CMP X0, #25
+    B.EQ 1f
+    MOV X0, #26
+1:
+
+    MOV X22, X0
+    MOV X0, X22
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_invalid_halt_atom
+brodal_okasaki_priority_invalid_halt_atom:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X9, #1
+    MOV X10, #0
+
+
+    CMP X10, #0
+    B.NE 1f
+    BL silica_rt_badarith
+1:
+    SDIV X0, X9, X10
+    MOV X0, #24
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_compare_entry_value
+brodal_okasaki_priority_compare_entry_value:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #16
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    LDR X16, [X19, #24]
+    STR X16, [SP, #-16]!
+    LDR X16, [X19, #8]
+    STR X16, [SP, #-16]!
+    LDR X16, [X20, #8]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    // effects []|sir_rec:o5223|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_compare_raw_value
+    ADD X9, X9, :lo12:brodal_okasaki_priority_compare_raw_value
+    BLR X9
+
+    MOV X21, X0
+    MOV X3, X21
+L_case_o5279_br_0:
+    MOV X4, #23
+    CMP X3, X4
+    B.NE L_case_o5279_br_1
+    MOV X0, #23
+    B L_case_o5279_done
+L_case_o5279_br_1:
+    MOV X4, #24
+    CMP X3, X4
+    B.NE L_case_o5279_br_2
+    MOV X0, #24
+    B L_case_o5279_done
+L_case_o5279_br_2:
+    MOV X4, #25
+    CMP X3, X4
+    B.NE L_case_o5279_br_3
+    MOV X0, #25
+    B L_case_o5279_done
+L_case_o5279_br_3:
+    STR X3, [X29, #-16]
+
+    LDR X16, [X29, #-16]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    // effects []|sir_rec:o5394|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_invalid_halt_atom
+    ADD X9, X9, :lo12:brodal_okasaki_priority_invalid_halt_atom
+    BLR X9
+
+    B L_case_o5279_done
+L_case_o5279_fb:
+    BL silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o5279_done
+L_case_o5279_done:
+
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #16
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_compare_entry
+brodal_okasaki_priority_compare_entry:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #16
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    LDR X16, [X19, #16]
+    STR X16, [SP, #-16]!
+    LDR X16, [X19, #0]
+    STR X16, [SP, #-16]!
+    LDR X16, [X20, #0]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    // effects []|sir_rec:o5945|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_compare_raw
+    ADD X9, X9, :lo12:brodal_okasaki_priority_compare_raw
+    BLR X9
+
+    MOV X21, X0
+    MOV X3, X21
+L_case_o6004_br_0:
+    MOV X4, #23
+    CMP X3, X4
+    B.NE L_case_o6004_br_1
+    MOV X0, #23
+    B L_case_o6004_done
+L_case_o6004_br_1:
+    MOV X4, #24
+    CMP X3, X4
+    B.NE L_case_o6004_br_2
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    // effects []|sir_rec:o6060|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_compare_entry_value
+    ADD X9, X9, :lo12:brodal_okasaki_priority_compare_entry_value
+    BLR X9
+
+    B L_case_o6004_done
+L_case_o6004_br_2:
+    MOV X4, #25
+    CMP X3, X4
+    B.NE L_case_o6004_br_3
+    MOV X0, #25
+    B L_case_o6004_done
+L_case_o6004_br_3:
+    STR X3, [X29, #-16]
+
+    LDR X16, [X29, #-16]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    // effects []|sir_rec:o6138|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_invalid_halt_atom
+    ADD X9, X9, :lo12:brodal_okasaki_priority_invalid_halt_atom
+    BLR X9
+
+    B L_case_o6004_done
+L_case_o6004_fb:
+    BL silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o6004_done
+L_case_o6004_done:
+
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #16
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_item_of_peek
+brodal_okasaki_priority_item_of_peek:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X11, X0
+
+    LDR X0, [X1, #8]
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_item_of_pop
+brodal_okasaki_priority_item_of_pop:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X11, X0
+
+    LDR X0, [X1, #64]
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_make_entry
+brodal_okasaki_priority_make_entry:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #128
+    STP X19, X20, [SP, #-16]!
+    MOV X11, X0
+
+    MOV X9, X1
+    STR X9, [X29, #-32]
+    MOV X9, X2
+    STR X9, [X29, #-24]
+    LDR X9, [X11, #0]
+    STR X9, [X29, #-16]
+    LDR X9, [X11, #8]
+    STR X9, [X29, #-8]
+    SUB X0, X29, #32
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #32
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #0
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #128
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_rebuild
+brodal_okasaki_priority_rebuild:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #896
+    STP X19, X20, [SP, #-16]!
+    MOV X11, X0
+
+    LDR X9, [X11, #0]
+    STR X9, [X29, #-112]
+    LDR X9, [X11, #8]
+    STR X9, [X29, #-104]
+    LDR X9, [X11, #16]
+    STR X9, [X29, #-96]
+    LDR X9, [X11, #24]
+    STR X9, [X29, #-88]
+    MOV X9, X1
+    LDR X10, [X9, #0]
+    STR X10, [X29, #-80]
+    LDR X10, [X9, #8]
+    STR X10, [X29, #-72]
+    LDR X10, [X9, #16]
+    STR X10, [X29, #-64]
+    LDR X10, [X9, #24]
+    STR X10, [X29, #-56]
+    LDR X10, [X9, #32]
+    STR X10, [X29, #-48]
+    LDR X10, [X9, #40]
+    STR X10, [X29, #-40]
+    LDR X10, [X9, #48]
+    STR X10, [X29, #-32]
+
+    LDR X9, [X11, #88]
+    STR X9, [X29, #-24]
+    LDR X9, [X11, #96]
+    STR X9, [X29, #-16]
+    LDR X9, [X11, #104]
+    STR X9, [X29, #-8]
+    SUB X0, X29, #112
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #112
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    LDR X3, [X1, #96]
+    STR X3, [X4, #96]
+    LDR X3, [X1, #104]
+    STR X3, [X4, #104]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #0
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #896
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_empty_priority_queue
+brodal_okasaki_priority_empty_priority_queue:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #896
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+
+    STP X0, X1, [SP, #-16]!
+    STP X2, X3, [SP, #-16]!
+    STP X4, X5, [SP, #-16]!
+    STP X6, X7, [SP, #-16]!
+    ADRP X9, brodal_okasaki_priority_compare_entry
+    ADD X9, X9, :lo12:brodal_okasaki_priority_compare_entry
+
+    STR X9, [X29, #-16]
+    SUB X16, X29, #16
+    MOV X0, X16
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    MOV X16, X0
+    LDP X6, X7, [SP], #16
+    LDP X4, X5, [SP], #16
+    LDP X2, X3, [SP], #16
+    LDP X0, X1, [SP], #16
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    // effects []|sir_rec:o13088|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_empty
+    ADD X9, X9, :lo12:brodal_okasaki_empty
+    BLR X9
+
+    MOV X20, X0
+    LDR X1, [X19, #0]
+    MOV X2, #0
+
+    MOV X0, X1
+    MOV X1, X2
+    BL silica_rt_ordering_identity_make
+    MOV X0, X0
+    MOV X21, X0
+    LDR X1, [X19, #8]
+    MOV X2, #0
+
+    MOV X0, X1
+    MOV X1, X2
+    BL silica_rt_ordering_identity_make
+    MOV X0, X0
+    MOV X22, X0
+    LDR X9, [X19, #0]
+    STR X9, [X29, #-112]
+    LDR X9, [X19, #8]
+    STR X9, [X29, #-104]
+    LDR X9, [X19, #0]
+    STR X9, [X29, #-96]
+    LDR X9, [X19, #8]
+    STR X9, [X29, #-88]
+    MOV X9, X20
+    LDR X10, [X9, #0]
+    STR X10, [X29, #-80]
+    LDR X10, [X9, #8]
+    STR X10, [X29, #-72]
+    LDR X10, [X9, #16]
+    STR X10, [X29, #-64]
+    LDR X10, [X9, #24]
+    STR X10, [X29, #-56]
+    LDR X10, [X9, #32]
+    STR X10, [X29, #-48]
+    LDR X10, [X9, #40]
+    STR X10, [X29, #-40]
+    LDR X10, [X9, #48]
+    STR X10, [X29, #-32]
+
+    MOV X9, #0
+    STR X9, [X29, #-24]
+    MOV X9, X21
+    STR X9, [X29, #-16]
+    MOV X9, X22
+    STR X9, [X29, #-8]
+    SUB X0, X29, #112
+    MOV X23, X0
+    MOV X0, X23
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #112
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    LDR X3, [X1, #96]
+    STR X3, [X4, #96]
+    LDR X3, [X1, #104]
+    STR X3, [X4, #104]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #896
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_empty
+brodal_okasaki_priority_empty:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    MOV X11, X0
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    MOV X16, X11
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    // effects []|sir_rec:o15929|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, brodal_okasaki_priority_empty_priority_queue
+    ADD X9, X9, :lo12:brodal_okasaki_priority_empty_priority_queue
+    BR X9
+
+
+.globl brodal_okasaki_priority_push_priority
+brodal_okasaki_priority_push_priority:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    // effects []|sir_rec:o18183|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_make_entry
+    ADD X9, X9, :lo12:brodal_okasaki_priority_make_entry
+    BLR X9
+
+    MOV X22, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    ADD X16, X19, #32
+
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    // effects []|sir_rec:o18238|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_push
+    ADD X9, X9, :lo12:brodal_okasaki_push
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    // effects []|sir_rec:o18223|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_rebuild
+    ADD X9, X9, :lo12:brodal_okasaki_priority_rebuild
+    BLR X9
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_peek_priority_entry
+brodal_okasaki_priority_peek_priority_entry:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #96
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    // effects []|sir_rec:o19693|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_make_entry
+    ADD X9, X9, :lo12:brodal_okasaki_priority_make_entry
+    BLR X9
+
+    MOV X22, X0
+    ADD X16, X19, #32
+
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    // effects []|sir_rec:o19978|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_peek
+    ADD X9, X9, :lo12:brodal_okasaki_peek
+    BLR X9
+
+    MOV X23, X0
+    ADD X16, X19, #32
+
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    // effects []|sir_rec:o20204|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_item_of_peek
+    ADD X9, X9, :lo12:brodal_okasaki_priority_item_of_peek
+    BLR X9
+
+    MOV X24, X0
+    LDR X9, [X23, #0]
+    STR X9, [X29, #-32]
+    LDR X9, [X24, #0]
+    STR X9, [X29, #-24]
+    LDR X9, [X24, #8]
+    STR X9, [X29, #-16]
+    SUB X0, X29, #32
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #32
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #32
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #32
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #96
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_pop_priority
+brodal_okasaki_priority_pop_priority:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #576
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    // effects []|sir_rec:o22657|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_make_entry
+    ADD X9, X9, :lo12:brodal_okasaki_priority_make_entry
+    BLR X9
+
+    MOV X22, X0
+    ADD X16, X19, #32
+
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    // effects []|sir_rec:o23507|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_pop
+    ADD X9, X9, :lo12:brodal_okasaki_pop
+    BLR X9
+
+    MOV X23, X0
+    ADD X16, X19, #32
+
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    // effects []|sir_rec:o23732|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_item_of_pop
+    ADD X9, X9, :lo12:brodal_okasaki_priority_item_of_pop
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    ADD X16, X23, #0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    // effects []|sir_rec:o24718|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_rebuild
+    ADD X9, X9, :lo12:brodal_okasaki_priority_rebuild
+    BLR X9
+
+    MOV X25, X0
+    MOV X9, X25
+    LDR X10, [X9, #0]
+    STR X10, [X29, #-144]
+    LDR X10, [X9, #8]
+    STR X10, [X29, #-136]
+    LDR X10, [X9, #16]
+    STR X10, [X29, #-128]
+    LDR X10, [X9, #24]
+    STR X10, [X29, #-120]
+    LDR X10, [X9, #32]
+    STR X10, [X29, #-112]
+    LDR X10, [X9, #40]
+    STR X10, [X29, #-104]
+    LDR X10, [X9, #48]
+    STR X10, [X29, #-96]
+    LDR X10, [X9, #56]
+    STR X10, [X29, #-88]
+    LDR X10, [X9, #64]
+    STR X10, [X29, #-80]
+    LDR X10, [X9, #72]
+    STR X10, [X29, #-72]
+    LDR X10, [X9, #80]
+    STR X10, [X29, #-64]
+    LDR X10, [X9, #88]
+    STR X10, [X29, #-56]
+    LDR X10, [X9, #96]
+    STR X10, [X29, #-48]
+    LDR X10, [X9, #104]
+    STR X10, [X29, #-40]
+
+    LDR X9, [X23, #56]
+    STR X9, [X29, #-32]
+    LDR X9, [X24, #0]
+    STR X9, [X29, #-24]
+    LDR X9, [X24, #8]
+    STR X9, [X29, #-16]
+    SUB X0, X29, #144
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #144
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    LDR X3, [X1, #96]
+    STR X3, [X4, #96]
+    LDR X3, [X1, #104]
+    STR X3, [X4, #104]
+    LDR X3, [X1, #112]
+    STR X3, [X4, #112]
+    LDR X3, [X1, #120]
+    STR X3, [X4, #120]
+    LDR X3, [X1, #128]
+    STR X3, [X4, #128]
+    LDR X3, [X1, #136]
+    STR X3, [X4, #136]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #144
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    LDR X3, [X1, #96]
+    STR X3, [X4, #96]
+    LDR X3, [X1, #104]
+    STR X3, [X4, #104]
+    LDR X3, [X1, #112]
+    STR X3, [X4, #112]
+    LDR X3, [X1, #120]
+    STR X3, [X4, #120]
+    LDR X3, [X1, #128]
+    STR X3, [X4, #128]
+    LDR X3, [X1, #136]
+    STR X3, [X4, #136]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #144
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    LDR X3, [X1, #96]
+    STR X3, [X4, #96]
+    LDR X3, [X1, #104]
+    STR X3, [X4, #104]
+    LDR X3, [X1, #112]
+    STR X3, [X4, #112]
+    LDR X3, [X1, #120]
+    STR X3, [X4, #120]
+    LDR X3, [X1, #128]
+    STR X3, [X4, #128]
+    LDR X3, [X1, #136]
+    STR X3, [X4, #136]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #144
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    LDR X3, [X1, #96]
+    STR X3, [X4, #96]
+    LDR X3, [X1, #104]
+    STR X3, [X4, #104]
+    LDR X3, [X1, #112]
+    STR X3, [X4, #112]
+    LDR X3, [X1, #120]
+    STR X3, [X4, #120]
+    LDR X3, [X1, #128]
+    STR X3, [X4, #128]
+    LDR X3, [X1, #136]
+    STR X3, [X4, #136]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #576
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_meld_priority
+brodal_okasaki_priority_meld_priority:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #384
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    SUB X16, X29, #384
+    STR X0, [X16, #0]
+    LDR X9, [X19, #96]
+    STR X9, [SP, #-16]!
+    LDR X10, [X20, #96]
+    LDR X9, [SP], #16
+    CMP X9, X10
+    CSET X0, EQ
+    CBZ X0, L_sc_o28028_done
+    SUB X16, X29, #384
+    LDR X0, [X16, #0]
+    LDR X9, [X19, #104]
+    STR X9, [SP, #-16]!
+    LDR X10, [X20, #104]
+    LDR X9, [SP], #16
+    CMP X9, X10
+    CSET X0, EQ
+L_sc_o28028_done:
+
+    MOV X21, X0
+    MOV X3, X21
+L_case_o28109_br_0:
+    CMP W3, #0
+    B.NE L_case_o28109_br_1
+    MOV X9, X19
+    LDR X10, [X9, #0]
+    STR X10, [X29, #-128]
+    LDR X10, [X9, #8]
+    STR X10, [X29, #-120]
+    LDR X10, [X9, #16]
+    STR X10, [X29, #-112]
+    LDR X10, [X9, #24]
+    STR X10, [X29, #-104]
+    LDR X10, [X9, #32]
+    STR X10, [X29, #-96]
+    LDR X10, [X9, #40]
+    STR X10, [X29, #-88]
+    LDR X10, [X9, #48]
+    STR X10, [X29, #-80]
+    LDR X10, [X9, #56]
+    STR X10, [X29, #-72]
+    LDR X10, [X9, #64]
+    STR X10, [X29, #-64]
+    LDR X10, [X9, #72]
+    STR X10, [X29, #-56]
+    LDR X10, [X9, #80]
+    STR X10, [X29, #-48]
+    LDR X10, [X9, #88]
+    STR X10, [X29, #-40]
+    LDR X10, [X9, #96]
+    STR X10, [X29, #-32]
+    LDR X10, [X9, #104]
+    STR X10, [X29, #-24]
+
+    MOV X9, #0
+    STR X9, [X29, #-16]
+    SUB X0, X29, #128
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #128
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    LDR X3, [X1, #96]
+    STR X3, [X4, #96]
+    LDR X3, [X1, #104]
+    STR X3, [X4, #104]
+    LDR X3, [X1, #112]
+    STR X3, [X4, #112]
+    LDR X3, [X1, #120]
+    STR X3, [X4, #120]
+    MOV X0, X4
+    ADD SP, SP, #16
+    B L_case_o28109_done
+L_case_o28109_br_1:
+    CMP W3, #1
+    B.NE L_case_o28109_fb
+    ADD X16, X19, #32
+
+    STR X16, [SP, #-16]!
+    ADD X16, X20, #32
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    // effects []|sir_rec:o28808|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_meld
+    ADD X9, X9, :lo12:brodal_okasaki_meld
+    BLR X9
+
+    MOV X22, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    ADD X16, X22, #0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    // effects []|sir_rec:o28873|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_rebuild
+    ADD X9, X9, :lo12:brodal_okasaki_priority_rebuild
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [X9, #0]
+    STR X10, [X29, #-128]
+    LDR X10, [X9, #8]
+    STR X10, [X29, #-120]
+    LDR X10, [X9, #16]
+    STR X10, [X29, #-112]
+    LDR X10, [X9, #24]
+    STR X10, [X29, #-104]
+    LDR X10, [X9, #32]
+    STR X10, [X29, #-96]
+    LDR X10, [X9, #40]
+    STR X10, [X29, #-88]
+    LDR X10, [X9, #48]
+    STR X10, [X29, #-80]
+    LDR X10, [X9, #56]
+    STR X10, [X29, #-72]
+    LDR X10, [X9, #64]
+    STR X10, [X29, #-64]
+    LDR X10, [X9, #72]
+    STR X10, [X29, #-56]
+    LDR X10, [X9, #80]
+    STR X10, [X29, #-48]
+    LDR X10, [X9, #88]
+    STR X10, [X29, #-40]
+    LDR X10, [X9, #96]
+    STR X10, [X29, #-32]
+    LDR X10, [X9, #104]
+    STR X10, [X29, #-24]
+
+    LDR X9, [X22, #56]
+    STR X9, [X29, #-16]
+    SUB X0, X29, #128
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #240
+    BL silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    LDR X3, [X1, #96]
+    STR X3, [X4, #96]
+    LDR X3, [X1, #104]
+    STR X3, [X4, #104]
+    LDR X3, [X1, #112]
+    STR X3, [X4, #112]
+    LDR X3, [X1, #120]
+    STR X3, [X4, #120]
+    LDR X3, [X1, #128]
+    STR X3, [X4, #128]
+    LDR X3, [X1, #136]
+    STR X3, [X4, #136]
+    LDR X3, [X1, #144]
+    STR X3, [X4, #144]
+    LDR X3, [X1, #152]
+    STR X3, [X4, #152]
+    LDR X3, [X1, #160]
+    STR X3, [X4, #160]
+    LDR X3, [X1, #168]
+    STR X3, [X4, #168]
+    LDR X3, [X1, #176]
+    STR X3, [X4, #176]
+    LDR X3, [X1, #184]
+    STR X3, [X4, #184]
+    LDR X3, [X1, #192]
+    STR X3, [X4, #192]
+    LDR X3, [X1, #200]
+    STR X3, [X4, #200]
+    LDR X3, [X1, #208]
+    STR X3, [X4, #208]
+    LDR X3, [X1, #216]
+    STR X3, [X4, #216]
+    LDR X3, [X1, #224]
+    STR X3, [X4, #224]
+    LDR X3, [X1, #232]
+    STR X3, [X4, #232]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    B L_case_o28109_done
+L_case_o28109_fb:
+    BL silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o28109_done
+L_case_o28109_done:
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #384
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_len
+brodal_okasaki_priority_len:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    MOV X11, X0
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    ADD X16, X11, #32
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    // effects []|sir_rec:o29917|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, brodal_okasaki_size
+    ADD X9, X9, :lo12:brodal_okasaki_size
+    BR X9
+
+
+.globl brodal_okasaki_priority_is_empty
+brodal_okasaki_priority_is_empty:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    MOV X11, X0
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    ADD X16, X11, #32
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    // effects []|sir_rec:o30934|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, brodal_okasaki_is_empty
+    ADD X9, X9, :lo12:brodal_okasaki_is_empty
+    BR X9
+
+
+.globl brodal_okasaki_priority_from_entries_go
+brodal_okasaki_priority_from_entries_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X3, X20
+L_case_o32968_br_0:
+    CMP X3, #0
+    B.NE L_case_o32968_br_1
+    MOV X0, X19
+    B L_case_o32968_done
+L_case_o32968_br_1:
+    CBZ X3, L_case_o32968_fb
+    STP X0, X1, [SP, #-16]!
+    STP X2, X3, [SP, #-16]!
+    STP X4, X5, [SP, #-16]!
+    MOV X0, X3
+    MOV X1, #16
+    MOV X2, #16
+    BL L_list_tail_helper
+    MOV X21, X0
+    LDP X4, X5, [SP], #16
+    LDP X2, X3, [SP], #16
+    LDP X0, X1, [SP], #16
+    LDR X10, [X3, #8]
+    LDR X11, [X3, #16]
+    ADD X10, X10, X11
+    MOV X22, X10
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X16, [X22, #0]
+    STR X16, [SP, #-16]!
+    LDR X16, [X22, #8]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    // effects []|sir_rec:o33214|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_push_priority
+    ADD X9, X9, :lo12:brodal_okasaki_priority_push_priority
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    // effects []|sir_rec:o33198|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_from_entries_go
+    ADD X9, X9, :lo12:brodal_okasaki_priority_from_entries_go
+    BLR X9
+
+    B L_case_o32968_done
+L_case_o32968_fb:
+    BL silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o32968_done
+L_case_o32968_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_from_entries
+brodal_okasaki_priority_from_entries:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    // effects []|sir_rec:o34596|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, brodal_okasaki_priority_empty_priority_queue
+    ADD X9, X9, :lo12:brodal_okasaki_priority_empty_priority_queue
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ADRP X9, brodal_okasaki_priority_from_entries_go
+    ADD X9, X9, :lo12:brodal_okasaki_priority_from_entries_go
+    BLR X9
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+.globl brodal_okasaki_priority_validate
+brodal_okasaki_priority_validate:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    MOV X11, X0
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    ADD X16, X11, #32
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    // effects []|sir_rec:o35669|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, brodal_okasaki_validate
+    ADD X9, X9, :lo12:brodal_okasaki_validate
+    BR X9
+
+
+.globl brodal_okasaki_priority_validate_error_code
+brodal_okasaki_priority_validate_error_code:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    // effects []|sir_rec:o35759|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, brodal_okasaki_validate_error_code
+    ADD X9, X9, :lo12:brodal_okasaki_validate_error_code
+    BR X9
+
+L_pa_helper:
+    CMP X0, #0
+    B.lt L_pa_oob
+    CMP X0, #27
+    B.ge L_pa_oob
+    ADRP X9, L_pa_table
+    ADD X9, X9, :lo12:L_pa_table
+    LSL X10, X0, #4
+    ADD X9, X9, X10
+    LDR X1, [X9]
+    LDR X2, [X9, #8]
+    MOV X0, #1
+    STR X8, [SP, #-16]!
+    MOV X8, #64
+    SVC #0
+    LDR X8, [SP], #16
+    MOV X0, #0
+    RET
+L_pa_oob:
+    MOV X0, #0
+    RET
+
+L_list_prepend_helper:
+    STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X1, X2, [SP, #-16]!
+    STP X3, X4, [SP, #-16]!
+    STR X5, [SP, #-16]!
+    CBZ X2, L_lph_new_chunk
+    LDR X6, [X2, #16]
+    CBZ X6, L_lph_new_chunk
+    LDR X7, [X2, #8]
+    SUB X8, X6, X3
+    ADD X10, X7, X8
+    LDR X11, [SP]
+    CBZ X11, L_lph_room_scalar
+    MOV X12, #0
+L_lph_room_agg:
+    CMP X12, X3
+    B.GE L_lph_room_stored
+    LDR X13, [X1, X12]
+    STR X13, [X10, X12]
+    ADD X12, X12, #8
+    B L_lph_room_agg
+    B L_lph_room_stored
+L_lph_room_scalar:
+    CMP X3, #8
+    B.EQ L_lph_rs8
+    CMP X3, #4
+    B.EQ L_lph_rs4
+    CMP X3, #2
+    B.EQ L_lph_rs2
+    STRB W1, [X10]
+    B L_lph_room_stored
+L_lph_rs2:
+    STRH W1, [X10]
+    B L_lph_room_stored
+L_lph_rs4:
+    STR W1, [X10]
+    B L_lph_room_stored
+L_lph_rs8:
+    STR X1, [X10]
+L_lph_room_stored:
+    MOV X0, #24
+    BL silica_rt_region_alloc
+    LDR X5, [SP], #16
+    LDP X3, X4, [SP], #16
+    LDP X1, X2, [SP], #16
+    LDR X6, [X2]
+    ADD X6, X6, #1
+    STR X6, [X0]
+    LDR X7, [X2, #8]
+    STR X7, [X0, #8]
+    LDR X8, [X2, #16]
+    SUB X8, X8, X3
+    STR X8, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+L_lph_new_chunk:
+    ADD X0, X4, #8
+    BL silica_rt_region_alloc
+    MOV X6, X0
+    LDR X5, [SP]
+    LDP X3, X4, [SP, #16]
+    LDP X1, X2, [SP, #32]
+    SUB X8, X4, X3
+    ADD X10, X6, X8
+    CBZ X5, L_lph_new_scalar
+    MOV X12, #0
+L_lph_new_agg:
+    CMP X12, X3
+    B.GE L_lph_new_stored
+    LDR X13, [X1, X12]
+    STR X13, [X10, X12]
+    ADD X12, X12, #8
+    B L_lph_new_agg
+    B L_lph_new_stored
+L_lph_new_scalar:
+    CMP X3, #8
+    B.EQ L_lph_ns8
+    CMP X3, #4
+    B.EQ L_lph_ns4
+    CMP X3, #2
+    B.EQ L_lph_ns2
+    STRB W1, [X10]
+    B L_lph_new_stored
+L_lph_ns2:
+    STRH W1, [X10]
+    B L_lph_new_stored
+L_lph_ns4:
+    STR W1, [X10]
+    B L_lph_new_stored
+L_lph_ns8:
+    STR X1, [X10]
+L_lph_new_stored:
+    CBZ X2, L_lph_next_nil
+    LDR X9, [X2, #8]
+    STR X9, [X6, X4]
+    B L_lph_alloc_handle
+L_lph_next_nil:
+    STR XZR, [X6, X4]
+L_lph_alloc_handle:
+    STP X6, X8, [SP, #-16]!
+    MOV X0, #24
+    BL silica_rt_region_alloc
+    LDP X6, X8, [SP], #16
+    LDR X5, [SP], #16
+    LDP X3, X4, [SP], #16
+    LDP X1, X2, [SP], #16
+    CBZ X2, L_lph_len1
+    LDR X9, [X2]
+    ADD X9, X9, #1
+    B L_lph_setlen
+L_lph_len1:
+    MOV X9, #1
+L_lph_setlen:
+    STR X9, [X0]
+    STR X6, [X0, #8]
+    STR X8, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+
+L_list_tail_helper:
+    STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    LDR X3, [X0]
+    LDR X4, [X0, #8]
+    LDR X5, [X0, #16]
+    ADD X6, X5, X1
+    CMP X6, X2
+    B.GE L_lth_next_chunk
+    SUB X3, X3, #1
+    CBZ X3, L_lth_nil
+    STP X3, X4, [SP, #-16]!
+    STP X6, XZR, [SP, #-16]!
+    MOV X0, #24
+    BL silica_rt_region_alloc
+    LDP X6, XZR, [SP], #16
+    LDP X3, X4, [SP], #16
+    STR X3, [X0]
+    STR X4, [X0, #8]
+    STR X6, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+L_lth_next_chunk:
+    LDR X7, [X4, X2]
+    CBZ X7, L_lth_nil
+    SUB X3, X3, #1
+    CBZ X3, L_lth_nil
+    STP X3, X7, [SP, #-16]!
+    MOV X0, #24
+    BL silica_rt_region_alloc
+    LDP X3, X7, [SP], #16
+    STR X3, [X0]
+    STR X7, [X0, #8]
+    STR XZR, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+L_lth_nil:
+    MOV X0, #0
+    LDP X29, X30, [SP], #16
+    RET
+
+L_list_length_helper:
+    CBZ X0, L_list_len_nil
+    LDR X0, [X0]
+    RET
+L_list_len_nil:
+    MOV X0, #0
+    RET
+
+.section .rodata
+.p2align	8
+atom_0:
+    .byte  0x3a, 0x65, 0x66, 0x66, 0x69, 0x63, 0x69, 0x65, 0x6e, 0x63, 0x79, 0
+atom_1:
+    .byte  0x3a, 0x70, 0x65, 0x72, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x6e, 0x63, 0x65, 0
+atom_2:
+    .byte  0x3a, 0x6f, 0x6b, 0
+atom_3:
+    .byte  0x3a, 0x6e, 0x6f, 0x72, 0x6d, 0x61, 0x6c, 0
+atom_4:
+    .byte  0x3a, 0x6c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x5f, 0x65, 0x72, 0x72, 0x6f, 0x72, 0
+atom_5:
+    .byte  0x3a, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x5f, 0x66, 0x61, 0x75, 0x6c, 0x74, 0
+atom_6:
+    .byte  0x3a, 0x65, 0x78, 0x70, 0x6c, 0x69, 0x63, 0x69, 0x74, 0
+atom_7:
+    .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0
+atom_8:
+    .byte  0x3a, 0x6e, 0x6f, 0x70, 0x72, 0x6f, 0x63, 0
+atom_9:
+    .byte  0x3a, 0x70, 0x65, 0x72, 0x6d, 0x61, 0x6e, 0x65, 0x6e, 0x74, 0
+atom_10:
+    .byte  0x3a, 0x74, 0x72, 0x61, 0x6e, 0x73, 0x69, 0x65, 0x6e, 0x74, 0
+atom_11:
+    .byte  0x3a, 0x74, 0x65, 0x6d, 0x70, 0x6f, 0x72, 0x61, 0x72, 0x79, 0
+atom_12:
+    .byte  0x3a, 0x6f, 0x6e, 0x65, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x6f, 0x6e, 0x65, 0
+atom_13:
+    .byte  0x3a, 0x6f, 0x6e, 0x65, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x61, 0x6c, 0x6c, 0
+atom_14:
+    .byte  0x3a, 0x72, 0x65, 0x73, 0x74, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x6f, 0x6e, 0x65, 0
+atom_15:
+    .byte  0x3a, 0x69, 0x6e, 0x73, 0x65, 0x72, 0x74, 0
+atom_16:
+    .byte  0x3a, 0x6c, 0x6f, 0x6f, 0x6b, 0x75, 0x70, 0
+atom_17:
+    .byte  0x3a, 0x64, 0x65, 0x6c, 0x65, 0x74, 0x65, 0
+atom_18:
+    .byte  0x3a, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
+atom_19:
+    .byte  0x3a, 0x6e, 0x6f, 0x74, 0x5f, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
+atom_20:
+    .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0x5f, 0x6f, 0x70, 0
+atom_21:
+    .byte  0x3a, 0x70, 0x6c, 0x61, 0x69, 0x6e, 0
+atom_22:
+    .byte  0x3a, 0x64, 0x61, 0x6e, 0x67, 0x65, 0x72, 0x6f, 0x75, 0x73, 0
+atom_23:
+    .byte  0x3a, 0x6c, 0x65, 0x73, 0x73, 0
+atom_24:
+    .byte  0x3a, 0x65, 0x71, 0x75, 0x61, 0x6c, 0
+atom_25:
+    .byte  0x3a, 0x67, 0x72, 0x65, 0x61, 0x74, 0x65, 0x72, 0
+atom_26:
+    .byte  0x3a, 0x69, 0x6e, 0x76, 0x61, 0x6c, 0x69, 0x64, 0x5f, 0x63, 0x6f, 0x6d, 0x70, 0x61, 0x72, 0x61, 0x74, 0x6f, 0x72, 0x5f, 0x72, 0x65, 0x73, 0x75, 0x6c, 0x74, 0
+.section .data.rel.ro,"aw",%progbits
+.p2align	3
+L_pa_table:
+    .quad atom_0
+    .quad 11
+    .quad atom_1
+    .quad 12
+    .quad atom_2
+    .quad 3
+    .quad atom_3
+    .quad 7
+    .quad atom_4
+    .quad 15
+    .quad atom_5
+    .quad 13
+    .quad atom_6
+    .quad 9
+    .quad atom_7
+    .quad 8
+    .quad atom_8
+    .quad 7
+    .quad atom_9
+    .quad 10
+    .quad atom_10
+    .quad 10
+    .quad atom_11
+    .quad 10
+    .quad atom_12
+    .quad 12
+    .quad atom_13
+    .quad 12
+    .quad atom_14
+    .quad 13
+    .quad atom_15
+    .quad 7
+    .quad atom_16
+    .quad 7
+    .quad atom_17
+    .quad 7
+    .quad atom_18
+    .quad 6
+    .quad atom_19
+    .quad 10
+    .quad atom_20
+    .quad 11
+    .quad atom_21
+    .quad 6
+    .quad atom_22
+    .quad 10
+    .quad atom_23
+    .quad 5
+    .quad atom_24
+    .quad 6
+    .quad atom_25
+    .quad 8
+    .quad atom_26
+    .quad 26
+

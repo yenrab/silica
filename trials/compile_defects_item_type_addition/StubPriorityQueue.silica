@@ -1,0 +1,56 @@
+// Staged type-checker repro (2026-09-18, binaries/silica-compiler = the fixed point of that date),
+// found while writing the PriorityQueue trait over brodal_okasaki_priority. Not compiled by the
+// suite; see priority_type_composite.silica and item_type_first_parameter.silica beside it.
+//
+// A minimal PriorityQueue construction module. `StubPriorityQueue` is one of the module names the
+// checker registers for PriorityQueue[P, V, mem(S)] bindings (type_checker_collections
+// representation_id_from_module), so a bracket-typed `x <- StubPriorityQueue@empty({...})` binding
+// type-checks without the real stdlib. The stored record spells the value type ValueType: with the
+// design's ItemType in `compare_item: fn(ItemType, ItemType)` the constructor binding itself already
+// fails ("E2003 type mismatch: cmp_str"), because the checker resolves ItemType to the first bracket
+// parameter, the int64 priority -- the same defect item_type_first_parameter.silica isolates on a
+// bare formal. The priority keeps the design's PriorityType.
+
+export empty/1;
+export peek/3;
+export value_only/2;
+
+fn empty(
+    functions: {
+        compare_priority: fn(PriorityType, PriorityType) -> :less | :equal | :greater,
+        compare_item: fn(ValueType, ValueType) -> :less | :equal | :greater
+    }
+) -> {
+        compare_priority: fn(PriorityType, PriorityType) -> :less | :equal | :greater,
+        compare_item: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        count: int64
+    } {
+    { compare_priority: functions.compare_priority, compare_item: functions.compare_item, count: 0 }
+}
+
+// Composite result naming PriorityType: the checker never substitutes PriorityType inside a
+// composite type, so the caller's `{ ..., priority: int64, ... }` binding fails E2003.
+fn peek(
+    queue: {
+        compare_priority: fn(PriorityType, PriorityType) -> :less | :equal | :greater,
+        compare_item: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        count: int64
+    },
+    placeholder_priority: PriorityType,
+    placeholder_value: ValueType
+) -> { status: :not_found | :found, priority: PriorityType, value: ValueType } {
+    { status: :not_found, priority: placeholder_priority, value: placeholder_value }
+}
+
+// Bare ItemType formal: for a PriorityQueue[int64, string, mem(normal)] receiver the checker resolves
+// ItemType to the FIRST bracket parameter (int64, the priority), so passing a string value fails.
+fn value_only(
+    queue: {
+        compare_priority: fn(PriorityType, PriorityType) -> :less | :equal | :greater,
+        compare_item: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        count: int64
+    },
+    value: ItemType
+) -> ItemType {
+    value
+}

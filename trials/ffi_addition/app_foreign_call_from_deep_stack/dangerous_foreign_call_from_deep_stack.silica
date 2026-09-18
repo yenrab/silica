@@ -1,0 +1,55 @@
+module dangerous_foreign_call_from_deep_stack;
+
+// §15.1.2.2: a foreign call made from deep inside an already-grown actor stack runs on that stack
+// and may grow it further; the fault handler treats an address inside the reservation as growth
+// before it considers the guarded-foreign-call recovery. The worker (:keep_high_water, so its stack
+// stays grown) first recurses 100000 frames in Silica, then calls a C function that recurses 150000
+// frames, deeper than the run the Silica recursion committed, so the growth faults happen inside the
+// guarded foreign call; it reports the sum of the two depths. The external_danger sequence must be
+// the worker behavior's root body (FFI wrapper spec §4.6, E3012), so the Silica recursion runs inside it.
+
+wrapper_meta "dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta";
+
+foreign c_wrapper "silica_legacy_math_recurse"
+fn recurse_raw(n: int64) -> int64;
+
+fn silica_depth(n: int64) -> int64 {
+    case n == 0 of {
+        true -> 0;
+        false -> {
+            r: int64 <- silica_depth(n - 1);
+            r + 1
+        }
+    }
+}
+
+fn result_sink(msg: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        print_int64(msg);
+        println("");
+        println("done")
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn ffi_worker(msg: int64, reply_to: actor_ref) -> (:no_reply, actor_ref) {
+    sequence proc[external_danger, concurrency]
+        d: int64 <- silica_depth(100000);
+        c: int64 <- recurse_raw(msg);
+        _: boolean <- cast(reply_to, d + c impl ActorMessage {})
+    produces
+        pure (:no_reply, reply_to)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sink_ref: actor_ref <- spawn(0, result_sink, stack_policy(0, :keep_last_message));
+        worker_ref: dangerous_actor_ref <- spawn_dangerous(sink_ref, ffi_worker, stack_policy(0, :keep_high_water));
+        _: boolean <- cast(worker_ref, 150000 impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

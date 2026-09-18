@@ -26,7 +26,10 @@ SUB_TRIALS := \
 	wbt_core \
 	skew_ral_core \
 	brodal_okasaki_core \
+	binary_tree_core \
 	ordered_collections \
+	heap_collections \
+	tree_collections \
 	self_host_maps \
 	live_graphs \
 	terminal_structures \
@@ -35,7 +38,7 @@ SUB_TRIALS := \
 
 STDLIB_SRC := $(abspath $(THIS_DIR)../../compiler/silica-compiler/stdlib/data_structures)
 SDS_STDLIB_CACHE := $(THIS_DIR).stdlib_cache
-SDS_STDLIB_MODULES := wbt_set wbt_map OrderedMap OrderedSet skew_ral_weights skew_ral_node skew_ral_tree_read skew_ral_tree_write skew_ral_forest skew_ral_index skew_ral_traverse skew_ral_build skew_ral_validate skew_ral_dispatch_access skew_ral_dispatch_bulk skew_ral brodal_okasaki_node brodal_okasaki_compare brodal_okasaki_link brodal_okasaki_forest brodal_okasaki_extract brodal_okasaki_boot brodal_okasaki_validate brodal_okasaki_dispatch_core brodal_okasaki_dispatch_bulk brodal_okasaki
+SDS_STDLIB_MODULES := wbt_set wbt_map OrderedMap OrderedSet skew_ral_weights skew_ral_node skew_ral_tree_read skew_ral_tree_write skew_ral_forest skew_ral_index skew_ral_traverse skew_ral_build skew_ral_validate skew_ral_dispatch_access skew_ral_dispatch_bulk skew_ral brodal_okasaki_node brodal_okasaki_compare brodal_okasaki_link brodal_okasaki_forest brodal_okasaki_extract brodal_okasaki_boot brodal_okasaki_validate brodal_okasaki_dispatch_core brodal_okasaki_dispatch_bulk brodal_okasaki tree_binary BinaryTree brodal_okasaki_min brodal_okasaki_max brodal_okasaki_priority Heap PriorityQueue tree_rose Tree
 
 ASSEMBLER := clang
 MACOS_MIN_VERSION ?= 26.0
@@ -125,7 +128,10 @@ gate-stdlib: stdlib-objs
 		case "$$m" in \
 			OrderedMap|OrderedSet) golden="$(THIS_DIR)ordered_collections/lib/$$m$(ASCOMP_EXT)";; \
 			skew_ral*) golden="$(THIS_DIR)skew_ral_core/lib/$$m$(ASCOMP_EXT)";; \
+			brodal_okasaki_min|brodal_okasaki_max|brodal_okasaki_priority|Heap|PriorityQueue) golden="$(THIS_DIR)heap_collections/lib/$$m$(ASCOMP_EXT)";; \
 			brodal_okasaki*) golden="$(THIS_DIR)brodal_okasaki_core/lib/$$m$(ASCOMP_EXT)";; \
+			tree_binary|BinaryTree) golden="$(THIS_DIR)binary_tree_core/lib/$$m$(ASCOMP_EXT)";; \
+			tree_rose|Tree) golden="$(THIS_DIR)tree_collections/lib/$$m$(ASCOMP_EXT)";; \
 			*) golden="$(THIS_DIR)wbt_core/lib/$$m$(ASCOMP_EXT)";; \
 		esac; \
 		if [ ! -f "$$sams" ]; then \

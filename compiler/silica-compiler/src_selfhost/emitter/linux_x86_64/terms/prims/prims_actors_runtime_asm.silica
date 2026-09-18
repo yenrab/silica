@@ -1,0 +1,1840 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Compiler-bundled actor runtime: x86-64 assembly text maintained here (Silica string chunks).
+// linux_x86_64 port of emitter/linux_aarch64: GNU/ELF Intel syntax (`.intel_syntax noprefix` is emitted
+// by the unit prelude), undecorated symbols, and Linux x86-64 syscalls (numbers per the port guide).
+// Links against glibc (calloc, free, pthread_*, sigaction, dladdr, ...). Darwin-only APIs
+// (os_unfair_lock, __ulock_wait/wake, sysctlbyname, thread_policy_set, pthread QoS) are routed to
+// the futex / sysconf / affinity shims in linux_rt_shims_asm.silica (silica_rt_lock_*,
+// silica_rt_futex_*, silica_rt_sysctlbyname, silica_rt_thread_policy_set, ...).
+// Calling conventions: every silica_rt_* routine (shims included) reads its arguments in the internal
+// homes X0..X7 = rdi rsi rdx rcx r8 r9 r14 r15 and returns its result in rdi (X0), never rax; only C
+// library results arrive in rax. Behaviours and trampolines are entered with rdi/rsi/rdx and clobber
+// every register except rbp/rsp, so the AArch64 callee-saved values x19..x28 live in frame slots
+// [rbp-8]..[rbp-80] (x8 -> rbx, x9..x12 -> r10 r11 r12 r13, x13..x17 -> rax). Routines that C calls
+// back (actor_thread_main as the pthread start routine) additionally preserve rbx r12-r15 below the
+// slots and return in rax. Chunks 9-13 live in prims_actors_runtime_asm_b; the cv / phase_c / phase_f
+// / pid_registry / phase_i / badarith / case_clause chunks live in prims_actors_runtime_asm_c.
+// Thread-local current actor pointer is stored via pthread_key_t (silica_actor_pthread_key), not Mach-O TLV
+// (__thread/__tlv_bootstrap), so linker TLVP_* lowering cannot break pthread entry.
+// Phase E e4f: per-actor mutex + scheduler CV use a 4 B lock word + futex seq word (not pthread_mutex_t /
+// pthread_cond_t) — see actor_rt_asm_cv_chunk and supervisors_implementation_development_plan.md.
+// cpu_topology / cache / NUMA helpers (silica_rt_apple_*, sysctl hw.*): answered by the sysctl shim (cpuid / sysconf) on this target (see cpu_topology_implementation_plan Phase G).
+// ABI: spawn(X0,X1,X2)->X0  send(X0,X1)  cast(X0,X1)->W0  call(X0,X1)->X0  self()->X0  recv()->X0
+// X2=optional core_id (0 default) per §15.1.1, X4=packed stack_policy (0 = inherit the spawner's; see prims_actors_stack_asm).
+// Unified actor control block 512 B (384..511 are the runtime-managed stack fields, prims_actors_stack_asm.silica) for spawn and spawn_linked (e3e: +32 B restart frequency fields; e4b: +8 B pending exit reason_tag; call-death active wrapper; Phase 12: +32 B FFI arena base/end/bump at #352).
+// spawn_linked Phase A (supervisors_implementation_development_plan): spawn_linked(X0,X1,X2,X3,X4)->X0
+// X0=init X1=beh X2=agent_type (int64) X3=row/core metadata (0 default), X4=optional supervisor trampoline.
+// Offsets: #192 supervisor actor_ref (0 root), #200 agent_type atom, #208 core_id, #216 first supervised child,
+// #224 next supervised sibling (intrusive list under parent's mutex +16).
+// Mailboxes (supervisors_implementation_development_plan §4 Phase B; §15.4.9, §16.2.7):
+// Each mailbox is a two-list functional queue (front, rear). Enqueue = prepend node to `rear`; dequeue = pop from
+// `front`; when `front` is empty on a dequeue, `rear` is reversed in place to become the new `front` and `rear` is
+// cleared. Standard mailbox pair at (#128 front, #136 rear). Supervision ingress pair at (#232 front, #240 rear),
+// with u32 depth at #248 (bounded; overflow calls abort in trusted runtime).
+// 152 B message nodes: #24 ingress_kind — 0 = structured child-exit heap payload ptr at #8 (Phase C; auto-restart reads #8);
+// non-zero = Phase B trial hook only: #8 holds inline int64 (not a pointer; sup_beh must run; skip maybe_restart).
+// Phase E e3a: child table anchors at #256 head ptr, #264 len (high-water row count),
+// #272 sync_failure_reported (0/1; root restart-cap escalation reports before replying, thread exit skips duplicate);
+// rows are singly-linked nodes (88 B: 80 B row + next@+80), no realloc — stable row pointers (Option B).
+// Phase E e3b: #280 = trampoline fn ptr (silica_supervisor_start_<T>, 0 if non-supervisor), #288 = trampoline-ran flag (0/1).
+// Phase E e3d: #296 = strategy atom ptr (0 if non-supervisor; set by materialize from init tuple+0).
+// Phase E e3e: #304 = allowed_restart_count (i64), #312 = restarts_time_frame (i64, seconds),
+//              #320 = restart_count (current window), #328 = window_start_time (seconds, from time()).
+// Phase E e4b: #336 = pending_exit_reason_tag (i64; 0=:normal default, !=0=abnormal). `silica_rt_actor_kill_abnormal` writes 1; `silica_rt_actor_deliver_exit` reads → payload[+8].
+// #344 = active_call_wrapper (0 unless the currently-running behavior is servicing a call; used to wake callers during actor-death teardown).
+// Scheduler: actor_thread_main dequeues ingress before standard mailbox each message; recv() matches.
+// Phase B trial hook: silica_rt_actor_supervision_ingress_enqueue(X0 actor, X1 int64 payload) → X0 atom :ok.
+// Supervisors Phase G (same plan §4 Phase G; silica-specification §15.4.8.4–8.7): link(X0), monitor(X0), demonitor(X0) —
+// ABI for runtime; full idempotent link graph, dead-target handling, and DOWN → standard mailbox are implemented in the
+// same symbols below (stubs return benign values until runtime fills behavior).
+// Phase C (§15.4.10–§15.4.11, §16.2.7): structured exit notifications → ingress; dead supervisor drops notification
+// and routes the unwind note to stderr (§15.4.10.4). Payload (32 B heap): [+0]=child_ref, [+8]=reason_tag,
+// [+16]=reason_atom, [+24]=agent_type. Runtime entry: `silica_rt_actor_deliver_exit(X0=child) → X0=0 delivered
+// or 1 needs stderr`. Behavior-only trial accessors (`supervision_wait_and_drain_one`, `failure_reason_tag`,
+// `failure_agent_type`, `failure_release`) surface the payload for integration tests.
+
+use prims_actors_child_table_asm;
+use prims_actors_stack_asm;
+use atom_table;
+use ffi_arena_runtime_asm;
+use ffi_guarded_runtime_asm;
+use ffi_fault_runtime_asm;
+use canonical_arena_runtime_asm;
+use ordering_identity_runtime_asm;
+use checked_int64_runtime_asm;
+use linux_rt_shims_asm;
+use prims_actors_runtime_asm_b;
+use prims_actors_runtime_asm_c;
+
+export emit_actor_runtime_helpers/1;
+
+fn actor_rt_asm_chunk_0() -> string {
+    "	.text
+	.globl	silica_rt_actor_spawn # -- Begin function silica_rt_actor_spawn
+	.p2align	2
+silica_rt_actor_spawn: # @silica_rt_actor_spawn
+# X0..X4 = rdi rsi rdx rcx r8. x19..x25 live in the frame: [rbp-8] acb, [rbp-16] beh, [rbp-24] init,
+# [rbp-32] w22 (=1), [rbp-40] core_id / pthread_create rc, [rbp-48] trampoline, [rbp-56] stack_policy.
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 56], r8
+	mov	QWORD PTR [rbp - 48], rcx
+	mov	QWORD PTR [rbp - 40], rdx
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	QWORD PTR [rbp - 24], rdi
+	mov	QWORD PTR [rbp - 32], 1
+	mov	edi, 1
+	mov	esi, 512
+	call	calloc
+	mov	rdi, rax
+	mov	QWORD PTR [rbp - 8], rdi
+	test	rdi, rdi
+	jz	LBB0_4
+# %bb.1:
+	mov	rax, QWORD PTR [rbp - 24]
+	mov	QWORD PTR [rdi], rax
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	QWORD PTR [rdi + 8], rax
+	mov	QWORD PTR [rdi + 192], 0
+	mov	QWORD PTR [rdi + 200], 0
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	QWORD PTR [rdi + 208], rax
+	mov	QWORD PTR [rdi + 216], 0
+	mov	QWORD PTR [rdi + 224], 0
+	mov	QWORD PTR [rdi + 232], 0
+	mov	QWORD PTR [rdi + 240], 0
+	mov	DWORD PTR [rdi + 248], 0
+	mov	QWORD PTR [rdi + 256], 0
+	mov	QWORD PTR [rdi + 264], 0
+	mov	QWORD PTR [rdi + 272], 0
+	mov	rax, QWORD PTR [rbp - 48]
+	mov	QWORD PTR [rdi + 280], rax
+	mov	QWORD PTR [rdi + 288], 0
+	mov	QWORD PTR [rdi + 296], 0
+	mov	QWORD PTR [rdi + 304], 0
+	mov	QWORD PTR [rdi + 312], 0
+	mov	QWORD PTR [rdi + 320], 0
+	mov	QWORD PTR [rdi + 328], 0
+	mov	QWORD PTR [rdi + 336], 0
+	mov	QWORD PTR [rdi + 344], 0
+# Phase E e4f: ACB+16 is the 4 B lock word and ACB+80 is a 4 B futex seq word.
+# Both are zero from calloc above (unlocked == 0); no init call needed.
+	mov	DWORD PTR [rdi + 152], 1
+# The reservation, the fault handlers and the arena bookkeeping exist before the thread does:
+# its first instruction on the actor stack faults, and the handler must already be installed.
+	mov	rsi, QWORD PTR [rbp - 56]
+	call	silica_rt_actor_stack_reserve
+	test	rdi, rdi
+	jnz	LBB0_reserve_failed
+	call	silica_rt_install_sync_fault_handlers
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	silica_rt_actor_init_region
+	sub	rsp, 64
+	mov	rdi, rsp
+	call	pthread_attr_init
+	mov	rdi, rsp
+	mov	esi, 0x20000
+	call	pthread_attr_setstacksize
+	lea	rdx, [rip + actor_thread_main]
+	mov	rcx, QWORD PTR [rbp - 8]
+	lea	rdi, [rcx + 144]
+	mov	rsi, rsp
+	call	pthread_create
+	mov	edi, eax
+	mov	QWORD PTR [rbp - 40], rdi
+	mov	rdi, rsp
+	call	pthread_attr_destroy
+	add	rsp, 64
+	cmp	QWORD PTR [rbp - 40], 0
+	je	LBB0_3
+# %bb.2:
+	mov	rdi, QWORD PTR [rbp - 8]
+	xor	esi, esi
+	call	silica_rt_actor_stack_free
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	free
+	mov	QWORD PTR [rbp - 8], 0
+	jmp	LBB0_4
+LBB0_reserve_failed:
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	free
+	call	silica_rt_spawn_reserve_failed
+LBB0_3:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rdi, QWORD PTR [rax + 144]
+	call	pthread_detach
+# Phase E: supervisor trampoline (ACB#280) runs on the new thread; wait until #288 is set so
+# callers see a materialized child table before receiving the actor_ref.
+	cmp	QWORD PTR [rbp - 48], 0
+	je	LBB0_4
+LBB0_tramp_spin:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rbx, QWORD PTR [rax + 288]
+	test	rbx, rbx
+	jz	LBB0_tramp_spin
+LBB0_4:
+# Phase I: wait_for_exit consults silica_rt_wait_root_acb (+#152 alive). Only top-level spawn()
+# registers here; spawn_linked workers must not steal the slot (see LBBsl_4).
+	mov	rax, QWORD PTR [rbp - 8]
+	test	rax, rax
+	jz	LBB0_wr_skip
+LBB0_wr_try:
+	lea	rbx, [rip + silica_rt_wait_root_acb]
+	mov	r10, QWORD PTR [rbx]
+	test	r10, r10
+	jnz	LBB0_wr_skip
+	mov	QWORD PTR [rbx], rax
+LBB0_wr_skip:
+	mov	rdi, QWORD PTR [rbp - 8]
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_actor_spawn_linked # Phase A: supervision metadata (supervisors_implementation_development_plan.md §A)
+	.p2align	2
+silica_rt_actor_spawn_linked: # @silica_rt_actor_spawn_linked
+# X0..X4 = rdi rsi rdx rcx r8. Frame: [rbp-8] acb, [rbp-16] beh, [rbp-24] init / parent (0),
+# [rbp-32] trampoline, [rbp-40] agent_type / pthread_create rc, [rbp-48] row/core metadata.
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 40], rdx
+	mov	QWORD PTR [rbp - 48], rcx
+	mov	QWORD PTR [rbp - 32], r8
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	QWORD PTR [rbp - 24], rdi
+	mov	edi, 1
+	mov	esi, 512
+	call	calloc
+	mov	rdi, rax
+	mov	QWORD PTR [rbp - 8], rdi
+	test	rdi, rdi
+	jz	LBBsl_4
+	mov	rax, rdi
+	mov	rcx, QWORD PTR [rbp - 24]
+	mov	QWORD PTR [rax], rcx
+	mov	rcx, QWORD PTR [rbp - 16]
+	mov	QWORD PTR [rax + 8], rcx
+# Parent/supervisor is recorded by the internal supervisor runtime path after spawn returns.
+	mov	QWORD PTR [rax + 192], 0
+	mov	QWORD PTR [rbp - 24], 0
+	xor	edi, edi
+	mov	rcx, QWORD PTR [rbp - 40]
+	mov	QWORD PTR [rax + 200], rcx
+	mov	rcx, QWORD PTR [rbp - 48]
+	mov	QWORD PTR [rax + 208], rcx
+	mov	QWORD PTR [rax + 216], 0
+	mov	QWORD PTR [rax + 224], 0
+	mov	QWORD PTR [rax + 232], 0
+	mov	QWORD PTR [rax + 240], 0
+	mov	DWORD PTR [rax + 248], 0
+	mov	QWORD PTR [rax + 256], 0
+	mov	QWORD PTR [rax + 264], 0
+	mov	QWORD PTR [rax + 272], 0
+	mov	rcx, QWORD PTR [rbp - 32]
+	mov	QWORD PTR [rax + 280], rcx
+	mov	QWORD PTR [rax + 288], 0
+	mov	QWORD PTR [rax + 296], 0
+	mov	QWORD PTR [rax + 304], 0
+	mov	QWORD PTR [rax + 312], 0
+	mov	QWORD PTR [rax + 320], 0
+	mov	QWORD PTR [rax + 328], 0
+	mov	QWORD PTR [rax + 336], 0
+	mov	QWORD PTR [rax + 344], 0
+	test	rdi, rdi
+	jz	Lslp_skip_list
+	sub	rsp, 16
+	mov	QWORD PTR [rsp + 8], rdi
+	mov	rsi, QWORD PTR [rsp + 8]
+	lea	rdi, [rsi + 16]
+	call	silica_rt_lock_lock
+	mov	rsi, QWORD PTR [rsp + 8]
+	mov	rbx, QWORD PTR [rsi + 216]
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax + 224], rbx
+	mov	QWORD PTR [rsi + 216], rax
+	lea	rdi, [rsi + 16]
+	call	silica_rt_lock_unlock
+	add	rsp, 16
+Lslp_skip_list:
+# Phase E e4f: ACB+16 (lock word) and ACB+80 (futex seq word) are pre-zeroed by calloc.
+# Unlocked == 0, seq baseline 0; no init call required.
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	DWORD PTR [rax + 152], 1
+# Children started from child specs inherit the spawning actor's stack policy (X1 = 0).
+	mov	rdi, rax
+	xor	esi, esi
+	call	silica_rt_actor_stack_reserve
+	test	rdi, rdi
+	jnz	LBBsl_reserve_failed
+	call	silica_rt_install_sync_fault_handlers
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	silica_rt_actor_init_region
+	sub	rsp, 64
+	mov	rdi, rsp
+	call	pthread_attr_init
+	mov	rdi, rsp
+	mov	esi, 0x20000
+	call	pthread_attr_setstacksize
+	lea	rdx, [rip + actor_thread_main]
+	mov	rcx, QWORD PTR [rbp - 8]
+	lea	rdi, [rcx + 144]
+	mov	rsi, rsp
+	call	pthread_create
+	mov	edi, eax
+	mov	QWORD PTR [rbp - 40], rdi
+	mov	rdi, rsp
+	call	pthread_attr_destroy
+	add	rsp, 64
+	cmp	QWORD PTR [rbp - 40], 0
+	je	LBBsl_3
+	mov	rdi, QWORD PTR [rbp - 8]
+	xor	esi, esi
+	call	silica_rt_actor_stack_free
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	free
+	mov	QWORD PTR [rbp - 8], 0
+	jmp	LBBsl_4
+LBBsl_reserve_failed:
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	free
+	call	silica_rt_spawn_reserve_failed
+LBBsl_3:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rdi, QWORD PTR [rax + 144]
+	call	pthread_detach
+# Phase E e4f: spin until the new actor's thread has finished its TLS init / trampoline
+# (signalled by ACB[+288] == 1 in actor_thread_main). Keeps spawn ordering strictly
+# sequential — the supervisor never overlaps two children's startup, eliminating the
+# libsystem mfm_alloc / TLS-instantiate race observed with 3+ concurrent spawns.
+LBBsl_started_spin:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rbx, QWORD PTR [rax + 288]
+	test	rbx, rbx
+	jz	LBBsl_started_spin
+LBBsl_4:
+	mov	rdi, QWORD PTR [rbp - 8]
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_actor_spawn_dangerous_linked
+	.p2align	2
+silica_rt_actor_spawn_dangerous_linked:
+	jmp	silica_rt_actor_spawn_linked
+	.p2align	2 # -- Begin function actor_thread_main
+actor_thread_main: # @actor_thread_main
+"
+}
+
+fn actor_rt_asm_chunk_1() -> string {
+    "# pthread start routine (SysV callee): rdi = ACB; returns rax = 0. Saves rbx r12-r15 below the
+# x19..x25 frame slots ([rbp-8] acb, [rbp-16] message / exit flag, [rbp-24] w21 ingress flag / reply,
+# [rbp-32] w22, [rbp-40] x23, [rbp-56] x25). Behaviours run with rdi = message, rsi = state,
+# rdx = sret and return the result pointer in rdi; nothing else survives the call.
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 128
+	mov	QWORD PTR [rbp - 88], rbx
+	mov	QWORD PTR [rbp - 96], r12
+	mov	QWORD PTR [rbp - 104], r13
+	mov	QWORD PTR [rbp - 112], r14
+	mov	QWORD PTR [rbp - 120], r15
+	mov	QWORD PTR [rbp - 8], rdi
+	call	silica_rt_ensure_actor_tls_key
+# The ACB is x19's home ([rbp-8]) and is also passed in rdi for silica_rt_tls_actor_set_from_x19.
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	silica_rt_tls_actor_set_from_x19
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	silica_rt_actor_altstack_install
+# Phase E e3b: first-schedule supervisor trampoline hook. It runs on the actor's stack, like a
+# behavior: the top of the reservation is the empty stack, and the runtime keeps this thread's
+# own SP in ACB+480 while user code runs there.
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rbx, QWORD PTR [rax + 280]
+	test	rbx, rbx
+	jz	LBB1_skip_tramp
+	mov	r10, QWORD PTR [rax + 288]
+	test	r10, r10
+	jnz	LBB1_skip_tramp
+	mov	rdi, rax
+	mov	r10, QWORD PTR [rax + 384]
+	test	r10, r10
+	jz	LBB1_sw_none_0
+	mov	r11, QWORD PTR [rax + 392]
+	add	r10, r11
+	mov	r11, rsp
+	mov	QWORD PTR [rax + 480], r11
+	mov	rsp, r10
+LBB1_sw_none_0:
+	call	rbx
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r11, QWORD PTR [rax + 480]
+	test	r11, r11
+	jz	LBB1_sw_back_0
+	mov	rsp, r11
+	mov	QWORD PTR [rax + 480], 0
+LBB1_sw_back_0:
+LBB1_skip_tramp:
+# Phase E e4f: mark actor as started (post TLS init + post any first-schedule trampoline) so
+# spawn / spawn_linked callers can serialize on +288 == 1 for both supervisors and workers.
+# This delivers the user-requested ordering: each child starts one at a time, waiting until
+# the previous child's actor_thread_main has materialised before the next spawn proceeds.
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax + 288], 1
+	mov	QWORD PTR [rbp - 32], 1
+LBB1_loop:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_lock
+LBB1_wait:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 232
+	call	silica_rt_q_dequeue_locked
+	mov	QWORD PTR [rbp - 16], rdi
+	test	rdi, rdi
+	jz	LBB1_try_std
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r10d, DWORD PTR [rax + 248]
+	sub	r10d, 1
+	mov	DWORD PTR [rax + 248], r10d
+	mov	QWORD PTR [rbp - 24], 1
+	jmp	LBB1_process
+LBB1_try_std:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r10d, DWORD PTR [rax + 152]
+	test	r10d, r10d
+	jz	LBB1_exit
+	lea	rdi, [rax + 128]
+	call	silica_rt_q_dequeue_locked
+	mov	QWORD PTR [rbp - 16], rdi
+	mov	QWORD PTR [rbp - 24], 0
+	test	rdi, rdi
+	jnz	LBB1_process
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r10d, DWORD PTR [rax + 152]
+	test	r10d, r10d
+	jz	LBB1_exit
+# Phase E e4f: blocking silica_rt_cv_wait (lock word + silica_rt_futex_wait).
+# Earlier pthread_cond_timedwait_relative_np drove libpthread kwq malloc churn racing TLS instantiation
+# (mfm_alloc SIGBUS). Wake paths hold ACB+16, signal ACB+80, then unlock before silica_rt_cv_wait.
+# A :release_when_idle actor waits with a timeout while it still holds committed stack; the
+# check releases it once a second has passed since its last message (spec §15.1.2.2).
+	mov	rdi, rax
+	call	silica_rt_stack_idle_check
+	mov	rdx, rdi
+	mov	rax, QWORD PTR [rbp - 8]
+	lea	rdi, [rax + 80]
+	lea	rsi, [rax + 16]
+	call	silica_rt_cv_wait_timeout
+	jmp	LBB1_wait
+LBB1_process:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+"
+}
+
+fn actor_rt_asm_chunk_2() -> string {
+    std_no_reply_cmp: string <- "	mov	ebx, DWORD PTR [rsp + 32]
+	test	ebx, ebx
+	jz	LBB1_no_reply_result
+";
+    ingress_no_reply_cmp: string <- "	mov	ebx, DWORD PTR [rsp + 32]
+	test	ebx, ebx
+	jz	LBB1_ingress_no_reply_result
+";
+    p0: string <- "	sub	rsp, 48
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	QWORD PTR [rsp + 24], rax
+	mov	ebx, DWORD PTR [rax + 16]
+	mov	DWORD PTR [rsp + 32], ebx
+	test	ebx, ebx
+	jz	LBB1_no_active_call
+	mov	rcx, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rcx + 344], rax
+	jmp	LBB1_active_call_set
+LBB1_no_active_call:
+	mov	rcx, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rcx + 344], 0
+LBB1_active_call_set:
+	mov	rax, QWORD PTR [rbp - 24]
+	mov	QWORD PTR [rbp - 32], rax
+	test	rax, rax
+	jnz	LBB1_ingress_check_kind
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	rdi, QWORD PTR [rax + 8]
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rsi, QWORD PTR [rax]
+	mov	rbx, QWORD PTR [rax + 8]
+	test	rbx, rbx
+	jz	LBB1_ingress_no_beh
+	mov	rdx, rsp
+	mov	r10, QWORD PTR [rax + 384]
+	test	r10, r10
+	jz	LBB1_sw_none_1
+	mov	r11, QWORD PTR [rax + 392]
+	add	r10, r11
+	mov	r11, rsp
+	mov	QWORD PTR [rax + 480], r11
+	mov	rsp, r10
+LBB1_sw_none_1:
+	call	rbx
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r11, QWORD PTR [rax + 480]
+	test	r11, r11
+	jz	LBB1_sw_back_1
+	mov	rsp, r11
+	mov	QWORD PTR [rax + 480], 0
+LBB1_sw_back_1:
+	mov	r11, QWORD PTR [rdi]
+";
+    p1: string <- concat(p0, std_no_reply_cmp);
+    p2: string <- concat(p1, "	mov	rax, QWORD PTR [rdi + 8]
+	mov	QWORD PTR [rbp - 24], rax
+	mov	r10, QWORD PTR [rdi + 16]
+	jmp	LBB1_post_beh
+LBB1_no_reply_result:
+	mov	QWORD PTR [rbp - 24], 0
+	mov	r10, QWORD PTR [rdi + 8]
+	jmp	LBB1_post_beh
+LBB1_ingress_check_kind:
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	r10d, DWORD PTR [rax + 24]
+	test	r10d, r10d
+	jnz	LBB1_ingress_user_beh
+LBB1_ingress_no_beh:
+# Phase C / structured exit: message[+8] is heap payload; do not invoke beh(msg,…). phase_e4f rest_for_one.
+	mov	QWORD PTR [rbp - 24], 0
+	xor	r10d, r10d
+	jmp	LBB1_post_beh
+LBB1_ingress_user_beh:
+# Phase B trial: message[+8] is inline int64; run behavior like a normal dequeue.
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	rdi, QWORD PTR [rax + 8]
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rsi, QWORD PTR [rax]
+	mov	rbx, QWORD PTR [rax + 8]
+	test	rbx, rbx
+	jz	LBB1_ingress_no_beh
+	mov	rdx, rsp
+	mov	r10, QWORD PTR [rax + 384]
+	test	r10, r10
+	jz	LBB1_sw_none_2
+	mov	r11, QWORD PTR [rax + 392]
+	add	r10, r11
+	mov	r11, rsp
+	mov	QWORD PTR [rax + 480], r11
+	mov	rsp, r10
+LBB1_sw_none_2:
+	call	rbx
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r11, QWORD PTR [rax + 480]
+	test	r11, r11
+	jz	LBB1_sw_back_2
+	mov	rsp, r11
+	mov	QWORD PTR [rax + 480], 0
+LBB1_sw_back_2:
+	mov	r11, QWORD PTR [rdi]
+");
+    p3: string <- concat(p2, ingress_no_reply_cmp);
+    concat(p3, "	mov	rax, QWORD PTR [rdi + 8]
+	mov	QWORD PTR [rbp - 24], rax
+	mov	r10, QWORD PTR [rdi + 16]
+	mov	QWORD PTR [rbp - 32], 0
+	jmp	LBB1_post_beh
+LBB1_ingress_no_reply_result:
+	mov	QWORD PTR [rbp - 24], 0
+	mov	r10, QWORD PTR [rdi + 8]
+	mov	QWORD PTR [rbp - 32], 0
+	jmp	LBB1_post_beh
+LBB1_post_beh:
+# Message boundary: the behavior has returned and its stack is empty, so the release algorithm
+# runs now, before the reply is handed to the caller (spec §15.1.2.2).
+	mov	QWORD PTR [rbp - 40], r10
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	silica_rt_stack_on_message_return
+	mov	r10, QWORD PTR [rbp - 40]
+	mov	rax, QWORD PTR [rsp + 24]
+	mov	QWORD PTR [rbp - 16], rax
+	mov	ebx, DWORD PTR [rsp + 32]
+	add	rsp, 48
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax + 344], 0
+	cmp	QWORD PTR [rbp - 32], 0
+	jne	LBB1_skip_actor_state
+	mov	QWORD PTR [rax], r10
+LBB1_skip_actor_state:
+	cmp	QWORD PTR [rbp - 32], 0
+	jne	LBB1_ingress_restore_w21
+	jmp	LBB1_after_w21
+LBB1_ingress_restore_w21:
+	mov	rax, QWORD PTR [rbp - 32]
+	mov	QWORD PTR [rbp - 24], rax
+LBB1_after_w21:
+	test	ebx, ebx
+	jz	LBB1_free
+# Phase E e4f: take the call wrapper lock before draining supervision ingress so the
+# caller cannot complete actor_call (and free the wrapper) until every enqueued exit
+# notification has been processed. kill_abnormal only signals the victim; deliver_exit
+# runs on child threads while sup_beh is still finishing — without this ordering, main
+# could free the wrapper concurrently with deliver_exit / LBB1_exit (SIGBUS mfm_*) on
+# phase_e4f_rest_for_one.
+	mov	rdi, QWORD PTR [rbp - 16]
+	add	rdi, 72
+	call	silica_rt_lock_lock
+LBB1_drain_ingress:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_lock
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 232
+	call	silica_rt_q_dequeue_locked
+	mov	QWORD PTR [rbp - 40], rdi
+	test	rdi, rdi
+	jz	LBB1_drain_ingress_done
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r10d, DWORD PTR [rax + 248]
+	sub	r10d, 1
+	mov	DWORD PTR [rax + 248], r10d
+	lea	rdi, [rax + 16]
+	call	silica_rt_lock_unlock
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	r10d, DWORD PTR [rax + 24]
+	test	r10d, r10d
+	jnz	LBB1_drain_ingress_free_msg
+	mov	rax, QWORD PTR [rax + 8]
+	mov	QWORD PTR [rbp - 32], rax
+	test	rax, rax
+	jz	LBB1_drain_ingress_free_msg
+	mov	rdi, QWORD PTR [rax]
+	mov	rsi, QWORD PTR [rbp - 8]
+	mov	rdx, QWORD PTR [rax + 8]
+	call	silica_rt_supervisor_maybe_restart
+	mov	rdi, QWORD PTR [rbp - 32]
+	call	free
+LBB1_drain_ingress_free_msg:
+	mov	rdi, QWORD PTR [rbp - 40]
+	call	free
+	jmp	LBB1_drain_ingress
+LBB1_drain_ingress_done:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	rcx, QWORD PTR [rbp - 24]
+	mov	QWORD PTR [rax + 144], rcx
+	mov	DWORD PTR [rax + 136], 1
+	lea	rdi, [rax + 24]
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 16]
+	add	rdi, 72
+	call	silica_rt_lock_unlock
+	jmp	LBB1_loop
+LBB1_free:
+# Phase E e3c+e4b: if this was an ingress message (w22==1), attempt automatic restart before freeing. X2 = reason_tag from payload+8 (e4b).
+# Payload ptr must live in the frame across maybe_restart (x25 -> [rbp-56]); every register is clobbered by it.
+# Phase B trial: message[+24]!=0 and +8 is inline int64 — do not treat +8 as heap or call maybe_restart (phase_b_ingress_before_cast).
+	cmp	QWORD PTR [rbp - 32], 0
+	je	LBB1_free_skip_restart
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	r10d, DWORD PTR [rax + 24]
+	test	r10d, r10d
+	jnz	LBB1_free_skip_restart
+	mov	rax, QWORD PTR [rax + 8]
+	mov	QWORD PTR [rbp - 56], rax
+	test	rax, rax
+	jz	LBB1_free_skip_restart
+	mov	rdi, QWORD PTR [rax]
+	mov	rsi, QWORD PTR [rbp - 8]
+	mov	rdx, QWORD PTR [rax + 8]
+	call	silica_rt_supervisor_maybe_restart
+	mov	rdi, QWORD PTR [rbp - 56]
+	call	free
+LBB1_free_skip_restart:
+	mov	rdi, QWORD PTR [rbp - 16]
+	call	free
+	jmp	LBB1_loop
+LBB1_exit:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rbx, QWORD PTR [rax + 272]
+	test	rbx, rbx
+	jnz	LBB1_exit_report_already_done
+	mov	rdi, rax
+	call	silica_rt_actor_deliver_exit
+	mov	QWORD PTR [rbp - 16], rdi
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	silica_rt_actor_deliver_unwind_report
+	jmp	LBB1_exit_after_report
+LBB1_exit_report_already_done:
+	mov	QWORD PTR [rbp - 16], 0
+LBB1_exit_after_report:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rax, QWORD PTR [rax + 192]
+	mov	QWORD PTR [rbp - 24], rax
+	test	rax, rax
+	jz	LBB1_exit_no_sup_drain
+	mov	rdi, rax
+	call	silica_rt_supervisor_drain_ingress
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	ecx, DWORD PTR [rax + 336]
+	mov	QWORD PTR [rbp - 40], rcx
+	test	ecx, ecx
+	jz	LBB1_exit_no_sup_drain
+	mov	rcx, QWORD PTR [rax + 208]
+	mov	QWORD PTR [rbp - 32], rcx
+	test	rcx, rcx
+	jz	LBB1_exit_no_sup_drain
+	mov	rax, QWORD PTR [rbp - 24]
+	mov	ebx, DWORD PTR [rax + 152]
+	test	ebx, ebx
+	jz	LBB1_exit_no_sup_drain
+LBB1_exit_wait_new_child:
+	mov	rcx, QWORD PTR [rbp - 32]
+	mov	rdi, QWORD PTR [rcx]
+	cmp	rdi, QWORD PTR [rbp - 8]
+	je	LBB1_exit_wait_new_child
+	test	rdi, rdi
+	jz	LBB1_exit_wait_new_child
+	mov	rbx, QWORD PTR [rdi + 288]
+	test	rbx, rbx
+	jz	LBB1_exit_wait_new_child
+LBB1_exit_no_sup_drain:
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	silica_rt_actor_signal_pending_call_deaths
+	mov	rdi, QWORD PTR [rbp - 8]
+	xor	esi, esi
+	call	silica_rt_actor_stack_free
+	cmp	QWORD PTR [rbp - 16], 0
+	je	LBB1_exit_skip_legacy_root
+	mov	edi, 2
+	lea	rsi, [rip + L_silica_root_actor_exit]
+	mov	edx, 43
+	call	write
+LBB1_exit_skip_legacy_root:
+# Phase E e4f: capture row_ptr from ACB[+208] (set by spawn_linked from X3) into a
+# frame slot so we can flag the supervisor AFTER our own teardown completes.
+# Top-level supervisors spawned via spawn() have ACB[+208] == 0 (their X3 is the
+# trampoline fn pointer routed to ACB[+280]), so x20 == 0 and the post-free flag write
+# is skipped — there is no parent row to notify.
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rcx, QWORD PTR [rax + 208]
+	mov	QWORD PTR [rbp - 16], rcx
+	mov	rcx, QWORD PTR [rax + 192]
+	mov	QWORD PTR [rbp - 24], rcx
+	test	rcx, rcx
+	jz	LBB1_exit_no_row
+	mov	rdi, rax
+	call	silica_rt_child_table_free
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	silica_rt_ffi_arena_teardown
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	silica_rt_actor_dealloc_region
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	free
+# Phase E e4f: AFTER full teardown (mutex/cond destroyed, ACB freed) signal the
+# supervisor's row.exit_done = 1. The supervisor's cascade kill loop spins on this
+# flag for sequential stop ordering — every libsystem cleanup has now retired before
+# the next sibling is asked to die, eliminating the malloc / TLS-instantiate races
+# observed when 3+ worker teardowns overlapped.
+	mov	rax, QWORD PTR [rbp - 16]
+	test	rax, rax
+	jz	LBB1_exit_no_row
+	mov	QWORD PTR [rax + 56], 1
+LBB1_exit_no_row:
+	xor	eax, eax
+	xor	edi, edi
+	mov	rbx, QWORD PTR [rbp - 88]
+	mov	r12, QWORD PTR [rbp - 96]
+	mov	r13, QWORD PTR [rbp - 104]
+	mov	r14, QWORD PTR [rbp - 112]
+	mov	r15, QWORD PTR [rbp - 120]
+	leave
+	ret
+                                        # -- End function
+	.p2align	2 # functional queue dequeue; caller holds queue's lock
+silica_rt_q_dequeue_locked: # X0 = &queue (pair: front, rear). Returns X0 = node or null.
+	mov	rsi, QWORD PTR [rdi]
+	test	rsi, rsi
+	jnz	Lqd_pop
+	mov	rsi, QWORD PTR [rdi + 8]
+	test	rsi, rsi
+	jz	Lqd_empty
+	xor	edx, edx
+Lqd_rev:
+	mov	rcx, QWORD PTR [rsi]
+	mov	QWORD PTR [rsi], rdx
+	mov	rdx, rsi
+	mov	rsi, rcx
+	test	rsi, rsi
+	jnz	Lqd_rev
+	mov	QWORD PTR [rdi], rdx
+	mov	QWORD PTR [rdi + 8], 0
+	mov	rsi, rdx
+Lqd_pop:
+	mov	rcx, QWORD PTR [rsi]
+	mov	QWORD PTR [rdi], rcx
+	mov	rdi, rsi
+	ret
+Lqd_empty:
+	xor	edi, edi
+	ret
+                                        # -- End function
+	.p2align	2 # functional queue enqueue; caller holds queue's lock
+silica_rt_q_enqueue_locked: # X0 = &queue (pair), X1 = node. Prepends to rear.
+	mov	rdx, QWORD PTR [rdi + 8]
+	mov	QWORD PTR [rsi], rdx
+	mov	QWORD PTR [rdi + 8], rsi
+	ret
+                                        # -- End function
+	.globl	silica_rt_actor_send # -- Begin function silica_rt_actor_send
+	.p2align	2
+silica_rt_actor_send: # @silica_rt_actor_send
+# rdi = actor, rsi = message. Frame: [rbp-8] actor, [rbp-16] node, [rbp-24] message.
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	test	rdi, rdi
+	jz	LBB2_5
+# %bb.1:
+	mov	QWORD PTR [rbp - 24], rsi
+# %bb.2:
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	edi, 1
+")
+}
+
+fn actor_rt_asm_chunk_3() -> string {
+    "	mov	esi, 152
+	call	calloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	LBB2_5
+# %bb.3:
+	mov	QWORD PTR [rbp - 16], rdi
+	mov	rax, QWORD PTR [rbp - 24]
+	mov	QWORD PTR [rdi + 8], rax
+	mov	DWORD PTR [rdi + 16], 0
+	mov	DWORD PTR [rdi + 24], 1
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_lock
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 128
+	mov	rsi, QWORD PTR [rbp - 16]
+	call	silica_rt_q_enqueue_locked
+	jmp	LBB2_7
+LBB2_5:
+	leave
+	ret
+LBB2_7:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 80
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	xor	edi, edi
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_actor_cast # -- Begin function silica_rt_actor_cast
+	.p2align	2
+silica_rt_actor_cast: # @silica_rt_actor_cast
+# rdi = actor, rsi = message. Frame: [rbp-8] actor, [rbp-16] node, [rbp-24] result flag, [rbp-32] message.
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 24], 0
+	test	rdi, rdi
+	jz	LBB3_7
+# %bb.1:
+	mov	QWORD PTR [rbp - 32], rsi
+# %bb.2:
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	edi, 1
+	mov	esi, 152
+	call	calloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	LBB3_7
+# %bb.3:
+	mov	QWORD PTR [rbp - 16], rdi
+	mov	rax, QWORD PTR [rbp - 32]
+	mov	QWORD PTR [rdi + 8], rax
+	mov	DWORD PTR [rdi + 16], 0
+	mov	DWORD PTR [rdi + 24], 1
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_lock
+"
+}
+
+fn actor_rt_asm_chunk_4() -> string {
+    "	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 128
+	mov	rsi, QWORD PTR [rbp - 16]
+	call	silica_rt_q_enqueue_locked
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 80
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	mov	QWORD PTR [rbp - 24], 1
+LBB3_7:
+	mov	rdi, QWORD PTR [rbp - 24]
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_actor_signal_call_death
+	.p2align	2
+silica_rt_actor_signal_call_death:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	test	rdi, rdi
+	jz	LBBsig_done
+	add	rdi, 72
+	call	silica_rt_lock_lock
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	ebx, DWORD PTR [rax + 136]
+	test	ebx, ebx
+	jnz	LBBsig_unlock
+	mov	QWORD PTR [rax + 144], 0
+	mov	DWORD PTR [rax + 136], 1
+	lea	rdi, [rax + 24]
+	call	silica_rt_cv_signal
+LBBsig_unlock:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 72
+	call	silica_rt_lock_unlock
+LBBsig_done:
+	leave
+	ret
+	.globl	silica_rt_actor_signal_pending_call_deaths
+	.p2align	2
+silica_rt_actor_signal_pending_call_deaths:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	test	rdi, rdi
+	jz	LBBsigpend_done
+	mov	rax, QWORD PTR [rdi + 344]
+	mov	QWORD PTR [rbp - 16], rax
+	mov	QWORD PTR [rdi + 344], 0
+	test	rax, rax
+	jz	LBBsigpend_lock_mailbox
+	mov	rdi, rax
+	call	silica_rt_actor_signal_call_death
+LBBsigpend_lock_mailbox:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_lock
+LBBsigpend_loop:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 128
+	call	silica_rt_q_dequeue_locked
+	mov	QWORD PTR [rbp - 16], rdi
+	test	rdi, rdi
+	jz	LBBsigpend_unlock
+	mov	ebx, DWORD PTR [rdi + 16]
+	test	ebx, ebx
+	jz	LBBsigpend_free_message
+	mov	rdi, QWORD PTR [rbp - 16]
+	call	silica_rt_actor_signal_call_death
+	jmp	LBBsigpend_loop
+LBBsigpend_free_message:
+	mov	rdi, QWORD PTR [rbp - 16]
+	call	free
+	jmp	LBBsigpend_loop
+LBBsigpend_unlock:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+LBBsigpend_done:
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_actor_call # -- Begin function silica_rt_actor_call
+	.p2align	2
+silica_rt_actor_call: # @silica_rt_actor_call
+# rdi = actor, rsi = message. Frame: [rbp-8] wrapper, [rbp-16] actor / reply, [rbp-24] message, [rbp-32] w22 (=1).
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 16], rdi
+	mov	rax, rdi
+	xor	edi, edi
+	test	rax, rax
+	jz	LBB4_9
+# %bb.1:
+	mov	QWORD PTR [rbp - 24], rsi
+# %bb.2:
+	mov	QWORD PTR [rbp - 32], 1
+	mov	edi, 1
+	mov	esi, 152
+	call	calloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	LBB4_9
+# %bb.3:
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	rax, QWORD PTR [rbp - 24]
+	mov	QWORD PTR [rdi + 8], rax
+	mov	DWORD PTR [rdi + 16], 1
+# Phase E e4f: wrapper+72 is the 4 B lock word and wrapper+24 is a 4 B futex seq word.
+# Both are pre-zeroed by calloc; no init call required.
+	mov	rdi, QWORD PTR [rbp - 16]
+	add	rdi, 16
+	call	silica_rt_lock_lock
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	ebx, DWORD PTR [rax + 152]
+	test	ebx, ebx
+	jz	LBB4_dead_locked
+	lea	rdi, [rax + 128]
+	mov	rsi, QWORD PTR [rbp - 8]
+	call	silica_rt_q_enqueue_locked
+"
+}
+
+fn actor_rt_asm_chunk_5() -> string {
+    "	mov	rdi, QWORD PTR [rbp - 16]
+	add	rdi, 80
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 16]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	jmp	LBB4_wait_start
+LBB4_dead_locked:
+	mov	rdi, QWORD PTR [rbp - 16]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	free
+	xor	edi, edi
+	jmp	LBB4_9
+LBB4_wait_start:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 72
+	call	silica_rt_lock_lock
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	ebx, DWORD PTR [rax + 136]
+	test	ebx, ebx
+	jnz	LBB4_8
+LBB4_7: # =>This Inner Loop Header: Depth=1
+# Phase E e4f: blocking wait. Earlier 1 ms timedwait_relative_np was a missed-signal
+# band-aid that, under macOS arm64 with 3+ concurrent supervised actors, drove a libpthread
+# internal kwq malloc storm racing with new-actor TLS instantiation (mfm_alloc
+# KERN_PROTECTION_FAILURE SIGBUS in calloc / _tlv_get_addr). All wake paths for the call
+# wrapper (worker reply, supervisor cascade kill+restart, etc.) hold wrapper#72 and signal
+# wrapper#24 before unlock, so a properly-locked plain wait is sufficient. We still check
+# reply_set on each wake to absorb spurious wakeups.
+	mov	rax, QWORD PTR [rbp - 8]
+	lea	rdi, [rax + 24]
+	lea	rsi, [rax + 72]
+	call	silica_rt_cv_wait
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	ebx, DWORD PTR [rax + 136]
+	test	ebx, ebx
+	jz	LBB4_7
+LBB4_8:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rcx, QWORD PTR [rax + 144]
+	mov	QWORD PTR [rbp - 16], rcx
+	lea	rdi, [rax + 72]
+	call	silica_rt_lock_unlock
+# Phase E e4f: wrapper+72 (lock word) and wrapper+24 (futex seq word) have no
+# out-of-line state, so freeing the wrapper buffer reclaims everything. No destroy call needed.
+	mov	rdi, QWORD PTR [rbp - 8]
+	call	free
+	mov	rdi, QWORD PTR [rbp - 16]
+LBB4_9:
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_actor_call_registered # -- Begin function silica_rt_actor_call_registered
+	.p2align	2
+silica_rt_actor_call_registered: # @silica_rt_actor_call_registered
+# X0=atom registry key, X1=message. Resolve through the global PID registry, then tail-call actor_call.
+	mov	r12, rdi
+	mov	r13, rsi
+	mov	rbx, QWORD PTR [rip + silica_pid_registry_ref]
+	test	rbx, rbx
+	jz	LBB4r_not_found
+	mov	r10, QWORD PTR [rbx]
+	test	r10, r10
+	jz	LBB4r_not_found
+	cmp	r12, 0
+	jl	LBB4r_not_found
+	cmp	r12, 240
+	jge	LBB4r_not_found
+	mov	r11, QWORD PTR [r10 + r12*8]
+	cmp	r11, 1
+	jne	LBB4r_not_found
+	add	r10, 1920
+	mov	rdi, QWORD PTR [r10 + r12*8]
+	test	rdi, rdi
+	jz	LBB4r_not_found
+	mov	rsi, r13
+	jmp	silica_rt_actor_call
+LBB4r_not_found:
+	xor	edi, edi
+	ret
+                                        # -- End function
+	.globl	silica_rt_actor_cast_registered # -- Begin function silica_rt_actor_cast_registered
+	.p2align	2
+silica_rt_actor_cast_registered: # @silica_rt_actor_cast_registered
+# X0=atom registry key, X1=message. Resolve through the global PID registry, then tail-call actor_cast.
+	mov	r12, rdi
+	mov	r13, rsi
+	mov	rbx, QWORD PTR [rip + silica_pid_registry_ref]
+	test	rbx, rbx
+	jz	LBB3r_not_found
+	mov	r10, QWORD PTR [rbx]
+	test	r10, r10
+	jz	LBB3r_not_found
+	cmp	r12, 0
+	jl	LBB3r_not_found
+	cmp	r12, 240
+	jge	LBB3r_not_found
+	mov	r11, QWORD PTR [r10 + r12*8]
+	cmp	r11, 1
+	jne	LBB3r_not_found
+	add	r10, 1920
+	mov	rdi, QWORD PTR [r10 + r12*8]
+	test	rdi, rdi
+	jz	LBB3r_not_found
+	mov	rsi, r13
+	jmp	silica_rt_actor_cast
+LBB3r_not_found:
+	xor	edi, edi
+	ret
+                                        # -- End function
+	.globl	silica_rt_actor_cast_dangerous_registered # -- Begin function silica_rt_actor_cast_dangerous_registered
+	.p2align	2
+silica_rt_actor_cast_dangerous_registered: # @silica_rt_actor_cast_dangerous_registered
+# X0=atom registry key, X1=message. Resolve through the dangerous PID registry, then tail-call actor_cast.
+	mov	r12, rdi
+	mov	r13, rsi
+	mov	rbx, QWORD PTR [rip + silica_dangerous_pid_registry_ref]
+	test	rbx, rbx
+	jz	LBB3dr_not_found
+	mov	r10, QWORD PTR [rbx]
+	test	r10, r10
+	jz	LBB3dr_not_found
+	cmp	r12, 0
+	jl	LBB3dr_not_found
+	cmp	r12, 240
+	jge	LBB3dr_not_found
+	mov	r11, QWORD PTR [r10 + r12*8]
+	cmp	r11, 1
+	jne	LBB3dr_not_found
+	add	r10, 1920
+	mov	rdi, QWORD PTR [r10 + r12*8]
+	test	rdi, rdi
+	jz	LBB3dr_not_found
+	mov	rsi, r13
+	jmp	silica_rt_actor_cast
+LBB3dr_not_found:
+	xor	edi, edi
+	ret
+                                        # -- End function
+	.globl	silica_rt_actor_self # -- Begin function silica_rt_actor_self
+	.p2align	2
+silica_rt_actor_self: # @silica_rt_actor_self
+# %bb.0:
+	push	rbp
+	mov	rbp, rsp
+	call	silica_rt_tls_current_actor_get
+	pop	rbp
+	ret
+                                        # -- End function
+"
+}
+
+// Phase G (cpu_topology_implementation_plan): heap layout matches expand_named_topology_type field order.
+// Apple Silicon + macOS only: sysctl hw.*; numa_info/cache_info filled in silica_rt_* below (see prims_actors_runtime_asm header).
+// core_info.core_type is atom index: :efficiency = 0, :performance = 1 (emitter atom_table.silica pre-seed; only these two variants).
+// P-cores (indices [0,P) per hw.perflevel0) -> :performance; E-cores [P,P+E) -> :efficiency.
+// core_info on success: capabilities = silica_rt_apple_hw_optional_caps_list() (shared pointer across topology.cores[]);
+// frequency_mhz = 0 (sysctl does not expose core clock; hw.tbfrequency is not CPU MHz).
+fn actor_rt_topology_phase_g_chunk() -> string {
+    "	.globl	silica_rt_get_cpu_topology
+	.p2align	2
+silica_rt_get_cpu_topology:
+# Frame: [rbp-8] w19 P-cores, [rbp-16] w20 E-cores, [rbp-24] w21 total, [rbp-32] x22 cores list,
+# [rbp-40] x23 scratch node, [rbp-48] x24 / [rbp-80] x28 core-id range list, [rbp-56] x25 cache levels,
+# [rbp-64] x26 caps / numa list, [rbp-72] x27 memsize; [rbp-88] w9 loop counter and [rbp-96] w10
+# are kept in the frame because malloc clobbers r10/r11. The sysctl scratch pair lives at [rsp], [rsp+8].
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 96
+	sub	rsp, 16
+	mov	DWORD PTR [rsp + 8], 4
+	mov	DWORD PTR [rsp], 0
+	lea	rdi, [rip + L_hw_perf0_str]
+	mov	rsi, rsp
+	lea	rdx, [rsp + 8]
+	xor	ecx, ecx
+	xor	r8d, r8d
+	call	silica_rt_sysctlbyname
+	test	edi, edi
+	jnz	L_topo_sysctl_fail
+	mov	eax, DWORD PTR [rsp]
+	mov	QWORD PTR [rbp - 8], rax
+	mov	DWORD PTR [rsp + 8], 4
+	mov	DWORD PTR [rsp], 0
+	lea	rdi, [rip + L_hw_perf1_str]
+	mov	rsi, rsp
+	lea	rdx, [rsp + 8]
+	xor	ecx, ecx
+	xor	r8d, r8d
+	call	silica_rt_sysctlbyname
+	test	edi, edi
+	jnz	L_topo_sysctl_fail
+	mov	eax, DWORD PTR [rsp]
+	mov	QWORD PTR [rbp - 16], rax
+	add	rsp, 16
+	mov	eax, DWORD PTR [rbp - 8]
+	add	eax, DWORD PTR [rbp - 16]
+	mov	QWORD PTR [rbp - 24], rax
+	test	eax, eax
+	jz	L_topo_fail_zero
+	call	silica_rt_apple_hw_optional_caps_list
+	mov	QWORD PTR [rbp - 64], rdi
+	mov	QWORD PTR [rbp - 32], 0
+	mov	r10d, DWORD PTR [rbp - 24]
+	sub	r10d, 1
+	mov	QWORD PTR [rbp - 88], r10
+	jl	L_topo_after_cores
+L_topo_core_loop:
+	mov	r10d, DWORD PTR [rbp - 88]
+	mov	QWORD PTR [rbp - 96], r10
+	mov	edi, 32
+	call	malloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	L_topo_fail_zero
+	mov	QWORD PTR [rbp - 40], rdi
+	mov	r11d, DWORD PTR [rbp - 96]
+	mov	QWORD PTR [rdi], r11
+	cmp	r11d, DWORD PTR [rbp - 8]
+	setl	r12b
+	movzx	r12d, r12b
+	mov	QWORD PTR [rdi + 8], r12
+	mov	rax, QWORD PTR [rbp - 64]
+	mov	QWORD PTR [rdi + 16], rax
+	mov	QWORD PTR [rdi + 24], 0
+	mov	edi, 16
+	call	malloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	L_topo_fail_zero
+	mov	rsi, QWORD PTR [rbp - 40]
+	mov	rdx, QWORD PTR [rbp - 32]
+	mov	QWORD PTR [rdi], rsi
+	mov	QWORD PTR [rdi + 8], rdx
+	mov	QWORD PTR [rbp - 32], rdi
+	mov	r10d, DWORD PTR [rbp - 88]
+	sub	r10d, 1
+	mov	QWORD PTR [rbp - 88], r10
+	jge	L_topo_core_loop
+L_topo_after_cores:
+	xor	edi, edi
+	mov	esi, DWORD PTR [rbp - 24]
+	call	silica_rt_build_int_range_list
+	mov	QWORD PTR [rbp - 48], rdi
+	mov	QWORD PTR [rbp - 80], rdi
+	lea	rdi, [rip + L_hw_memsize_str]
+	call	silica_rt_sysctl_u64
+	test	rdi, rdi
+	jz	L_topo_fail_zero
+	mov	QWORD PTR [rbp - 72], rdi
+	mov	edi, 24
+	call	malloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	L_topo_fail_zero
+# memory_range: one NUMA node (Apple Silicon has no multi-domain sysctl matrix). start=0 = domain origin in this layout;
+# macOS sysctl does not expose physical DRAM base per node — size is real (hw.memsize bytes). latency=0 = local self-
+# distance (ACPI SLIT-style relative units: same node as itself), not an OS picoseconds value.
+	mov	QWORD PTR [rdi], 0
+	mov	rax, QWORD PTR [rbp - 72]
+	mov	QWORD PTR [rdi + 8], rax
+	mov	QWORD PTR [rdi + 16], 0
+	mov	QWORD PTR [rbp - 40], rdi
+	mov	edi, 16
+	call	malloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	L_topo_fail_zero
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	QWORD PTR [rdi], rax
+	mov	QWORD PTR [rdi + 8], 0
+	mov	QWORD PTR [rbp - 40], rdi
+	mov	edi, 24
+	call	malloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	L_topo_fail_zero
+	mov	QWORD PTR [rdi], 0
+	mov	rax, QWORD PTR [rbp - 80]
+	mov	QWORD PTR [rdi + 8], rax
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	QWORD PTR [rdi + 16], rax
+	mov	QWORD PTR [rbp - 40], rdi
+	mov	edi, 16
+	call	malloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	L_topo_fail_zero
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	QWORD PTR [rdi], rax
+	mov	QWORD PTR [rdi + 8], 0
+	mov	QWORD PTR [rbp - 64], rdi
+	mov	edi, DWORD PTR [rbp - 8]
+	mov	esi, DWORD PTR [rbp - 16]
+	mov	edx, DWORD PTR [rbp - 24]
+	mov	rcx, QWORD PTR [rbp - 80]
+	call	silica_rt_apple_build_cache_levels
+	mov	QWORD PTR [rbp - 56], rdi
+	mov	edi, 24
+	call	malloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	L_topo_fail_zero
+	mov	rax, QWORD PTR [rbp - 32]
+	mov	QWORD PTR [rdi], rax
+	mov	rax, QWORD PTR [rbp - 64]
+	mov	QWORD PTR [rdi + 8], rax
+	mov	rax, QWORD PTR [rbp - 56]
+	mov	QWORD PTR [rdi + 16], rax
+	jmp	L_topo_epilogue
+L_topo_sysctl_fail:
+	add	rsp, 16
+L_topo_fail_zero:
+# OOM / sysctl / zero-core failure: still return a non-NULL 24-byte record (cores, numa_nodes, cache_hierarchy
+# pointers all nil) so Silica callers can field-load and length(empty) without SIGSEGV. If malloc fails, return NULL.
+	mov	edi, 24
+	call	malloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	L_topo_null_ret
+	mov	QWORD PTR [rdi], 0
+	mov	QWORD PTR [rdi + 8], 0
+	mov	QWORD PTR [rdi + 16], 0
+	jmp	L_topo_epilogue
+L_topo_null_ret:
+	xor	edi, edi
+L_topo_epilogue:
+	leave
+	ret
+	.globl	silica_rt_get_core_capabilities
+	.p2align	2
+silica_rt_get_core_capabilities:
+# Frame: [rbp-8] w19 P-cores, [rbp-16] w20 E-cores, [rbp-24] w21 total, [rbp-40] x23 record, [rbp-80] x28 requested id.
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 96
+	mov	QWORD PTR [rbp - 80], rdi
+	sub	rsp, 16
+	mov	DWORD PTR [rsp + 8], 4
+	mov	DWORD PTR [rsp], 0
+	lea	rdi, [rip + L_hw_perf0_str]
+	mov	rsi, rsp
+	lea	rdx, [rsp + 8]
+	xor	ecx, ecx
+	xor	r8d, r8d
+	call	silica_rt_sysctlbyname
+	test	edi, edi
+	jnz	L_cap_sysctl_fail
+	mov	eax, DWORD PTR [rsp]
+	mov	QWORD PTR [rbp - 8], rax
+	mov	DWORD PTR [rsp + 8], 4
+	mov	DWORD PTR [rsp], 0
+	lea	rdi, [rip + L_hw_perf1_str]
+	mov	rsi, rsp
+	lea	rdx, [rsp + 8]
+	xor	ecx, ecx
+	xor	r8d, r8d
+	call	silica_rt_sysctlbyname
+	test	edi, edi
+	jnz	L_cap_sysctl_fail
+	mov	eax, DWORD PTR [rsp]
+	mov	QWORD PTR [rbp - 16], rax
+	add	rsp, 16
+	mov	eax, DWORD PTR [rbp - 8]
+	add	eax, DWORD PTR [rbp - 16]
+	mov	QWORD PTR [rbp - 24], rax
+	mov	rax, QWORD PTR [rbp - 80]
+	cmp	rax, 0
+	jl	L_cap_emit_sentinel
+	mov	ebx, DWORD PTR [rbp - 24]
+	cmp	rax, rbx
+	jae	L_cap_emit_sentinel
+	mov	edi, 32
+	call	malloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	L_cap_emit_sentinel
+	mov	QWORD PTR [rbp - 40], rdi
+	mov	rax, QWORD PTR [rbp - 80]
+	mov	QWORD PTR [rdi], rax
+	mov	r10d, DWORD PTR [rbp - 8]
+	cmp	rax, r10
+	setl	r12b
+	movzx	r12d, r12b
+	mov	QWORD PTR [rdi + 8], r12
+	call	silica_rt_apple_hw_optional_caps_list
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	QWORD PTR [rax + 16], rdi
+	mov	QWORD PTR [rax + 24], 0
+	mov	rdi, rax
+	jmp	L_cap_epilogue
+L_cap_sysctl_fail:
+	add	rsp, 16
+	jmp	L_cap_emit_sentinel
+# Failure / OOM: heap core_info with id=-1 (sentinel); core_type=0 (:efficiency); caps/freq zero — distinguish from valid id>=0.
+L_cap_emit_sentinel:
+	mov	edi, 32
+	call	malloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	L_cap_sentinel_oom
+	mov	QWORD PTR [rdi], -1
+	mov	QWORD PTR [rdi + 8], 0
+	mov	QWORD PTR [rdi + 16], 0
+	mov	QWORD PTR [rdi + 24], 0
+	jmp	L_cap_epilogue
+L_cap_sentinel_oom:
+	xor	edi, edi
+	jmp	L_cap_epilogue
+L_cap_epilogue:
+	leave
+	ret
+"
+}
+
+fn actor_rt_asm_chunk_6() -> string {
+    "	.globl	silica_rt_get_efficiency_cores # -- Begin function silica_rt_get_efficiency_cores
+	.p2align	2
+silica_rt_get_efficiency_cores: # @silica_rt_get_efficiency_cores
+# %bb.0: query P-core count (offset) then E-core count, build list [p..p+e-1]
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	sub	rsp, 16
+	mov	QWORD PTR [rsp + 8], 4
+	mov	QWORD PTR [rsp], 0
+	lea	rdi, [rip + L_hw_perf0_str]
+	mov	rsi, rsp
+	lea	rdx, [rsp + 8]
+	xor	ecx, ecx
+	xor	r8d, r8d
+	call	silica_rt_sysctlbyname
+	test	edi, edi
+	jnz	LBBec_fail
+	mov	eax, DWORD PTR [rsp]
+	mov	QWORD PTR [rbp - 8], rax
+	mov	QWORD PTR [rsp + 8], 4
+	mov	QWORD PTR [rsp], 0
+	lea	rdi, [rip + L_hw_perf1_str]
+	mov	rsi, rsp
+	lea	rdx, [rsp + 8]
+	xor	ecx, ecx
+	xor	r8d, r8d
+	call	silica_rt_sysctlbyname
+	test	edi, edi
+	jnz	LBBec_fail
+	mov	esi, DWORD PTR [rsp]
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rsp, 16
+	call	silica_rt_build_int_range_list
+	leave
+	ret
+LBBec_fail:
+	add	rsp, 16
+	xor	edi, edi
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_get_performance_cores # -- Begin function silica_rt_get_performance_cores
+	.p2align	2
+silica_rt_get_performance_cores: # @silica_rt_get_performance_cores
+# %bb.0: query P-core count, build list [0..count-1]
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	sub	rsp, 16
+	mov	QWORD PTR [rsp + 8], 4
+	mov	QWORD PTR [rsp], 0
+	lea	rdi, [rip + L_hw_perf0_str]
+	mov	rsi, rsp
+	lea	rdx, [rsp + 8]
+	xor	ecx, ecx
+	xor	r8d, r8d
+	call	silica_rt_sysctlbyname
+	test	edi, edi
+	jnz	LBBpc_fail
+	mov	esi, DWORD PTR [rsp]
+	xor	edi, edi
+	add	rsp, 16
+	call	silica_rt_build_int_range_list
+	leave
+	ret
+LBBpc_fail:
+	add	rsp, 16
+	xor	edi, edi
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_pin_actor_to_core # -- Begin function silica_rt_pin_actor_to_core
+	.p2align	2
+silica_rt_pin_actor_to_core: # @silica_rt_pin_actor_to_core
+# %bb.0: X0=actor_ref X1=core_id; silica_rt_thread_policy_set(thread, 4, &tag, 1)
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rsi
+	mov	rdi, QWORD PTR [rdi + 144]
+	call	silica_rt_pthread_mach_thread_np
+	mov	QWORD PTR [rbp - 16], rdi
+	sub	rsp, 16
+	mov	eax, DWORD PTR [rbp - 8]
+	mov	DWORD PTR [rsp], eax
+	mov	rdi, QWORD PTR [rbp - 16]
+	mov	esi, 4
+	mov	rdx, rsp
+	mov	ecx, 1
+	call	silica_rt_thread_policy_set
+	add	rsp, 16
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_pin_actor_to_efficiency_core # -- Begin function silica_rt_pin_actor_to_efficiency_core
+	.p2align	2
+silica_rt_pin_actor_to_efficiency_core: # @silica_rt_pin_actor_to_efficiency_core
+# %bb.0: X0=actor_ref; pin to any E-core via affinity tag 0x45 ('E')
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	rdi, QWORD PTR [rdi + 144]
+	call	silica_rt_pthread_mach_thread_np
+	mov	QWORD PTR [rbp - 16], rdi
+	sub	rsp, 16
+	mov	DWORD PTR [rsp], 0x45
+	mov	rdi, QWORD PTR [rbp - 16]
+	mov	esi, 4
+	mov	rdx, rsp
+	mov	ecx, 1
+	call	silica_rt_thread_policy_set
+	add	rsp, 16
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_pin_actor_to_performance_core # -- Begin function silica_rt_pin_actor_to_performance_core
+	.p2align	2
+"
+}
+
+fn actor_rt_asm_chunk_7() -> string {
+    "silica_rt_pin_actor_to_performance_core: # @silica_rt_pin_actor_to_performance_core
+# %bb.0: X0=actor_ref; pin to any P-core via affinity tag 0x50 ('P')
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	rdi, QWORD PTR [rdi + 144]
+	call	silica_rt_pthread_mach_thread_np
+	mov	QWORD PTR [rbp - 16], rdi
+	sub	rsp, 16
+	mov	DWORD PTR [rsp], 0x50
+	mov	rdi, QWORD PTR [rbp - 16]
+	mov	esi, 4
+	mov	rdx, rsp
+	mov	ecx, 1
+	call	silica_rt_thread_policy_set
+	add	rsp, 16
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_pin_actor_realtime # -- Begin function silica_rt_pin_actor_realtime
+	.p2align	2
+silica_rt_pin_actor_realtime: # @silica_rt_pin_actor_realtime
+# %bb.0: X0=actor_ref; stub (realtime policy requires THREAD_TIME_CONSTRAINT_POLICY)
+	xor	edi, edi
+	ret
+                                        # -- End function
+	.globl	silica_rt_remove_actor # -- Begin function silica_rt_remove_actor
+	.p2align	2
+silica_rt_remove_actor: # @silica_rt_remove_actor
+# %bb.0: X0=actor_ref; set alive=0, signal cond to wake thread
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	add	rdi, 16
+	call	silica_rt_lock_lock
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	DWORD PTR [rax + 152], 0
+	lea	rdi, [rax + 80]
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	xor	edi, edi
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_register_actor_named # -- Begin function silica_rt_register_actor_named
+	.p2align	2
+silica_rt_register_actor_named: # @silica_rt_register_actor_named
+# X0=actor_ref, X1=atom registry key. Insert directly into the PID registry table.
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	rbx, QWORD PTR [rip + silica_pid_registry_ref]
+	test	rbx, rbx
+	jz	Lreg_named_done
+	mov	r10, QWORD PTR [rbx]
+	test	r10, r10
+	jz	Lreg_named_done
+	mov	rax, QWORD PTR [rbp - 16]
+	cmp	rax, 0
+	jl	Lreg_named_done
+	cmp	rax, 240
+	jge	Lreg_named_done
+	mov	r11d, 1
+	mov	QWORD PTR [r10 + rax*8], r11
+	add	r10, 1920
+	mov	rcx, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [r10 + rax*8], rcx
+Lreg_named_done:
+	xor	edi, edi
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_register_dangerous_actor_named # -- Begin function silica_rt_register_dangerous_actor_named
+	.p2align	2
+silica_rt_register_dangerous_actor_named: # @silica_rt_register_dangerous_actor_named
+# X0=actor_ref, X1=atom registry key. Insert directly into the dangerous PID registry table.
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	rbx, QWORD PTR [rip + silica_dangerous_pid_registry_ref]
+	test	rbx, rbx
+	jz	Lreg_danger_named_done
+	mov	r10, QWORD PTR [rbx]
+	test	r10, r10
+	jz	Lreg_danger_named_done
+	mov	rax, QWORD PTR [rbp - 16]
+	cmp	rax, 0
+	jl	Lreg_danger_named_done
+	cmp	rax, 240
+	jge	Lreg_danger_named_done
+	mov	r11d, 1
+	mov	QWORD PTR [r10 + rax*8], r11
+	add	r10, 1920
+	mov	rcx, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [r10 + rax*8], rcx
+Lreg_danger_named_done:
+	xor	edi, edi
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_register_actor # -- Begin function silica_rt_register_actor
+	.p2align	2
+silica_rt_register_actor: # @silica_rt_register_actor
+# Legacy unary register_actor(actor_ref). The global slot belongs to the PID registry actor;
+# named insertion is handled by silica_rt_register_actor_named.
+	xor	edi, edi
+	ret
+                                        # -- End function
+	.globl	silica_rt_get_registry_actor # -- Begin function silica_rt_get_registry_actor
+	.p2align	2
+silica_rt_get_registry_actor: # @silica_rt_get_registry_actor
+# %bb.0: Returns actor_ref stored by register_actor (or 0 if not yet initialised). X0=actor_ref.
+	mov	rdi, QWORD PTR [rip + silica_pid_registry_ref]
+	ret
+                                        # -- End function
+# Phase E e4b: silica_rt_actor_kill_abnormal — set pending exit reason_tag to 1 (abnormal) and stop the actor.
+# X0=actor_ref or atom registry key. Returns X0=0 (atom :ok). Used by trials to inject abnormal exits so :transient restart policy
+# (restart iff reason_tag != 0) can be exercised. Mutex protects the alive/reason_tag transition vs
+# deliver_exit reading [ACB+#336] from the actor's own thread.
+	.globl	silica_rt_actor_kill_abnormal
+	.p2align	2
+silica_rt_actor_kill_abnormal:
+# Frame: [rbp-8] acb, [rbp-16] row ptr (ACB+208), [rbp-24] supervisor (ACB+192).
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+# Accept atom target by resolving through PID registry (same table layout as call_registered/cast_registered).
+	mov	r12, rdi
+	cmp	r12, 0
+	jl	Lkab_use_direct
+	cmp	r12, 240
+	jge	Lkab_use_direct
+	mov	rbx, QWORD PTR [rip + silica_pid_registry_ref]
+	test	rbx, rbx
+	jz	Lkab_not_found
+	mov	r10, QWORD PTR [rbx]
+	test	r10, r10
+	jz	Lkab_not_found
+	mov	r11, QWORD PTR [r10 + r12*8]
+	cmp	r11, 1
+	jne	Lkab_not_found
+	add	r10, 1920
+	mov	rdi, QWORD PTR [r10 + r12*8]
+	test	rdi, rdi
+	jz	Lkab_not_found
+	jmp	Lkab_resolved
+Lkab_use_direct:
+	mov	rdi, r12
+Lkab_resolved:
+	mov	QWORD PTR [rbp - 8], rdi
+	test	rdi, rdi
+	jz	Lkab_not_found
+	mov	rax, QWORD PTR [rdi + 208]
+	mov	QWORD PTR [rbp - 16], rax
+	mov	rax, QWORD PTR [rdi + 192]
+	mov	QWORD PTR [rbp - 24], rax
+	add	rdi, 16
+	call	silica_rt_lock_lock
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax + 336], 1
+	mov	DWORD PTR [rax + 152], 0
+	lea	rdi, [rax + 80]
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	cmp	QWORD PTR [rbp - 16], 4096
+	jb	Lkab_not_found
+	call	silica_rt_tls_current_actor_get
+	cmp	rdi, QWORD PTR [rbp - 8]
+	je	Lkab_not_found
+Lkab_wait_exit_done:
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	rbx, QWORD PTR [rax + 56]
+	test	rbx, rbx
+	jz	Lkab_wait_exit_done
+	mov	rdi, QWORD PTR [rbp - 24]
+	test	rdi, rdi
+	jz	Lkab_not_found
+	call	silica_rt_supervisor_drain_ingress
+Lkab_not_found:
+	xor	edi, edi
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_pin_actor_to_numa_node # -- Begin function silica_rt_pin_actor_to_numa_node
+	.p2align	2
+silica_rt_pin_actor_to_numa_node: # @silica_rt_pin_actor_to_numa_node
+# %bb.0: N/A (single NUMA domain)
+	xor	edi, edi
+	ret
+                                        # -- End function
+	.globl	silica_rt_unpin_actor # -- Begin function silica_rt_unpin_actor
+	.p2align	2
+silica_rt_unpin_actor: # @silica_rt_unpin_actor
+# %bb.0: X0=actor_ref; clear affinity by setting tag=0
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	rdi, QWORD PTR [rdi + 144]
+	call	silica_rt_pthread_mach_thread_np
+	mov	QWORD PTR [rbp - 16], rdi
+	sub	rsp, 16
+	mov	DWORD PTR [rsp], 0
+	mov	rdi, QWORD PTR [rbp - 16]
+	mov	esi, 4
+	mov	rdx, rsp
+	mov	ecx, 1
+	call	silica_rt_thread_policy_set
+	add	rsp, 16
+	xor	edi, edi
+	leave
+	ret
+                                        # -- End function
+	.globl	silica_rt_set_actor_priority # -- Begin function silica_rt_set_actor_priority
+	.p2align	2
+silica_rt_set_actor_priority: # @silica_rt_set_actor_priority
+# %bb.0: X0=actor_ref X1=priority; map to pthread QoS class
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rsi
+	mov	rdi, QWORD PTR [rdi + 144]
+	cmp	rsi, 3
+	jge	LBBsp_interactive
+	cmp	rsi, 2
+	je	LBBsp_initiated
+	cmp	rsi, 1
+	je	LBBsp_default
+	cmp	rsi, 0
+	je	LBBsp_utility
+	mov	esi, 0x09
+	jmp	LBBsp_set
+LBBsp_interactive:
+	mov	esi, 0x21
+	jmp	LBBsp_set
+LBBsp_initiated:
+	mov	esi, 0x19
+	jmp	LBBsp_set
+LBBsp_default:
+	mov	esi, 0x15
+	jmp	LBBsp_set
+LBBsp_utility:
+	mov	esi, 0x11
+LBBsp_set:
+	xor	edx, edx
+	call	silica_rt_pthread_set_qos_class_np
+	leave
+	ret
+"
+}
+
+fn actor_rt_asm_chunk_8() -> string {
+    "                                        # -- End function
+"
+}
+
+fn actor_rt_emit_runtime_tail(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> string {
+    concat(concat(prims_actors_runtime_asm_c@actor_rt_asm_phase_i_chunk(table), prims_actors_runtime_asm_c@actor_rt_asm_phase_c_chunk(table)), prims_actors_runtime_asm_c@actor_rt_asm_phase_f_chunk())
+}
+
+fn emit_actor_runtime_helpers(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> string {
+    arena_asm: string <- ffi_arena_runtime_asm@emit_ffi_arena_runtime_asm();
+    guarded_asm: string <- ffi_guarded_runtime_asm@emit_guarded_ffi_runtime_asm();
+    fault_asm: string <- ffi_fault_runtime_asm@emit_ffi_fault_runtime_asm();
+    canonical_arena_asm: string <- canonical_arena_runtime_asm@emit_canonical_arena_runtime_asm();
+    ordering_identity_asm: string <- ordering_identity_runtime_asm@emit_ordering_identity_runtime_asm();
+    checked_int64_asm: string <- checked_int64_runtime_asm@emit_checked_int64_runtime_asm();
+    stack_asm: string <- prims_actors_stack_asm@emit_actor_stack_runtime_asm(table);
+    linux_shims_asm: string <- linux_rt_shims_asm@emit_linux_rt_shims_asm();
+    concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(actor_rt_asm_chunk_0(), actor_rt_asm_chunk_1()), actor_rt_asm_chunk_2()), actor_rt_asm_chunk_3()), actor_rt_asm_chunk_4()), actor_rt_asm_chunk_5()), actor_rt_topology_phase_g_chunk()), actor_rt_asm_chunk_6()), actor_rt_asm_chunk_7()), actor_rt_asm_chunk_8()), prims_actors_runtime_asm_b@actor_rt_asm_chunk_9()), prims_actors_runtime_asm_b@actor_rt_asm_chunk_10()), prims_actors_runtime_asm_b@actor_rt_asm_chunk_11()), prims_actors_runtime_asm_b@actor_rt_asm_chunk_12()), prims_actors_runtime_asm_b@actor_rt_asm_chunk_13()), prims_actors_runtime_asm_c@actor_rt_asm_cv_chunk()), prims_actors_child_table_asm@emit_child_table_runtime_asm(table)), actor_rt_emit_runtime_tail(table)), prims_actors_runtime_asm_c@actor_rt_asm_badarith_chunk()), concat(prims_actors_runtime_asm_c@actor_rt_asm_case_clause_chunk(), concat(arena_asm, concat(guarded_asm, concat(fault_asm, concat(canonical_arena_asm, concat(ordering_identity_asm, concat(checked_int64_asm, linux_shims_asm)))))))), stack_asm)
+}

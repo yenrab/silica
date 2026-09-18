@@ -1,0 +1,35 @@
+// SD-21: every call of a function that returns an aggregate (a record or a tuple; even a
+// one-field record) leaks stack for the life of the actor: ~32 bytes per call (~4 bytes for a
+// one-field record), never released between dispatches, until the 8 MB actor stack guard.
+// Here: 100,000 messages x 10 record-returning calls fault in mk ("[silica] fault ... in
+// ..._mk"); 100 messages x 1,000 calls per message are fine, and int64 returns never leak.
+fn mk(n: int64) -> { a: int64, b: int64, c: int64 } { { a: n, b: n + 1, c: n + 2 } }
+fn sum_k(k: int64, acc: int64) -> int64 {
+    sequence
+        r: { a: int64, b: int64, c: int64 } <- mk(k);
+        v: int64 <- case k == 0 of { true -> acc + r.c; false -> sum_k(k - 1, acc + r.c) }
+    produces pure v end
+}
+fn beh(msg: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        v: int64 <- sum_k(10, 0);
+        _: atom <- case msg == 0 - 1 of {
+            true -> { _: atom <- print_int64(state + v); println(""); println("done"); :ok };
+            false -> :ok
+        }
+    produces pure (:no_reply, state + v) end
+}
+fn send_n(a: actor_ref, i: int64) -> atom {
+    sequence proc[concurrency]
+        _: boolean <- cast(a, i impl ActorMessage {});
+        r: atom <- case i == 0 of { true -> :ok; false -> send_n(a, i - 1) }
+    produces pure r end
+}
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        a: actor_ref <- spawn(0, beh, stack_policy(0, :keep_last_message));
+        _: atom <- send_n(a, 100000);
+        _: boolean <- cast(a, 0 - 1 impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces pure 0 end
+}

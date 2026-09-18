@@ -1,0 +1,1589 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Phase E e3a — linked-list child table (Option B): no contiguous buffer / realloc.
+// ACB anchors: #256 head (first node ptr), #264 len (i64 row count / list length),
+// #272 sync_failure_reported (0/1; root cap-breach reports synchronously, later thread exit skips duplicate).
+// Node size 88 B: payload 80 B (same row layout as e3a) then next ptr @ +80 (0 = end).
+// Offsets in row payload: +0 child_ref, +8 id atom, +16 agent_type, +24 start.0, +32 start.1, +40 restart atom,
+// +48 shutdown i64, +56 exit_done / sync, +64 flavor atom (:plain | :dangerous), +72 supervisor_start_trampoline (0 for worker).
+// Phase E e3f tombstone: child_ref==0 means inactive; len stays high-water for :rest_for_one ordering.
+//
+// linux_x86_64 (Intel syntax; RUNTIME_GUIDE.md): arguments X0..X4 arrive in rdi rsi rdx rcx r8 and every
+// result leaves in rdi (C results arrive in rax). What the AArch64 text kept in x19..x28 lives in the
+// frame slots [rbp - 8] .. [rbp - 80] (x19 = [rbp - 8], x20 = [rbp - 16], ... x28 = [rbp - 80]) because
+// nothing but rbp/rsp survives a call; x14/x15 in materialize are [rbp - 88]/[rbp - 96]. Temporaries
+// x8 x9 x10 x11 x12 use r8 r9 r10 r11 rcx (caller-saved, never live across a call, as on AArch64).
+// Frames are `push rbp; mov rbp, rsp; sub rsp, N` (N = 80, or 96 for materialize) and `leave; ret`.
+// silica_rt_tls_actor_set_from_x19 takes the ACB in rdi on this target (its AArch64 x19 is a slot here).
+
+use atom_table;
+use prims_list;
+
+export emit_child_table_runtime_asm/1;
+
+// Spine link offset for init/1 static List[child_spec] chunks; must match prims_list chunk_data_bytes.
+fn child_spec_init_list_chunk_data_bytes() -> int64 {
+    prims_list@chunk_data_bytes("{ id: atom, agent_type: atom, initial_state: int64, behavior: fn, restart: atom, shutdown: int64, flavor: atom }")
+}
+
+// Atoms are int64 indices (§4.1.7); strcmp on row/ACB atom fields was never valid.
+// e4b: row.restart dispatch over (perm, trans). rdi = restart atom, [rbp - 80] (x28) = reason_tag (0=:normal, !=0=abnormal).
+//   :permanent → always restart.
+//   :transient → restart iff reason_tag != 0; on :normal exit, fall through to tombstone.
+//   anything else (e.g. :temporary, missing atom) → tombstone (no restart).
+fn maybe_restart_policy_dispatch(perm_idx: int64, trans_idx: int64) -> string {
+    perm_cmp: string <- case perm_idx < 0 of {
+        true -> "";
+        false -> concat(concat("	cmp	rdi, ", atom_table@int64_to_decimal_string(perm_idx)), "\n	je	Lmr_can_restart\n")
+    };
+    trans_cmp: string <- case trans_idx < 0 of {
+        true -> "";
+        false -> concat(concat("	cmp	rdi, ", atom_table@int64_to_decimal_string(trans_idx)), "\n	je	Lmr_check_transient\n")
+    };
+    fall: string <- "	jmp	Lmr_tombstone_done\n";
+    trans_block: string <- case trans_idx < 0 of {
+        true -> "";
+        false -> "Lmr_check_transient:\n	cmp	QWORD PTR [rbp - 80], 0\n	je	Lmr_tombstone_done\n"
+    };
+    label_can: string <- "Lmr_can_restart:\n";
+    concat(concat(concat(concat(perm_cmp, trans_cmp), fall), trans_block), label_can)
+}
+
+fn maybe_restart_strat_eq_branch(idx: int64, dest: string) -> string {
+    case idx < 0 of {
+        true -> "";
+        false -> concat(concat(concat("	cmp	rdi, ", atom_table@int64_to_decimal_string(idx)), "\n	je	"), concat(dest, "\n"))
+    }
+}
+
+fn child_table_rt_asm_chunk_0() -> string {
+    "	.text
+# --- Phase E e3a Option B: linked-list child table ---
+# silica_rt_child_table_free: X0=ACB* — walk nodes (+80 next), free each, clear anchors.
+# silica_rt_child_table_ensure_min_cap: X0=ACB*, X1=min node count — X0=0 ok, 1 OOM. Appends 88 B nodes (80 B row + next) until count >= X1.
+	.globl	silica_rt_child_table_free
+	.p2align	2
+silica_rt_child_table_free:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	r8, QWORD PTR [rdi + 256]
+Lct_free_loop:
+	test	r8, r8
+	jz	Lct_free_clear
+	mov	rax, QWORD PTR [r8 + 80]
+	mov	QWORD PTR [rbp - 16], rax
+	mov	rdi, r8
+	call	free
+	mov	r8, QWORD PTR [rbp - 16]
+	jmp	Lct_free_loop
+Lct_free_clear:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax + 256], 0
+	mov	QWORD PTR [rax + 264], 0
+# Do not clear ACB[+272] (sync_failure_reported) — that flag outlives the child-table list.
+	leave
+	ret
+	.globl	silica_rt_child_table_ensure_min_cap
+	.p2align	2
+silica_rt_child_table_ensure_min_cap:
+# X0=ACB* X1=min_nodes. Returns X0=0 success, 1 OOM.
+# [rbp - 8] ACB (x19), [rbp - 16] min (x20), [rbp - 24] head (x21), [rbp - 32] count (x22), [rbp - 40] cursor (x23),
+# [rbp - 48] new node (x24), [rbp - 56] tail cursor (x25), [rbp - 64] tail next (x26).
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	cmp	rsi, 0
+	jle	Lct_ens_ok
+Lct_ens_retry:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rax, QWORD PTR [rax + 256]
+	mov	QWORD PTR [rbp - 24], rax
+	mov	QWORD PTR [rbp - 32], 0
+	mov	QWORD PTR [rbp - 40], rax
+Lct_count_loop:
+	mov	rax, QWORD PTR [rbp - 40]
+	test	rax, rax
+	jz	Lct_count_done
+	add	QWORD PTR [rbp - 32], 1
+	mov	rax, QWORD PTR [rax + 80]
+	mov	QWORD PTR [rbp - 40], rax
+	jmp	Lct_count_loop
+Lct_count_done:
+	mov	rax, QWORD PTR [rbp - 32]
+	cmp	rax, QWORD PTR [rbp - 16]
+	jae	Lct_ens_ok
+	mov	edi, 1
+	mov	esi, 88
+	call	calloc
+	mov	rdi, rax
+	test	rdi, rdi
+	jz	Lct_ens_fail
+	mov	QWORD PTR [rbp - 48], rdi
+	mov	QWORD PTR [rdi + 80], 0
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rax, QWORD PTR [rax + 256]
+	mov	QWORD PTR [rbp - 24], rax
+	test	rax, rax
+	jnz	Lct_link_at_tail
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax + 256], rdi
+	jmp	Lct_ens_retry
+Lct_link_at_tail:
+	mov	QWORD PTR [rbp - 56], rax
+Lct_find_tail:
+	mov	rax, QWORD PTR [rbp - 56]
+	mov	rcx, QWORD PTR [rax + 80]
+	mov	QWORD PTR [rbp - 64], rcx
+	test	rcx, rcx
+	jz	Lct_found_tail
+	mov	QWORD PTR [rbp - 56], rcx
+	jmp	Lct_find_tail
+Lct_found_tail:
+	mov	rcx, QWORD PTR [rbp - 48]
+	mov	QWORD PTR [rax + 80], rcx
+	jmp	Lct_ens_retry
+Lct_ens_ok:
+	xor	edi, edi
+	leave
+	ret
+Lct_ens_fail:
+	mov	edi, 1
+	leave
+	ret
+"
+}
+
+fn child_table_rt_spawn_child_row_by_flavor_asm(danger_idx: int64) -> string {
+    case danger_idx < 0 of {
+        true -> "	.globl	silica_rt_supervisor_spawn_child_row_by_flavor
+	.p2align	2
+silica_rt_supervisor_spawn_child_row_by_flavor:
+# X0 = row, X1 = supervisor ACB -> X0 = the new child's ACB. [rbp - 8] row (x19), [rbp - 16] supervisor (x20), [rbp - 24] child (x21).
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	rcx, rdi
+	mov	rdi, QWORD PTR [rcx + 24]
+	mov	rsi, QWORD PTR [rcx + 32]
+	mov	rdx, QWORD PTR [rcx + 16]
+	mov	r8, QWORD PTR [rcx + 72]
+	call	silica_rt_actor_spawn_linked
+	mov	QWORD PTR [rbp - 24], rdi
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	QWORD PTR [rdi + 192], rax
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax], rdi
+	mov	QWORD PTR [rax + 56], 0
+	mov	rsi, QWORD PTR [rax + 8]
+	call	silica_rt_register_actor_named
+	mov	rdi, QWORD PTR [rbp - 24]
+	leave
+	ret
+";
+        false -> {
+            danger_atom: string <- atom_table@int64_to_decimal_string(danger_idx);
+            concat(concat(concat(concat("	.globl	silica_rt_supervisor_spawn_child_row_by_flavor
+	.p2align	2
+silica_rt_supervisor_spawn_child_row_by_flavor:
+# X0 = row, X1 = supervisor ACB -> X0 = the new child's ACB. [rbp - 8] row (x19), [rbp - 16] supervisor (x20), [rbp - 24] child (x21).
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	r9, QWORD PTR [rdi + 64]
+	cmp	r9, ", danger_atom), "
+	je	Lsscr_spawn_dangerous
+	mov	rcx, rdi
+	mov	rdi, QWORD PTR [rcx + 24]
+	mov	rsi, QWORD PTR [rcx + 32]
+	mov	rdx, QWORD PTR [rcx + 16]
+	mov	r8, QWORD PTR [rcx + 72]
+	call	silica_rt_actor_spawn_linked
+	jmp	Lsscr_spawn_done
+Lsscr_spawn_dangerous:
+	mov	rcx, rdi
+	mov	rdi, QWORD PTR [rcx + 24]
+	mov	rsi, QWORD PTR [rcx + 32]
+	mov	rdx, QWORD PTR [rcx + 16]
+	mov	r8, QWORD PTR [rcx + 72]
+	call	silica_rt_actor_spawn_dangerous_linked
+Lsscr_spawn_done:
+	mov	QWORD PTR [rbp - 24], rdi
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	QWORD PTR [rdi + 192], rax
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax], rdi
+	mov	QWORD PTR [rax + 56], 0
+	mov	rsi, QWORD PTR [rax + 8]
+	mov	r9, QWORD PTR [rax + 64]
+	cmp	r9, "), danger_atom), "
+	je	Lsscr_register_dangerous
+	call	silica_rt_register_actor_named
+	jmp	Lsscr_register_done
+Lsscr_register_dangerous:
+	call	silica_rt_register_dangerous_actor_named
+	mov	rdi, QWORD PTR [rbp - 24]
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rsi, QWORD PTR [rax + 8]
+	call	silica_rt_register_actor_named
+Lsscr_register_done:
+	mov	rdi, QWORD PTR [rbp - 24]
+	leave
+	ret
+")
+        };
+    }
+}
+
+// Phase E e3b: silica_rt_supervisor_materialize_init_children
+// X0=ACB*, X1=tuple_ptr (init return: flags record at +0..+23, children list head at +24).
+// Walks the list-literal handle of child_spec records (visible payload 56 B plus hidden
+// supervisor_start_trampoline at +56 in each child_spec element).
+// Payload layout matches emitter value-flat record: id@0, agent@8, start@(16,24), restart@32, shutdown@40, flavor@48.
+// For each child_spec: spawn_linked(start.0, start.1, agent_type, row_ptr), append a linked row node (88 B; 80 B payload).
+// Stores strategy atom, allowed_restart_count, and restarts_time_frame at ACB#296/#304/#312 for
+// restart strategy dispatch (e3d) and frequency cap (e3e). Current record emission returns a pointer
+// to the supervisor_flags record in tuple slot 0 and the child list in slot 24; keep a flat fallback
+// for older generated tuple shapes where slot 0 is the strategy atom directly.
+// Slots: [rbp - 8] ACB (x19), [rbp - 16] list cursor / remaining count (x20), [rbp - 24] chunk (x21),
+// [rbp - 32] start.0 (x22), [rbp - 40] start.1 (x23), [rbp - 48] agent (x24), [rbp - 56] id (x25),
+// [rbp - 64] restart (x26), [rbp - 72] shutdown (x27), [rbp - 80] row (x28), [rbp - 88] chunk offset (x14),
+// [rbp - 96] element (x15). x14/x15 are slots because they are live across calls.
+fn child_table_rt_asm_chunk_1(danger_idx: int64, list_chunk_bytes: int64) -> string {
+    pre: string <- "	.globl	silica_rt_supervisor_materialize_init_children
+	.p2align	2
+silica_rt_supervisor_materialize_init_children:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 96
+	mov	r8, QWORD PTR [rsi]
+	cmp	r8, 4096
+	jb	Lmat_pre_flags_flat
+	mov	QWORD PTR [rbp - 96], 8
+	mov	r9, QWORD PTR [r8]
+	mov	QWORD PTR [rdi + 296], r9
+	mov	r9, QWORD PTR [r8 + 8]
+	mov	QWORD PTR [rdi + 304], r9
+	mov	r9, QWORD PTR [r8 + 16]
+	mov	QWORD PTR [rdi + 312], r9
+	jmp	Lmat_pre_flags_done
+Lmat_pre_flags_flat:
+	mov	QWORD PTR [rbp - 96], 24
+	mov	QWORD PTR [rdi + 296], r8
+	mov	r9, QWORD PTR [rsi + 8]
+	mov	QWORD PTR [rdi + 304], r9
+	mov	r9, QWORD PTR [rsi + 16]
+	mov	QWORD PTR [rdi + 312], r9
+Lmat_pre_flags_done:
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	rax, rsi
+	add	rax, QWORD PTR [rbp - 96]
+	mov	QWORD PTR [rbp - 88], rax
+	mov	rax, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 16], rax
+	test	rax, rax
+	jz	Lmat_done
+	mov	rcx, QWORD PTR [rax + 8]
+	mov	QWORD PTR [rbp - 24], rcx
+	mov	rcx, QWORD PTR [rax + 16]
+	mov	QWORD PTR [rbp - 88], rcx
+	mov	rax, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 16], rax
+Lmat_loop:
+	cmp	QWORD PTR [rbp - 16], 0
+	je	Lmat_done
+	mov	rax, QWORD PTR [rbp - 24]
+	test	rax, rax
+	jz	Lmat_done
+	add	rax, QWORD PTR [rbp - 88]
+	mov	QWORD PTR [rbp - 96], rax
+	mov	rcx, QWORD PTR [rax + 16]
+	mov	QWORD PTR [rbp - 32], rcx
+	mov	rcx, QWORD PTR [rax + 24]
+	mov	QWORD PTR [rbp - 40], rcx
+	mov	rcx, QWORD PTR [rax + 8]
+	mov	QWORD PTR [rbp - 48], rcx
+	mov	rcx, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 56], rcx
+	mov	rcx, QWORD PTR [rax + 32]
+	mov	QWORD PTR [rbp - 64], rcx
+	mov	rcx, QWORD PTR [rax + 40]
+	mov	QWORD PTR [rbp - 72], rcx
+# Phase E e4f + Option B: ensure one more list node, then walk `len` links from head for stable row ptr (no realloc).
+	mov	rdi, QWORD PTR [rbp - 8]
+	mov	rsi, QWORD PTR [rdi + 264]
+	add	rsi, 1
+	call	silica_rt_child_table_ensure_min_cap
+	test	rdi, rdi
+	jnz	Lmat_done
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rcx, QWORD PTR [rax + 256]
+	mov	r9, QWORD PTR [rax + 264]
+	mov	r10, r9
+Lmat_walk_row:
+	test	r10, r10
+	jz	Lmat_walk_row_done
+	mov	rcx, QWORD PTR [rcx + 80]
+	sub	r10, 1
+	jmp	Lmat_walk_row
+Lmat_walk_row_done:
+	mov	QWORD PTR [rbp - 80], rcx
+";
+    post: string <- concat("    mov QWORD PTR [rcx], 0\n    mov rax, QWORD PTR [rbp - 56]\n    mov QWORD PTR [rcx + 8], rax\n    mov rax, QWORD PTR [rbp - 48]\n    mov QWORD PTR [rcx + 16], rax\n    mov rax, QWORD PTR [rbp - 32]\n    mov QWORD PTR [rcx + 24], rax\n    mov rax, QWORD PTR [rbp - 40]\n    mov QWORD PTR [rcx + 32], rax\n    mov rax, QWORD PTR [rbp - 64]\n    mov QWORD PTR [rcx + 40], rax\n    mov rax, QWORD PTR [rbp - 72]\n    mov QWORD PTR [rcx + 48], rax\n    mov QWORD PTR [rcx + 56], 0\n    mov rax, QWORD PTR [rbp - 96]\n    mov r9, QWORD PTR [rax + 48]\n    mov QWORD PTR [rcx + 64], r9\n    mov r9, QWORD PTR [rax + 56]\n    mov QWORD PTR [rcx + 72], r9\n", case danger_idx < 0 of {
+        true -> "    mov rdi, QWORD PTR [rbp - 32]\n    mov rsi, QWORD PTR [rbp - 40]\n    mov rdx, QWORD PTR [rbp - 48]\n    mov r8, QWORD PTR [rcx + 72]\n    call silica_rt_actor_spawn_linked\n    mov rax, QWORD PTR [rbp - 8]\n    mov QWORD PTR [rdi + 192], rax\n    mov rcx, QWORD PTR [rbp - 80]\n    mov QWORD PTR [rcx], rdi\n    mov QWORD PTR [rcx + 56], 0\n    mov rdi, QWORD PTR [rcx]\n    mov rsi, QWORD PTR [rcx + 8]\n    call silica_rt_register_actor_named\n";
+        false -> concat(concat("    mov r9, QWORD PTR [rcx + 64]\n    cmp r9, ", atom_table@int64_to_decimal_string(danger_idx)), "\n    je Lmat_row_spawn_dangerous\n    mov rdi, QWORD PTR [rbp - 32]\n    mov rsi, QWORD PTR [rbp - 40]\n    mov rdx, QWORD PTR [rbp - 48]\n    mov r8, QWORD PTR [rcx + 72]\n    call silica_rt_actor_spawn_linked\n    mov rax, QWORD PTR [rbp - 8]\n    mov QWORD PTR [rdi + 192], rax\n    mov rcx, QWORD PTR [rbp - 80]\n    mov QWORD PTR [rcx], rdi\n    mov QWORD PTR [rcx + 56], 0\n    mov rdi, QWORD PTR [rcx]\n    mov rsi, QWORD PTR [rcx + 8]\n    call silica_rt_register_actor_named\n    jmp Lmat_row_spawn_done\nLmat_row_spawn_dangerous:\n    mov rdi, QWORD PTR [rbp - 80]\n    mov rsi, QWORD PTR [rbp - 8]\n    call silica_rt_supervisor_spawn_child_row_by_flavor\nLmat_row_spawn_done:\n")
+    });
+    list_chunk_s: string <- atom_table@int64_to_decimal_string(list_chunk_bytes);
+    tail_pre: string <- "	mov	rax, QWORD PTR [rbp - 8]
+	add	QWORD PTR [rax + 264], 1
+	mov	rax, QWORD PTR [rbp - 24]
+	mov	rax, QWORD PTR [rax + ";
+    tail_post: string <- "]
+	mov	QWORD PTR [rbp - 24], rax
+	mov	QWORD PTR [rbp - 88], 0
+	sub	QWORD PTR [rbp - 16], 1
+	jmp	Lmat_loop
+Lmat_done:
+	leave
+	ret
+";
+    tail: string <- concat(concat(tail_pre, list_chunk_s), tail_post);
+    concat(concat(pre, post), tail)
+}
+
+// Phase E e3b2: silica_rt_supervisor_start_child
+// X0 = child_spec record pointer (value-flat 56 B: id@+0, agent_type@+8, start.0@+16, start.1@+24, restart@+32, shutdown@+40,
+// flavor@+48; hidden supervisor_start_trampoline@+56).
+// Layout matches `silica_rt_supervisor_materialize_init_children` (cons payload) so the compiler can build a single
+// stack record and pass it to either path. (Earlier comment claimed +40/+48 — that 72 B layout never matched the
+// emitter's value-flat record_make output; e4b corrects this to the canonical +32/+40 used elsewhere.)
+// Reads current-actor TLS for supervisor ACB. spawn_linked(start.0, start.1, agent_type, row_ptr).
+// Reuses the first e3f tombstone row (child_ref==0) or appends a linked row node (88 B) to the child table.
+// Returns actor_ref (new child) in X0.
+// Slots: [rbp - 8] supervisor ACB (x19), [rbp - 16] spec, then the new child (x20), [rbp - 24] id (x21),
+// [rbp - 32] agent (x22), [rbp - 40] start.0 (x23), [rbp - 48] start.1 (x24), [rbp - 56] restart (x25),
+// [rbp - 64] shutdown (x26), [rbp - 72] row (x27), [rbp - 80] appended flag (x28).
+fn child_table_rt_asm_chunk_2(danger_idx: int64) -> string {
+    pre: string <- "	.globl	silica_rt_supervisor_start_child
+	.p2align	2
+silica_rt_supervisor_start_child:
+# Phase E e4f: the frame also keeps x27 (row_ptr) and x28 (appended flag) so we can
+# locate / allocate the table row first, then call spawn_linked with X3 = row_ptr.
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 16], rdi
+	mov	rax, QWORD PTR [rdi]
+	mov	QWORD PTR [rbp - 24], rax
+	mov	rax, QWORD PTR [rdi + 8]
+	mov	QWORD PTR [rbp - 32], rax
+	mov	rax, QWORD PTR [rdi + 16]
+	mov	QWORD PTR [rbp - 40], rax
+	mov	rax, QWORD PTR [rdi + 24]
+	mov	QWORD PTR [rbp - 48], rax
+	mov	rax, QWORD PTR [rdi + 32]
+	mov	QWORD PTR [rbp - 56], rax
+	mov	rax, QWORD PTR [rdi + 40]
+	mov	QWORD PTR [rbp - 64], rax
+Lsc_tls_prep:
+	call	silica_rt_tls_current_actor_get
+	mov	QWORD PTR [rbp - 8], rdi
+# Phase E e4f + Option B: tombstone scan / append on singly-linked row nodes (+80).
+	mov	r8, QWORD PTR [rdi + 256]
+	mov	r9, QWORD PTR [rdi + 264]
+	xor	r10d, r10d
+Lsc_reuse_loop:
+	cmp	r10, r9
+	jae	Lsc_append_new
+	mov	QWORD PTR [rbp - 72], r8
+	mov	r11, r10
+Lsc_walk_reuse:
+	test	r11, r11
+	jz	Lsc_reuse_at_row
+	mov	rax, QWORD PTR [rbp - 72]
+	mov	rax, QWORD PTR [rax + 80]
+	mov	QWORD PTR [rbp - 72], rax
+	sub	r11, 1
+	jmp	Lsc_walk_reuse
+Lsc_reuse_at_row:
+	mov	rax, QWORD PTR [rbp - 72]
+	mov	rcx, QWORD PTR [rax]
+	test	rcx, rcx
+	jz	Lsc_use_reuse_row
+	add	r10, 1
+	jmp	Lsc_reuse_loop
+Lsc_append_new:
+	mov	rdi, QWORD PTR [rbp - 8]
+	mov	rsi, QWORD PTR [rdi + 264]
+	add	rsi, 1
+	call	silica_rt_child_table_ensure_min_cap
+	test	rdi, rdi
+	jnz	Lsc_done
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r8, QWORD PTR [rax + 256]
+	mov	r9, QWORD PTR [rax + 264]
+	mov	QWORD PTR [rbp - 72], r8
+	mov	r11, r9
+Lsc_walk_append:
+	test	r11, r11
+	jz	Lsc_append_at_row
+	mov	rax, QWORD PTR [rbp - 72]
+	mov	rax, QWORD PTR [rax + 80]
+	mov	QWORD PTR [rbp - 72], rax
+	sub	r11, 1
+	jmp	Lsc_walk_append
+Lsc_append_at_row:
+	mov	QWORD PTR [rbp - 80], 1
+	jmp	Lsc_post_row
+Lsc_use_reuse_row:
+	mov	QWORD PTR [rbp - 80], 0
+Lsc_post_row:
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	r8, QWORD PTR [rax + 56]
+	mov	rcx, QWORD PTR [rbp - 72]
+	mov	QWORD PTR [rcx + 72], r8
+";
+    post: string <- concat("    mov r9, QWORD PTR [rax + 48]\n    mov QWORD PTR [rcx], 0\n    mov rax, QWORD PTR [rbp - 24]\n    mov QWORD PTR [rcx + 8], rax\n    mov rax, QWORD PTR [rbp - 32]\n    mov QWORD PTR [rcx + 16], rax\n    mov rax, QWORD PTR [rbp - 40]\n    mov QWORD PTR [rcx + 24], rax\n    mov rax, QWORD PTR [rbp - 48]\n    mov QWORD PTR [rcx + 32], rax\n    mov rax, QWORD PTR [rbp - 56]\n    mov QWORD PTR [rcx + 40], rax\n    mov rax, QWORD PTR [rbp - 64]\n    mov QWORD PTR [rcx + 48], rax\n    mov QWORD PTR [rcx + 56], 0\n    mov QWORD PTR [rcx + 64], r9\n", case danger_idx < 0 of {
+        true -> "    mov rdi, QWORD PTR [rbp - 40]\n    mov rsi, QWORD PTR [rbp - 48]\n    mov rdx, QWORD PTR [rbp - 32]\n    mov r8, QWORD PTR [rcx + 72]\n    call silica_rt_actor_spawn_linked\n    mov rax, QWORD PTR [rbp - 8]\n    mov QWORD PTR [rdi + 192], rax\n    mov QWORD PTR [rbp - 16], rdi\n    mov rcx, QWORD PTR [rbp - 72]\n    mov QWORD PTR [rcx], rdi\n    mov QWORD PTR [rcx + 56], 0\n    mov rdi, QWORD PTR [rcx]\n    mov rsi, QWORD PTR [rcx + 8]\n    call silica_rt_register_actor_named\n";
+        false -> concat(concat("    mov r9, QWORD PTR [rcx + 64]\n    cmp r9, ", atom_table@int64_to_decimal_string(danger_idx)), "\n    je Lsc_row_spawn_dangerous\n    mov rdi, QWORD PTR [rbp - 40]\n    mov rsi, QWORD PTR [rbp - 48]\n    mov rdx, QWORD PTR [rbp - 32]\n    mov r8, QWORD PTR [rcx + 72]\n    call silica_rt_actor_spawn_linked\n    mov rax, QWORD PTR [rbp - 8]\n    mov QWORD PTR [rdi + 192], rax\n    mov QWORD PTR [rbp - 16], rdi\n    mov rcx, QWORD PTR [rbp - 72]\n    mov QWORD PTR [rcx], rdi\n    mov QWORD PTR [rcx + 56], 0\n    mov rdi, QWORD PTR [rcx]\n    mov rsi, QWORD PTR [rcx + 8]\n    call silica_rt_register_actor_named\n    jmp Lsc_row_spawn_done\nLsc_row_spawn_dangerous:\n    mov rdi, QWORD PTR [rbp - 72]\n    mov rsi, QWORD PTR [rbp - 8]\n    call silica_rt_supervisor_spawn_child_row_by_flavor\n    mov QWORD PTR [rbp - 16], rdi\nLsc_row_spawn_done:\n")
+    });
+    tail: string <- "	cmp	QWORD PTR [rbp - 80], 0
+	je	Lsc_done
+	mov	rax, QWORD PTR [rbp - 8]
+	add	QWORD PTR [rax + 264], 1
+Lsc_done:
+	mov	rdi, QWORD PTR [rbp - 16]
+	leave
+	ret
+";
+    concat(concat(pre, post), tail)
+}
+
+// Phase D: call_supervisor(..., { op: :add_child, child: spec }) uses the same row allocation
+// and supervised spawn path as start_child, but takes the supervisor ref explicitly because
+// public supervisor calls are made by ordinary actors/main, not from inside the supervisor thread.
+fn child_table_rt_asm_chunk_2b() -> string {
+    "	.p2align	2
+silica_rt_supervisor_drain_ingress:
+# X0 = supervisor ACB. [rbp - 8] ACB (x19), [rbp - 16] message (x20), [rbp - 24] payload (x21),
+# [rbp - 40] caller's TLS actor (x23), [rbp - 48] supervisor (x24).
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+Lsdrain_loop:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_lock
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 232
+	call	silica_rt_q_dequeue_locked
+	mov	QWORD PTR [rbp - 16], rdi
+	test	rdi, rdi
+	jz	Lsdrain_empty
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r9d, DWORD PTR [rax + 248]
+	test	r9d, r9d
+	jz	Lsdrain_depth_done
+	sub	r9d, 1
+	mov	DWORD PTR [rax + 248], r9d
+Lsdrain_depth_done:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	r9d, DWORD PTR [rax + 24]
+	test	r9d, r9d
+	jnz	Lsdrain_free_msg
+	mov	rcx, QWORD PTR [rax + 8]
+	mov	QWORD PTR [rbp - 24], rcx
+	test	rcx, rcx
+	jz	Lsdrain_free_msg
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rbp - 48], rax
+	call	silica_rt_tls_current_actor_get
+	mov	QWORD PTR [rbp - 40], rdi
+	mov	rax, QWORD PTR [rbp - 48]
+	mov	QWORD PTR [rbp - 8], rax
+	mov	rdi, rax
+	call	silica_rt_tls_actor_set_from_x19
+	mov	rax, QWORD PTR [rbp - 24]
+	mov	rdi, QWORD PTR [rax]
+	mov	rsi, QWORD PTR [rbp - 48]
+	mov	rdx, QWORD PTR [rax + 8]
+	call	silica_rt_supervisor_maybe_restart
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	QWORD PTR [rbp - 8], rax
+	mov	rdi, rax
+	call	silica_rt_tls_actor_set_from_x19
+	mov	rax, QWORD PTR [rbp - 48]
+	mov	QWORD PTR [rbp - 8], rax
+	mov	rdi, QWORD PTR [rbp - 24]
+	call	free
+Lsdrain_free_msg:
+	mov	rdi, QWORD PTR [rbp - 16]
+	call	free
+	jmp	Lsdrain_loop
+Lsdrain_empty:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	leave
+	ret
+	.globl	silica_rt_supervisor_add_child
+	.p2align	2
+silica_rt_supervisor_add_child:
+# X0 = supervisor ACB, X1 = child_spec -> X0 = the new child. [rbp - 8] TLS handoff (x19),
+# [rbp - 16] supervisor, then the child (x20), [rbp - 24] spec (x21), [rbp - 32] caller's TLS actor (x22).
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 16], rdi
+	mov	QWORD PTR [rbp - 24], rsi
+	call	silica_rt_supervisor_drain_ingress
+	call	silica_rt_tls_current_actor_get
+	mov	QWORD PTR [rbp - 32], rdi
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	QWORD PTR [rbp - 8], rax
+	mov	rdi, rax
+	call	silica_rt_tls_actor_set_from_x19
+	mov	rdi, QWORD PTR [rbp - 24]
+	call	silica_rt_supervisor_start_child
+	mov	QWORD PTR [rbp - 16], rdi
+	mov	rax, QWORD PTR [rbp - 32]
+	mov	QWORD PTR [rbp - 8], rax
+	mov	rdi, rax
+	call	silica_rt_tls_actor_set_from_x19
+	mov	rdi, QWORD PTR [rbp - 16]
+	leave
+	ret
+"
+}
+
+// Phase E e3d+e3e+e4b: silica_rt_supervisor_maybe_restart
+// X0 = dead child_ref, X1 = supervisor ACB, X2 = reason_tag (0=:normal default; !=0 abnormal — e4b).
+// Scans linked child row list for matching child_ref. child_ref==0 is an e3f tombstone. If found, dispatches by
+// row.restart policy (e4b): :permanent always restarts; :transient restarts iff reason_tag != 0; anything else
+// tombstones. On restart, checks restart-frequency cap (ACB#304 max_restarts, #312 time_frame, #320 count,
+// #328 window_start; if both max_restarts and time_frame are 0, cap is unlimited; max_restarts 0 with a
+// non-zero frame means no restarts are allowed and the first restart attempt breaches). On cap breach, terminates
+// the supervisor (alive=0 → Phase C link propagation). Otherwise dispatches by strategy (ACB#296):
+//   :one_for_one  — respawn only the dead child
+//   :one_for_all  — kill all other children, then respawn all
+//   :rest_for_one — kill children after dead child, then respawn dead + rest
+// Kill = lock mutex, alive=0, signal cond, unlock mutex on each sibling ACB.
+// perm_idx / trans_idx / ofa_idx / rfo_idx: module atom table indices for :permanent, :transient, :one_for_all, :rest_for_one.
+// Slots: [rbp - 8] dead child (x19), [rbp - 16] supervisor (x20), [rbp - 24] head (x21), [rbp - 32] len (x22),
+// [rbp - 40] index (x23), [rbp - 48] row (x24), [rbp - 56] now / loop index (x25), [rbp - 64] sibling row (x26),
+// [rbp - 72] sibling child (x27), [rbp - 80] reason_tag (x28).
+fn child_table_rt_asm_chunk_3(perm_idx: int64, trans_idx: int64, ofa_idx: int64, rfo_idx: int64) -> string {
+        mr_head: string <- "	.p2align	2
+silica_rt_supervisor_drop_pending_exit:
+# X0 = supervisor ACB, X1 = child ACB. [rbp - 8] ACB (x19), [rbp - 16] child (x20), [rbp - 24] payload (x21),
+# [rbp - 32] node (x22), [rbp - 40] queue anchor (x23), [rbp - 48] previous node (x24).
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	add	rdi, 16
+	call	silica_rt_lock_lock
+	mov	rax, QWORD PTR [rbp - 8]
+	add	rax, 232
+	mov	QWORD PTR [rbp - 40], rax
+	mov	rax, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 32], rax
+	mov	QWORD PTR [rbp - 48], 0
+Ldpe_front_loop:
+	mov	rax, QWORD PTR [rbp - 32]
+	test	rax, rax
+	jz	Ldpe_scan_rear
+	mov	r8, QWORD PTR [rax + 8]
+	test	r8, r8
+	jz	Ldpe_front_next
+	mov	r9, QWORD PTR [r8]
+	cmp	r9, QWORD PTR [rbp - 16]
+	je	Ldpe_remove
+Ldpe_front_next:
+	mov	QWORD PTR [rbp - 48], rax
+	mov	rax, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 32], rax
+	jmp	Ldpe_front_loop
+Ldpe_scan_rear:
+	mov	rax, QWORD PTR [rbp - 8]
+	add	rax, 240
+	mov	QWORD PTR [rbp - 40], rax
+	mov	rax, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 32], rax
+	mov	QWORD PTR [rbp - 48], 0
+Ldpe_rear_loop:
+	mov	rax, QWORD PTR [rbp - 32]
+	test	rax, rax
+	jz	Ldpe_not_found
+	mov	r8, QWORD PTR [rax + 8]
+	test	r8, r8
+	jz	Ldpe_rear_next
+	mov	r9, QWORD PTR [r8]
+	cmp	r9, QWORD PTR [rbp - 16]
+	je	Ldpe_remove
+Ldpe_rear_next:
+	mov	QWORD PTR [rbp - 48], rax
+	mov	rax, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 32], rax
+	jmp	Ldpe_rear_loop
+Ldpe_remove:
+	mov	r10, QWORD PTR [rax]
+	mov	rcx, QWORD PTR [rbp - 48]
+	test	rcx, rcx
+	jz	Ldpe_remove_head
+	mov	QWORD PTR [rcx], r10
+	jmp	Ldpe_removed_link
+Ldpe_remove_head:
+	mov	rcx, QWORD PTR [rbp - 40]
+	mov	QWORD PTR [rcx], r10
+Ldpe_removed_link:
+	mov	QWORD PTR [rbp - 24], r8
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r11d, DWORD PTR [rax + 248]
+	test	r11d, r11d
+	jz	Ldpe_depth_done
+	sub	r11d, 1
+	mov	DWORD PTR [rax + 248], r11d
+Ldpe_depth_done:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	mov	rdi, QWORD PTR [rbp - 24]
+	call	free
+	mov	rdi, QWORD PTR [rbp - 32]
+	call	free
+	jmp	Ldpe_done
+Ldpe_not_found:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+Ldpe_done:
+	leave
+	ret
+	.globl	silica_rt_supervisor_maybe_restart
+	.p2align	2
+silica_rt_supervisor_maybe_restart:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	QWORD PTR [rbp - 80], rdx
+	mov	rax, QWORD PTR [rsi + 256]
+	mov	QWORD PTR [rbp - 24], rax
+	test	rax, rax
+	jz	Lmr_done
+	mov	rax, QWORD PTR [rsi + 264]
+	mov	QWORD PTR [rbp - 32], rax
+	test	rax, rax
+	jz	Lmr_done
+	mov	QWORD PTR [rbp - 40], 0
+Lmr_scan:
+	mov	rax, QWORD PTR [rbp - 40]
+	cmp	rax, QWORD PTR [rbp - 32]
+	jae	Lmr_done
+	mov	rcx, QWORD PTR [rbp - 24]
+	mov	r10, rax
+Lmr_walk_scan:
+	test	r10, r10
+	jz	Lmr_scan_at_row
+	mov	rcx, QWORD PTR [rcx + 80]
+	sub	r10, 1
+	jmp	Lmr_walk_scan
+Lmr_scan_at_row:
+	mov	QWORD PTR [rbp - 48], rcx
+	mov	r8, QWORD PTR [rcx]
+	cmp	r8, QWORD PTR [rbp - 8]
+	jne	Lmr_next
+	mov	rdi, QWORD PTR [rcx + 40]
+";
+        mr_policy: string <- maybe_restart_policy_dispatch(perm_idx, trans_idx);
+        mr_freq: string <- "	mov	rax, QWORD PTR [rbp - 16]
+	mov	r8, QWORD PTR [rax + 304]
+	mov	r9, QWORD PTR [rax + 312]
+	mov	r10, r8
+	or	r10, r9
+	jz	Lmr_freq_ok
+	test	r8, r8
+	jz	Lmr_freq_escalate
+	xor	edi, edi
+	call	time
+	mov	QWORD PTR [rbp - 56], rax
+	mov	rcx, QWORD PTR [rbp - 16]
+	mov	r8, QWORD PTR [rcx + 328]
+	test	r8, r8
+	jz	Lmr_freq_first
+	mov	r9, QWORD PTR [rcx + 312]
+	mov	r10, rax
+	sub	r10, r8
+	cmp	r10, r9
+	ja	Lmr_freq_reset
+	mov	r8, QWORD PTR [rcx + 320]
+	add	r8, 1
+	mov	r9, QWORD PTR [rcx + 304]
+	cmp	r8, r9
+	ja	Lmr_freq_escalate
+	mov	QWORD PTR [rcx + 320], r8
+	jmp	Lmr_freq_ok
+Lmr_freq_first:
+Lmr_freq_reset:
+	mov	rcx, QWORD PTR [rbp - 16]
+	mov	rax, QWORD PTR [rbp - 56]
+	mov	QWORD PTR [rcx + 328], rax
+	mov	r8d, 1
+	mov	QWORD PTR [rcx + 320], r8
+	mov	r9, QWORD PTR [rcx + 304]
+	cmp	r8, r9
+	ja	Lmr_freq_escalate
+	jmp	Lmr_freq_ok
+Lmr_freq_escalate:
+# Claim sync_failure_reported BEFORE mark-dead+signal. Otherwise actor_thread_main can
+# observe alive==0, take LBB1_exit, and emit a duplicate root failure banner/note.
+	mov	rcx, QWORD PTR [rbp - 16]
+	mov	r8, QWORD PTR [rcx + 192]
+	test	r8, r8
+	jnz	Lmr_freq_escalate_mark_dead
+	mov	r8, QWORD PTR [rcx + 272]
+	test	r8, r8
+	jnz	Lmr_freq_escalate_mark_dead
+	mov	QWORD PTR [rcx + 272], 1
+	lea	rdi, [rcx + 16]
+	call	silica_rt_lock_lock
+	mov	rcx, QWORD PTR [rbp - 16]
+	mov	DWORD PTR [rcx + 152], 0
+	lea	rdi, [rcx + 80]
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 16]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	mov	rdi, QWORD PTR [rbp - 16]
+	call	silica_rt_actor_deliver_unwind_report
+	mov	edi, 2
+Lmr_root_note_a:
+	lea	rsi, [rip + L_silica_root_actor_exit]
+Lmr_root_note_b:
+	mov	edx, 43
+	call	write
+	jmp	Lmr_done
+Lmr_freq_escalate_mark_dead:
+	mov	rdi, QWORD PTR [rbp - 16]
+	add	rdi, 16
+	call	silica_rt_lock_lock
+	mov	rcx, QWORD PTR [rbp - 16]
+	mov	DWORD PTR [rcx + 152], 0
+	lea	rdi, [rcx + 80]
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 16]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	jmp	Lmr_done
+Lmr_freq_ok:
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	rdi, QWORD PTR [rax + 296]
+";
+        mr_ofa: string <- maybe_restart_strat_eq_branch(ofa_idx, "Lmr_ofa_kill");
+        mr_rfo: string <- maybe_restart_strat_eq_branch(rfo_idx, "Lmr_rfo_kill");
+        mr_b_ofo: string <- "	jmp	Lmr_ofo
+";
+        mr_tail: string <- "Lmr_ofo:
+# Phase E e4f: pass row_ptr (x24) as X3 so the new child's actor_thread_main can flag
+# this row's exit_done on its own teardown; clear stale exit_done from prior incarnation.
+	mov	rdi, QWORD PTR [rbp - 48]
+	mov	rsi, QWORD PTR [rbp - 16]
+	call	silica_rt_supervisor_spawn_child_row_by_flavor
+	jmp	Lmr_done
+Lmr_ofa_kill:
+	mov	QWORD PTR [rbp - 56], 0
+Lmr_ofa_kill_loop:
+	mov	rax, QWORD PTR [rbp - 56]
+	cmp	rax, QWORD PTR [rbp - 32]
+	jae	Lmr_ofa_spawn
+	cmp	rax, QWORD PTR [rbp - 40]
+	je	Lmr_ofa_kill_next
+	mov	rcx, QWORD PTR [rbp - 24]
+	mov	r10, rax
+Lmr_ofa_kill_walk_idx:
+	test	r10, r10
+	jz	Lmr_ofa_kill_at_idx
+	mov	rcx, QWORD PTR [rcx + 80]
+	sub	r10, 1
+	jmp	Lmr_ofa_kill_walk_idx
+Lmr_ofa_kill_at_idx:
+	mov	QWORD PTR [rbp - 64], rcx
+	mov	rcx, QWORD PTR [rcx]
+	mov	QWORD PTR [rbp - 72], rcx
+	test	rcx, rcx
+	jz	Lmr_ofa_kill_next
+	lea	rdi, [rcx + 16]
+	call	silica_rt_lock_lock
+	mov	rcx, QWORD PTR [rbp - 72]
+	mov	DWORD PTR [rcx + 152], 0
+	lea	rdi, [rcx + 80]
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 72]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+# Phase E e4f: per-user-spec sequential stop — block here until this child's actor_thread_main
+# has fully unwound (ACB freed) and stamped row[+56]=1. Only then proceed to the next sibling,
+# so two children's teardowns never overlap (no concurrent libsystem_malloc cleanup races).
+# Reset the flag once observed so a future cascade restart targeting this row can re-arm.
+	mov	rcx, QWORD PTR [rbp - 64]
+Lmr_ofa_kill_wait:
+	mov	r8, QWORD PTR [rcx + 56]
+	test	r8, r8
+	jz	Lmr_ofa_kill_wait
+	mov	QWORD PTR [rcx + 56], 0
+Lmr_ofa_kill_next:
+	add	QWORD PTR [rbp - 56], 1
+	jmp	Lmr_ofa_kill_loop
+Lmr_ofa_spawn:
+	mov	QWORD PTR [rbp - 56], 0
+Lmr_ofa_spawn_loop:
+# Phase E e4f: per-user-spec sequential start — spawn_linked itself spins on the new
+# child's ACB[+288] before returning, so iteration k cannot proceed until child k's
+# thread has finished its TLS init / first-schedule. Children come up in list order,
+# one at a time, after every cascaded stop has retired.
+	mov	rax, QWORD PTR [rbp - 56]
+	cmp	rax, QWORD PTR [rbp - 32]
+	jae	Lmr_done
+	mov	rcx, QWORD PTR [rbp - 24]
+	mov	r10, rax
+Lmr_ofa_spawn_walk_idx:
+	test	r10, r10
+	jz	Lmr_ofa_spawn_at_idx
+	mov	rcx, QWORD PTR [rcx + 80]
+	sub	r10, 1
+	jmp	Lmr_ofa_spawn_walk_idx
+Lmr_ofa_spawn_at_idx:
+	mov	QWORD PTR [rbp - 64], rcx
+	mov	r8, QWORD PTR [rcx]
+	test	r8, r8
+	jz	Lmr_ofa_spawn_next
+	mov	rdi, rcx
+	mov	rsi, QWORD PTR [rbp - 16]
+	call	silica_rt_supervisor_spawn_child_row_by_flavor
+Lmr_ofa_spawn_next:
+	add	QWORD PTR [rbp - 56], 1
+	jmp	Lmr_ofa_spawn_loop
+Lmr_rfo_kill:
+	mov	rax, QWORD PTR [rbp - 40]
+	add	rax, 1
+	mov	QWORD PTR [rbp - 56], rax
+Lmr_rfo_kill_loop:
+	mov	rax, QWORD PTR [rbp - 56]
+	cmp	rax, QWORD PTR [rbp - 32]
+	jae	Lmr_rfo_spawn
+	mov	rcx, QWORD PTR [rbp - 24]
+	mov	r10, rax
+Lmr_rfo_kill_walk_idx:
+	test	r10, r10
+	jz	Lmr_rfo_kill_at_idx
+	mov	rcx, QWORD PTR [rcx + 80]
+	sub	r10, 1
+	jmp	Lmr_rfo_kill_walk_idx
+Lmr_rfo_kill_at_idx:
+	mov	QWORD PTR [rbp - 64], rcx
+	mov	rcx, QWORD PTR [rcx]
+	mov	QWORD PTR [rbp - 72], rcx
+	test	rcx, rcx
+	jz	Lmr_rfo_kill_next
+	lea	rdi, [rcx + 16]
+	call	silica_rt_lock_lock
+	mov	rcx, QWORD PTR [rbp - 72]
+	mov	DWORD PTR [rcx + 152], 0
+	lea	rdi, [rcx + 80]
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 72]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+# Phase E e4f: per-user-spec sequential stop — wait for this child's actor_thread_main
+# to retire (row[+56]=1 set after its full ACB free) before signalling the next row.
+# No two cascaded teardowns ever overlap.
+	mov	rcx, QWORD PTR [rbp - 64]
+Lmr_rfo_kill_wait:
+	mov	r8, QWORD PTR [rcx + 56]
+	test	r8, r8
+	jz	Lmr_rfo_kill_wait
+	mov	rdi, QWORD PTR [rbp - 16]
+	mov	rsi, QWORD PTR [rbp - 72]
+	call	silica_rt_supervisor_drop_pending_exit
+	mov	rcx, QWORD PTR [rbp - 64]
+	mov	QWORD PTR [rcx + 56], 0
+# Tombstone the row only after the child has fully exited so Lmr_rfo_spawn does not run
+# with a stale child_ref in the slot.
+	mov	QWORD PTR [rcx], 0
+Lmr_rfo_kill_next:
+	add	QWORD PTR [rbp - 56], 1
+	jmp	Lmr_rfo_kill_loop
+Lmr_rfo_spawn:
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	QWORD PTR [rbp - 56], rax
+Lmr_rfo_spawn_loop:
+# Phase E e4f: per-user-spec sequential start — children come up in list order, one
+# at a time. spawn_linked blocks on each new child's ACB[+288] (set in actor_thread_main
+# right after TLS init / trampoline) so iteration k+1 can never run alongside iteration k.
+	mov	rax, QWORD PTR [rbp - 56]
+	cmp	rax, QWORD PTR [rbp - 32]
+	jae	Lmr_done
+	mov	rcx, QWORD PTR [rbp - 24]
+	mov	r10, rax
+Lmr_rfo_spawn_walk_idx:
+	test	r10, r10
+	jz	Lmr_rfo_spawn_at_idx
+	mov	rcx, QWORD PTR [rcx + 80]
+	sub	r10, 1
+	jmp	Lmr_rfo_spawn_walk_idx
+Lmr_rfo_spawn_at_idx:
+	mov	QWORD PTR [rbp - 64], rcx
+	mov	rdi, rcx
+	mov	rsi, QWORD PTR [rbp - 16]
+	call	silica_rt_supervisor_spawn_child_row_by_flavor
+Lmr_rfo_spawn_next:
+	add	QWORD PTR [rbp - 56], 1
+	jmp	Lmr_rfo_spawn_loop
+Lmr_next:
+	add	QWORD PTR [rbp - 40], 1
+	jmp	Lmr_scan
+Lmr_tombstone_done:
+	mov	rax, QWORD PTR [rbp - 48]
+	mov	QWORD PTR [rax], 0
+	jmp	Lmr_done
+Lmr_done:
+	leave
+	ret
+";
+        concat(concat(concat(concat(concat(mr_head, mr_policy), mr_freq), mr_ofa), mr_rfo), concat(mr_b_ofo, mr_tail))
+}
+
+// Phase E e4a/e4b trial accessor: silica_rt_child_table_first_ref
+// Returns the actor_ref (child ACB pointer) of the first LIVE row in the current actor's linked child table.
+// No arguments. Reads TLS for current actor, loads table pointer from ACB#256. e4b: skips tombstoned rows
+// (child_ref==0) so callers see the next live child after a :transient/:temporary no-restart leaves a hole.
+// Returns 0 if table is empty, null, or contains only tombstones.
+fn child_table_rt_asm_chunk_4() -> string {
+    "	.globl	silica_rt_child_table_first_ref
+	.p2align	2
+silica_rt_child_table_first_ref:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	call	silica_rt_tls_current_actor_get
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	rax, QWORD PTR [rdi + 256]
+	mov	QWORD PTR [rbp - 16], rax
+	test	rax, rax
+	jz	Lctfr_empty
+	mov	rcx, rax
+Lctfr_scan:
+	mov	rdi, QWORD PTR [rcx]
+	test	rdi, rdi
+	jnz	Lctfr_done
+	mov	rcx, QWORD PTR [rcx + 80]
+	test	rcx, rcx
+	jz	Lctfr_empty
+	jmp	Lctfr_scan
+Lctfr_empty:
+	xor	edi, edi
+Lctfr_done:
+	leave
+	ret
+"
+}
+
+// Phase E e4f: silica_rt_child_table_row_ref — 0-based row index (list walk order).
+// (materialize / start_child order). X0 = index (i64; negative or >= len ⇒ 0). Returns child_ref at that row
+// (may be 0 for tombstones). Does not skip rows (trials compare stable row indices to first_ref).
+fn child_table_rt_asm_chunk_5() -> string {
+    "	.globl	silica_rt_child_table_row_ref
+	.p2align	2
+silica_rt_child_table_row_ref:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	call	silica_rt_tls_current_actor_get
+	mov	QWORD PTR [rbp - 16], rdi
+	mov	r8, QWORD PTR [rdi + 256]
+	test	r8, r8
+	jz	Lctrr_empty
+	mov	r9, QWORD PTR [rdi + 264]
+	test	r9, r9
+	jz	Lctrr_empty
+	mov	rax, QWORD PTR [rbp - 8]
+	cmp	rax, 0
+	jl	Lctrr_empty
+	cmp	rax, r9
+	jae	Lctrr_empty
+	mov	r11, r8
+	mov	rcx, rax
+Lctrr_walk:
+	test	rcx, rcx
+	jz	Lctrr_at
+	mov	r11, QWORD PTR [r11 + 80]
+	test	r11, r11
+	jz	Lctrr_empty
+	sub	rcx, 1
+	jmp	Lctrr_walk
+Lctrr_at:
+	mov	rdi, QWORD PTR [r11]
+	jmp	Lctrr_done
+Lctrr_empty:
+	xor	edi, edi
+Lctrr_done:
+	leave
+	ret
+"
+}
+
+// Phase D runtime-backed call_supervisor helpers over linked child rows.
+// All functions take supervisor ACB explicitly in X0 so ordinary actors can invoke call_supervisor.
+// Slots follow the module rule: x19 = [rbp - 8] (supervisor ACB), x20 = [rbp - 16], ... x28 = [rbp - 80].
+fn child_table_rt_asm_chunk_6(ofa_idx: int64) -> string {
+        ofa_branch: string <- case ofa_idx < 0 of {
+            true -> "";
+            false -> concat(concat("	mov	rax, QWORD PTR [rbp - 8]\n	mov	r8, QWORD PTR [rax + 296]\n	cmp	r8, ", atom_table@int64_to_decimal_string(ofa_idx)), "\n	je	Lsrestart_ofa\n")
+        };
+        concat(concat("	.globl	silica_rt_supervisor_count_children
+	.p2align	2
+silica_rt_supervisor_count_children:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	call	silica_rt_supervisor_drain_ingress
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rax, QWORD PTR [rax + 256]
+	mov	QWORD PTR [rbp - 16], rax
+	mov	QWORD PTR [rbp - 24], 0
+Lscount_loop:
+	mov	rax, QWORD PTR [rbp - 16]
+	test	rax, rax
+	jz	Lscount_done
+	mov	r8, QWORD PTR [rax]
+	test	r8, r8
+	jz	Lscount_next
+	add	QWORD PTR [rbp - 24], 1
+Lscount_next:
+	mov	rax, QWORD PTR [rax + 80]
+	mov	QWORD PTR [rbp - 16], rax
+	jmp	Lscount_loop
+Lscount_done:
+	mov	rdi, QWORD PTR [rbp - 24]
+	leave
+	ret
+	.globl	silica_rt_supervisor_get_child
+	.p2align	2
+silica_rt_supervisor_get_child:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	call	silica_rt_supervisor_drain_ingress
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r9, QWORD PTR [rax + 256]
+Lsget_loop:
+	test	r9, r9
+	jz	Lsget_none
+	mov	r10, QWORD PTR [r9]
+	test	r10, r10
+	jz	Lsget_next
+	jmp	Lsget_found
+Lsget_next:
+	mov	r9, QWORD PTR [r9 + 80]
+	jmp	Lsget_loop
+Lsget_found:
+	mov	rdi, r10
+	jmp	Lsget_done
+Lsget_none:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r9, QWORD PTR [rax + 256]
+Lsget_fallback_scan:
+	test	r9, r9
+	jz	Lsget_fallback_none
+	mov	r10, QWORD PTR [r9]
+	test	r10, r10
+	jnz	Lsget_found
+	mov	r9, QWORD PTR [r9 + 80]
+	jmp	Lsget_fallback_scan
+Lsget_fallback_none:
+	xor	edi, edi
+Lsget_done:
+	leave
+	ret
+	.globl	silica_rt_supervisor_get_child_info
+	.p2align	2
+silica_rt_supervisor_get_child_info:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	call	silica_rt_supervisor_drain_ingress
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r9, QWORD PTR [rax + 256]
+Lsgetinfo_loop:
+	test	r9, r9
+	jz	Lsgetinfo_none
+	mov	r10, QWORD PTR [r9]
+	test	r10, r10
+	jz	Lsgetinfo_next
+	jmp	Lsgetinfo_found
+Lsgetinfo_next:
+	mov	r9, QWORD PTR [r9 + 80]
+	jmp	Lsgetinfo_loop
+Lsgetinfo_found:
+	mov	QWORD PTR [rbp - 8], r9
+	mov	edi, 32
+	call	silica_rt_region_alloc
+	mov	QWORD PTR [rbp - 24], rdi
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	QWORD PTR [rdi], rax
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r11, QWORD PTR [rax + 16]
+	cmp	r11, 7
+	jne	Lsgetinfo_agent_done
+	mov	r11, QWORD PTR [rax + 8]
+Lsgetinfo_agent_done:
+	mov	QWORD PTR [rdi + 8], r11
+	mov	r8, QWORD PTR [rax]
+	mov	QWORD PTR [rdi + 16], r8
+	mov	r8, QWORD PTR [rax + 40]
+	test	r8, r8
+	jz	Lsgetinfo_restart_default
+	jmp	Lsgetinfo_restart_done
+Lsgetinfo_restart_default:
+	mov	r8d, 9
+Lsgetinfo_restart_done:
+	mov	QWORD PTR [rdi + 24], r8
+	jmp	Lsgetinfo_done
+Lsgetinfo_none:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r9, QWORD PTR [rax + 256]
+Lsgetinfo_fallback_scan:
+	test	r9, r9
+	jz	Lsgetinfo_zero
+	mov	r10, QWORD PTR [r9]
+	test	r10, r10
+	jnz	Lsgetinfo_found
+	mov	r9, QWORD PTR [r9 + 80]
+	jmp	Lsgetinfo_fallback_scan
+Lsgetinfo_zero:
+	mov	edi, 32
+	call	silica_rt_region_alloc
+	mov	QWORD PTR [rbp - 24], rdi
+	mov	QWORD PTR [rdi], 0
+	mov	QWORD PTR [rdi + 8], 0
+	mov	QWORD PTR [rdi + 16], 0
+	mov	QWORD PTR [rdi + 24], 0
+Lsgetinfo_done:
+	leave
+	ret
+	.globl	silica_rt_supervisor_get_child_id
+	.p2align	2
+silica_rt_supervisor_get_child_id:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	call	silica_rt_supervisor_drain_ingress
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r9, QWORD PTR [rax + 256]
+Lsgetid_loop:
+	test	r9, r9
+	jz	Lsgetid_none
+	mov	r10, QWORD PTR [r9]
+	test	r10, r10
+	jz	Lsgetid_next
+	mov	r11, QWORD PTR [r9 + 8]
+	cmp	r11, QWORD PTR [rbp - 16]
+	je	Lsgetid_found
+Lsgetid_next:
+	mov	r9, QWORD PTR [r9 + 80]
+	jmp	Lsgetid_loop
+Lsgetid_found:
+	mov	rdi, QWORD PTR [r9 + 8]
+	jmp	Lsgetid_done
+Lsgetid_none:
+	xor	edi, edi
+Lsgetid_done:
+	leave
+	ret
+	.globl	silica_rt_supervisor_get_child_agent_type
+	.p2align	2
+silica_rt_supervisor_get_child_agent_type:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	call	silica_rt_supervisor_drain_ingress
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r9, QWORD PTR [rax + 256]
+Lsgetagt_loop:
+	test	r9, r9
+	jz	Lsgetagt_none
+	mov	r10, QWORD PTR [r9]
+	test	r10, r10
+	jz	Lsgetagt_next
+	mov	r11, QWORD PTR [r9 + 8]
+	cmp	r11, QWORD PTR [rbp - 16]
+	je	Lsgetagt_found
+Lsgetagt_next:
+	mov	r9, QWORD PTR [r9 + 80]
+	jmp	Lsgetagt_loop
+Lsgetagt_found:
+	mov	rdi, QWORD PTR [r9 + 16]
+	jmp	Lsgetagt_done
+Lsgetagt_none:
+	xor	edi, edi
+Lsgetagt_done:
+	leave
+	ret
+	.globl	silica_rt_supervisor_get_child_restart
+	.p2align	2
+silica_rt_supervisor_get_child_restart:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	call	silica_rt_supervisor_drain_ingress
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r9, QWORD PTR [rax + 256]
+Lsgetrst_loop:
+	test	r9, r9
+	jz	Lsgetrst_none
+	mov	r10, QWORD PTR [r9]
+	test	r10, r10
+	jz	Lsgetrst_next
+	mov	r11, QWORD PTR [r9 + 8]
+	cmp	r11, QWORD PTR [rbp - 16]
+	je	Lsgetrst_found
+Lsgetrst_next:
+	mov	r9, QWORD PTR [r9 + 80]
+	jmp	Lsgetrst_loop
+Lsgetrst_found:
+	mov	rdi, QWORD PTR [r9 + 40]
+	jmp	Lsgetrst_done
+Lsgetrst_none:
+	xor	edi, edi
+Lsgetrst_done:
+	leave
+	ret
+	.globl	silica_rt_supervisor_which_children
+	.p2align	2
+silica_rt_supervisor_which_children:
+# [rbp - 8] ACB (x19), [rbp - 16] row (x20), [rbp - 24] list so far (x21), [rbp - 32] child (x22),
+# [rbp - 40] info record (x23), [rbp - 48] id, then chunk (x24), [rbp - 56] agent (x25), [rbp - 64] restart (x26),
+# [rbp - 72] new list handle (x27).
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	call	silica_rt_supervisor_drain_ingress
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rax, QWORD PTR [rax + 256]
+	mov	QWORD PTR [rbp - 16], rax
+	mov	QWORD PTR [rbp - 24], 0
+Lswhich_scan:
+	mov	rax, QWORD PTR [rbp - 16]
+	test	rax, rax
+	jz	Lswhich_done
+	mov	rcx, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 32], rcx
+	test	rcx, rcx
+	jz	Lswhich_next
+	mov	edi, 32
+	call	silica_rt_region_alloc
+	mov	QWORD PTR [rbp - 40], rdi
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	rcx, QWORD PTR [rax + 8]
+	mov	QWORD PTR [rbp - 48], rcx
+	mov	QWORD PTR [rdi], rcx
+	mov	rcx, QWORD PTR [rax + 16]
+	mov	QWORD PTR [rbp - 56], rcx
+	mov	QWORD PTR [rdi + 8], rcx
+	mov	rcx, QWORD PTR [rbp - 32]
+	mov	QWORD PTR [rdi + 16], rcx
+	mov	rcx, QWORD PTR [rax + 40]
+	mov	QWORD PTR [rbp - 64], rcx
+	mov	QWORD PTR [rdi + 24], rcx
+	mov	edi, 40
+	call	silica_rt_region_alloc
+	mov	QWORD PTR [rbp - 48], rdi
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	r8, QWORD PTR [rax]
+	mov	QWORD PTR [rdi], r8
+	mov	r8, QWORD PTR [rax + 8]
+	mov	QWORD PTR [rdi + 8], r8
+	mov	r8, QWORD PTR [rax + 16]
+	mov	QWORD PTR [rdi + 16], r8
+	mov	r8, QWORD PTR [rax + 24]
+	mov	QWORD PTR [rdi + 24], r8
+	mov	rax, QWORD PTR [rbp - 24]
+	test	rax, rax
+	jz	Lswhich_chunk_nil
+	mov	r8, QWORD PTR [rax + 8]
+	mov	QWORD PTR [rdi + 32], r8
+	jmp	Lswhich_chunk_ready
+Lswhich_chunk_nil:
+	mov	QWORD PTR [rdi + 32], 0
+Lswhich_chunk_ready:
+	mov	edi, 24
+	call	silica_rt_region_alloc
+	mov	QWORD PTR [rbp - 72], rdi
+	mov	rax, QWORD PTR [rbp - 24]
+	test	rax, rax
+	jz	Lswhich_len_one
+	mov	r8, QWORD PTR [rax]
+	add	r8, 1
+	jmp	Lswhich_set_len
+Lswhich_len_one:
+	mov	r8d, 1
+Lswhich_set_len:
+	mov	QWORD PTR [rdi], r8
+	mov	rax, QWORD PTR [rbp - 48]
+	mov	QWORD PTR [rdi + 8], rax
+	mov	QWORD PTR [rdi + 16], 0
+	mov	QWORD PTR [rbp - 24], rdi
+Lswhich_next:
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	rax, QWORD PTR [rax + 80]
+	mov	QWORD PTR [rbp - 16], rax
+	jmp	Lswhich_scan
+Lswhich_done:
+	mov	rdi, QWORD PTR [rbp - 24]
+	leave
+	ret
+	.globl	silica_rt_supervisor_terminate_child
+	.p2align	2
+silica_rt_supervisor_terminate_child:
+# [rbp - 8] ACB (x19), [rbp - 16] id (x20), [rbp - 32] child (x22), [rbp - 40] row (x23).
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	call	silica_rt_supervisor_drain_ingress
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rax, QWORD PTR [rax + 256]
+	mov	QWORD PTR [rbp - 40], rax
+Lsterm_find:
+	mov	rax, QWORD PTR [rbp - 40]
+	test	rax, rax
+	jz	Lsterm_done
+	mov	rcx, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 32], rcx
+	test	rcx, rcx
+	jz	Lsterm_next
+	mov	r8, QWORD PTR [rax + 8]
+	cmp	r8, QWORD PTR [rbp - 16]
+	jne	Lsterm_next
+	mov	QWORD PTR [rax], 0
+	lea	rdi, [rcx + 16]
+	call	silica_rt_lock_lock
+	mov	rcx, QWORD PTR [rbp - 32]
+	mov	DWORD PTR [rcx + 152], 0
+	lea	rdi, [rcx + 80]
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 32]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	mov	rax, QWORD PTR [rbp - 40]
+Lsterm_wait:
+	mov	r8, QWORD PTR [rax + 56]
+	test	r8, r8
+	jz	Lsterm_wait
+	mov	rdi, QWORD PTR [rbp - 8]
+	mov	rsi, QWORD PTR [rbp - 32]
+	call	silica_rt_supervisor_drop_pending_exit
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	QWORD PTR [rax], 0
+	mov	QWORD PTR [rax + 56], 0
+	jmp	Lsterm_done
+Lsterm_next:
+	mov	rax, QWORD PTR [rax + 80]
+	mov	QWORD PTR [rbp - 40], rax
+	jmp	Lsterm_find
+Lsterm_done:
+	xor	edi, edi
+	leave
+	ret
+	.globl	silica_rt_supervisor_remove_child
+	.p2align	2
+silica_rt_supervisor_remove_child:
+	push	rbp
+	mov	rbp, rsp
+	call	silica_rt_supervisor_terminate_child
+	leave
+	ret
+	.globl	silica_rt_supervisor_restart_child
+	.p2align	2
+silica_rt_supervisor_restart_child:
+# [rbp - 8] ACB (x19), [rbp - 16] id (x20), [rbp - 32] child (x22), [rbp - 40] row (x23), [rbp - 48] row cursor (x24),
+# [rbp - 80] restarted child for :one_for_all (x28).
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	call	silica_rt_supervisor_drain_ingress
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rax, QWORD PTR [rax + 256]
+	mov	QWORD PTR [rbp - 40], rax
+Lsrestart_find:
+	mov	rax, QWORD PTR [rbp - 40]
+	test	rax, rax
+	jz	Lsrestart_none
+	mov	r8, QWORD PTR [rax + 8]
+	cmp	r8, QWORD PTR [rbp - 16]
+	jne	Lsrestart_next
+", ofa_branch), "	mov	rax, QWORD PTR [rbp - 40]
+	mov	rcx, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 32], rcx
+	test	rcx, rcx
+	jz	Lsrestart_spawn
+	mov	QWORD PTR [rax], 0
+	lea	rdi, [rcx + 16]
+	call	silica_rt_lock_lock
+	mov	rcx, QWORD PTR [rbp - 32]
+	mov	DWORD PTR [rcx + 152], 0
+	lea	rdi, [rcx + 80]
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 32]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	mov	rax, QWORD PTR [rbp - 40]
+Lsrestart_wait:
+	mov	r8, QWORD PTR [rax + 56]
+	test	r8, r8
+	jz	Lsrestart_wait
+	mov	rdi, QWORD PTR [rbp - 8]
+	mov	rsi, QWORD PTR [rbp - 32]
+	call	silica_rt_supervisor_drop_pending_exit
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	QWORD PTR [rax], 0
+Lsrestart_spawn:
+	mov	rdi, QWORD PTR [rbp - 40]
+	mov	rsi, QWORD PTR [rbp - 8]
+	call	silica_rt_supervisor_spawn_child_row_by_flavor
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	rdi, QWORD PTR [rax]
+	jmp	Lsrestart_done
+Lsrestart_ofa:
+	mov	QWORD PTR [rbp - 80], 0
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rax, QWORD PTR [rax + 256]
+	mov	QWORD PTR [rbp - 48], rax
+Lsrestart_ofa_kill_loop:
+	mov	rax, QWORD PTR [rbp - 48]
+	test	rax, rax
+	jz	Lsrestart_ofa_spawn_begin
+	mov	rcx, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 32], rcx
+	test	rcx, rcx
+	jz	Lsrestart_ofa_kill_next
+	mov	QWORD PTR [rax], 0
+	lea	rdi, [rcx + 16]
+	call	silica_rt_lock_lock
+	mov	rcx, QWORD PTR [rbp - 32]
+	mov	DWORD PTR [rcx + 152], 0
+	lea	rdi, [rcx + 80]
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 32]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	mov	rax, QWORD PTR [rbp - 48]
+Lsrestart_ofa_wait:
+	mov	r8, QWORD PTR [rax + 56]
+	test	r8, r8
+	jz	Lsrestart_ofa_wait
+	mov	rdi, QWORD PTR [rbp - 8]
+	mov	rsi, QWORD PTR [rbp - 32]
+	call	silica_rt_supervisor_drop_pending_exit
+	mov	rax, QWORD PTR [rbp - 48]
+	mov	QWORD PTR [rax], 0
+	mov	QWORD PTR [rax + 56], 0
+Lsrestart_ofa_kill_next:
+	mov	rax, QWORD PTR [rbp - 48]
+	mov	rax, QWORD PTR [rax + 80]
+	mov	QWORD PTR [rbp - 48], rax
+	jmp	Lsrestart_ofa_kill_loop
+Lsrestart_ofa_spawn_begin:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rax, QWORD PTR [rax + 256]
+	mov	QWORD PTR [rbp - 48], rax
+Lsrestart_ofa_spawn_loop:
+	mov	rax, QWORD PTR [rbp - 48]
+	test	rax, rax
+	jz	Lsrestart_ofa_done
+	mov	rdi, rax
+	mov	rsi, QWORD PTR [rbp - 8]
+	call	silica_rt_supervisor_spawn_child_row_by_flavor
+	mov	rax, QWORD PTR [rbp - 48]
+	mov	r8, QWORD PTR [rax + 8]
+	cmp	r8, QWORD PTR [rbp - 16]
+	jne	Lsrestart_ofa_spawn_next
+	mov	r8, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 80], r8
+Lsrestart_ofa_spawn_next:
+	mov	rax, QWORD PTR [rbp - 48]
+	mov	rax, QWORD PTR [rax + 80]
+	mov	QWORD PTR [rbp - 48], rax
+	jmp	Lsrestart_ofa_spawn_loop
+Lsrestart_ofa_done:
+	mov	rdi, QWORD PTR [rbp - 80]
+	jmp	Lsrestart_done
+Lsrestart_next:
+	mov	rax, QWORD PTR [rbp - 40]
+	mov	rax, QWORD PTR [rax + 80]
+	mov	QWORD PTR [rbp - 40], rax
+	jmp	Lsrestart_find
+Lsrestart_none:
+	xor	edi, edi
+Lsrestart_done:
+	leave
+	ret
+")
+}
+
+fn emit_child_table_runtime_asm(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> string {
+        // Match const_atoms.silica / rodata: first-added order, not bst_lookup_string alone.
+        p: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":permanent");
+        t: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":transient");
+        o: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":one_for_all");
+        r: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":rest_for_one");
+        d: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":dangerous");
+        list_chunk: int64 <- child_spec_init_list_chunk_data_bytes();
+        concat(concat(concat(concat(concat(concat(concat(concat(child_table_rt_asm_chunk_0(), child_table_rt_spawn_child_row_by_flavor_asm(d)), child_table_rt_asm_chunk_1(d, list_chunk)), child_table_rt_asm_chunk_2(d)), child_table_rt_asm_chunk_2b()), child_table_rt_asm_chunk_3(p, t, o, r)), child_table_rt_asm_chunk_4()), child_table_rt_asm_chunk_5()), child_table_rt_asm_chunk_6(o))
+}

@@ -1,0 +1,233 @@
+// tree_trait.md §8, §12: add_subtree appends a compatible whole tree as a child subtree, adding its
+// cached node count along the copied path and sharing its root; the grafted tree stays
+// independently usable. Compatibility needs the same canonical arena, specialization and
+// comparator ordering identity: a tree built with a different comparator symbol is refused with
+// compatible = false and the host unchanged; a missing parent answers added = false.
+// Host 1(2, 3), subtree 7(8, 9), graft under 3 -> 1(2, 3(7(8, 9))), preorder 123789.
+
+use tree_rose;
+use rt_trial_i64;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+fn host() -> {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } {
+    sequence
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        t1: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@new_tree(1);
+        t2: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(t1, p0, 2);
+        t3: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(t2, p0, 3)
+    produces
+        pure t3
+    end
+}
+
+fn sub() -> {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } {
+    sequence
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        t7: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@new_tree(7);
+        t8: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(t7, p0, 8);
+        t9: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(t8, p0, 9)
+    produces
+        pure t9
+    end
+}
+
+fn graft() -> boolean {
+    sequence proc[mem(normal)]
+        h: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- host();
+        s: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- sub();
+        p1: List[int64, mem(normal)] <- [1];
+        p10: List[int64, mem(normal)] <- [1, 0];
+        p101: List[int64, mem(normal)] <- [1, 0, 1];
+        g: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add_sub(h, p1, s);
+        flags_ok: boolean <- rt_trial_i64@add_sub_slot(h, p1, s) == 0 and rt_trial_i64@add_sub_compatible(h, p1, s);
+        shape_ok: boolean <- tree_rose@node_count(g) == 6 and rt_trial_i64@seq_pre(g) == 123789
+            and rt_trial_i64@get_is(g, p101, 9) and rt_trial_i64@child_count_of(g, p1) == 1
+            and rt_trial_i64@child_count_of(g, p10) == 2 and rt_trial_i64@valid_count(g, 6);
+        sub_ok: boolean <- tree_rose@node_count(s) == 3 and rt_trial_i64@seq_pre(s) == 789
+            and tree_rose@node_count(h) == 3 and rt_trial_i64@seq_pre(h) == 123;
+        cut: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(g, p1, 0);
+        cut_ok: boolean <- rt_trial_i64@remove_count(g, p1, 0) == 3 and rt_trial_i64@seq_pre(cut) == 123
+            and rt_trial_i64@seq_pre(s) == 789 and rt_trial_i64@seq_pre(g) == 123789;
+        twice: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add_sub(g, p101, s);
+        twice_ok: boolean <- tree_rose@node_count(twice) == 9 and rt_trial_i64@seq_pre(twice) == 123789789
+            and rt_trial_i64@valid_count(twice, 9)
+    produces
+        pure flags_ok and shape_ok and sub_ok and cut_ok and twice_ok
+    end
+}
+
+fn refused() -> boolean {
+    sequence proc[mem(normal)]
+        h: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- host();
+        s: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- sub();
+        other: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@new_tree_other(7);
+        p1: List[int64, mem(normal)] <- [1];
+        p5: List[int64, mem(normal)] <- [5];
+        same: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add_sub(h, p1, other);
+        incompatible: boolean <- rt_trial_i64@add_sub_compatible(h, p1, other) == false
+            and rt_trial_i64@add_sub_slot(h, p1, other) == -1 and tree_rose@node_count(same) == 3
+            and rt_trial_i64@seq_pre(same) == 123;
+        missing: boolean <- rt_trial_i64@add_sub_compatible(h, p5, s) and rt_trial_i64@add_sub_slot(h, p5, s) == -1;
+        self_ok: boolean <- rt_trial_i64@add_sub_compatible(h, p1, h)
+    produces
+        pure incompatible and missing and self_ok
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        h: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- host();
+        s: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- sub();
+        p1: List[int64, mem(normal)] <- tree_rose@path_with(tree_rose@path_root(), 1);
+        g: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add_sub(h, p1, s);
+        n: int64 <- tree_rose@node_count(g);
+        seq: int64 <- rt_trial_i64@seq_pre(g);
+        other: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@new_tree_other(7);
+        c: boolean <- rt_trial_i64@add_sub_compatible(h, p1, other);
+        ci: int64 <- case c of { true -> 1; false -> 0 };
+        a: boolean <- graft();
+        b: boolean <- refused();
+        println("grafted_count");
+        print_int64(n);
+        println("");
+        println("grafted_preorder");
+        print_int64(seq);
+        println("");
+        println("other_comparator_compatible");
+        print_int64(ci);
+        println("")
+    produces
+        pure pick(a, 1, pick(b, 2, 0))
+    end
+}

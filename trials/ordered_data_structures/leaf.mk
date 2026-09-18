@@ -50,7 +50,7 @@ INTEGRATE_PRE_CLEAN = cd "$(THIS_DIR)" && \
 
 # Root `make integrate` compiles these once into SDS_STDLIB_CACHE and passes both vars.
 # Standalone leaf integrate leaves SDS_STDLIB_CACHE empty and compiles lib/ as before.
-SDS_STDLIB_MODULES ?= wbt_set wbt_map OrderedMap OrderedSet skew_ral_weights skew_ral_node skew_ral_tree_read skew_ral_tree_write skew_ral_forest skew_ral_index skew_ral_traverse skew_ral_build skew_ral_validate skew_ral_dispatch_access skew_ral_dispatch_bulk skew_ral brodal_okasaki_node brodal_okasaki_compare brodal_okasaki_link brodal_okasaki_forest brodal_okasaki_extract brodal_okasaki_boot brodal_okasaki_validate brodal_okasaki_dispatch_core brodal_okasaki_dispatch_bulk brodal_okasaki
+SDS_STDLIB_MODULES ?= wbt_set wbt_map OrderedMap OrderedSet skew_ral_weights skew_ral_node skew_ral_tree_read skew_ral_tree_write skew_ral_forest skew_ral_index skew_ral_traverse skew_ral_build skew_ral_validate skew_ral_dispatch_access skew_ral_dispatch_bulk skew_ral brodal_okasaki_node brodal_okasaki_compare brodal_okasaki_link brodal_okasaki_forest brodal_okasaki_extract brodal_okasaki_boot brodal_okasaki_validate brodal_okasaki_dispatch_core brodal_okasaki_dispatch_bulk brodal_okasaki tree_binary BinaryTree brodal_okasaki_min brodal_okasaki_max brodal_okasaki_priority Heap PriorityQueue tree_rose Tree
 
 # Copy prebuilt stdlib .o/.sams/.iface into this leaf's lib/ (same relative source= paths).
 define INSTALL_SDS_STDLIB_OBJS

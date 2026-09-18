@@ -1,0 +1,50 @@
+// Documented open emitter defect (2026-09-18, promoted from a staged repro found
+// while building the PriorityQueue over brodal_okasaki entries). The fix
+// is a compiler change; brodal_okasaki_priority reads the core's result slot through a function
+// whose surface type is the bare ItemType instead (see its header, deviation 4).
+//
+// Defect: a generic module stores an ItemType field as one pointer word (gbox@wrap here, the
+// brodal_okasaki core's peek/pop results in the stdlib), but a caller that knows the field's type
+// is a record reads the slot with the emitter's inline nested-record layout (record_make INLINES a
+// record-typed field, prims_record.silica): `f <- r.value` yields the ADDRESS of the slot, so
+// f.a reads the stored pointer and f.b reads past the record. The same record round-trips correctly
+// when the writer is a non-generic function in any unit (both sides inline it), which is why no
+// sibling trial sees it: every existing generic payload is a scalar or a string.
+// Expected output: 7 and 8. Observed: a large pointer-like value and a stray word (2 on the 2026-09-18 run).
+//
+// To run by hand (two units; the generic module beside this file):
+//   mkdir -p /tmp/grs && cp gbox.silica record_item_through_generic_result.silica /tmp/grs/ && cd /tmp/grs
+//   printf 'record_item_through_generic_result.silica\ngbox.silica\n' > silica.config
+//   /Volumes/2T/silica/binaries/silica-compiler
+//   clang -mmacosx-version-min=26.0 -c -x assembler record_item_through_generic_result.sams -o m.o
+//   clang -mmacosx-version-min=26.0 -c -x assembler gbox.sams -o g.o
+//   clang -mmacosx-version-min=26.0 -c -x assembler __silica_runtime.sams -o rt.o
+//   clang m.o g.o rt.o -o m -Wl,-e,main -Wl,-macos_version_min,26.0 && ./m
+
+use gbox;
+
+fn cmp_pair(a: { a: int64, b: int64 }, b: { a: int64, b: int64 }) -> :less | :equal | :greater {
+    case a.a < b.a of {
+        true -> :less;
+        false -> case a.a == b.a of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        item: { a: int64, b: int64 } <- { a: 7, b: 8 };
+        r: { status: :not_found | :found, value: { a: int64, b: int64 } } <- gbox@wrap({ compare_item: cmp_pair }, item);
+        f: { a: int64, b: int64 } <- r.value;
+        fa: int64 <- f.a;
+        fb: int64 <- f.b;
+        print_int64(fa);
+        println("");
+        print_int64(fb);
+        println("")
+    produces
+        pure 0
+    end
+}

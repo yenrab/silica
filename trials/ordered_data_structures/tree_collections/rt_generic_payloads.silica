@@ -1,0 +1,227 @@
+// Overriding genericity rule (common_contract.md §1): ItemType is whatever the programmer declares.
+// String payloads go through with_root/add_leaf/get/child_at/replace_item/find_first/
+// fold_preorder/remove_child/validate; tuple payloads through with_root/add_leaf/get/replace_item/
+// find_first (status and value)/validate. Not exercised for tuples: folding with a tuple-typed
+// callback parameter (the bootstrap emitter miscompiles fn(int64, (int64, int64)) -> int64
+// callbacks, see skew_ral_core/ral_generic_payloads) and reading a record field that FOLLOWS a
+// tuple-typed ItemType field (find_first's path, child_at's child_path: the concrete reader lays
+// the pair out inline while the generic builder stored one slot; staged repro
+// staged/record_tuple_field_then_list_read). r(a, b): preorder "rab".
+
+use tree_rose;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+
+// Comparator atoms must appear in the order :less, :equal, :greater: atoms are numbered per unit
+// in order of first appearance and tree_rose reads the three at their implicit positions.
+fn cmp_str(a: string, b: string) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn first_of(p: (int64, int64)) -> int64 {
+    (x: int64, _: int64) <- p;
+    x
+}
+
+// Pairs compare by their first component. Each tuple is destructured as a FIRST parameter
+// (first_of): the bootstrap emitter clobbers the first parameter when a later tuple parameter
+// is destructured (see skew_ral_core/ral_generic_payloads).
+fn cmp_pair(a: (int64, int64), b: (int64, int64)) -> :less | :equal | :greater {
+    a1: int64 <- first_of(a);
+    b1: int64 <- first_of(b);
+    case a1 < b1 of {
+        true -> :less;
+        false -> case a1 == b1 of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn concat_step(acc: string, _: List[int64, mem(normal)], x: string) -> string {
+    concat(acc, x)
+}
+
+fn string_is(res: { status: :not_found | :found, value: string }, expected: string) -> boolean {
+    case res.status of {
+        :found -> res.value == expected;
+        :not_found -> false
+    }
+}
+
+fn pair_is(res: { status: :not_found | :found, value: (int64, int64) }, a: int64, b: int64) -> boolean {
+    case res.status of {
+        :found -> {
+            (got_a: int64, got_b: int64) <- res.value;
+            got_a == a and got_b == b
+        };
+        :not_found -> false
+    }
+}
+
+fn path_len(path: List[int64, mem(normal)]) -> int64 {
+    tree_rose@path_length(path)
+}
+
+fn string_tree() -> {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } {
+    sequence
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        r: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- tree_rose@with_root({ compare_item: cmp_str }, "r");
+        ra: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        }, added: boolean, child_slot: int64 } <- tree_rose@add_leaf(r, p0, "a");
+        rb: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        }, added: boolean, child_slot: int64 } <- tree_rose@add_leaf(ra.tree, p0, "b")
+    produces
+        pure rb.tree
+    end
+}
+
+fn strings_ok() -> boolean {
+    sequence proc[mem(normal)]
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- string_tree();
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        pa: List[int64, mem(normal)] <- [0];
+        pb: List[int64, mem(normal)] <- [1];
+        count_ok: boolean <- tree_rose@node_count(t) == 3 and tree_rose@root_item(t) == "r";
+        get_ok: boolean <- string_is(tree_rose@get(t, pb, ""), "b") and string_is(tree_rose@get(t, pa, ""), "a");
+        ca: { status: :not_found | :found, value: string, child_path: List[int64, mem(normal)] } <- tree_rose@child_at(t, p0, 0, "");
+        child_ok: boolean <- ca.value == "a" and path_len(ca.child_path) == 1;
+        rep: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        }, changed: boolean } <- tree_rose@replace_item(t, pa, "zz");
+        rep_pre: string <- tree_rose@fold_preorder(rep.tree, "", concat_step);
+        old_pre: string <- tree_rose@fold_preorder(t, "", concat_step);
+        rep_ok: boolean <- rep.changed and rep_pre == "rzzb" and old_pre == "rab";
+        ff: { status: :not_found | :found, value: string, path: List[int64, mem(normal)] } <- tree_rose@find_first(t, "b", "");
+        find_ok: boolean <- ff.value == "b" and path_len(ff.path) == 1;
+        rm: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        }, removed: boolean, removed_node_count: int64 } <- tree_rose@remove_child(t, p0, 0);
+        rm_pre: string <- tree_rose@fold_preorder(rm.tree, "", concat_step);
+        v: { valid: boolean, error: atom, logical_count: int64 } <- tree_rose@validate(rm.tree)
+    produces
+        pure count_ok and get_ok and child_ok and rep_ok and find_ok and rm.removed and rm_pre == "rb"
+            and v.valid and v.logical_count == 2
+    end
+}
+
+fn pairs_ok() -> boolean {
+    sequence proc[mem(normal)]
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        pa: List[int64, mem(normal)] <- [0];
+        pb: List[int64, mem(normal)] <- [1];
+        r: {
+            root: ref?(L, normal, rec),
+            compare_item: fn((int64, int64), (int64, int64)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- tree_rose@with_root({ compare_item: cmp_pair }, (1, 10));
+        ra: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn((int64, int64), (int64, int64)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        }, added: boolean, child_slot: int64 } <- tree_rose@add_leaf(r, p0, (2, 20));
+        rb: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn((int64, int64), (int64, int64)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        }, added: boolean, child_slot: int64 } <- tree_rose@add_leaf(ra.tree, p0, (3, 30));
+        get_ok: boolean <- pair_is(tree_rose@get(rb.tree, pb, (0, 0)), 3, 30) and pair_is(tree_rose@get(rb.tree, p0, (0, 0)), 1, 10)
+            and rb.child_slot == 1 and tree_rose@node_count(rb.tree) == 3;
+        rep: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn((int64, int64), (int64, int64)) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        }, changed: boolean } <- tree_rose@replace_item(rb.tree, pa, (7, 70));
+        rep_ok: boolean <- rep.changed and pair_is(tree_rose@get(rep.tree, pa, (0, 0)), 7, 70)
+            and pair_is(tree_rose@get(rb.tree, pa, (0, 0)), 2, 20);
+        ff: { status: :not_found | :found, value: (int64, int64), path: List[int64, mem(normal)] } <- tree_rose@find_first(rep.tree, (7, 0), (0, 0));
+        ffv: { status: :not_found | :found, value: (int64, int64) } <- { status: ff.status, value: ff.value };
+        find_ok: boolean <- pair_is(ffv, 7, 70);
+        v: { valid: boolean, error: atom, logical_count: int64 } <- tree_rose@validate(rep.tree)
+    produces
+        pure get_ok and rep_ok and find_ok and v.valid and v.logical_count == 3
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- string_tree();
+        pre: string <- tree_rose@fold_preorder(t, "", concat_step);
+        pa: List[int64, mem(normal)] <- tree_rose@path_with(tree_rose@path_root(), 0);
+        rep: { tree: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        }, changed: boolean } <- tree_rose@replace_item(t, pa, "zz");
+        rep_pre: string <- tree_rose@fold_preorder(rep.tree, "", concat_step);
+        so: boolean <- strings_ok();
+        po: boolean <- pairs_ok();
+        println(pre);
+        println(rep_pre)
+    produces
+        pure pick(so, 1, pick(po, 2, 0))
+    end
+}

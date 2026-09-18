@@ -1,0 +1,1064 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Compiler-bundled actor runtime, part B: x86-64 (Intel syntax, GNU/ELF) translations of the
+// linux_aarch64 prims_actors_runtime_asm chunks 9-13. prims_actors_runtime_asm@emit_actor_runtime_helpers
+// concatenates these in the same order as the AArch64 original; every chunk starts at a section
+// boundary (chunk 9 .rodata, 10 .bss, 11 .text, 12 .rodata, 13 .text), so no routine straddles into
+// or out of this module. All data layouts, control-block offsets and constants are those documented
+// in prims_actors_runtime_asm.silica (ACB 512 B, 152 B message nodes, mailbox pairs at #128/#136 and
+// #232/#240 with the u32 depth at #248, arena fields #160..#184, region list cells [next][size]).
+//
+// Register model (shared by the linux_x86_64 runtime modules): X0..X7 -> rdi rsi rdx rcx r8 r9 r14 r15,
+// X9/X10 -> r10/r11, X8 and the X13..X17 scratch registers -> rax (or rdx/rcx once the argument is
+// consumed) because every such temporary here dies before the next call; X19..X28 -> frame slots
+// [rbp-8]..[rbp-80] (never registers: calls into Silica code preserve only rbp/rsp). Prologue
+// `push rbp; mov rbp, rsp; sub rsp, N` with N = 80 (the ten slots) + the routine's own [sp, #k]
+// locals (now [rsp + k]) rounded to 16, epilogue `leave; ret`. Routines called from Silica or from
+// other runtime routines return X0 in rdi; C library results arrive in rax and are moved to rdi.
+// The Darwin-era shim names (silica_rt_lock_lock/unlock, silica_rt_sysctlbyname,
+// silica_rt_pthread_mach_thread_np, silica_rt_thread_policy_set) keep their argument order and are
+// expected to return X0/W0 in rdi/edi like every other runtime routine.
+//
+// Cross-routine register contracts kept from the AArch64 text:
+//   silica_rt_tls_actor_set_from_x19: on x86-64 the ACB arrives in rdi (X0); callers load their X19
+//     value into rdi before the call (the caller's [rbp-8] slot is not read: C-called routines may
+//     have pushed registers there).
+//   silica_rt_region_mark returns the mark in rax (X16) and silica_rt_region_release_to takes it
+//     in rax (X16), preserving rdi/rsi (X0/X1) as the original preserved X0/X1.
+//   L_bc_push (private to silica_rt_apple_build_cache_levels) now takes the list head in rdi instead
+//     of reading the caller's X22, and keeps its line/assoc/shared arguments in frame slots across
+//     malloc (the AArch64 text left them in X3..X5 and X1/X2 across the two malloc calls).
+// silica_rt_sysctl_u64 keeps the original's order of `str w0, [sp, #8]` then `stp xzr, xzr, [sp]`
+// (the length word is zeroed after being set, as in the Darwin and Linux AArch64 sources).
+
+export actor_rt_asm_chunk_9/0;
+export actor_rt_asm_chunk_10/0;
+export actor_rt_asm_chunk_11/0;
+export actor_rt_asm_chunk_12/0;
+export actor_rt_asm_chunk_13/0;
+
+fn actor_rt_asm_chunk_9() -> string {
+    "	.section .rodata
+L_hw_perf0_str:
+	.asciz	\"hw.perflevel0.physicalcpu\"
+L_hw_perf1_str:
+	.asciz	\"hw.perflevel1.physicalcpu\"
+L_hw_memsize_str:
+	.asciz	\"hw.memsize\"
+L_hw_cachelinesize_str:
+	.asciz	\"hw.cachelinesize\"
+L_hw_nperflevels_str:
+	.asciz	\"hw.nperflevels\"
+L_hw_l3cachesize_str:
+	.asciz	\"hw.l3cachesize\"
+L_hw_l1dcachesize_str:
+	.asciz	\"hw.l1dcachesize\"
+L_hw_l2cachesize_str:
+	.asciz	\"hw.l2cachesize\"
+L_hw_pl0_l1d_str:
+	.asciz	\"hw.perflevel0.l1dcachesize\"
+L_hw_pl0_l2_str:
+	.asciz	\"hw.perflevel0.l2cachesize\"
+L_hw_pl1_l1d_str:
+	.asciz	\"hw.perflevel1.l1dcachesize\"
+L_hw_pl1_l2_str:
+	.asciz	\"hw.perflevel1.l2cachesize\"
+L_sc_opt_neon:
+	.asciz	\"hw.optional.neon\"
+L_tok_opt_neon:
+	.asciz	\"optional.neon\"
+L_sc_opt_armv8crc:
+	.asciz	\"hw.optional.armv8_crc32\"
+L_tok_opt_armv8crc:
+	.asciz	\"optional.armv8_crc32\"
+L_sc_opt_arm64:
+	.asciz	\"hw.optional.arm64\"
+L_tok_opt_arm64:
+	.asciz	\"optional.arm64\"
+L_sc_opt_lse:
+	.asciz	\"hw.optional.arm.FEAT_LSE\"
+L_tok_opt_lse:
+	.asciz	\"optional.arm.FEAT_LSE\"
+L_sc_opt_sha512:
+	.asciz	\"hw.optional.arm.FEAT_SHA512\"
+L_tok_opt_sha512:
+	.asciz	\"optional.arm.FEAT_SHA512\"
+L_sc_opt_sha256:
+	.asciz	\"hw.optional.arm.FEAT_SHA256\"
+L_tok_opt_sha256:
+	.asciz	\"optional.arm.FEAT_SHA256\"
+L_sc_opt_aes:
+	.asciz	\"hw.optional.arm.FEAT_AES\"
+L_tok_opt_aes:
+	.asciz	\"optional.arm.FEAT_AES\"
+L_sc_opt_advsimd:
+	.asciz	\"hw.optional.AdvSIMD\"
+L_tok_opt_advsimd:
+	.asciz	\"optional.AdvSIMD\"
+	.text
+	.p2align	2
+# -- Begin function silica_rt_build_int_range_list
+silica_rt_build_int_range_list:
+# rdi=start rsi=count -> rdi=cons list [start..start+count-1] or nil
+# frame: [rbp-8] start (X19), [rbp-16] count (X20), [rbp-24] head (X21), [rbp-32] value (X22)
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	QWORD PTR [rbp - 24], 0
+	test	rsi, rsi
+	jz	LBBrl_done
+	lea	rax, [rdi + rsi - 1]
+	mov	QWORD PTR [rbp - 32], rax
+LBBrl_loop:
+	mov	edi, 16
+	call	malloc
+	test	rax, rax
+	jz	LBBrl_done
+	mov	rcx, QWORD PTR [rbp - 32]
+	mov	QWORD PTR [rax], rcx
+	mov	rcx, QWORD PTR [rbp - 24]
+	mov	QWORD PTR [rax + 8], rcx
+	mov	QWORD PTR [rbp - 24], rax
+	mov	rcx, QWORD PTR [rbp - 32]
+	sub	rcx, 1
+	mov	QWORD PTR [rbp - 32], rcx
+	cmp	rcx, QWORD PTR [rbp - 8]
+	jge	LBBrl_loop
+LBBrl_done:
+	mov	rdi, QWORD PTR [rbp - 24]
+	leave
+	ret
+# -- End function
+# rdi = sysctl name cstring. Returns edi = int32 value, or -1 on failure.
+	.p2align	2
+silica_rt_sysctl_i32:
+# frame: [rbp-8] name (X19); [rsp] value, [rsp+8] length (the AArch64 [sp], [sp, #8])
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 96
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	DWORD PTR [rsp + 8], 4
+	mov	DWORD PTR [rsp], 0
+	mov	rdi, QWORD PTR [rbp - 8]
+	mov	rsi, rsp
+	lea	rdx, [rsp + 8]
+	xor	ecx, ecx
+	xor	r8d, r8d
+	call	silica_rt_sysctlbyname
+	test	edi, edi
+	jnz	L_si32_fail
+	mov	edi, DWORD PTR [rsp]
+	leave
+	ret
+L_si32_fail:
+	mov	edi, -1
+	leave
+	ret
+# rdi = C string pointer, rsi = tail (cons list or 0). Returns rdi = new head; malloc fail returns the tail.
+	.p2align	2
+silica_rt_cons_cstr_list:
+# frame: [rbp-8] cstring (X19), [rbp-16] tail (X20)
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	edi, 16
+	call	malloc
+	test	rax, rax
+	jz	L_ccl_fail
+	mov	rcx, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax], rcx
+	mov	rcx, QWORD PTR [rbp - 16]
+	mov	QWORD PTR [rax + 8], rcx
+	mov	rdi, rax
+	leave
+	ret
+L_ccl_fail:
+	mov	rdi, QWORD PTR [rbp - 16]
+	leave
+	ret
+# Machine-wide sysctl hw.optional.* flags -> cons list of cstrings (see cpu_topology_implementation_plan).
+	.globl	silica_rt_apple_hw_optional_caps_list
+	.p2align	2
+silica_rt_apple_hw_optional_caps_list:
+# frame: [rbp-8] list head (X19)
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], 0
+	lea	rdi, [rip + L_sc_opt_neon]
+	call	silica_rt_sysctl_i32
+	cmp	edi, 1
+	jne	L_iho_1
+	lea	rdi, [rip + L_tok_opt_neon]
+	mov	rsi, QWORD PTR [rbp - 8]
+	call	silica_rt_cons_cstr_list
+	mov	QWORD PTR [rbp - 8], rdi
+L_iho_1:
+	lea	rdi, [rip + L_sc_opt_armv8crc]
+	call	silica_rt_sysctl_i32
+	cmp	edi, 1
+	jne	L_iho_2
+	lea	rdi, [rip + L_tok_opt_armv8crc]
+	mov	rsi, QWORD PTR [rbp - 8]
+	call	silica_rt_cons_cstr_list
+	mov	QWORD PTR [rbp - 8], rdi
+L_iho_2:
+	lea	rdi, [rip + L_sc_opt_arm64]
+	call	silica_rt_sysctl_i32
+	cmp	edi, 1
+	jne	L_iho_3
+	lea	rdi, [rip + L_tok_opt_arm64]
+	mov	rsi, QWORD PTR [rbp - 8]
+	call	silica_rt_cons_cstr_list
+	mov	QWORD PTR [rbp - 8], rdi
+L_iho_3:
+	lea	rdi, [rip + L_sc_opt_lse]
+	call	silica_rt_sysctl_i32
+	cmp	edi, 1
+	jne	L_iho_4
+	lea	rdi, [rip + L_tok_opt_lse]
+	mov	rsi, QWORD PTR [rbp - 8]
+	call	silica_rt_cons_cstr_list
+	mov	QWORD PTR [rbp - 8], rdi
+L_iho_4:
+	lea	rdi, [rip + L_sc_opt_sha512]
+	call	silica_rt_sysctl_i32
+	cmp	edi, 1
+	jne	L_iho_5
+	lea	rdi, [rip + L_tok_opt_sha512]
+	mov	rsi, QWORD PTR [rbp - 8]
+	call	silica_rt_cons_cstr_list
+	mov	QWORD PTR [rbp - 8], rdi
+L_iho_5:
+	lea	rdi, [rip + L_sc_opt_sha256]
+	call	silica_rt_sysctl_i32
+	cmp	edi, 1
+	jne	L_iho_6
+	lea	rdi, [rip + L_tok_opt_sha256]
+	mov	rsi, QWORD PTR [rbp - 8]
+	call	silica_rt_cons_cstr_list
+	mov	QWORD PTR [rbp - 8], rdi
+L_iho_6:
+	lea	rdi, [rip + L_sc_opt_aes]
+	call	silica_rt_sysctl_i32
+	cmp	edi, 1
+	jne	L_iho_7
+	lea	rdi, [rip + L_tok_opt_aes]
+	mov	rsi, QWORD PTR [rbp - 8]
+	call	silica_rt_cons_cstr_list
+	mov	QWORD PTR [rbp - 8], rdi
+L_iho_7:
+	lea	rdi, [rip + L_sc_opt_advsimd]
+	call	silica_rt_sysctl_i32
+	cmp	edi, 1
+	jne	L_iho_done
+	lea	rdi, [rip + L_tok_opt_advsimd]
+	mov	rsi, QWORD PTR [rbp - 8]
+	call	silica_rt_cons_cstr_list
+	mov	QWORD PTR [rbp - 8], rdi
+L_iho_done:
+	mov	rdi, QWORD PTR [rbp - 8]
+	leave
+	ret
+# rdi = sysctl name cstring. Returns rdi = uint64 (0 on failure).
+	.p2align	2
+silica_rt_sysctl_u64:
+# frame: [rbp-8] name (X19); [rsp] value, [rsp+8] length (the AArch64 [sp], [sp, #8])
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 96
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	DWORD PTR [rsp + 8], 8
+	mov	QWORD PTR [rsp], 0
+	mov	QWORD PTR [rsp + 8], 0
+	mov	rdi, QWORD PTR [rbp - 8]
+	mov	rsi, rsp
+	lea	rdx, [rsp + 8]
+	xor	ecx, ecx
+	xor	r8d, r8d
+	call	silica_rt_sysctlbyname
+	test	edi, edi
+	jnz	L_s64_fail
+	mov	rdi, QWORD PTR [rsp]
+	leave
+	ret
+L_s64_fail:
+	xor	edi, edi
+	leave
+	ret
+# Apple Silicon cache_info.levels: sysctl exposes per-cluster L1D/L2 (hw.perflevel0/1.*), aggregate hw.l1d/l2/l3,
+# hw.cachelinesize, hw.nperflevels. Not exposed in sysctl: SLC/unified last-level cache as a stable L3; associativity
+# (we store 0). rdi=P, rsi=E, rdx=total, rcx=all-core-ids list. Returns rdi = list head (cons spine) or 0.
+	.globl	silica_rt_apple_build_cache_levels
+	.p2align	2
+silica_rt_apple_build_cache_levels:
+# frame: [rbp-8] P (X19), [rbp-16] E (X20), [rbp-24] total (X21), [rbp-32] head (X22), [rbp-40] line (X23),
+# [rbp-48] P ids (X24), [rbp-56] E ids (X25), [rbp-64] all ids (X26), [rbp-72] nperflevels (X27),
+# [rbp-80] all-core-ids arg (X28); [rsp] sysctl value, [rsp+8] sysctl length
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 96
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	QWORD PTR [rbp - 24], rdx
+	mov	QWORD PTR [rbp - 80], rcx
+	mov	QWORD PTR [rbp - 32], 0
+	lea	rdi, [rip + L_hw_cachelinesize_str]
+	call	silica_rt_sysctl_u64
+	mov	QWORD PTR [rbp - 40], rdi
+	xor	edi, edi
+	mov	esi, DWORD PTR [rbp - 8]
+	call	silica_rt_build_int_range_list
+	mov	QWORD PTR [rbp - 48], rdi
+	cmp	DWORD PTR [rbp - 16], 0
+	je	L_bc_no_epl
+	mov	edi, DWORD PTR [rbp - 8]
+	mov	esi, DWORD PTR [rbp - 16]
+	call	silica_rt_build_int_range_list
+	mov	QWORD PTR [rbp - 56], rdi
+	jmp	L_bc_have_epl
+L_bc_no_epl:
+	mov	QWORD PTR [rbp - 56], 0
+L_bc_have_epl:
+	xor	edi, edi
+	mov	esi, DWORD PTR [rbp - 24]
+	call	silica_rt_build_int_range_list
+	mov	QWORD PTR [rbp - 64], rdi
+	mov	DWORD PTR [rsp + 8], 4
+	mov	DWORD PTR [rsp], 0
+	lea	rdi, [rip + L_hw_nperflevels_str]
+	mov	rsi, rsp
+	lea	rdx, [rsp + 8]
+	xor	ecx, ecx
+	xor	r8d, r8d
+	call	silica_rt_sysctlbyname
+	test	edi, edi
+	jnz	L_bc_nperf_fail
+	mov	eax, DWORD PTR [rsp]
+	mov	QWORD PTR [rbp - 72], rax
+	cmp	eax, 2
+	jae	L_bc_dual
+	jmp	L_bc_agg
+L_bc_nperf_fail:
+L_bc_agg:
+	lea	rdi, [rip + L_hw_l3cachesize_str]
+	call	silica_rt_sysctl_u64
+	test	rdi, rdi
+	jz	L_bc_a_skip_l3
+	mov	rdx, rdi
+	shr	rdx, 10
+	test	rdx, rdx
+	jz	L_bc_a_skip_l3
+	mov	esi, 3
+	mov	rcx, QWORD PTR [rbp - 40]
+	xor	r8d, r8d
+	mov	r9, QWORD PTR [rbp - 64]
+	mov	rdi, QWORD PTR [rbp - 32]
+	call	L_bc_push
+	mov	QWORD PTR [rbp - 32], rdi
+L_bc_a_skip_l3:
+	lea	rdi, [rip + L_hw_l2cachesize_str]
+	call	silica_rt_sysctl_u64
+	test	rdi, rdi
+	jz	L_bc_a_skip_l2
+	mov	rdx, rdi
+	shr	rdx, 10
+	test	rdx, rdx
+	jz	L_bc_a_skip_l2
+	mov	esi, 2
+	mov	rcx, QWORD PTR [rbp - 40]
+	xor	r8d, r8d
+	mov	r9, QWORD PTR [rbp - 64]
+	mov	rdi, QWORD PTR [rbp - 32]
+	call	L_bc_push
+	mov	QWORD PTR [rbp - 32], rdi
+L_bc_a_skip_l2:
+	lea	rdi, [rip + L_hw_l1dcachesize_str]
+	call	silica_rt_sysctl_u64
+	test	rdi, rdi
+	jz	L_bc_done
+	mov	rdx, rdi
+	shr	rdx, 10
+	test	rdx, rdx
+	jz	L_bc_done
+	mov	esi, 1
+	mov	rcx, QWORD PTR [rbp - 40]
+	xor	r8d, r8d
+	mov	r9, QWORD PTR [rbp - 64]
+	mov	rdi, QWORD PTR [rbp - 32]
+	call	L_bc_push
+	mov	QWORD PTR [rbp - 32], rdi
+	jmp	L_bc_done
+L_bc_dual:
+	lea	rdi, [rip + L_hw_l3cachesize_str]
+	call	silica_rt_sysctl_u64
+	test	rdi, rdi
+	jz	L_bc_d_skip_l3
+	mov	rdx, rdi
+	shr	rdx, 10
+	test	rdx, rdx
+	jz	L_bc_d_skip_l3
+	mov	esi, 3
+	mov	rcx, QWORD PTR [rbp - 40]
+	xor	r8d, r8d
+	mov	r9, QWORD PTR [rbp - 64]
+	mov	rdi, QWORD PTR [rbp - 32]
+	call	L_bc_push
+	mov	QWORD PTR [rbp - 32], rdi
+L_bc_d_skip_l3:
+	cmp	DWORD PTR [rbp - 16], 0
+	je	L_bc_d_skip_el2
+	lea	rdi, [rip + L_hw_pl1_l2_str]
+	call	silica_rt_sysctl_u64
+	test	rdi, rdi
+	jz	L_bc_d_skip_el2
+	mov	rdx, rdi
+	shr	rdx, 10
+	test	rdx, rdx
+	jz	L_bc_d_skip_el2
+	mov	esi, 2
+	mov	rcx, QWORD PTR [rbp - 40]
+	xor	r8d, r8d
+	mov	r9, QWORD PTR [rbp - 56]
+	mov	rdi, QWORD PTR [rbp - 32]
+	call	L_bc_push
+	mov	QWORD PTR [rbp - 32], rdi
+L_bc_d_skip_el2:
+	cmp	DWORD PTR [rbp - 8], 0
+	je	L_bc_d_skip_pl2
+	lea	rdi, [rip + L_hw_pl0_l2_str]
+	call	silica_rt_sysctl_u64
+	test	rdi, rdi
+	jz	L_bc_d_skip_pl2
+	mov	rdx, rdi
+	shr	rdx, 10
+	test	rdx, rdx
+	jz	L_bc_d_skip_pl2
+	mov	esi, 2
+	mov	rcx, QWORD PTR [rbp - 40]
+	xor	r8d, r8d
+	mov	r9, QWORD PTR [rbp - 48]
+	mov	rdi, QWORD PTR [rbp - 32]
+	call	L_bc_push
+	mov	QWORD PTR [rbp - 32], rdi
+L_bc_d_skip_pl2:
+	cmp	DWORD PTR [rbp - 16], 0
+	je	L_bc_d_skip_el1
+	lea	rdi, [rip + L_hw_pl1_l1d_str]
+	call	silica_rt_sysctl_u64
+	test	rdi, rdi
+	jz	L_bc_d_skip_el1
+	mov	rdx, rdi
+	shr	rdx, 10
+	test	rdx, rdx
+	jz	L_bc_d_skip_el1
+	mov	esi, 1
+	mov	rcx, QWORD PTR [rbp - 40]
+	xor	r8d, r8d
+	mov	r9, QWORD PTR [rbp - 56]
+	mov	rdi, QWORD PTR [rbp - 32]
+	call	L_bc_push
+	mov	QWORD PTR [rbp - 32], rdi
+L_bc_d_skip_el1:
+	cmp	DWORD PTR [rbp - 8], 0
+	je	L_bc_done
+	lea	rdi, [rip + L_hw_pl0_l1d_str]
+	call	silica_rt_sysctl_u64
+	test	rdi, rdi
+	jz	L_bc_done
+	mov	rdx, rdi
+	shr	rdx, 10
+	test	rdx, rdx
+	jz	L_bc_done
+	mov	esi, 1
+	mov	rcx, QWORD PTR [rbp - 40]
+	xor	r8d, r8d
+	mov	r9, QWORD PTR [rbp - 48]
+	mov	rdi, QWORD PTR [rbp - 32]
+	call	L_bc_push
+	mov	QWORD PTR [rbp - 32], rdi
+L_bc_done:
+	mov	rdi, QWORD PTR [rbp - 32]
+	leave
+	ret
+# rdi=head rsi=level rdx=size_kb rcx=line r8=assoc r9=shared -> rdi=new head (malloc failure returns head)
+L_bc_push:
+# frame: [rbp-8] head (X19), [rbp-16] level (X20), [rbp-24] size_kb (X21), [rbp-32] line, [rbp-40] assoc,
+# [rbp-48] shared, [rbp-56] entry pointer
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	QWORD PTR [rbp - 24], rdx
+	mov	QWORD PTR [rbp - 32], rcx
+	mov	QWORD PTR [rbp - 40], r8
+	mov	QWORD PTR [rbp - 48], r9
+	mov	edi, 40
+	call	malloc
+	test	rax, rax
+	jz	L_bcp_fail
+	mov	rcx, QWORD PTR [rbp - 16]
+	mov	QWORD PTR [rax], rcx
+	mov	rcx, QWORD PTR [rbp - 24]
+	mov	QWORD PTR [rax + 8], rcx
+	mov	rcx, QWORD PTR [rbp - 32]
+	mov	QWORD PTR [rax + 16], rcx
+	mov	rcx, QWORD PTR [rbp - 40]
+	mov	QWORD PTR [rax + 24], rcx
+	mov	rcx, QWORD PTR [rbp - 48]
+	mov	QWORD PTR [rax + 32], rcx
+	mov	QWORD PTR [rbp - 56], rax
+	mov	edi, 16
+	call	malloc
+	test	rax, rax
+	jz	L_bcp_fail
+	mov	rcx, QWORD PTR [rbp - 56]
+	mov	QWORD PTR [rax], rcx
+	mov	rcx, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax + 8], rcx
+	mov	rdi, rax
+	leave
+	ret
+L_bcp_fail:
+	mov	rdi, QWORD PTR [rbp - 8]
+	leave
+	ret
+"
+}
+
+fn actor_rt_asm_chunk_10() -> string {
+    "	.bss
+	.p2align	3
+silica_actor_pthread_key:
+	.zero	8
+silica_actor_tls_init_lock:
+	.zero	4
+silica_actor_tls_key_ready:
+	.zero	1
+"
+}
+
+fn actor_rt_asm_chunk_11() -> string {
+    "	.text
+	.globl	silica_rt_ensure_actor_tls_key
+	.p2align	2
+silica_rt_ensure_actor_tls_key:
+# frame: [rbp-16] address of silica_actor_tls_key_ready (X20)
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	lea	rax, [rip + silica_actor_tls_key_ready]
+	mov	QWORD PTR [rbp - 16], rax
+	movzx	eax, BYTE PTR [rax]
+	test	eax, eax
+	jnz	L_tlse_done
+	lea	rdi, [rip + silica_actor_tls_init_lock]
+	call	silica_rt_lock_lock
+	mov	rax, QWORD PTR [rbp - 16]
+	movzx	eax, BYTE PTR [rax]
+	test	eax, eax
+	jnz	L_tlse_unlock
+	lea	rdi, [rip + silica_actor_pthread_key]
+	xor	esi, esi
+	call	pthread_key_create
+	test	eax, eax
+	jnz	L_tlse_unlock
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	BYTE PTR [rax], 1
+L_tlse_unlock:
+	lea	rdi, [rip + silica_actor_tls_init_lock]
+	call	silica_rt_lock_unlock
+L_tlse_done:
+	leave
+	ret
+	.globl	silica_rt_tls_current_actor_get
+	.p2align	2
+silica_rt_tls_current_actor_get:
+# -> rdi = current actor (pthread_getspecific result) or 0
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	call	silica_rt_ensure_actor_tls_key
+	lea	rax, [rip + silica_actor_pthread_key]
+	mov	rdi, QWORD PTR [rax]
+	call	pthread_getspecific
+	mov	rdi, rax
+	leave
+	ret
+	.globl	silica_rt_tls_actor_set_from_x19
+	.p2align	2
+silica_rt_tls_actor_set_from_x19:
+# rdi = ACB (the caller's X19 value, moved into rdi by the caller); kept in [rsp] across
+# silica_rt_ensure_actor_tls_key. Nothing of the caller's frame is read or reloaded.
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 96
+	mov	QWORD PTR [rsp], rdi
+	call	silica_rt_ensure_actor_tls_key
+	mov	rsi, QWORD PTR [rsp]
+	lea	rax, [rip + silica_actor_pthread_key]
+	mov	rdi, QWORD PTR [rax]
+	call	pthread_setspecific
+	mov	rdi, rax
+	leave
+	ret
+	.p2align	2
+silica_rt_actor_init_region: # arena bookkeeping for the actor's implicit heap
+# rdi=actor_ptr. The arena is a chain of anonymous blocks allocated on demand by
+# silica_rt_region_alloc, so nothing is mapped here: #160 newest block (header: prev, size),
+# #168 bytes mapped so far, #176 bump pointer, #184 limit of the newest block.
+	mov	QWORD PTR [rdi + 160], 0
+	mov	QWORD PTR [rdi + 168], 0
+	mov	QWORD PTR [rdi + 176], 0
+	mov	QWORD PTR [rdi + 184], 0
+	ret
+# -- End function
+	.p2align	2
+silica_rt_actor_dealloc_region: # release every arena block of an actor
+# rdi=actor_ptr. Walks the block chain from #160 and munmaps each block.
+# frame: [rbp-8] block (X19), [rbp-16] actor (X20), [rbp-24] previous block (X21)
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 16], rdi
+	mov	rax, QWORD PTR [rdi + 160]
+	mov	QWORD PTR [rbp - 8], rax
+LBBdr_loop:
+	mov	rdi, QWORD PTR [rbp - 8]
+	test	rdi, rdi
+	jz	LBBdr_done
+	mov	rax, QWORD PTR [rdi]
+	mov	QWORD PTR [rbp - 24], rax
+	mov	rsi, QWORD PTR [rdi + 8]
+	call	munmap
+	mov	rax, QWORD PTR [rbp - 24]
+	mov	QWORD PTR [rbp - 8], rax
+	jmp	LBBdr_loop
+LBBdr_done:
+	mov	rax, QWORD PTR [rbp - 16]
+	mov	QWORD PTR [rax + 160], 0
+	mov	QWORD PTR [rax + 168], 0
+	mov	QWORD PTR [rax + 176], 0
+	mov	QWORD PTR [rax + 184], 0
+	leave
+	ret
+# -- End function
+"
+}
+
+fn actor_rt_asm_chunk_12() -> string {
+    "	.section .rodata
+	.p2align	2
+L_silica_root_actor_exit:
+	.asciz	\"[silica] root actor exited (no supervisor)\\n\"
+	.text
+	.globl	silica_rt_migrate_actor
+	.p2align	2
+# -- Begin function silica_rt_migrate_actor
+silica_rt_migrate_actor:
+# rdi=actor_ref rsi=target_core; sets thread affinity to target core
+# frame: [rbp-8] target core (X19), [rbp-16] thread (X20); [rsp] the 4-byte policy tag
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 96
+	mov	QWORD PTR [rbp - 8], rsi
+	mov	rdi, QWORD PTR [rdi + 144]
+	call	silica_rt_pthread_mach_thread_np
+	mov	QWORD PTR [rbp - 16], rdi
+	mov	eax, DWORD PTR [rbp - 8]
+	mov	DWORD PTR [rsp], eax
+	mov	rdi, QWORD PTR [rbp - 16]
+	mov	esi, 4
+	mov	rdx, rsp
+	mov	ecx, 1
+	call	silica_rt_thread_policy_set
+	leave
+	ret
+# -- End function
+	.globl	silica_rt_move_actor
+	.p2align	2
+# -- Begin function silica_rt_move_actor
+silica_rt_move_actor:
+# rdi=actor_ref rsi=from_core rdx=to_core; migrate actor to target core
+# frame: [rbp-8] target core (X19), [rbp-16] thread (X20); [rsp] the 4-byte policy tag
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 96
+	mov	QWORD PTR [rbp - 8], rdx
+	mov	rdi, QWORD PTR [rdi + 144]
+	call	silica_rt_pthread_mach_thread_np
+	mov	QWORD PTR [rbp - 16], rdi
+	mov	eax, DWORD PTR [rbp - 8]
+	mov	DWORD PTR [rsp], eax
+	mov	rdi, QWORD PTR [rbp - 16]
+	mov	esi, 4
+	mov	rdx, rsp
+	mov	ecx, 1
+	call	silica_rt_thread_policy_set
+	leave
+	ret
+# -- End function
+"
+}
+
+fn actor_rt_asm_chunk_13() -> string {
+    "	.text
+# get_actor_memory_usage lives in prims_actors_stack_asm.silica (four-field record).
+	.globl	silica_rt_region_alloc
+	.p2align	2
+# -- Begin function silica_rt_region_alloc
+silica_rt_region_alloc:
+# rdi=size. Bump-allocates from the current actor's mmap region.
+# Falls back to malloc if not in actor context. Result in rdi.
+# frame: [rbp-8] rounded size (X19), [rbp-16] actor (X20); [rsp] mmap length across the call
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 96
+	lea	rax, [rdi + 7]
+	and	rax, -8
+	mov	QWORD PTR [rbp - 8], rax
+	call	silica_rt_tls_current_actor_get
+	mov	QWORD PTR [rbp - 16], rdi
+	test	rdi, rdi
+	jz	LBBra_fallback
+	mov	rax, QWORD PTR [rdi + 176]
+	test	rax, rax
+	jz	LBBra_grow
+	mov	r10, QWORD PTR [rdi + 184]
+	mov	r11, rax
+	add	r11, QWORD PTR [rbp - 8]
+	cmp	r11, r10
+	ja	LBBra_grow
+	mov	QWORD PTR [rdi + 176], r11
+	mov	rdi, rax
+	leave
+	ret
+LBBra_grow:
+# New block: 64 MB, or the request plus its header when larger. Anonymous RW mappings cost
+# nothing until touched, so an idle actor still holds no arena memory.
+	mov	r10, QWORD PTR [rbp - 8]
+	add	r10, 32
+	mov	r11, 67108864
+	mov	rsi, r11
+	cmp	r10, r11
+	cmova	rsi, r10
+	mov	QWORD PTR [rsp], rsi
+	xor	edi, edi
+	mov	edx, 3
+	mov	ecx, 34
+	mov	r8d, -1
+	xor	r9d, r9d
+	call	mmap
+	mov	rsi, QWORD PTR [rsp]
+	cmp	rax, -1
+	je	LBBra_grow_failed
+	mov	rcx, QWORD PTR [rbp - 16]
+	mov	rdx, QWORD PTR [rcx + 160]
+	mov	QWORD PTR [rax], rdx
+	mov	QWORD PTR [rax + 8], rsi
+	mov	QWORD PTR [rcx + 160], rax
+	lea	r10, [rax + rsi]
+	mov	QWORD PTR [rcx + 184], r10
+	mov	r11, QWORD PTR [rcx + 168]
+	add	r11, rsi
+	mov	QWORD PTR [rcx + 168], r11
+	lea	rdx, [rax + 16]
+	mov	r11, rdx
+	add	r11, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rcx + 176], r11
+	mov	rdi, rdx
+	leave
+	ret
+LBBra_grow_failed:
+	xor	edi, edi
+	leave
+	ret
+LBBra_fallback:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	malloc
+	test	rax, rax
+	jz	LBBra_oom
+	lea	rcx, [rip + silica_rt_region_list]
+	mov	r10, QWORD PTR [rcx]
+	mov	QWORD PTR [rax], r10
+	mov	r10, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax + 8], r10
+	mov	QWORD PTR [rcx], rax
+	add	rax, 16
+LBBra_oom:
+	mov	rdi, rax
+	leave
+	ret
+	.globl	silica_rt_raw_alloc
+silica_rt_raw_alloc:
+# rdi=size. malloc with a [next][size] header, NOT linked into the global region
+# list. Region memory must be freeable by its owner; anything on that list can
+# only be freed by unwinding to a mark, which is scope-shaped and unsound here.
+# frame: [rbp-8] size (X19)
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	add	rdi, 16
+	call	malloc
+	test	rax, rax
+	jz	LBBrw_oom
+	mov	QWORD PTR [rax], 0
+	mov	rcx, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax + 8], rcx
+	add	rax, 16
+LBBrw_oom:
+	mov	rdi, rax
+	leave
+	ret
+	.globl	silica_rt_region_destroy
+silica_rt_region_destroy:
+# rdi=region handle. Frees every extension block on the [r+16] chain, then the
+# region header. Blocks come from silica_rt_raw_alloc, so each malloc base is
+# payload-16. Null handle is a no-op so a moved-out region is safe to skip.
+# frame: [rbp-8] region (X19), [rbp-16] block (X20), [rbp-24] next block (X21)
+	test	rdi, rdi
+	jz	LBBrd_ret
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	rax, QWORD PTR [rdi + 16]
+	mov	QWORD PTR [rbp - 16], rax
+LBBrd_loop:
+	mov	rdi, QWORD PTR [rbp - 16]
+	test	rdi, rdi
+	jz	LBBrd_hdr
+	mov	rax, QWORD PTR [rdi + 16]
+	mov	QWORD PTR [rbp - 24], rax
+	sub	rdi, 16
+	call	free
+	mov	rax, QWORD PTR [rbp - 24]
+	mov	QWORD PTR [rbp - 16], rax
+	jmp	LBBrd_loop
+LBBrd_hdr:
+	mov	rdi, QWORD PTR [rbp - 8]
+	sub	rdi, 16
+	call	free
+	leave
+LBBrd_ret:
+	ret
+	.globl	silica_rt_region_mark
+silica_rt_region_mark:
+# -> rax (X16) = current head of silica_rt_region_list; nothing else touched.
+	mov	rax, QWORD PTR [rip + silica_rt_region_list]
+	ret
+	.globl	silica_rt_region_release_to
+silica_rt_region_release_to:
+# rax (X16) = mark. Frees list cells down to the mark; preserves rdi/rsi (X0/X1).
+# frame: [rbp-8] &silica_rt_region_list (X19), [rbp-16] cell (X20), [rbp-24] mark (X21); [rsp] rdi, [rsp+8] rsi
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 96
+	mov	QWORD PTR [rsp], rdi
+	mov	QWORD PTR [rsp + 8], rsi
+	mov	QWORD PTR [rbp - 24], rax
+	lea	rax, [rip + silica_rt_region_list]
+	mov	QWORD PTR [rbp - 8], rax
+	mov	rcx, QWORD PTR [rax]
+	mov	QWORD PTR [rbp - 16], rcx
+Lrrt_loop:
+	mov	rcx, QWORD PTR [rbp - 16]
+	cmp	rcx, QWORD PTR [rbp - 24]
+	je	Lrrt_done
+	test	rcx, rcx
+	jz	Lrrt_done
+	mov	rsi, QWORD PTR [rcx]
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rax], rsi
+	mov	rdi, rcx
+	mov	QWORD PTR [rbp - 16], rsi
+	call	free
+	jmp	Lrrt_loop
+Lrrt_done:
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rcx, QWORD PTR [rbp - 24]
+	mov	QWORD PTR [rax], rcx
+	mov	rdi, QWORD PTR [rsp]
+	mov	rsi, QWORD PTR [rsp + 8]
+	leave
+	ret
+	.globl	silica_rt_region_list
+	.comm	silica_rt_region_list,8,8
+# -- End function
+	.globl	silica_rt_actor_supervision_ingress_enqueue
+	.p2align	2
+# Phase B: synthetic exit / trial hook; bounded queue
+silica_rt_actor_supervision_ingress_enqueue:
+# rdi=target actor_ref, rsi=int64 payload -> rdi=:ok (0). Cast-shaped 152 B node; +8 = inline int64; +24 = 1 (trial; not heap payload).
+# frame: [rbp-8] actor (X19), [rbp-16] node (X20), [rbp-24] payload (X21)
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 24], rsi
+	test	rdi, rdi
+	jz	Lsie_fail_nolock
+	add	rdi, 16
+	call	silica_rt_lock_lock
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r10d, DWORD PTR [rax + 248]
+	cmp	r10d, 1024
+	jae	Lsie_abort
+	mov	edi, 1
+	mov	esi, 152
+	call	calloc
+	test	rax, rax
+	jz	Lsie_unlock_fail
+	mov	QWORD PTR [rbp - 16], rax
+	mov	rcx, QWORD PTR [rbp - 24]
+	mov	QWORD PTR [rax + 8], rcx
+	mov	DWORD PTR [rax + 16], 0
+	mov	DWORD PTR [rax + 24], 1
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 232
+	mov	rsi, rax
+	call	silica_rt_q_enqueue_locked
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r10d, DWORD PTR [rax + 248]
+	add	r10d, 1
+	mov	DWORD PTR [rax + 248], r10d
+	lea	rdi, [rax + 80]
+	call	silica_rt_cv_signal
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	xor	edi, edi
+	leave
+	ret
+Lsie_unlock_fail:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+Lsie_fail_nolock:
+	xor	edi, edi
+	leave
+	ret
+Lsie_abort:
+	call	abort
+# -- End function
+	.globl	silica_rt_actor_recv
+	.p2align	2
+# Phase B/C/G: ingress then standard; spec 15.4.8.6 DOWN only on standard
+silica_rt_actor_recv:
+# TLS current actor: dequeue next message (supervision ingress first, then standard mailbox). Return rdi = message node or 0.
+# frame: [rbp-8] actor (X19), [rbp-16] node (X20)
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	call	silica_rt_tls_current_actor_get
+	mov	QWORD PTR [rbp - 8], rdi
+	test	rdi, rdi
+	jz	Lrecv_done_null
+	add	rdi, 16
+	call	silica_rt_lock_lock
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 232
+	call	silica_rt_q_dequeue_locked
+	mov	QWORD PTR [rbp - 16], rdi
+	test	rdi, rdi
+	jz	Lrecv_try_std
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	r10d, DWORD PTR [rax + 248]
+	sub	r10d, 1
+	mov	DWORD PTR [rax + 248], r10d
+	jmp	Lrecv_unlock_node
+Lrecv_try_std:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 128
+	call	silica_rt_q_dequeue_locked
+	mov	QWORD PTR [rbp - 16], rdi
+Lrecv_unlock_node:
+	mov	rdi, QWORD PTR [rbp - 8]
+	add	rdi, 16
+	call	silica_rt_lock_unlock
+	mov	rdi, QWORD PTR [rbp - 16]
+	leave
+	ret
+Lrecv_done_null:
+	xor	edi, edi
+	leave
+	ret
+# -- End function
+	.globl	silica_rt_actor_add_child
+	.p2align	2
+# Explicit supervisor child registration
+silica_rt_actor_add_child:
+# rdi=parent supervisor actor_ref, rsi=child actor_ref -> rdi=atom :ok.
+# Records the explicit parent/child relationship used by supervisor ingress teardown.
+# frame: [rbp-8] parent (X19), [rbp-16] child (X20)
+	test	rdi, rdi
+	jz	Ladd_child_done
+	test	rsi, rsi
+	jz	Ladd_child_done
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	mov	QWORD PTR [rbp - 16], rsi
+	mov	QWORD PTR [rsi + 192], rdi
+	add	rdi, 16
+	call	silica_rt_lock_lock
+	mov	rax, QWORD PTR [rbp - 8]
+	mov	rcx, QWORD PTR [rbp - 16]
+	mov	rdx, QWORD PTR [rax + 216]
+	mov	QWORD PTR [rcx + 224], rdx
+	mov	QWORD PTR [rax + 216], rcx
+	lea	rdi, [rax + 16]
+	call	silica_rt_lock_unlock
+	leave
+Ladd_child_done:
+	xor	edi, edi
+	ret
+# -- End function
+	.globl	silica_rt_actor_link
+	.p2align	2
+# Phase G: spec 15.4.8.4-8.5
+silica_rt_actor_link:
+# rdi=target actor_ref -> rdi=atom :ok (index 0). Idempotent link; dead target must enqueue exit (ingress if supervisor) -- stub.
+	xor	edi, edi
+	ret
+# -- End function
+	.globl	silica_rt_actor_monitor
+	.p2align	2
+# Phase G: spec 15.4.8.6
+silica_rt_actor_monitor:
+# rdi=target -> rdi=monitor_ref. Real runtime: DOWN (:down, ref, target, reason) to standard mailbox only, not ingress.
+	ret
+# -- End function
+	.globl	silica_rt_actor_demonitor
+	.p2align	2
+# Phase G: spec 15.4.8.6-8.7
+silica_rt_actor_demonitor:
+# rdi=monitor_ref -> rdi=atom :ok
+	xor	edi, edi
+	ret
+# -- End function
+"
+}

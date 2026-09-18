@@ -41,7 +41,7 @@ Use the entries below for **quick navigation**. Each item links to a file in thi
 
 ## [porting_to_linux_x86_64_hosted.md](./porting_to_linux_x86_64_hosted.md)
 
-**Porting plan** for the **Linux x86_64 hosted** target (DigitalOcean droplets), executed entirely on one Linux machine: Rust bootstrap → Linux seed from `src/` → Linux selfhost from `src_selfhost/` → fixpoint. Covers the LLVM 15 pin for the bootstrap's typed-pointer IR, the `linux_x86_64` backend directories, per-target trial goldens, the register model decision, and droplet deployment.
+**Porting plan** for the **Linux x86_64 hosted** target (Debian-family x86-64 hosts, DigitalOcean droplets), revised 2026-09-18: the backend is copied from `linux_aarch64` into `src_selfhost/emitter/linux_x86_64/`, the Mac compiles and the x86-64 machine runs until the cross hand-off (`bootstrap-assembly` / `bootstrap-link`) produces the first native selfhost, then fixpoint and droplet deployment. Phases 0–2 are done; the register and frame model (System V, five callee-saved registers, fixed `rbp` frame) is in `src_selfhost/emitter/linux_x86_64/regs/README.md`.
 
 ---
 

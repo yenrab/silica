@@ -1,0 +1,66 @@
+module defect_supervisor_init_in_other_unit_sup;
+
+// Documented open defect (2026-09-18, found while writing docs/learn-programming.md): the supervisor
+// implementation (impl + init/1) lives in this unit, and main.silica spawns it. The compiler emits the
+// supervisor start trampoline at the spawn site referencing `<spawning unit>_init`, so the program
+// fails to link (`..._init` undefined) although the specification puts no such restriction on where
+// `impl T for Supervisor` and `init` live.
+
+use Supervisor;
+use defect_supervisor_init_in_other_unit_adder;
+
+impl OtherUnitSup for Supervisor;
+
+export init/1;
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: (int64, int64), state: int64) -> (:no_reply, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: (int64, int64), state: int64) -> (:no_reply, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :adder,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: defect_supervisor_init_in_other_unit_adder@add_and_print,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}

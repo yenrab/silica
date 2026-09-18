@@ -1,0 +1,218 @@
+// tree_trait.md §9, §11, §16: removing a child vacates its slot and removes its whole subtree;
+// surviving siblings keep their slot numbers, the slot count is unchanged, vacant and out-of-range
+// slots decline with removed = false, and a later append takes a fresh slot (never a vacated one).
+// The §16 example: root with "left" (slot 0) and "right" (slot 1); removing slot 0 leaves "right"
+// at slot 1. Items here: 1 root, 2 left, 3 right.
+
+use tree_rose;
+use rt_trial_i64;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+fn example() -> boolean {
+    sequence proc[mem(normal)]
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        pa: List[int64, mem(normal)] <- [0];
+        pb: List[int64, mem(normal)] <- [1];
+        pc: List[int64, mem(normal)] <- [2];
+        t0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@new_tree(1);
+        a: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(t0, p0, 2);
+        b: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(a, p0, 3);
+        r: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(b, p0, 0);
+        removed_ok: boolean <- rt_trial_i64@remove_count(b, p0, 0) == 1 and tree_rose@node_count(r) == 2;
+        stable_ok: boolean <- rt_trial_i64@get_missing(r, pa) and rt_trial_i64@get_is(r, pb, 3)
+            and rt_trial_i64@child_missing(r, p0, 0) and rt_trial_i64@child_is(r, p0, 1, 3);
+        counts_ok: boolean <- rt_trial_i64@child_count_of(r, p0) == 1 and rt_trial_i64@slot_count_of(r, p0) == 2
+            and rt_trial_i64@seq_pre(r) == 13 and rt_trial_i64@paths_pre(r) == 12;
+        old_ok: boolean <- rt_trial_i64@seq_pre(b) == 123 and rt_trial_i64@get_is(b, pa, 2);
+        grown: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(r, p0, 4);
+        fresh_ok: boolean <- rt_trial_i64@add_slot(r, p0, 4) == 2 and rt_trial_i64@get_is(grown, pc, 4)
+            and rt_trial_i64@get_missing(grown, pa) and rt_trial_i64@seq_pre(grown) == 134
+            and rt_trial_i64@slot_count_of(grown, p0) == 3 and rt_trial_i64@child_count_of(grown, p0) == 2;
+        valid_ok: boolean <- rt_trial_i64@valid_count(r, 2) and rt_trial_i64@valid_count(grown, 3)
+    produces
+        pure removed_ok and stable_ok and counts_ok and old_ok and fresh_ok and valid_ok
+    end
+}
+
+fn declines() -> boolean {
+    sequence proc[mem(normal)]
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        p4: List[int64, mem(normal)] <- [4];
+        t0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@new_tree(1);
+        a: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(t0, p0, 2);
+        b: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(a, p0, 3);
+        r: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(b, p0, 0);
+        vacant: boolean <- rt_trial_i64@remove_count(r, p0, 0) == -1;
+        out_of_range: boolean <- rt_trial_i64@remove_count(r, p0, 2) == -1 and rt_trial_i64@remove_count(r, p0, -1) == -1;
+        missing_parent: boolean <- rt_trial_i64@remove_count(r, p4, 0) == -1;
+        same: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(r, p0, 0);
+        unchanged: boolean <- tree_rose@node_count(same) == 2 and rt_trial_i64@seq_pre(same) == 13
+    produces
+        pure vacant and out_of_range and missing_parent and unchanged
+    end
+}
+
+// 1(2(4, 5), 3): removing root slot 0 drops the three-node subtree; removing slot 1 under 2 drops
+// one leaf and leaves 2 with slot count 2 and one live child.
+fn subtrees() -> boolean {
+    sequence proc[mem(normal)]
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        pa: List[int64, mem(normal)] <- [0];
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@tree_1_2_4_5_3();
+        big: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(t, p0, 0);
+        big_ok: boolean <- rt_trial_i64@remove_count(t, p0, 0) == 3 and tree_rose@node_count(big) == 2
+            and rt_trial_i64@seq_pre(big) == 13 and rt_trial_i64@valid_count(big, 2);
+        old_ok: boolean <- rt_trial_i64@seq_pre(t) == 12453 and tree_rose@node_count(t) == 5;
+        deep: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(t, pa, 1);
+        deep_ok: boolean <- rt_trial_i64@remove_count(t, pa, 1) == 1 and tree_rose@node_count(deep) == 4
+            and rt_trial_i64@seq_pre(deep) == 1243 and rt_trial_i64@slot_count_of(deep, pa) == 2
+            and rt_trial_i64@child_count_of(deep, pa) == 1 and rt_trial_i64@valid_count(deep, 4)
+    produces
+        pure big_ok and old_ok and deep_ok
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        t0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@new_tree(1);
+        a: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(t0, p0, 2);
+        b: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(a, p0, 3);
+        r: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(b, p0, 0);
+        s: int64 <- rt_trial_i64@seq_pre(r);
+        sc: int64 <- rt_trial_i64@slot_count_of(r, p0);
+        ns: int64 <- rt_trial_i64@add_slot(r, p0, 4);
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@tree_1_2_4_5_3();
+        rc: int64 <- rt_trial_i64@remove_count(t, p0, 0);
+        e: boolean <- example();
+        d: boolean <- declines();
+        u: boolean <- subtrees();
+        println("after_remove_preorder");
+        print_int64(s);
+        println("");
+        println("slot_count");
+        print_int64(sc);
+        println("");
+        println("next_slot");
+        print_int64(ns);
+        println("");
+        println("removed_subtree_nodes");
+        print_int64(rc);
+        println("")
+    produces
+        pure pick(e, 1, pick(d, 2, pick(u, 3, 0)))
+    end
+}

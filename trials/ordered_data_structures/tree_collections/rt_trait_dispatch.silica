@@ -1,0 +1,149 @@
+// tree_trait.md §5: the Tree trait methods dispatched on the tree_rose record: node_count,
+// root_item, get, child_count, child_slot_count, child_at, fold_preorder and compare_item, on a
+// single node and on 1(2(4, 5), 3(6)). The design declares no provided Tree methods.
+
+use tree_rose;
+use Tree;
+use rt_trial_i64;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+fn digit_step(acc: int64, _: List[int64, mem(normal)], item: int64) -> int64 {
+    acc * 10 + item
+}
+
+fn depth_step(acc: int64, path: List[int64, mem(normal)], _: int64) -> int64 {
+    acc + tree_rose@path_length(path)
+}
+
+fn atom_code(a: :less | :equal | :greater) -> int64 {
+    case a of {
+        :less -> 1;
+        :equal -> 2;
+        :greater -> 3
+    }
+}
+
+fn fixture() -> {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } {
+    sequence proc[mem(normal)]
+        pb: List[int64, mem(normal)] <- [1];
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@tree_1_2_4_5_3();
+        t6: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(t, pb, 6)
+    produces
+        pure t6
+    end
+}
+
+fn single() -> boolean {
+    sequence proc[mem(normal)]
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@new_tree(7);
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        pa: List[int64, mem(normal)] <- [0];
+        count_ok: boolean <- Tree@node_count(t) == 1 and Tree@root_item(t) == 7;
+        g: { status: :not_found | :found, value: int64 } <- Tree@get(t, p0, 0);
+        gm: { status: :not_found | :found, value: int64 } <- Tree@get(t, pa, 0);
+        cc: { status: :not_found | :found, count: int64 } <- Tree@child_count(t, p0);
+        cs: { status: :not_found | :found, count: int64 } <- Tree@child_slot_count(t, pa);
+        ca: { status: :not_found | :found, value: int64, child_path: List[int64, mem(normal)] } <- Tree@child_at(t, p0, 0, 0);
+        cs_missing: boolean <- case cs.status of { :found -> false; :not_found -> true };
+        ca_missing: boolean <- case ca.status of { :found -> false; :not_found -> true };
+        query_ok: boolean <- rt_trial_i64@found_is(g, 7) and rt_trial_i64@is_not_found(gm) and cc.count == 0
+            and cs_missing and ca_missing;
+        fold_ok: boolean <- Tree@fold_preorder(t, 0, digit_step) == 7 and Tree@fold_preorder(t, 4, depth_step) == 4;
+        cmp_ok: boolean <- atom_code(Tree@compare_item(t, 7, 7)) == 2
+    produces
+        pure count_ok and query_ok and fold_ok and cmp_ok
+    end
+}
+
+fn full() -> boolean {
+    sequence proc[mem(normal)]
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- fixture();
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        pa: List[int64, mem(normal)] <- [0];
+        pb: List[int64, mem(normal)] <- [1];
+        p01: List[int64, mem(normal)] <- [0, 1];
+        p2: List[int64, mem(normal)] <- [2];
+        count_ok: boolean <- Tree@node_count(t) == 6 and Tree@root_item(t) == 1;
+        g: { status: :not_found | :found, value: int64 } <- Tree@get(t, p01, 0);
+        gm: { status: :not_found | :found, value: int64 } <- Tree@get(t, p2, 0);
+        cc: { status: :not_found | :found, count: int64 } <- Tree@child_count(t, pa);
+        cs: { status: :not_found | :found, count: int64 } <- Tree@child_slot_count(t, pb);
+        ca: { status: :not_found | :found, value: int64, child_path: List[int64, mem(normal)] } <- Tree@child_at(t, pa, 1, 0);
+        query_ok: boolean <- rt_trial_i64@found_is(g, 5) and rt_trial_i64@is_not_found(gm) and cc.count == 2
+            and cs.count == 1 and ca.value == 5 and rt_trial_i64@path_code(ca.child_path) == 101;
+        fold_ok: boolean <- Tree@fold_preorder(t, 0, digit_step) == 124536 and Tree@fold_preorder(t, 0, depth_step) == 8;
+        cmp_ok: boolean <- atom_code(Tree@compare_item(t, 1, 2)) == 1 and atom_code(Tree@compare_item(t, 2, 2)) == 2
+            and atom_code(Tree@compare_item(t, 3, 2)) == 3
+    produces
+        pure count_ok and query_ok and fold_ok and cmp_ok
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- fixture();
+        n: int64 <- Tree@node_count(t);
+        r: int64 <- Tree@root_item(t);
+        pre: int64 <- Tree@fold_preorder(t, 0, digit_step);
+        c1: int64 <- atom_code(Tree@compare_item(t, 1, 2));
+        c2: int64 <- atom_code(Tree@compare_item(t, 2, 2));
+        c3: int64 <- atom_code(Tree@compare_item(t, 3, 2));
+        s: boolean <- single();
+        f: boolean <- full();
+        println("node_count");
+        print_int64(n);
+        println("");
+        println("root_item");
+        print_int64(r);
+        println("");
+        println("fold_preorder");
+        print_int64(pre);
+        println("");
+        println("compare_less_equal_greater");
+        print_int64(c1 * 100 + c2 * 10 + c3);
+        println("")
+    produces
+        pure pick(s, 1, pick(f, 2, 0))
+    end
+}

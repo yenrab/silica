@@ -1,0 +1,117 @@
+// tree_trait.md §7-§9, §15: a 60-node chain (item i at depth i - 1, every child in slot 0). Path
+// lookup walks the whole depth, replace at the bottom copies 60 nodes and keeps the old version,
+// removing the slot-0 child at depth 29 drops the 30 nodes below it, and a fresh child there
+// takes slot 1. Depth sum 0 + 1 + ... + 59 = 1770; after the cut 0 + ... + 29 = 435.
+
+use tree_rose;
+use rt_trial_i64;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+fn lookups() -> boolean {
+    sequence
+        c: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@chain(60);
+        bottom: List[int64, mem(normal)] <- rt_trial_i64@path_chain(59);
+        below: List[int64, mem(normal)] <- rt_trial_i64@path_chain(60);
+        mid: List[int64, mem(normal)] <- rt_trial_i64@path_chain(29);
+        count_ok: boolean <- tree_rose@node_count(c) == 60 and rt_trial_i64@count_visited(c) == 60
+            and rt_trial_i64@depth_sum(c) == 1770 and rt_trial_i64@sum_of(c) == 1830;
+        get_ok: boolean <- rt_trial_i64@get_is(c, bottom, 60) and rt_trial_i64@get_missing(c, below)
+            and rt_trial_i64@get_is(c, mid, 30) and rt_trial_i64@child_is(c, mid, 0, 31)
+            and rt_trial_i64@child_count_of(c, bottom) == 0 and rt_trial_i64@child_count_of(c, mid) == 1;
+        find_ok: boolean <- rt_trial_i64@find_value(c, 60) == 60 and rt_trial_i64@find_value(c, 61) == -1;
+        valid_ok: boolean <- rt_trial_i64@valid_count(c, 60)
+    produces
+        pure count_ok and get_ok and find_ok and valid_ok
+    end
+}
+
+fn updates() -> boolean {
+    sequence
+        c: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@chain(60);
+        bottom: List[int64, mem(normal)] <- rt_trial_i64@path_chain(59);
+        mid: List[int64, mem(normal)] <- rt_trial_i64@path_chain(29);
+        side: List[int64, mem(normal)] <- tree_rose@path_with(mid, 1);
+        renamed: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@replace(c, bottom, 99);
+        replace_ok: boolean <- rt_trial_i64@get_is(renamed, bottom, 99) and tree_rose@node_count(renamed) == 60
+            and rt_trial_i64@get_is(c, bottom, 60) and rt_trial_i64@valid_count(renamed, 60);
+        cut: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(c, mid, 0);
+        cut_ok: boolean <- rt_trial_i64@remove_count(c, mid, 0) == 30 and tree_rose@node_count(cut) == 30
+            and rt_trial_i64@depth_sum(cut) == 435 and rt_trial_i64@child_count_of(cut, mid) == 0
+            and rt_trial_i64@slot_count_of(cut, mid) == 1 and tree_rose@node_count(c) == 60;
+        grown: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(cut, mid, 77);
+        grown_ok: boolean <- rt_trial_i64@add_slot(cut, mid, 77) == 1 and rt_trial_i64@get_is(grown, side, 77)
+            and tree_rose@node_count(grown) == 31 and rt_trial_i64@valid_count(grown, 31)
+            and rt_trial_i64@valid_count(cut, 30)
+    produces
+        pure replace_ok and cut_ok and grown_ok
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        c: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@chain(60);
+        bottom: List[int64, mem(normal)] <- rt_trial_i64@path_chain(59);
+        mid: List[int64, mem(normal)] <- rt_trial_i64@path_chain(29);
+        n: int64 <- tree_rose@node_count(c);
+        b: { status: :not_found | :found, value: int64 } <- tree_rose@get(c, bottom, 0);
+        d: int64 <- rt_trial_i64@depth_sum(c);
+        rc: int64 <- rt_trial_i64@remove_count(c, mid, 0);
+        l: boolean <- lookups();
+        u: boolean <- updates();
+        println("node_count");
+        print_int64(n);
+        println("");
+        println("bottom_item");
+        print_int64(b.value);
+        println("");
+        println("depth_sum");
+        print_int64(d);
+        println("");
+        println("removed_below_depth_29");
+        print_int64(rc);
+        println("")
+    produces
+        pure pick(l, 1, pick(u, 2, 0))
+    end
+}

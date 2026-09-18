@@ -1,0 +1,34 @@
+// SD-15: a raw foreign binding reached through a same-unit adapter (`fn add(l, r) { add_raw(l, r) }`,
+// the tutorial's exported adapter shape) called from main compiles without a diagnostic and faults at
+// run time. FFI wrapper spec §4.5: a call to any function in a dangerous_* module, helper functions
+// included, must appear in the sequence portion of an external_danger sequence inside an FFI worker
+// behaviour. The placement check catches qualified calls (dangerous_direct_call_fail) but not calls
+// to the root unit's own helpers. Reconstructed from the project-bees S4 spike note §2.
+module dangerous_sd15_adapter_called_from_main;
+
+wrapper_meta "dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta";
+
+foreign c_wrapper "silica_legacy_math_add_int64"
+fn add_raw(left: int64, right: int64) -> int64;
+
+fn add(left: int64, right: int64) -> int64 {
+    add_raw(left, right)
+}
+
+fn ffi_worker_behavior(msg: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[external_danger]
+        _: int64 <- add(msg, state)
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        worker_ref: dangerous_actor_ref <- spawn_dangerous(0, ffi_worker_behavior, stack_policy(0, :keep_last_message));
+        v: int64 <- add(1, 2);
+        _: atom <- print_int64(v)
+    produces
+        pure 0
+    end
+}

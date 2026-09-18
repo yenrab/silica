@@ -1,0 +1,152 @@
+// tree_trait.md §4, §7, §9: a node with many children keeps them in a skew-binary random-access
+// list (40 slots span several digits). Every slot reads back, slot 39 is the last, slot 40 is
+// missing, preorder visits the children in ascending slot order, removing slots 0, 20 and 39
+// keeps the other 37 at their numbers with the slot count still 40, and the next append takes
+// slot 40. Items: root 0, child s + 1 at slot s; sum 0 + 1 + ... + 40 = 820.
+
+use tree_rose;
+use rt_trial_i64;
+
+fn pick(ok: boolean, code: int64, rest: int64) -> int64 {
+    case ok of {
+        true -> rest;
+        false -> code
+    }
+}
+fn full_fan() -> boolean {
+    sequence proc[mem(normal)]
+        f: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@fan(40);
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        p39: List[int64, mem(normal)] <- [39];
+        p40: List[int64, mem(normal)] <- [40];
+        count_ok: boolean <- tree_rose@node_count(f) == 41 and rt_trial_i64@count_visited(f) == 41
+            and rt_trial_i64@child_count_of(f, p0) == 40 and rt_trial_i64@slot_count_of(f, p0) == 40;
+        slots_ok: boolean <- rt_trial_i64@gets_match(f, 40) and rt_trial_i64@get_is(f, p39, 40)
+            and rt_trial_i64@get_missing(f, p40) and rt_trial_i64@child_is(f, p0, 39, 40)
+            and rt_trial_i64@child_missing(f, p0, 40);
+        order_ok: boolean <- rt_trial_i64@ascending_tail(f) == 40 and rt_trial_i64@sum_of(f) == 820
+            and rt_trial_i64@depth_sum(f) == 40;
+        find_ok: boolean <- rt_trial_i64@find_value(f, 40) == 40 and rt_trial_i64@find_value(f, 21) == 21
+            and rt_trial_i64@find_code(f, 5) == 14 and rt_trial_i64@find_code(f, 41) == -1;
+        valid_ok: boolean <- rt_trial_i64@valid_count(f, 41)
+    produces
+        pure count_ok and slots_ok and order_ok and find_ok and valid_ok
+    end
+}
+
+fn after_removals() -> boolean {
+    sequence proc[mem(normal)]
+        f: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@fan(40);
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        p20: List[int64, mem(normal)] <- [20];
+        p21: List[int64, mem(normal)] <- [21];
+        p39: List[int64, mem(normal)] <- [39];
+        p40: List[int64, mem(normal)] <- [40];
+        r1: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(f, p0, 0);
+        r2: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(r1, p0, 20);
+        r3: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(r2, p0, 39);
+        count_ok: boolean <- tree_rose@node_count(r3) == 38 and rt_trial_i64@child_count_of(r3, p0) == 37
+            and rt_trial_i64@slot_count_of(r3, p0) == 40 and rt_trial_i64@sum_of(r3) == 758;
+        gaps_ok: boolean <- rt_trial_i64@get_missing(r3, p20) and rt_trial_i64@get_missing(r3, p39)
+            and rt_trial_i64@get_is(r3, p21, 22) and rt_trial_i64@child_missing(r3, p0, 0)
+            and rt_trial_i64@ascending_tail(r3) == 39;
+        old_ok: boolean <- rt_trial_i64@sum_of(f) == 820 and rt_trial_i64@get_is(f, p20, 21);
+        grown: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@add(r3, p0, 41);
+        fresh_ok: boolean <- rt_trial_i64@add_slot(r3, p0, 41) == 40 and rt_trial_i64@get_is(grown, p40, 41)
+            and rt_trial_i64@child_count_of(grown, p0) == 38 and rt_trial_i64@slot_count_of(grown, p0) == 41
+            and rt_trial_i64@ascending_tail(grown) == 41;
+        valid_ok: boolean <- rt_trial_i64@valid_count(r3, 38) and rt_trial_i64@valid_count(grown, 39)
+    produces
+        pure count_ok and gaps_ok and old_ok and fresh_ok and valid_ok
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        f: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@fan(40);
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        n: int64 <- tree_rose@node_count(f);
+        s: int64 <- rt_trial_i64@sum_of(f);
+        r1: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(f, p0, 0);
+        r2: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(r1, p0, 20);
+        r3: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- rt_trial_i64@remove(r2, p0, 39);
+        rs: int64 <- rt_trial_i64@sum_of(r3);
+        rc: int64 <- rt_trial_i64@child_count_of(r3, p0);
+        a: boolean <- full_fan();
+        b: boolean <- after_removals();
+        println("node_count");
+        print_int64(n);
+        println("");
+        println("sum");
+        print_int64(s);
+        println("");
+        println("sum_after_removals");
+        print_int64(rs);
+        println("");
+        println("live_after_removals");
+        print_int64(rc);
+        println("")
+    produces
+        pure pick(a, 1, pick(b, 2, 0))
+    end
+}

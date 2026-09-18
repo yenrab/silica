@@ -1,263 +1,367 @@
-# Porting Silica to Linux x86_64 (hosted), on one Linux machine
+# Porting Silica to Linux x86_64 (hosted)
 
-**Status:** Plan. Not implemented. Not normative; [silica-specification.md](silica-specification.md) governs language and ABI semantics. Use this document when adding the `linux_x86_64` emit backend, producing the first Linux seed and selfhost compilers, and deploying to DigitalOcean droplets.
+**Status:** Plan, revised 2026-09-18. Phases 0, 1 and 2 executed on that date (§6); Phase 3's source work (the backend as text: shared layer, site conversions, runtime translation, ladder) was done the same day by the virtual-register method without a build, and its debug phase (§6 Phase 3, runbook) starts when the Mac is free. Not normative; [silica-specification.md](silica-specification.md) governs language and ABI semantics. Use this document when adding the `linux_x86_64` emit backend, producing the first Linux x86-64 selfhost compiler, and deploying to Debian-family x86-64 hosts (DigitalOcean droplets).
 
-**Scope of execution:** everything in this plan runs on a single Linux x86_64 machine. No macOS host, no VM, no CI runner. The machine measured while writing this: Ubuntu 25.10, glibc 2.42, 2 cores, 3 GB RAM, GNU Make 4.4.1, GNU as 2.45; no clang, LLVM, or Rust installed yet.
+**What changed since the 2026-09-08 plan.** Two facts retired most of its first half:
 
-**Audience:** someone who knows the `src/` bootstrap build, the `src_selfhost/` batch build (`silica.config`, `emit_target.mk`), and the `binaries/` seed and selfhost naming.
+1. **The Rust bootstrap and the `src/` seed tree are retired.** Every Silica compiler is now built from `src_selfhost/` by a published Silica compiler (`binaries/silica-compiler`), and a new platform gets its first compiler by a **cross hand-off** from the Mac (§5), not by a bootstrap. There is no way to run any Silica compiler on x86-64 before the x86-64 backend exists, so the old Phase 1 (cargo, LLVM 15, seed chain, text oracle) is gone, and with it the old Phase 0 items for LLVM 15 and cargo.
+2. **The trial harness already has the per-target golden axis and host detection.** `trials/silica_compiler.mk` maps a Linux x86_64 host to `linux_x86_64`, derives `ASCOMP_EXT` = `.linux_x86_64.ascomp`, and runs a cross compiler named `silica-compiler-<target>` compile-only. Phase 2's golden handling is therefore mostly done; §6 Phase 2 says what remains.
+
+The AArch64 Linux port is the precedent for everything here: [ports/linux_aarch64_port_checklist.md](ports/linux_aarch64_port_checklist.md), `src_selfhost/emitter/linux_aarch64/` (its `README.md` lists every Darwin → GNU/ELF change), its runtime shims in `emitter/linux_aarch64/terms/linux_rt_shims_asm.silica` and `src_selfhost/runtime_asm/linux_aarch64/`. [ROADMAP.md](../../../ROADMAP.md) "Later paths" fixes the rule: **Linux x86-64's first fixed point has the behaviours of the current Linux AArch64 fixed point**, and the backend is copied from `linux_aarch64`, not from `apple_silicon_mac`.
+
+**Scope of execution:** the Mac tree (`/Volumes/2T/silica`) is the source of truth and does every compile until Phase 4; the x86-64 machine assembles, links and runs. The machine measured while revising this (`nix`, `ssh lee@nix.local`): Ubuntu 24.04.3 LTS, glibc 2.39, kernel 6.8, AMD Ryzen 5 PRO 3400G (8 threads; AVX2, BMI2, F16C, FMA), 13 GB RAM + 39 GB swap (`free -g`: `Mem: 13 total, 12 available; Swap: 39`), 4 KB pages, `cc` 13.3, GNU `as`/`ld` 2.42, clang 18.1.3, GNU make 4.3, python3, perl, git, rsync. **Not installed:** `lld`, `gdb` (`sudo apt install lld gdb`). Disk: 7.7 GB free of 98 GB (92 % used) — enough for the hand-off tree, not for every trial's `.o` at once.
+
+**Audience:** someone who knows the `src_selfhost/` batch build (`silica.config`, `emit_target.mk`, `make bootstrap-assembly` / `bootstrap-link`), the trial harness (`trials/silica_compiler.mk`) and the `binaries/` naming.
 
 ## Related documents
 
 | Document | Role here |
 | --- | --- |
-| [Phase1_TODOs/bootstrap_retirement_and_self_host_plan.md](Phase1_TODOs/bootstrap_retirement_and_self_host_plan.md) | Seed and selfhost conventions, batch mode, Step 1.3 stack limits. This plan keeps the bootstrap alive longer on Linux than that plan intends on macOS, see §2 |
-| [direct_machine_object_emitter_future.md](direct_machine_object_emitter_future.md) | Reserves `chip/x86_64`; the backend split here is shaped to become that layer later |
+| [ports/linux_aarch64_port_checklist.md](ports/linux_aarch64_port_checklist.md) | The hosted-port precedent: naming axes, Darwin-ism inventory, hand-off (§6 there), gates |
+| `src_selfhost/emitter/linux_aarch64/README.md` | What the GNU/ELF port changed; this port starts from that tree |
+| `src_selfhost/emitter/linux_x86_64/regs/README.md` | The virtual-register home table and frame model (Step 0.5, revised to the VR method 2026-09-18) |
+| [direct_machine_object_emitter_future.md](direct_machine_object_emitter_future.md) | Reserves `chip/x86_64`; `platform/` and `regs/` are shaped to become that layer later |
 | [porting_for_os_free_targets.md](porting_for_os_free_targets.md) | Board and OS-free ports; scopes hosted ports out, this document covers them |
 | [actor_spawn_core_affinity_os_semantics.md](actor_spawn_core_affinity_os_semantics.md) | Linux affinity semantics for the actor runtime |
 | [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) | Fifi boundary the SysV ABI work must satisfy |
-| [silica-specification.md](silica-specification.md) §15.4.13.5 | x86-64 named as supported; MPK containment deferred (§9) |
+| [silica-specification.md](silica-specification.md) §15.1.2.2, §15.4.13.5 | Runtime-managed actor stacks; x86-64 named as supported, MPK containment deferred (§9) |
 
 ---
 
 ## 1. Facts that shape the plan
 
-1. **No committed compiler runs here.** Every binary in `binaries/` is Mach-O AArch64. On this machine the only way to obtain a first Silica compiler is to build the Rust bootstrap (`silica-bootstrap-compiler`) and let it compile the frozen `src/` tree. That is the sole entry point, so the plan is organized around it.
-2. **The bootstrap chain is portable but pinned to old LLVM.** The bootstrap emits LLVM IR text, then `llvm-as` and `llc` produce `main.o`, and clang links it with the Rust static runtime. The IR uses typed pointers (`i8*`, 898 sites in `codegen.rs`), which LLVM 17 and later reject. Ubuntu 25.10 ships only LLVM 20. LLVM 15 or 16 must come from a prebuilt release tarball. The Rust side has no such problem: `edition = "2021"`, apt's `cargo` 1.85 suffices, and `runtime.rs` already has a generic fallback for platforms other than macOS and Linux AArch64.
-3. **The emitter is register-bound to AArch64.** Measured on `src_selfhost/emitter/apple_silicon_mac`:
+1. **No committed compiler runs on x86-64, and none can until the backend exists.** Every binary in `binaries/` is Mach-O AArch64 (plus Mac-hosted cross compilers such as `silica-compiler-linux_aarch64`). The first x86-64 compiler is produced by the Mac: a Mac-hosted compiler that emits x86-64 text compiles `src_selfhost/` into x86-64 `.sams`, and nix assembles and links them (§5).
+2. **The backend lives in one tree, in the selfhost dialect.** `src_selfhost/emitter/linux_x86_64/` only; the two-copy problem of the old plan (bootstrap dialect in `src/`, adapter in `src_selfhost/`) no longer exists.
+3. **The emitter is register-bound to AArch64.** Measured on `src_selfhost/emitter/linux_aarch64` (the tree this port copies):
 
    | Measure | Count |
    | --- | --- |
-   | Silica source files | 87 |
-   | Lines | 27,656 |
-   | Files with literal `X<n>` register names | 71 |
-   | Literal `X<n>` mentions | 4,534 |
-   | Files with inline asm | 43 |
-   | Files with Darwin syscalls (`SVC #0x80`) | 12 |
-   | Files with Mach-O section directives | 21 |
-   | Files with `@PAGE` / `@PAGEOFF` | 30 |
-   | Files with no asm (target neutral) | 18 |
+   | Silica source files | 115 (`.sams`/`.iface` beside them are generated) |
+   | Lines | 35,588 |
+   | Files with literal `X<n>` register names | 74 |
+   | Literal `X<n>` mentions | 4,817 |
+   | Files with `SVC` (write, mmap, munmap, futex) | 14 |
+   | Files with `:lo12:` relocations | 33 |
+   | Files with `.section` | 16 |
+   | Files with no asm at all (target neutral) | 27 |
+   | Hand-written runtime `.s` | `runtime_asm/linux_aarch64/silica_rt_shim.s` (237 lines), `deviceio_link_thunks.s` (133) |
 
-   The x86_64 backend is a rewrite of the asm-bearing files, not an edit of the Apple tree.
-4. **The backend must exist in two trees, and the first copy must be in the bootstrap dialect.** The seed is built by the bootstrap from `src/`, and whatever `src/emitter/<TARGET>/` it is built with decides what the seed emits. To get runnable Linux output from the seed, the new backend must live in `src/emitter/linux_x86_64/` and compile under the bootstrap's Silica subset (the "W" workarounds catalogued in the retirement plan). Later the selfhost compiler needs its own copy in `src_selfhost/emitter/linux_x86_64/`. The two Apple copies already differ in every file and `src_selfhost` has extra helper modules, so the copies will not be byte-identical; §4 says how to keep them close.
-5. **Trials check assembly goldens, not only program output.** `trials/*/Makefile integrate` diffs each emitted `.sams` against a committed `.ascomp` and each program's `.sout` against `.scout`. The `.ascomp` files are Apple AArch64. Program output (`.scout`) is target neutral and is the real oracle for the port; assembly goldens must become per target.
-6. **The Apple backend cannot be executed here.** Its emitted text can still be produced on Linux by a seed built with `TARGET=apple_silicon_mac`, which gives a text-only regression oracle (see Phase 1) but no way to run the result. This plan therefore does not refactor the Apple backend.
-7. **Memory is tight.** The seed is compiled as one LLVM unit (`main.ll` holds the entire compiler). `llc` on that unit and `cargo build --release` both need headroom on 3 GB. Swap is a Phase 0 item.
-
----
-
-## 2. The bootstrap chain on Linux
-
-```
-apt: cargo, clang, lld, make, gdb        prebuilt tarball: LLVM 15 (llvm-as, llc)
-        │                                          │
-        ▼                                          ▼
-cargo build --release --no-default-features  ──► silica-boot + libsilica_compiler.a   (Phase 1)
-        │
-        ▼
-silica-boot compiles src/ with TARGET=apple_silicon_mac ──► seed that emits Apple text   (Phase 1 smoke; text-diff oracle only)
-silica-boot compiles src/ with TARGET=linux_x86_64     ──► Linux seed  silica-NNNNNN-seed-debian-x86_64   (Phase 3)
-        │
-        ▼
-Linux seed compiles src_selfhost/ with TARGET=linux_x86_64 ──► Linux selfhost  silica-NNNNNN-debian-x86_64   (Phase 4)
-        │
-        ▼
-selfhost recompiles src_selfhost/ ──► byte-identical .sams (fixpoint)   (Phase 5)
-```
-
-Droplets never need Rust or LLVM 15. They receive the committed selfhost binary and need only `clang` (assembler and linker driver) and `make` (Phase 6).
+   The 88 asm-bearing files are not rewritten: by the virtual-register method (Phase 3) each instruction-emitting site becomes a call into the shared layer with the same operand texts, the 27 neutral files copy verbatim, and only the hand-written runtime chunks are translated by hand. The register model is a home table (regs README §2), not a new allocator.
+4. **The compiler needs the actor runtime to run at all.** `main.silica` spawns one actor and runs the whole pipeline inside it on a runtime-managed stack (spec §15.1.2.2); `main` itself never compiles anything. So the hand-off compiler only starts once the actor runtime, its stack fault handler and the futex shims work on x86-64 — Phase 3 must reach its actor step before Phase 4 can begin, and until then every trial is compiled on the Mac.
+5. **Trials check assembly goldens per target and program output as the oracle.** Counted 2026-09-18: 13,066 Darwin `.ascomp`, 11,778 `.linux_aarch64.ascomp`, 11,811 `.scout`, 0 `.linux_x86_64.ascomp`. `.scout` is target neutral and is the real oracle for the port; `.linux_x86_64.ascomp` goldens are recorded once a step is stable.
+6. **Memory is not tight; disk is.** 13 GB + 39 GB swap covers the largest units (the Mac peaks at 6–8 GB per unit). 7.7 GB of free disk is the constraint: sync only what a step needs.
+7. **Two assemblers, one text.** Both GNU `as` 2.42 (through `cc`) and clang 18 are on nix and both must accept every emitted unit, because `cc` is what a droplet has and clang is what the Mac cross-checks with (`clang --target=x86_64-unknown-linux-gnu -c` assembles x86-64 text on macOS, as the AArch64 port did for its target). They disagree in places (`movsx r64, r32`, trailing `//` comments — see the regs README §8); the backend lint assembles with both.
 
 ---
 
-## 3. Vocabulary (decide in Phase 0, then never revisit)
+## 2. The hand-off chain
+
+```
+Mac (source of truth)                                   nix (x86-64, no Silica compiler yet)
+──────────────────────                                  ────────────────────────────────────
+binaries/silica-compiler (macOS selfhost)
+   │  make -C src_selfhost TARGET=linux_x86_64
+   ▼
+binaries/silica-compiler-linux_x86_64                   (Phase 3: Mac-hosted, emits x86-64 text)
+   │  make -C trials/<suite> integrate                   .sams  ──rsync──►  assemble, link, run,
+   │  (compile-only: emit target ≠ host)                                    diff .sout vs .scout
+   │
+   │  make -C src_selfhost bootstrap-assembly BOOTSTRAP_TARGET=linux_x86_64
+   ▼
+src_selfhost/**/*.sams (x86-64 text of the whole compiler)  ──rsync──►  make bootstrap-link
+                                                                          │  (cc, GNU ld, runtime_asm/linux_x86_64/)
+                                                                          ▼
+                                                        binaries/silica-NNNNNN-linux-x86_64   (Phase 4)
+                                                          │  make -C src_selfhost build  (native)
+                                                          ▼
+                                                        gen2 == gen3 fixpoint                  (Phase 5)
+```
+
+Droplets receive the committed selfhost binary and need only `cc`/`clang`, `make`, and `-lpthread` (Phase 6).
+
+---
+
+## 3. Vocabulary (decided in Phase 0, then never revisited)
 
 | Concept | Value | Where defined |
 | --- | --- | --- |
-| Emit target directory | `linux_x86_64` | `src/emitter/linux_x86_64/`, `src_selfhost/emitter/linux_x86_64/` |
-| Host platform id | `debian-x86_64`, already accepted by `binaries/update_silica_compiler_link.bash` and produced by `install_compiler.bash` on Ubuntu | `project_makefiles/platform/platforms.mk` |
-| Host default | Linux + x86_64 → `linux_x86_64` / `debian-x86_64` | same file; `emit_target.mk` includes it and drops its own candidate list |
-| Assembler syntax | GNU as with `.intel_syntax noprefix`: destination first like the ARM text the team reads; accepted by GNU as and clang | backend `platform/` |
-| Object format | ELF64; every unit ends with the `.note.GNU-stack` directive | backend `platform/` |
-| C ABI at boundaries | System V AMD64 | backend `platform/`, `terms/ffi_*` |
-| CPU baseline | x86-64-v3 (AVX2, F16C, BMI2). Current droplet classes meet it; F16C gives cheap `float16` conversion. Runtime checks CPUID once at startup and aborts with a clear message | backend `runtime/` |
-| Assembler and linker on Linux | `clang` from apt (LLVM 20) for `.sams` → `.o` and final links, `-fuse-ld=lld` | `project_makefiles/platform/linux_x86_64.mk` |
-| IR tools for the bootstrap only | LLVM 15 prebuilt under `$HOME/llvm-15`, exposed as `SILICA_LLVM_PATH` (the variable `setup_silica.sh` already uses) | `deploy/linux/install_deps.sh` |
-| Per-target assembly goldens | `<unit>.<target>.ascomp`, for example `add.linux_x86_64.ascomp`; bare `.ascomp` stays Apple | `trials/platform/*.mk` |
+| Emit target directory | `linux_x86_64` | `src_selfhost/emitter/linux_x86_64/` (exists as of 2026-09-18 with `regs/README.md` only, which makes `emit_target.mk` list it as an allowed target) |
+| Host platform id | `linux-x86_64` (**not** `debian-x86_64` as the 2026-09-08 plan said: `install_compiler.bash` and `update_silica_compiler_link.bash` already produce and accept `linux-x86_64`) | `project_makefiles/platform/platforms.mk` |
+| Host default | Linux + x86_64 → emit `linux_x86_64`, run `linux-x86_64` | same file; `emit_target.mk` and `trials/silica_compiler.mk` already compute the same answer inline (the patch beside the table points them at it) |
+| Precedent target | `linux_aarch64` (same OS; the backend is copied from it) | `ROADMAP.md` "Later paths" |
+| Assembler syntax | GNU as with `.intel_syntax noprefix`: destination first like the ARM text; comments `#`; accepted by GNU as and clang | backend `platform/`; regs README §8 |
+| Object format | ELF64; every unit ends with `.section .note.GNU-stack,"",@progbits` | backend `platform/` |
+| C ABI at boundaries | System V AMD64 | `regs/README.md` §5.2, `terms/ffi_*` |
+| Internal convention | **Virtual registers** (the ESP32-S3 method): the emitter's `X<n>`/`W<n>`/`D<n>`/`SP`/`[X29, #-N]` names are mapped by a home table (`X0`–`X5` = `rdi rsi rdx rcx r8 r9`, `X6`/`X7` = `r14`/`r15`, `X8` = `rbx`, `X9`/`X10` = `r10`/`r11`, `X11`–`X28` and `D8`–`D31` = per-frame slots, `D0`–`D7` = `xmm0`–`7`, `SP` = `rsp` with real pushes, `X29` = `rbp - SVR_AREA`); the result of every call is `rdi` | `regs/README.md`, `shared/x86_vr.silica` |
+| CPU baseline | x86-64-v3 (AVX2, F16C, BMI2, FMA); runtime CPUID check once at startup | `regs/README.md` §7 |
+| Assembler and linker on Linux | `cc` (GNU as + GNU ld) is the default; clang is the alternative; `-fuse-ld=lld` only when lld is installed (`LINKER_USE_LLD=1`) | `trials/platform/linux_x86_64.mk`, later `project_makefiles/platform/linux_x86_64.mk` |
+| Link flags | `-no-pie -rdynamic -lpthread`, `crt1.o` calls `main` (no `-e main`, no `_main` alias, no stack flag) | same |
+| Per-target assembly goldens | `<unit>.linux_x86_64.ascomp`; bare `.ascomp` stays Darwin | `ASCOMP_EXT` in `trials/silica_compiler.mk` (already there) |
+| Hand-written runtime | `src_selfhost/runtime_asm/linux_x86_64/silica_rt_shim.s`, `deviceio_link_thunks.s` (SysV), mirroring `runtime_asm/linux_aarch64/` | `src_selfhost/Makefile` `HOST_RT_ASM` (patch generalises it to `runtime_asm/$(HOST_DEFAULT_TARGET)/`) |
 
 ---
 
 ## 4. Directory changes
 
 ```
-compiler/silica-bootstrap-compiler/          # unchanged source; built on Linux
-compiler/silica-compiler/
-  src/
-    emitter/linux_x86_64/                    # NEW: backend in bootstrap dialect (additive; no existing src/ file edited)
-      emitter_core.silica  module_linkage.silica
-      platform/   regs/   runtime/   terms/  control/  recursion/  atoms/  constraints/  shared/
-  src_selfhost/
-    emitter/linux_x86_64/                    # NEW: same backend plus a thin adapter to selfhost-only helpers (Phase 4)
-    runtime/linux_x86_64/                    # NEW: silica_rt_shim.s (SysV), deviceio_link_thunks.s
-    runtime/apple_silicon_mac/               # MOVE of the three root .s files, so the link recipe is per target
-  stdlib/**/build/<target>/                  # NEW: emitted .sams/.ascomp outputs per target; root Darwin copies stop being overwritten
-  tools/
-    ll_opaque_ptr.py                         # NEW, fallback only: rewrites typed-pointer .ll to opaque pointers if LLVM 15 cannot run here
-project_makefiles/
-  platform/                                  # NEW: platforms.mk (name table), apple_silicon_mac.mk, linux_x86_64.mk
-trials/
-  platform/                                  # NEW: per-platform assembler/linker flags, FFI fixture CFLAGS, skip list, golden suffix
-  */*.linux_x86_64.ascomp                    # NEW goldens, committed as each ladder step stabilizes (Phase 3)
-deploy/
-  linux/                                     # NEW: install_deps.sh (dev machine), install_silica.sh (droplet)
-binaries/
-  silica-NNNNNN-seed-debian-x86_64           # NEW committed seed (Phase 3 exit)
-  silica-NNNNNN-debian-x86_64                # NEW committed selfhost (Phase 5 exit)
+compiler/silica-compiler/src_selfhost/
+  emitter/linux_x86_64/                    # NEW backend, copied from emitter/linux_aarch64/, selfhost dialect
+    regs/README.md                         #   the home table and frame model (Phase 0, revised for the VR method)
+    shared/x86_vr.silica x86_isa.silica    #   the shared layer: VR homes, instruction selection, loads/stores, floats
+           x86_mem.silica x86_float.silica
+    shared/selftest/                       #   run_selftest.sh emits one instance of every helper, assembles it with both assemblers
+    ladder/silica_00_return42 .. silica_14_wbt_map   # the bring-up order for the debug phase (README there)
+    emitter_core.silica  module_linkage.silica  atoms/ constraints/ control/ effects/ recursion/ terms/
+  runtime_asm/linux_x86_64/                # NEW: silica_rt_shim.s, deviceio_link_thunks.s in SysV form
+project_makefiles/platform/
+  platforms.mk                             # NEW (Phase 0): the one name table; platforms.patch = proposed rewiring
+  linux_x86_64.mk, apple_silicon_mac.mk    # Phase 6: project-build toolchain fragments
+trials/platform/
+  linux_x86_64.mk, apple_silicon_mac.mk    # NEW (Phase 2): trial toolchain fragments, not yet included
+trials/base/linux_x86_64_smoke/            # NEW (Phase 2): hand-written hello.sams, Makefile, hello.scout
+trials/**/*.linux_x86_64.ascomp            # Phase 3: recorded per ladder step
+binaries/silica-NNNNNN-linux-x86_64        # Phase 4 exit: the first x86-64 selfhost, published on nix
+deploy/linux/install_silica.sh             # Phase 6
 ```
 
-Rules for the two backend copies: the `src/` copy is written first and is the reference; the `src_selfhost/` copy is produced by copying and then applying only the adapter changes needed for selfhost-only modules. A `make -C src_selfhost backend-drift` target runs `diff -r` between the two and prints the delta so it stays reviewable. After Phase 5 the `src/` copy is frozen like its Apple sibling.
+Gone from the old plan: `src/emitter/linux_x86_64/`, `tools/ll_opaque_ptr.py`, `deploy/linux/install_deps.sh` (LLVM 15), the `backend-drift` target, `runtime/apple_silicon_mac/` (the Apple `.s` files stay at the `src_selfhost/` root as today; Linux ones live under `runtime_asm/<target>/`).
 
 ---
 
 ## 5. Global rules
 
-- **`src/` is additive only.** New directory `emitter/linux_x86_64/`, and `Makefile` lines that are platform includes. No existing Silica file in `src/` changes.
-- **The Apple backend is not touched.** It cannot be executed here. Shared code is duplicated into the new backend (about 18 files) rather than refactored out of the Apple tree; consolidation is a later project once both targets can be run.
-- **Program output is the oracle; assembly goldens are per target.** A trial passes on Linux when every `.sout` matches its `.scout`. `.linux_x86_64.ascomp` goldens are committed once a step is stable and then guard against regressions.
-- **One name table** (§3) included by every makefile and both `binaries/*.bash` scripts.
-- **No register or directive literal outside `platform/` and `regs/`** in the new backend. `make lint-backend` greps for `\b(r[a-z0-9]{1,3}|e[a-d]x|xmm[0-9]+)\b`, `.section`, `.L`, and `syscall` outside those directories and fails on any hit.
-- **Every recipe that runs a Silica compiler is wrapped by `ulimit -s`** until Step 3.8 lands the emitted stack switch; the wrapper lives in one place, `project_makefiles/platform/linux_x86_64.mk`.
+- **The backend is copied from `linux_aarch64`, then rewritten file by file.** The Apple and AArch64 backends are not touched. The 27 target-neutral files copy verbatim; consolidation into an `emitter_common/` is a later project once three targets run.
+- **Program output is the oracle; assembly goldens are per target.** A trial passes when every `.sout` matches its `.scout`; `.linux_x86_64.ascomp` goldens are recorded once a step is stable and then guard regressions. Goldens are never auto-regenerated (project rule): recording is a deliberate copy of a reviewed `.sams`.
+- **One name table** (§3), `project_makefiles/platform/platforms.mk`, is the source for host platform ids and emit targets; makefiles include it, bash scripts read it through `make -s -f … host-platform`.
+- **No machine register literal outside `shared/` and the hand-written runtime chunks** in the new backend: a converted emitter site names only virtual registers and calls the shared layer. `make lint-backend` (debug phase) greps for `\b(r[a-z0-9]{1,3}|e[a-d]x|e[sd]i|xmm[0-9]+)\b` in emitter sites and assembles a sample of emitted units with both `cc` and `clang`.
+- **The stack discipline is AArch64's, shifted:** every emitter push is 16 bytes and `rsp` therefore stays 16-aligned at every `call`; the emitter's `[X29, #-N]` slots sit below the per-frame area of virtual-register homes (`SVR_AREA`), so no slot address changes (regs README §3).
+- **No `ulimit`, no stack link flag, ever.** `main` runs on the platform stack and does no work; actors run on runtime-managed stacks. The old plan's `ulimit -s` wrapper and Step 3.8 stack switch are obsolete.
+- **The Mac compiles, nix runs, until Phase 4.** Never run `make build`/`gen*`/`fixpoint` or a `TARGET=` build in `src_selfhost` while someone else's build is running there (project rule); the cross compiler is built once per ladder step and published as `binaries/silica-compiler-linux_x86_64`.
 
 ---
 
 ## 6. Phases
 
-### Phase 0 — Machine preparation (no Silica code)
+### Phase 0 — Machine preparation and decisions (done 2026-09-18)
 
-**Step 0.1 — Packages.** `deploy/linux/install_deps.sh`: `sudo apt install clang lld llvm make gdb cargo rustc`. Verify `clang --version` (20), `cargo --version` (1.85), `as --version`.
+**Step 0.1 — Packages.** Checked on nix: `cc`/`gcc` 13.3, GNU `as`/`ld` 2.42, `clang` 18.1.3 (`/usr/lib/llvm-18`), `make` 4.3, `python3`, `perl`, `git`, `rsync`, `objdump`, `nm` present. Missing: `lld` (so `-fuse-ld=lld` fails; GNU ld is the default) and `gdb`. To add them: `sudo apt install lld gdb` (Ubuntu 24.04 resolves `lld` to `lld-18`; `gdb` 15.1). Neither is required for Phases 0–2.
 
-**Step 0.2 — LLVM 15 for the bootstrap.** Download the `clang+llvm-15.0.7-x86_64-linux-gnu-ubuntu-18.04.tar.xz` release tarball into `$HOME/llvm-15` and export `SILICA_LLVM_PATH=$HOME/llvm-15/bin`. Prove it with a one-line typed-pointer `.ll` through `llvm-as` then `llc -filetype=obj`. Known snag: those binaries link `libtinfo.so.5`, which Ubuntu 25.10 no longer ships; a `libtinfo5` package from an older release or a `libtinfo.so.5 → libtinfo.so.6` symlink in `$HOME/llvm-15/lib` resolves it. If LLVM 15 cannot be made to run, fall back to `tools/ll_opaque_ptr.py` (typed pointers → `ptr`, pointer-to-pointer `bitcast` removed by substitution) and use LLVM 20's `llvm-as`/`llc`; that path is a bridge, not the default.
+**Step 0.2 — (removed)** LLVM 15 was only for the retired bootstrap.
 
-**Step 0.3 — Memory.** Add a 4 GB swapfile. Record `free -g` before and after. `JOBS=2` everywhere.
+**Step 0.3 — Memory.** Already present: `free -g` → `Mem: 13 total, 0 used, 12 free, 12 available; Swap: 39 total, 0 used` (`/swap.img`, 40 GB). `JOBS=8` is fine for assembling; Silica emission is serial anyway.
 
-**Step 0.4 — Name table.** Write `project_makefiles/platform/platforms.mk` (two rows, Apple and Linux x86_64). Point `emit_target.mk`, `install_compiler.bash`, and `update_silica_compiler_link.bash` at it.
+**Step 0.4 — Name table.** Written: `project_makefiles/platform/platforms.mk` (host rows `uname -s:uname -m:emit target:platform id`, target rows `emit target:platform id`, `SILICA_HOST_EMIT_TARGET`, `SILICA_HOST_PLATFORM`, `silica_platform_for_target`, and `make -s -f … host-platform|host-emit-target|platforms|emit-targets|platform-for-target` for shell callers; GNU make 3.81-compatible, verified on both machines). Nothing includes it yet: the rewiring of `src_selfhost/emit_target.mk`, `src_selfhost/Makefile` (`HOST_RT_ASM` per host target, `BOOTSTRAP_TARGET`), `trials/silica_compiler.mk`, `binaries/install_compiler.bash`, `binaries/update_silica_compiler_link.bash` and the representative `trials/base/makefile` is `project_makefiles/platform/platforms.patch`, which passes `git apply --check`; it is not applied because other builds were running in the tree.
 
-**Step 0.5 — Register and frame model (the deepest design risk).** The Apple lowering assumes AAPCS64: eight integer argument registers, ten callee-saved (`X19`–`X28`) used as spill slots by `count_callee_saved_spill_pressure`, `X16`/`X17` scratch, separate float registers. System V x86_64 has six integer argument registers (`rdi rsi rdx rcx r8 r9`), five callee-saved GPRs (`rbx r12 r13 r14 r15`), `rax`/`rdx` return, `r10`/`r11` scratch, `xmm0`–`xmm7` float arguments. Write `src/emitter/linux_x86_64/regs/README.md` stating:
+**Step 0.5 — Register and frame model.** Written before any lowering code: `src_selfhost/emitter/linux_x86_64/regs/README.md`. The decisions, in one paragraph: internal calls are SysV for scalars (`rdi rsi rdx rcx r8 r9` / `xmm0–7`, return `rax` / `xmm0`), the 7th and 8th GPR arguments (148 compiler functions need them) travel in a 16-byte outgoing area at the bottom of the caller's fixed frame; the callee-saved chain is `rbx r12 r13 r14 r15` then 8-byte frame slots whose addresses depend only on the slot number, below a 40-byte save area that is always reserved and only filled for the registers the single `frame_plan(fn) -> (registers, slots)` selects; all parameters are shadowed at entry so the argument registers are scratch; call arguments are staged in slots/callee-saved/`rax r10 r11` and loaded in one block before the `call`; floats have no callee-saved home and use slots; the internal aggregate-return pointer arrives in `rax` (`X8`'s role) while FFI follows real SysV classification (hidden pointer in `rdi`, `al` vector count); `float16` is 16 bits in memory, converted with F16C and computed in `float32` (bit-identical results for `+ − × ÷ √`); the actor-stack fault handler reads `RSP` at `ucontext+160` and `RIP` at `+168`; comments are `#`; x86-64-v3 baseline with a startup CPUID check.
 
-- Internal Silica convention is SysV-compatible for scalars, so every libc call site is ordinary and there is one convention to hold in mind.
-- The callee-saved spill role is filled by `rbx r12–r15`; pressure beyond five spills to frame slots `[rbp - 8*k]`. The pressure counter returns a `(registers, slots)` pair.
-- Aggregate returns follow SysV hidden-pointer rules at FFI boundaries; internal aggregate scheme is one documented choice per site.
-- `float16` is stored as 16 bits, converted with `vcvtph2ps`/`vcvtps2ph`, computed in `float32`.
+**Exit gate (met):** swap present; toolchain inventoried with the one install line; `platforms.mk` written with its consumers' rewiring as a checked patch; `regs/README.md` written before any lowering code.
 
-**Exit gate:** LLVM 15 `llvm-as` and `llc` run here; swap present; `platforms.mk` included by all consumers; `regs/README.md` written before any lowering code.
+### Phase 1 — The hand-off: how a platform gets its first compiler (procedure; executed in Phase 4)
 
-### Phase 1 — Bootstrap and seed chain on Linux (no new Silica code)
+There is no bootstrap. A new platform's first native compiler is produced by the Mac and finished on the target, using the two `src_selfhost/Makefile` targets the AArch64 port introduced:
 
-**Step 1.1 — Build the bootstrap.** `cd compiler/silica-bootstrap-compiler && cargo build --release --no-default-features`. Fix only what fails to compile on Linux, if anything; `runtime.rs` already has the generic topology fallback. Record peak memory.
+1. **Mac:** `make -C src_selfhost TARGET=linux_x86_64` builds a macOS-hosted compiler whose emitter is `emitter/linux_x86_64/` and publishes it as `binaries/silica-NNNNNN-linux_x86_64-macos-applesilicon` with the link `binaries/silica-compiler-linux_x86_64` (`install_compiler.bash target`). It runs on the Mac and emits x86-64 text.
+2. **Mac:** `make -C src_selfhost bootstrap-assembly` (with `BOOTSTRAP_TARGET=linux_x86_64` once `platforms.patch` is applied; today the target hard-codes `linux_aarch64`) runs that cross compiler over every unit of `src_selfhost/`, producing the whole compiler as x86-64 `.sams`. Nothing is assembled on the Mac.
+3. **Copy** the `src_selfhost/` tree with its `.sams` and `runtime_asm/linux_x86_64/` to nix (`rsync` into `~/silica`, the same relative layout; the Mac tree stays the source of truth).
+4. **nix:** `make -C src_selfhost bootstrap-link` assembles every `.sams` with `cc`, links with `cc -no-pie -rdynamic` plus `runtime_asm/linux_x86_64/*.s`, and installs the result as `binaries/silica-NNNNNN-linux-x86_64` with `binaries/silica-compiler` pointing at it. No compiler runs during this step.
+5. From here nix self-hosts: `make -C src_selfhost build` (`gen1`, `gen2`, `fixpoint`) runs natively and the Mac drops out of the loop.
 
-**Step 1.2 — Linux link rules for the seed.** `project_makefiles/platform/linux_x86_64.mk` provides `LLVM_AS`, `LLC` (from `SILICA_LLVM_PATH`), `LINKER_CLANG`, `LDFLAGS_RUNTIME := -lpthread -ldl -lm -lgcc_s` (what a Rust `staticlib` needs on glibc), `LDFLAGS_STACK :=` (empty), and the `ulimit -s` wrapper. `src/Makefile` includes the fragment for the host platform; its Apple values move to `apple_silicon_mac.mk` unchanged.
+The trial harness already supports the same split for programs: with `SILICA_COMPILER=binaries/silica-compiler-linux_x86_64` a trial on the Mac compiles only (`SILICA_TARGET_IS_HOST=0`, "compiling only, not assembling or running"), and the emitted `.sams` are the deliverable for nix.
 
-**Step 1.3 — Smoke: build the seed with the Apple backend.** `make -C src TARGET=apple_silicon_mac INSTALL_SEED=0`. The result is an ELF x86_64 binary containing the whole frontend and the Apple emitter. It cannot produce runnable output here, but it proves cargo, LLVM 15, `llc` memory fit, and the Linux link line, with zero new Silica.
+**No builds were run for this phase.** It is documentation of the procedure, which Phase 4 executes.
 
-**Step 1.4 — Text-only frontend regression oracle.** With that seed as `SILICA_COMPILER`, run each trial's compile step only and diff `.sams` against the committed Apple `.ascomp`. Wrap this as `make -C trials golden-text TARGET=apple_silicon_mac`. Matching goldens prove the Linux-built frontend and the bootstrap runtime behave as on macOS. Any mismatch here is a Linux bootstrap bug to fix before writing a backend.
+### Phase 2 — Linux assemble, link, run path (done 2026-09-18, hand assembly, no backend)
 
-**Exit gate:** `golden-text` matches for every trial that has `.ascomp` files.
+**Step 2.1 — Trial platform fragments.** Written, not yet included anywhere:
 
-### Phase 2 — Linux assemble, link, run path (hand assembly, no backend)
+- `trials/platform/linux_x86_64.mk`: `ASSEMBLER := clang` (or `cc`), `ASFLAGS := -c -x assembler`, `LINKER := $(ASSEMBLER)`, `LDFLAGS := -no-pie -rdynamic -lpthread` (`-fuse-ld=lld` only with `LINKER_USE_LLD=1`), FFI fixture `CFLAGS := -std=c11 -O2 -fPIC -D_GNU_SOURCE`, `GOLDEN_SUFFIX := .linux_x86_64.ascomp`, `SKIP_TRIALS := cpu_discovery_and_spawn_pinning`, GNU `stat` forms. Every variable a trial makefile assigns after its include is set with `override`, the way `trials/linux_host.mk` does, so it can be included from `silica_compiler.mk` today.
+- `trials/platform/apple_silicon_mac.mk`: the macOS values verbatim (`clang`, `-mmacosx-version-min`, the rust-lld-if-present linker, `-Wl,-e,main`, `GOLDEN_SUFFIX := .ascomp`). Its header lists the 43 makefiles that inline those values and the exact lines each would lose (40 × `RUST_SYSROOT/RUST_TARGET/RUST_LLD/MACOS_SDK`, 39 × `LDFLAGS_clang`, 37 × `ASSEMBLER`/`ASFLAGS_macos`, 36 × `LINKER`, 35 × `LDFLAGS_rust-lld`, 34 + 8 × `MACOS_MIN_VERSION`, 4 ffi `ARCH`/`ASFLAGS` variants, 1 `deep_frame_spill_addition` with `-stack_size`). `platforms.patch` shows the deletion on `trials/base/makefile`.
 
-**Step 2.1 — Trial platform fragment.** `trials/platform/linux_x86_64.mk`: `ASSEMBLER := clang`, `ASFLAGS := -c -x assembler`, `LINKER := clang`, `LDFLAGS := -fuse-ld=lld -lpthread`, FFI fixture `CFLAGS := -std=c11 -O2 -fPIC`, `GOLDEN_SUFFIX := .linux_x86_64.ascomp`, `SKIP_TRIALS := cpu_discovery_and_spawn_pinning` (until Step 3.10). Trial makefiles include the host fragment instead of their inline macOS blocks; the Apple values move to `trials/platform/apple_silicon_mac.mk` unchanged.
+**Step 2.2 — Golden handling: verified, what remains.** Already in `trials/silica_compiler.mk`: `SILICA_HOST_EMIT_TARGET` (`linux_x86_64` on a Linux x86_64 host), `SILICA_EMIT_TARGET` from the compiler's name, `ASCOMP_EXT` (`.linux_x86_64.ascomp`), and compile-only mode when target ≠ host. Still to do, in order:
 
-**Step 2.2 — Golden handling.** `integrate` compares against `<unit>$(GOLDEN_SUFFIX)` when it exists, reports "no golden yet" without failing when it does not, and always requires `.sout` to equal `.scout`.
+1. A missing `<unit>.linux_x86_64.ascomp` is a **failure** today (`has no .ascomp file`), not "no golden yet". Since the project never auto-regenerates goldens, this is the intended tripwire once goldens exist, but during Phase 3 it hides the `.scout` result behind an assembly failure. Add a `GOLDEN_MISSING=warn` knob to the shared recipe (one place: the `for sams in *.sams` loop that every suite copies) so a step can be run for its `.scout` oracle before its goldens are recorded.
+2. The 43 inline toolchain blocks: apply `platforms.patch`'s include in `silica_compiler.mk`, then delete the lines the Apple fragment lists. Until then `trials/linux_host.mk` already makes every suite work on a Linux host (`cc`, `-no-pie -rdynamic -lpthread`, no macOS flags), so this is tidiness, not a blocker.
+3. A "remote run" driver: the Mac compiles, nix runs. `trials/targets/` already has the board driver shape (`<target>.conf`, `trial_target.sh run`, per-target `.sout`/`.scout` overrides, the one-run lock); a `linux_x86_64.conf` whose runner is `rsync` + `ssh lee@nix.local make -C … integrate` would reuse the whole wrapper (progress line, watchdog, report). Alternative for early steps: `rsync` the suite directory and run its makefile on nix by hand, which is what Step 2.3 did.
+4. `SKIP_TRIALS` is read by nothing yet; `trials/targets/*.skip` is the existing per-target skip mechanism and is the right home.
 
-**Step 2.3 — Hand-written smoke.** `trials/base/linux_x86_64_smoke/hello.sams`: `.intel_syntax noprefix`, `.text`, `main` that `syscall`s `write` and returns 0, GNU-stack note. `make -C trials/base/linux_x86_64_smoke integrate PLATFORM=linux_x86_64` passes using only clang and make.
+**Step 2.3 — Hand-written smoke.** `trials/base/linux_x86_64_smoke/`: `hello.sams` (`.intel_syntax noprefix`, `.text`, `main` that `syscall`s `write(1, "hello from linux_x86_64\n", 24)` and returns 0, `.rodata`, `.L` labels, GNU-stack note, `#` comments), `hello.scout` (the line plus the exit status `0`, the trial convention), and a standalone `Makefile` that includes the Linux fragment and does assemble → link → run → diff without `silica_compiler.mk` (which would demand `binaries/silica-compiler`). It prints `SKIP` and exits 0 on any other host, and it is outside the automatic tree (`trials/Makefile` runs immediate children; `base/` discovers `.silica`). Run on nix (`rsync` of the three directories into `~/silica`, `make integrate`):
 
-**Exit gate:** the smoke trial passes; all other trials still compile-and-golden-check with the Apple text seed from Phase 1.
+```
+✅ linux_x86_64_smoke/Clean complete
+Assembling hello.sams -> hello.o (clang)
+Linking hello (clang -no-pie -rdynamic -lpthread )
+Running ./hello
+✅✅ linux_x86_64_smoke/hello output matches .scout
+```
 
-### Phase 3 — The `linux_x86_64` backend in `src/` (seed rebuilt each step)
+`hello.sout` = `hello from linux_x86_64` / `0`; `file hello` = `ELF 64-bit LSB executable, x86-64, version 1 (SYSV)`; `nm` shows only `main` and `__libc_start_main` (the `.L` label stayed local). The same file assembles and runs through `cc` (GNU as + GNU ld) too — that second path is what found that GNU as rejects trailing `//` comments.
 
-Create `src/emitter/linux_x86_64/` by copying the Apple tree's structure and function signatures, not its asm bodies. Write in the bootstrap dialect (Fact 4). The loop for every step: edit backend → `make -C src TARGET=linux_x86_64 INSTALL_SEED=0` → `make -C trials/<trial> integrate SILICA_COMPILER=.../src/silica-compiler PLATFORM=linux_x86_64` → debug with `gdb` on the produced binary → commit `.linux_x86_64.ascomp` when stable.
+**Exit gate (met):** the smoke trial passes on nix with clang or cc and make; nothing in the existing trial tree was changed.
 
-| Step | Scope | Trials that must pass |
+### Phase 3 — The `linux_x86_64` backend in `src_selfhost/` (Mac compiles, nix runs)
+
+**Method (decided 2026-09-18 after evaluation): the ESP32-S3 port's virtual-register approach, not a
+rewrite.** The AArch64 emitter's logic — SIR walking, type classification, aggregate promotion, region
+ownership, the `outer_reg` bookkeeping, the frame predicates — is kept verbatim. Its register names are
+virtual registers on this target; a shared layer maps each VR to a home and expands every AArch64-meaning
+operation into x86-64 text, so a site conversion is mechanical: `"    ADD dest, X9, X10"` becomes
+`x86_isa@x86_add(dest, "X9", "X10")`. The home table and frame are in
+`src_selfhost/emitter/linux_x86_64/regs/README.md`; the method's origin is
+[ports/esp32s3_xtensa_port.md](ports/esp32s3_xtensa_port.md) §2–§4.
+
+**What exists (source, no compiler build; done 2026-09-18):**
+
+1. `shared/x86_vr.silica` (home table, operand texts, VR in/out through the scratch registers),
+   `shared/x86_isa.silica` (mov/movi/adr, add/sub/mul/and/orr/eor/bic/neg/mvn, shifts, sdiv/udiv/srem/urem
+   with the `rdx` save and the x/0 and INT_MIN/-1 guards, cmp + cset/bcond/csel and the combined forms,
+   cbz/cbnz, calls, `x86_call_c` for the C boundary, extensions, barrier), `shared/x86_mem.silica`
+   (every AArch64 memory-operand form the emitter writes, all widths, pairs, SP pushes/pops as real `rsp`
+   moves through `lea`, `[X29, #-N]` → `[rbp - SVR_AREA - N]`), `shared/x86_float.silica` (xmm
+   arithmetic, `ucomisd` conditions with the unordered cases of every AArch64 condition, conversions,
+   F16C `float16` computed in `float32`, `is_nan/inf/finite`). All flag-transparent except the
+   arithmetic and compares, so a `CMP` survives the moves the emitter puts before its consumer.
+2. `shared/selftest/`: `x86_selftest.silica.txt` emits one instance of every helper (register-homed and
+   slot-homed operands, immediates, W/S/H views); `run_selftest.sh` builds it with the published macOS
+   compiler, runs it, and assembles the 1181-line result with `clang --target=x86_64-linux-gnu` and with
+   GNU `as` on nix; `unit_compile.sh <module>` compiles one emitter module plus its transitive `use`
+   closure in a scratch directory with the published compiler (how every converted module was checked).
+3. `emitter_core.silica` and `control/control.silica`: `push rbp; mov rbp, rsp; sub rsp, SVR_AREA` /
+   `leave; ret`; `x86_frame_header` lays out the VR homes a body references after the body is emitted and
+   publishes them as `.set` symbols in front of the label; the `STP`/`LDP` pushes of callee-saved VRs
+   vanish (they are slots); `main` preserves `rbx r12`–`r15` for `crt1` and returns through `rax`;
+   `.intel_syntax noprefix`, `#` comments, `.note.GNU-stack`; the runtime module prelude.
+4. Site conversions of every other file that emits machine text (the ESP32-vs-Apple diffs were the
+   checklist; files the ESP32 port left identical stay identical), with the memory layouts unchanged
+   (8-byte fields, 24-byte list cells, string header `{tag, data@+8, length@+16}`) so the `.scout`
+   goldens carry over.
+5. The runtime as translated text: `prims_actors_runtime_asm` (split into `_b`/`_c` modules by chunk
+   ranges), `prims_actors_stack_asm`, `prims_actors_child_table_asm`, `ffi_fault/guarded/arena/foreign`,
+   `canonical_arena`, `ordering_identity`, `checked_int64`, `linux_rt_shims_asm` (futex, lock,
+   `cpuid`-backed sysctl shim), the print/string/file helpers, and `runtime_asm/linux_x86_64/{silica_rt_shim.s,
+   deviceio_link_thunks.s}`. Every chunk assembles under both assemblers; none has run.
+6. The ladder: `emitter/linux_x86_64/ladder/silica_00_return42` … `silica_14_wbt_map` with their
+   reference outputs and a README on running each on nix.
+
+**Debug phase (when the Mac is free), in this order:**
+
+| Step | Program / suite | What it settles |
 | --- | --- | --- |
-| 3.1 | `platform/` (ELF sections, `.L` labels, `lea reg, [rip + sym]`, `syscall` wrappers, identity `c_symbol`), `emitter_core` skeleton, `module_linkage`, `main` via crt1 (no `_main` alias), `print_int64` | `base`, `int64_addition` |
-| 3.2 | `regs/` and frame model from Step 0.5; `rbp` frames; spill slots; `let`/`const` int64 | `functions_addition`, shallow `recursive_function_addition` |
-| 3.3 | Narrow and unsigned ints, negation, bitwise; `movsx`/`movzx` where AArch64 used `W` registers | `int8..uint64_addition`, `negation_addition`, `bitwise_addition` |
-| 3.4 | Booleans, atoms, atom rodata, `case`, control flow, sequence blocks | `boolean_addition`, `atoms_addition`, `case_addition`, `sequence_block_addition` |
-| 3.5 | String runtime: arena on `mmap`/`munmap` `syscall`s, length, eq, concat, substring, predicates, literal pool | `string_addition` |
-| 3.6 | Records, tuples, lists, aggregate conventions from 0.5 | `records_addition`, `tuples_addition`, `list_addition` |
-| 3.7 | Floats: SSE2 scalar float64/float32, F16C float16, literal pools, printing | `float16/32/64_addition` |
-| 3.8 | Deep recursion and stack: emitted `main` `mmap`s a 256 MB stack and switches `rsp`, restoring before exit. Removes the `ulimit` wrapper for compiled programs and closes retirement-plan Step 1.3 for Linux | `deep_frame_spill_addition`, full `recursive_function_addition` |
-| 3.9 | Modules, traits, effects, error and warning enforcement; ELF visibility (`.globl`, `.hidden`) | `modules_addition`, `traits_addition`, `effect_check_addition`, `error_enforcement_addition`, `warning_enforcement_addition` |
-| 3.10 | Actor runtime: `pthread_create`/`detach`/`exit`, `pthread_key_*` TLS, `pthread_mutex_*` replacing `os_unfair_lock`, `gettid` replacing `pthread_mach_thread_np`, `sched_setaffinity`, supervisors, pid registry | `actors_addition`, `actor_registration_addition`, `supervisors_addition`, `cpu_discovery_and_spawn_pinning` (leave skip list) |
-| 3.11 | FFI: SysV classification for the ABI types the trials use, `al` vector count for varargs, 16-byte call alignment, guarded and fault runtimes on glibc `sigaction`/`setjmp`; Linux `silica_rt_shim.s` | `ffi_addition/**` |
-| 3.12 | Memory regions, failure reporter (no MTE tag section per spec §15.4.13.6), standard data structures, compiler trial | `memory_region_addition`, `standard_data_structures/**`, `compiler_addition` |
+| 3.1 | `ladder/silica_00_return42` | the module prelude assembles as a whole unit; `.set` frame header; `main` through `crt1`; `__silica_runtime.sams` assembles and links (pid registry init runs at every entry point) |
+| 3.2 | `silica_01_arith`, `silica_02_calls` | calls with results in `rdi`; parameter shadows into slots; `idiv` paths |
+| 3.3 | `silica_03_case_bool` | flag transparency between `CMP` and its consumer; short-circuit pushes |
+| 3.4 | `silica_04_print`, `silica_05_int64_wide` | the print helpers' `write` syscall path; 64-bit multiply/divide |
+| 3.5 | `silica_06_strings` | the mmap string arena (syscall 9) |
+| 3.6 | `silica_07_recursion_depth`, `silica_08_stack_guard` | frame size under deep recursion; the fault handler leaving a non-actor SIGSEGV alone (status 139) |
+| 3.7 | `silica_09_lists` … `silica_11_regions` | lists, records/tuples on frame regions off `rbp - SVR_AREA`, regions/refs/bufs, `L_region_grow` |
+| 3.8 | `silica_12_floats` | xmm arithmetic, `ucomisd` conditions, F16C, the digit-exact float printers |
+| 3.9 | `silica_13_checked`, `silica_14_wbt_map` | overflow flags, tuple returns, the stdlib map |
+| 3.10 | `trials/actors_addition`, `actor_stacks_addition`, `supervisors_addition` | the actor runtime: pthreads, futex shims, the sigaltstack growth handler (`ucontext` RSP `+160` / RIP `+168`), `MAP_FIXED` release, the `rsp` switch — the gate for Phase 4, because the compiler runs its pipeline in an actor |
+| 3.11 | `trials/ffi_addition/**` | `x86_call_c` argument/`al` staging, MEMORY-class returns, the guarded and fault runtimes on glibc `sigaction`/`__sigsetjmp` |
+| 3.12 | the rest of `trials/` suite by suite (`base`, `int*`, `float*`, `string`, `records`, `tuples`, `list`, `case`, `modules`, `traits`, `effects`, `error/warning enforcement`, `memory_region`, `ordered_data_structures`, `compiler_addition`, `codegen_defects_addition`) | `.scout` conformance; then record `.linux_x86_64.ascomp` goldens (a deliberate copy of a reviewed `.sams`, never auto-regenerated) |
 
-**Step 3.13 — Publish the seed.** `make -C src TARGET=linux_x86_64 INSTALL_SEED=1` installs `binaries/silica-NNNNNN-seed-debian-x86_64` and points `seed-compiler` at it. Commit the binary and the goldens.
+The loop for every step is the one already described: edit backend → cross compiler on the Mac →
+compile-only trial run → `rsync` to nix → assemble/link/run/diff there (`objdump -d -M intel`, `gdb`
+once installed).
 
-**Exit gate:** `make -C trials integrate PLATFORM=linux_x86_64` green with the committed seed, skip list empty, every trial has a `.linux_x86_64.ascomp`.
+Things that can only be settled by running, in the order the ladder will hit them: the `.set`
+redefinition per function inside one unit with hundreds of functions (both assemblers accepted the
+probe); the frame header's text scan (`contains(text, "SVR_X19")`) against a body that mentions a home
+only in a comment (harmless extra slot) or builds a name it never references; the exit status of `main`
+through `rax`; flag transparency at every site that puts an `lea`/`mov` between a `CMP` and a `B.cond`
+(the helpers are flag-transparent by construction, but a site that was converted to a flag-setting
+`x86_add` between them would break); `x86_cbz` clobbering the flags where AArch64's `CBZ` did not; the
+`idiv` `rdx` save when `X2` is the destination; the print helpers' digit algorithms against the
+`.scout` files (bit-exact float printing); `ucomisd` condition mapping for `LT`/`LE`/`HI`/`HS` with NaN;
+`silica_08_stack_guard` (a platform-stack overflow must not be mistaken for actor growth); the region
+runtime's 64 MB blocks; the actor stack fault handler (`sigaltstack` per thread, `siginfo+16`,
+`ucontext+160/+168`, `MAP_FIXED` remaps, the timed futex, the usage scan); the futex lock and
+condition-variable shims under contention; `dladdr` on `-rdynamic` symbols for the failure banner; the
+`cpuid` answers of the sysctl shim; FFI `al` and 7th/8th-argument pushes; the `float16` results versus
+the AArch64 goldens.
 
-### Phase 4 — Backend into `src_selfhost/`, first Linux selfhost
+**Exit gate:** `make -C trials integrate SILICA_COMPILER=…/silica-compiler-linux_x86_64` compiles every suite on the Mac and every emitted program passes its `.scout` on nix; every unit has a `.linux_x86_64.ascomp`; `lint-backend` clean.
 
-**Step 4.1 — Copy and adapt.** `src_selfhost/emitter/linux_x86_64/` from the `src/` copy; adapt only where the selfhost tree's `emitter_core` entry points, `compiler_maps`, or `term_*` helper split require it. `make -C src_selfhost backend-drift` shows the delta; keep it small and commented.
+### Runbook — what happens when the Mac is free
 
-**Step 4.2 — Runtime and link recipe.** Move the three root `.s` files to `src_selfhost/runtime/apple_silicon_mac/` (a move, no edits), add `runtime/linux_x86_64/silica_rt_shim.s` and `deviceio_link_thunks.s` in SysV form, and make the link stage assemble `runtime/$(TARGET)/*.s`.
+1. **Clean first.** `make -C src_selfhost clean` — the object stage assembles every `.sams` under the tree
+   and links every `.o`, so a tree that still holds another emitter's objects links two emitters.
+2. **Build the cross compiler.** `make -C src_selfhost build TARGET=linux_x86_64 SILICA_COMPILER=binaries/silica-compiler INSTALL_SELFHOST=0`.
+   The published macOS selfhost compiles `src_selfhost/` with `emitter/linux_x86_64/` baked in; the
+   result is a Mac-hosted compiler that emits x86-64 and is published as `binaries/silica-compiler-linux_x86_64`
+   (`install_compiler.bash target`). `emitter_core.silica` is the one unit that could not be
+   compile-checked in advance (memory hog): its new functions were compiled in isolation, the rest of its
+   edits are helper calls of the shapes the other modules use; expect the first build to be the check.
+3. **Ladder and trials** as the Phase 3 table above, until 3.10 passes (the actor runtime).
+4. **Emit the whole compiler.** `make -C src_selfhost bootstrap-assembly` with `BOOTSTRAP_TARGET=linux_x86_64`.
+   Today `src_selfhost/Makefile` hard-codes `linux_aarch64` there; the generalisation
+   (`BOOTSTRAP_TARGET ?= linux_aarch64`, `HOST_RT_ASM := runtime_asm/$(HOST_DEFAULT_TARGET)/…`) is in
+   `project_makefiles/platform/platforms.patch` (`git apply --check` passes as of 2026-09-18): apply the
+   patch rather than editing the Makefile by hand.
+5. **rsync to nix** exactly as done for the Pi, excluding the Apple-generated files:
+   `rsync -a --exclude '*.o' --exclude '*.dSYM' --exclude 'silica-compiler' --exclude 'binaries/silica-9*' --exclude '.git' /Volumes/2T/silica/ lee@nix.local:~/silica/`
+   (the `.sams` are the deliverable; nix has 7.7 GB free, so never sync object files).
+6. **On nix:** `make -C src_selfhost bootstrap-link` assembles every `.sams` with `cc`, links with
+   `cc -no-pie -rdynamic -lpthread` plus `runtime_asm/linux_x86_64/*.s`, and installs
+   `binaries/silica-NNNNNN-linux-x86_64` with `binaries/silica-compiler` pointing at it.
+7. **gen2 / fixpoint on nix**, with the extra generation the actor runtime text needs
+   ([Phase1_TODOs/actor_stack_growth_plan.md](Phase1_TODOs/actor_stack_growth_plan.md) "Implementation
+   status"): the compiler links its own actor runtime and that text is emitted by the *building*
+   compiler, so an edit to the runtime assembly converges one generation later than an edit to compiler
+   code — when `make fixpoint` reports no unit differences but a differing binary, copy the newest build
+   to `binaries/silica-gen1`, run `make gen2` and `make fixpoint` again.
 
-**Step 4.3 — Build.** `make -C src_selfhost build TARGET=linux_x86_64` with the Phase 3 seed. Then `make -C src_selfhost integrate`.
+### Phase 4 — Hand-off: first native x86-64 selfhost
 
-**Exit gate:** selfhost integrate suite green on Linux.
+Execute Phase 1's procedure with the Phase 3 cross compiler: `bootstrap-assembly` on the Mac (`BOOTSTRAP_TARGET=linux_x86_64`), `rsync` to nix, `bootstrap-link` on nix, then `make -C trials integrate` natively on nix with the installed `binaries/silica-compiler`.
+
+**Exit gate:** the native compiler passes the whole trial tree on nix.
 
 ### Phase 5 — Fixpoint and publication
 
-> **Note (2026-09-08):** no fixpoint has been demonstrated on macOS either. On macOS the seed-built selfhost runs all trials, but the selfhost compiling all of `src_selfhost/`, a generation-2 build, a differential and a fixpoint are still open (see the status snapshot in `Phase1_TODOs/bootstrap_retirement_and_self_host_plan.md`). Step 5.1 here is therefore the first fixpoint run for *any* target unless macOS gets there first, and the macOS procedure should be reused verbatim when it exists.
+Fixed points exist now on both other hosted paths (macOS 2026-09-12; Linux AArch64 "fixed point 1" on the Raspberry Pi, commit `8dcf493d4`), and `src_selfhost/Makefile` has the procedure: `make gen1`, `make gen2`, `make fixpoint` (gen3 == gen2 modulo UUID/signature), `trials-gen1`/`trials-gen2`. Run it on nix unchanged. A gen2/gen3 difference means host-dependent output (uninitialised memory, address-dependent ordering) — fix before publishing. Record peak RSS on the largest unit. Publish with `install_compiler.bash selfhost` → `binaries/silica-NNNNNN-linux-x86_64`; commit the binary and the goldens; add the row to the ROADMAP paths table.
 
-**Step 5.1 — Generation 2.** Rebuild `src_selfhost` with the Phase 4 selfhost as the seed. The `.sams` set must be byte-identical to generation 1's. A difference means host-dependent output (uninitialized memory, address-dependent ordering); fix it before continuing.
-
-**Step 5.2 — Resource fit.** Record peak RSS on the largest unit. If above 2 GB, file it as a compiler memory issue, separate from the port.
-
-**Step 5.3 — Publish.** `install_compiler.bash selfhost` → `binaries/silica-NNNNNN-debian-x86_64`; `update_silica_compiler_link.bash` picks it on a Linux host. Commit.
-
-**Exit gate:** fresh clone on this machine → `binaries/update_silica_compiler_link.bash` → `make -C trials integrate` green with no bootstrap, LLVM 15, or Rust involved.
+**Exit gate:** fresh clone on nix → `binaries/update_silica_compiler_link.bash` → `make -C trials integrate` green, no Mac involved.
 
 ### Phase 6 — Droplets and project builds
 
-**Step 6.1 — `deploy/linux/install_silica.sh`.** `apt install clang lld make`, clone or pull, run the symlink updater, compile a hello project with `project_makefiles/Makefile`. Idempotent; `sudo` only for apt.
+- `deploy/linux/install_silica.sh`: `apt install build-essential clang make`, clone or pull, run the symlink updater, compile a hello project with `project_makefiles/Makefile`. Idempotent; `sudo` only for apt.
+- `project_makefiles/Makefile`: include `project_makefiles/platform/<host emit target>.mk` (assembler, linker, `LDFLAGS_STACK` empty on Linux) instead of its inline macOS values; `silica_link.sh` returns ELF archives.
+- Stdlib outputs per target: emit to `stdlib/**/build/<target>/`, `trials/stdlib_prereq.mk` reads from there, and the committed Darwin files at the stdlib root stop being overwritten.
+- Docs: `design_documents/README.md`, `tutorials_and_howtos/ffi_wrappers_and_makefiles.md` (SysV notes), the top-level `README.md` platform list; mark this document Implemented.
 
-**Step 6.2 — `project_makefiles/` on Linux.** Include the platform fragment (Step 1.2); make `silica_link.sh` return ELF archives.
-
-**Step 6.3 — Stdlib outputs per target.** Emit to `stdlib/**/build/<target>/`; `trials/stdlib_prereq.mk` reads from there; stop overwriting the committed Darwin files at the stdlib root.
-
-**Step 6.4 — Docs.** Update `design_documents/README.md`, `tutorials_and_howtos/ffi_wrappers_and_makefiles.md` (SysV notes), the top-level `README.md` platform list, and mark this document Implemented.
-
-**Exit gate:** a new droplet goes from image to compiling a Silica project with one script and never installs Rust or LLVM 15.
+**Exit gate:** a new droplet goes from image to compiling a Silica project with one script.
 
 ---
 
 ## 7. Order and dependencies
 
 ```
-Phase 0 ──► Phase 1 ──► Phase 3 ──► Phase 4 ──► Phase 5 ──► Phase 6
-              │            ▲
-              └─► Phase 2 ─┘   (Phase 2 needs only Phase 0; run alongside Phase 1)
+Phase 0 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5 ──► Phase 6
+              ▲                        ▲
+   Phase 1 (procedure only) ───────────┘
 ```
 
-Phase 3 is the long pole. Phases 1 and 2 are short and remove every toolchain unknown before backend code is written.
+Phases 0, 1 and 2 are done. Phase 3 is the long pole; its step 3.8/3.10 (actor runtime) is the gate for Phase 4, because the compiler itself runs inside an actor (Fact 4).
 
 ---
 
-## 8. Risks and what retires each
+## 8. Risks and what retires each (ordered by severity)
 
 | Risk | Retired by |
 | --- | --- |
-| LLVM 15 prebuilt does not run on Ubuntu 25.10 (`libtinfo5`) | Step 0.2 symlink or package; `ll_opaque_ptr.py` fallback |
-| `llc` on the single-unit `main.ll` exceeds 3 GB | Step 0.3 swap; `llc -O1` if needed; Step 1.3 measures before any backend work |
-| Backend constrained to the bootstrap dialect | Accepted: the Apple backend was written the same way; the `src_selfhost` copy may evolve after Phase 5 |
-| Two backend copies drift | `backend-drift` target; the `src/` copy freezes at Phase 5 |
-| Register-pressure mismatch (10 callee-saved → 5) corrupts callers silently | Step 0.5 decided before code; `deep_frame_spill_addition` at 3.8; `lint-backend` |
-| Two calling conventions drift | Step 0.5: internal is SysV-compatible for scalars |
-| Apple `.ascomp` goldens fail on Linux by construction | Per-target golden suffix (Step 2.2); `.scout` is the oracle |
-| Frontend behaves differently when built on Linux | Step 1.4 text oracle against Apple goldens |
-| Host-dependent codegen breaks fixpoint | Step 5.1 |
-| `float16` on a droplet without F16C | x86-64-v3 baseline; runtime CPUID abort |
-| Main-thread stack too small | `ulimit` wrapper now; Step 3.8 stack switch permanently |
-| Signal and `setjmp` layouts | Call glibc wrappers by name; never hand-lay the structs |
+| **Register-pressure mismatch (10 callee-saved → 5) corrupts callers silently.** Every SP-corruption bug so far came from a slot counter that mirrored the wrong predicate | Retired by the virtual-register method: `X19`–`X28` are per-frame slots, the AArch64 predicates and slot counters run unchanged, and no save area exists to land on |
+| **Argument registers double as scratch.** The AArch64 "binop with complex operand clobbers X9" family | Unchanged from AArch64: the home table keeps `X0`–`X7` and `X9`/`X10` disjoint (`rdi…r9 r14 r15` vs `r10 r11`), and the helpers' scratch (`rax r12 r13`) is never a VR |
+| **The compiler cannot run until the actor runtime works** (Fact 4): the fault-handler stack growth on x86-64 (`ucontext` offsets, `sigaltstack`, `MAP_FIXED` release, `rsp` switch) must be right before the hand-off, with no debugger on nix until gdb is installed | The offsets were verified on nix with a C program before translation (regs README §6); step 3.10 of the debug phase; `sudo apt install gdb`; the AArch64 `prims_actors_stack_asm` was translated line for line |
+| **16-byte `rsp` alignment at every `call`.** A misaligned call into glibc faults inside `movaps`, far from the cause | Every emitter push is 16 bytes (AArch64's own rule) and `SVR_AREA` is rounded to 16; hand-written helpers keep `N` a multiple of 16 (the shim trap from the Rust-free work) |
+| **Two assemblers disagree** (`movsx r64, r32`, trailing `//`, and whatever else) | `lint-backend` assembles with both `cc` and `clang`; `#` comments; `movsxd` |
+| **Seven- and eight-argument functions** (148 in the compiler) | `X6`/`X7` are homed in `r14`/`r15` (registers, as on AArch64), so nothing changes for them; only C callees with 7+ arguments push them (`x86_call_c`) |
+| **Partial-register writes** (`al`, `ax`) leave stale upper bits; AArch64 `W` writes zero-extend | Rule: 32-bit forms and `movzx`/`movsx` only; `int8/16_addition` |
+| **`float16` results must match the AArch64 `.scout` files** | F16C + `float32` compute is bit-identical for the basic operations; the print helpers are ported digit for digit |
+| **PIE default on Ubuntu** | `-no-pie` while data tables hold absolute `.quad` addresses; `rip`-relative code already, so PIE later is a data change |
+| **Disk on nix (7.7 GB free)** | Sync per suite; `make clean` between suites; never `rsync` the Mac's `.o`/`.sams` tree wholesale |
+| **Host-dependent codegen breaks the fixpoint** | Phase 5 `make fixpoint` |
+| **Signal and `setjmp` layouts** | glibc wrappers by name; the only hand-laid struct is `sigaction` (same 152-byte layout on both Linux targets) |
+| **`float16` on a droplet without F16C** | x86-64-v3 baseline; runtime CPUID abort |
 
 ---
 
@@ -265,23 +369,28 @@ Phase 3 is the long pole. Phases 1 and 2 are short and remove every toolchain un
 
 - **MPK containment** (spec §15.4.13.5). The first hosted port has no hardware memory protection; hosted targets may omit it. Follow-on after Phase 5.
 - **Direct object emission** (`chip/x86_64` encoders). Text assembly stays; `platform/` and `regs/` are shaped to be replaced by the encoder layer later.
-- **Any Apple backend refactor**, including the `emitter_common/` consolidation of the 18 neutral files. It cannot be validated by execution on this machine.
-- **`linux_aarch64`.** No hardware to run it. With `platform/` and `regs/` in place it becomes a small follow-on if hardware appears.
-- **Retiring the Rust bootstrap on Linux.** It is needed exactly once, to produce the first seed. After Phase 5 it is no longer on any Linux path, matching the retirement plan's end state.
+- **Any Apple or AArch64 backend refactor**, including the `emitter_common/` consolidation of the 27 neutral files.
+- **Windows and the RISC-V hosted path** (ROADMAP "Later paths").
 
 ---
 
-## Appendix A — OS surface inventory of the Apple backend and Linux replacements
+## Appendix A — OS and ISA surface: `linux_aarch64` → `linux_x86_64`
 
-| Apple symbol or syscall | Where emitted | Linux x86_64 replacement |
+The Darwin → Linux column of the old appendix is done by the AArch64 port; what remains is ISA-shaped.
+
+| Item | `linux_aarch64` | `linux_x86_64` |
 | --- | --- | --- |
-| `_malloc`, `_free`, `_abort` | many | `malloc`, `free`, `abort` (glibc) |
-| `_pthread_create/_detach/_exit/_key_create/_getspecific/_setspecific` | `prims_actors_runtime_asm`, `ffi_guarded_runtime_asm` | same names without underscore (glibc) |
-| `_os_unfair_lock_lock/_unlock` | `prims_actors_runtime_asm` | `pthread_mutex_lock/_unlock` |
-| `_pthread_mach_thread_np` | `prims_actors_runtime_asm` | `gettid` |
-| `_signal`, `_sigaction`, `_setjmp` | `ffi_fault_runtime_asm`, `ffi_guarded_runtime_asm`, actors | same names (glibc); `sigsetjmp`/`siglongjmp` if the signal mask must be restored |
-| `SVC #0x80` write, exit | `print_*_inline` | `syscall` 1, 60 (`exit_group` 231 for the process) |
-| `SVC #0x80` mmap, munmap (`0x2000000+197`, `+73`) | `string_*_mmap_nomte` | `syscall` 9, 11; `MAP_PRIVATE\|MAP_ANONYMOUS` = `0x22` |
-| `-Wl,-stack_size` | makefiles | `ulimit -s` wrapper, then Step 3.8 stack switch |
-| `_main` alias | `main_entry_alias.s` | none; crt1 calls `main` |
-| `-Wl,-macos_version_min`, `-arch arm64`, SDK sysroot | trials, fixtures | none; `-fuse-ld=lld -lpthread` |
+| libc calls (`malloc`, `free`, `abort`, `pthread_*`, `sigaction`, `__sigsetjmp`, `siglongjmp`, `mmap`) | undecorated, `BL sym` | undecorated, `call sym`; `rsp` 16-aligned; `rax` = 0 vector registers before variadic calls |
+| Locks, waits | futex shims with `LDAXR`/`STLXR`, `svc` 98 | futex syscall 202, `lock cmpxchg` / `xchg` |
+| Thread id | `gettid` 178 | `gettid` 186 |
+| `write` | `MOV X8, #64; SVC #0`, `X8` saved around it | `mov eax, 1; syscall`; `rcx`, `r11` clobbered |
+| `mmap`, `munmap`, `mprotect` | 222, 215, 226; `MAP_ANONYMOUS = 0x20` | 9, 11, 10; `MAP_PRIVATE\|MAP_ANONYMOUS = 0x22`, `MAP_FIXED = 0x10` |
+| Process exit | `exit_group` 94 | `exit_group` 231 |
+| Fault bridge | `SIGSEGV` 11 / `SIGBUS` 7, `si_addr` +16, PC `ucontext+440`, SP `+432` | same signals and `si_addr`; `RIP` at `ucontext+168`, `RSP` at `+160`, `RBP` at `+120` |
+| `sigjmp_buf` | 312 bytes | 200 bytes (448-byte slot unchanged) |
+| Topology (`silica_rt_sysctlbyname`) | `sysconf`, `getauxval(AT_HWCAP)` | `sysconf`, `cpuid` leaves 1/7 (no HWCAP on x86) |
+| Relocations | `adrp` + `:lo12:` | `lea r, [rip + sym]`, `QWORD PTR [rip + sym]`, `OFFSET sym` |
+| Sections | `.rodata,"a",%progbits` … | same names with `@progbits`; `.type sym,@function`; `.size` |
+| Comments, locals | `//`, `L_…` | `#`, `.L…` |
+| Arch directive | `.arch armv8.2-a+fp16` | none; `.intel_syntax noprefix` |
+| Link | `cc -no-pie -rdynamic`, `crt1` → `main` | same, plus `-lpthread` in the trials |

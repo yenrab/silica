@@ -18,9 +18,10 @@
 | `wbt_core/` | Layer 2A | Adams WBT `(3, 2)` core |
 | `skew_ral_core/` | Layer 2B | Skew binary random-access list — §15 core (`skew_ral*` stdlib units symlinked in `lib/`, helper `lib/ral_trial_i64`) |
 | `brodal_okasaki_core/` | Layer 2C | Brodal–Okasaki queue core |
-| `binary_tree_core/` | Layer 2D | Persistent fixed-role binary-tree core (planned by 2026-07-02 amendment) |
-| `binary_tree/` | Layer 3D | `tree_binary`, `BinaryTree`, and inline zipper acceptance (planned) |
+| `binary_tree_core/` | Layer 2D/3D | Persistent fixed-role binary-tree core: `tree_binary`, the `BinaryTree` trait and the inline zipper (`tree_binary`/`BinaryTree` stdlib units symlinked in `lib/`, helper `lib/bt_trial_i64`; `staged/` holds an uncompiled emitter repro) |
 | `ordered_collections/` | Layer 3 | `wbt_set`, `wbt_map`, `OrderedSet`, `OrderedMap`, `Heap` |
+| `heap_collections/` | Layer 3 | `Heap` and `PriorityQueue` traits over the Brodal–Okasaki core: `brodal_okasaki_min`/`brodal_okasaki_max` (the Heap module surface), `brodal_okasaki_priority` (priority/value entries), `Heap`, `PriorityQueue` (stdlib units symlinked in `lib/`, helpers `lib/hc_trial_i64` and `lib/pq_trial_i64`; `staged/` holds uncompiled compiler repros) |
+| `tree_collections/` | Layer 3E | `Tree` trait over the `tree_rose` rose-tree core with skew-binary child slots (`skew_ral*`/`tree_rose`/`Tree` stdlib units symlinked in `lib/`, helper `lib/rt_trial_i64`; `staged/` holds uncompiled emitter repros) |
 | `live_graphs/` | Layer 4 | Live WBT graph core and directed/undirected/weighted modules |
 | `terminal_structures/` | Layer 5 | `SearchTree`, `PriorityQueue`, `Tree` (leaf traits) |
 | `snapshot_graphs/` | Layer 6 | CSR freeze and dense matrix graphs |

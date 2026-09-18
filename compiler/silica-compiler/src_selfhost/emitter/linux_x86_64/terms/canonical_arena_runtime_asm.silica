@@ -1,0 +1,109 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Application-lifetime canonical arena registry for standard data structures (Layer 1 §7.1), Linux x86-64.
+// One bump arena per stable int64 specialization key; arenas are never freed before process exit.
+// Arena layout matches prims_memory alloc_region: [0:8]=bump, [8:16]=end, [16:24]=extension chain
+// (empty here; L_region_grow fills it if one of these arenas ever fills up), [24:32]=own data end,
+// data from offset 32.
+// Arguments arrive in rdi rsi, results leave in rdi; malloc's result arrives in rax.
+
+export emit_canonical_arena_runtime_asm/0;
+
+fn emit_canonical_arena_runtime_asm() -> string {
+    "
+	.bss
+	.p2align	3
+	.globl	silica_rt_canonical_arena_table
+silica_rt_canonical_arena_table:
+	.space	8192
+	.globl	silica_rt_canonical_arena_count
+silica_rt_canonical_arena_count:
+	.space	8
+	.text
+	.globl	silica_rt_canonical_arena_lookup
+	.p2align	4
+silica_rt_canonical_arena_lookup:
+# rdi = stable specialization key (non-zero) -> rdi = region base pointer
+# [rbp-8] = key (X19), [rbp-16] = table slot address (X12) across malloc.
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 80
+	mov	QWORD PTR [rbp - 8], rdi
+	test	rdi, rdi
+	jz	Lcal_abort
+	mov	r10d, 512
+	mov	eax, edi
+	xor	edx, edx
+	div	r10d
+	mov	r8d, edx
+	xor	r11d, r11d
+Lcal_probe:
+	cmp	r11d, r10d
+	jae	Lcal_abort
+	mov	r9, r8
+	shl	r9, 4
+	lea	rcx, [rip + silica_rt_canonical_arena_table]
+	add	rcx, r9
+	mov	rdx, QWORD PTR [rcx]
+	test	rdx, rdx
+	jz	Lcal_insert
+	cmp	rdx, QWORD PTR [rbp - 8]
+	je	Lcal_found
+	inc	r8d
+	xor	eax, eax
+	cmp	r8d, r10d
+	cmove	r8d, eax
+	inc	r11d
+	jmp	Lcal_probe
+Lcal_found:
+	mov	rdi, QWORD PTR [rcx + 8]
+	leave
+	ret
+Lcal_insert:
+	mov	QWORD PTR [rbp - 16], rcx
+	mov	edi, 4128
+	call	malloc
+	mov	rcx, QWORD PTR [rbp - 16]
+	test	rax, rax
+	jz	Lcal_abort
+	lea	r8, [rax + 32]
+	mov	QWORD PTR [rax], r8
+	lea	r8, [rax + 4128]
+	mov	QWORD PTR [rax + 8], r8
+	mov	QWORD PTR [rax + 16], 0
+	mov	QWORD PTR [rax + 24], r8
+	mov	r9, QWORD PTR [rbp - 8]
+	mov	QWORD PTR [rcx], r9
+	mov	QWORD PTR [rcx + 8], rax
+	lea	rdx, [rip + silica_rt_canonical_arena_count]
+	inc	QWORD PTR [rdx]
+	mov	rdi, rax
+	leave
+	ret
+Lcal_abort:
+	call	abort
+	.globl	silica_rt_canonical_arena_same
+	.p2align	4
+silica_rt_canonical_arena_same:
+# rdi = region A, rsi = region B -> rdi = 1 if same identity else 0
+	cmp	rdi, rsi
+	sete	al
+	movzx	edi, al
+	ret
+"
+}

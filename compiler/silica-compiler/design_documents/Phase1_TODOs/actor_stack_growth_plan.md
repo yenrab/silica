@@ -117,9 +117,13 @@ compiler code: when `make fixpoint` reports no unit differences but a differing 
 build to `binaries/silica-gen1` and run `make gen2`, `make fixpoint` again. The whole trial tree passes
 under that compiler except the project-bees defect trials (sd1, sd3, sd8, sd10, sd12, sd15, sd16, sd18,
 sd19), which document open defects unrelated to this chunk. Per-invocation cost of the compiler is
-unchanged (0.05 s warm for a small unit, before and after). Linux AArch64 has the port, builds as a
-cross compiler whose output assembles for `aarch64-linux-gnu`, and has refreshed goldens; it has not
-run on the Pi, so the lock-step fixed point on Linux is still to be re-established there.
+unchanged (0.05 s warm for a small unit, before and after). Linux AArch64 reached its own fixed point
+on the Pi 5 the same day (cross hand-off: `bootstrap-assembly` on the Mac, `bootstrap-link` on the Pi,
+then gen1 → gen2 → gen3 with gen3 byte-identical to gen2; about an hour per generation, one unit,
+`emitter_core`, peaking near 3.6 GB RSS on the 4 GB board). The Pi found one runtime defect the Mac had
+passed by scheduling luck: an actor that dies must unmap its stack *before* it wakes any waiter, since a
+caller woken by the death may ask `get_actor_memory_usage` at once (`_silica_rt_actor_fail_current`
+now frees first, on both hosts).
 
 ## Insertion points
 

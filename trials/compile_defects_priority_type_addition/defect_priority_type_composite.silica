@@ -1,0 +1,50 @@
+// Documented open type-checker defect (2026-09-18, promoted from a staged repro),
+// found while writing the PriorityQueue trait over brodal_okasaki_priority. It sits alone in this directory
+// because a compile rejection fails the whole directory; the stdlib spells the priority type KeyType and the value
+// type ValueType instead (see the brodal_okasaki_priority header, deviation 1).
+//
+// Defect: type_checker_collections@resolve_constructor_call_formal substitutes ItemType, KeyType and
+// ValueType inside composite formals and return types but never PriorityType, so a generic module
+// whose result record names PriorityType (the design's placeholder for a priority) cannot be bound
+// to a concrete record by any caller. Expected: compiles and prints 5. Observed: E2003
+// "StubPriorityQueue@peek returns { ... priority : PriorityType , value : string }, expected
+// {status: ..., priority: int64, value: string}" (ItemType was substituted, PriorityType was not).
+//
+// To run by hand (two units; the stub module beside this file):
+//   mkdir -p /tmp/ptp && cp StubPriorityQueue.silica priority_type_composite.silica /tmp/ptp/ && cd /tmp/ptp
+//   printf 'priority_type_composite.silica\nStubPriorityQueue.silica\n' > silica.config
+//   /Volumes/2T/silica/binaries/silica-compiler
+
+use StubPriorityQueue;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn cmp_str(a: string, b: string) -> :less | :equal | :greater {
+    case a == b of {
+        true -> :equal;
+        false -> :less
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        q: PriorityQueue[int64, string, mem(normal)] <- StubPriorityQueue@empty({
+            compare_priority: cmp_i64,
+            compare_item: cmp_str
+        });
+        r: { status: :not_found | :found, priority: int64, value: string } <- StubPriorityQueue@peek(q, 5, "x");
+        p: int64 <- r.priority;
+        print_int64(p);
+        println("")
+    produces
+        pure 0
+    end
+}

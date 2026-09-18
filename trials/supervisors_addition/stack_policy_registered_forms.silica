@@ -1,0 +1,80 @@
+// §15.1.1: spawn_registered(initial_state, behavior_fn, name, stack_policy [, core_id]) and
+// spawn_registered_supervisor(T, initial_state, name, stack_policy [, core_id]).
+
+use Supervisor;
+
+impl StackPolicySup for Supervisor;
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- empty[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ]()
+    produces
+        pure (flags, children)
+    end
+}
+
+fn worker(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state)
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        w: actor_ref <- spawn_registered(40, worker, :stack_policy_worker, stack_policy(2097152, :keep_last_message));
+        r: int64 <- call(w, 2 impl ActorMessage {});
+        print_int64(r);
+        println("");
+        uw: { reserved: int64, committed: int64, retained: int64, high_water: int64 } <- get_actor_memory_usage(w);
+        print_int64(uw.reserved);
+        println("");
+        sup: supervisor_ref <- spawn_registered_supervisor(StackPolicySup, 0, :stack_policy_sup, stack_policy(4194304, :keep_high_water));
+        _: atom <- print_int64(case call_supervisor(sup, { op: :count_children } impl SupervisorMessage {}).count == 0 of { true -> 1; false -> 0 });
+        println("")
+    produces
+        pure 0
+    end
+}
