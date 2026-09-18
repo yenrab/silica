@@ -8,6 +8,8 @@
 
 ## Executive Summary
 
+> **Decisions of 2026-09-17.** The sizing and policy in this document were settled against the language contract in [silica-specification.md](silica-specification.md) §15.1.2.2, which is the authority; where this document and that section differ, the specification wins. The settled points, each of which §15.1.2.2 states: one contiguous reservation per actor, defaulting to the machine's memory plus swap and lowerable per spawn, in place of the earlier 1 GB figure and in place of the segmented stacks the roadmap once proposed; nothing committed at spawn; growth in chunks that double from one platform page to 1 MB and then stay at 1 MB; release at the message boundary under one of five named algorithms chosen at spawn, where the stack policy is a required argument of every spawn form; no per-actor maximum and no runtime cap, so memory exhaustion is the host's affair; the platform's page size rather than a fixed one; `main` is not an actor; NUMA placement and lazy migration only where the platform has NUMA; and a four-field memory report. The implementation plan is [Phase1_TODOs/actor_stack_growth_plan.md](Phase1_TODOs/actor_stack_growth_plan.md). Sections below that still show 4 KB pages, an 8 MB initial mapping, a 1 GB region or a guard page are describing the pre-decision layout and are superseded on those points.
+
 This document describes the complete actor memory architecture for Silica, replacing the per-actor heap model with **growable stacks and lazy page migration**. Key design principles:
 
 - **Complete actor isolation**: No concurrent shared mutable data between actors; regions may still **move** across actors by ownership transfer (not aliasing)
@@ -82,11 +84,18 @@ Actor Virtual Memory Layout (Per Actor):
 │                                          │
 └──────────────────────────────────────────┘
 
-Key Points:
-- Virtual space: 1 GB per actor (doesn't cost physical memory). This reservation is a detail of this design, not a limit the spec allows: ROADMAP chunk 1 replaces it with segmented stacks that have no fixed reserve
-- Physical pages: Allocated on demand (8 MB initial)
-- Guard page: Marks stack limit; triggers page fault on overflow
-- All stack pages initially allocated on actor's creation NUMA node
+Key Points (as decided; spec §15.1.2.2):
+- Virtual space: one contiguous reservation per actor, mapped with no access rights, so it costs no memory
+  and is not counted against the host's memory commitment. Default size: the machine's physical memory
+  plus swap, read once at runtime start, rounded to the platform page, just under the total where the
+  host's overcommit heuristic would refuse the exact amount. A spawn may lower it with `stack_policy`.
+- Physical pages: none committed at spawn. The first access faults in the first chunk.
+- No guard mapping: the committed run is one mapping and the inaccessible remainder is the second, so an
+  actor costs two mappings, never three. Growth is detected by the fault address lying inside the
+  reservation, which the handler tests before any other meaning of a fault.
+- Page size: the platform's (16 KB on Apple silicon and the Raspberry Pi 5, 4 KB on most other Linux
+  systems). The diagram's "4 KB", "8 MB initial" and "1 GB" are the pre-decision layout.
+- On platforms with NUMA nodes, pages are committed on the node of the core the actor is running on.
 ```
 
 ### 2.2 Actor Metadata Structure
@@ -97,7 +106,12 @@ struct ActorStackMetadata {
     virtual_base: int64,              // Start address of 1 GB virtual region
     current_sp: int64,                // Current stack pointer
     guard_page_addr: int64,           // Address of guard page (growth trigger)
-    stack_limit: int64,               // Optional explicit limit; 0 = unlimited (bounded only by machine memory)
+    reserve_bytes: int64,             // Size of the reservation (default: machine memory + swap; lowered by stack_policy)
+    committed_bytes: int64,           // Bytes committed now
+    retained_bytes: int64,            // What the release algorithm keeps while the actor is idle
+    high_water_bytes: int64,          // Most ever committed
+    next_chunk_bytes: int64,          // Next growth chunk: one page, doubling to 1 MB, then 1 MB
+    release_algorithm: atom,          // One of the named algorithms of spec §15.1.2.2, chosen at spawn
 
     // Physical page tracking
     allocated_pages: ListPageInfo,    // List of allocated pages with NUMA info
@@ -117,7 +131,6 @@ struct ActorStackMetadata {
     priority: int64,                  // Scheduling priority
 
     // Limits and monitoring
-    max_stack_size: int64,            // Optional explicit limit; 0 = none (see stack_limit)
     total_allocations: int64,         // Bytes allocated (for monitoring)
 }
 
@@ -274,55 +287,63 @@ void actor_stack_page_fault_handler(int sig, siginfo_t *info, void *context) {
 
 ### 4.2 Stack Growth Handler
 
+The handler runs for every synchronous fault. Its first test is whether the faulting address lies inside
+the reservation of the actor running on the faulting thread; if it does, the fault is stack growth and
+nothing else is considered, in particular not the guarded-foreign-call recovery of §15.4, which is
+tested only afterwards. That ordering is a decision: C code inside a guarded call that runs past the
+committed stack must grow it, not be reported as a foreign fault.
+
 ```pseudocode
-void handle_stack_growth(int actor_id, void *guard_page_addr, int current_core) {
-    ActorStackMetadata *meta = get_actor_metadata(actor_id);
-    int target_numa = get_numa_node(current_core);
-
-    // Calculate next page address
-    void *new_page_addr = guard_page_addr + PAGE_SIZE;
-
-    // Check stack limit
-    if (meta->stack_limit != 0 &&
-        (int64)new_page_addr - (int64)meta->virtual_base > meta->stack_limit) {
-        // Stack overflow - actor exceeded its limit
-        send_error_to_actor(actor_id, "StackOverflow");
-        return;  // Actor handles error or terminates
+void handle_fault(void *fault_addr, int current_core) {
+    ActorStackMetadata *meta = current_actor_metadata();          // NULL on the main thread
+    if (meta == NULL || !inside(meta->virtual_base, meta->reserve_bytes, fault_addr)) {
+        return try_guarded_foreign_fault_or_crash();              // not stack growth
     }
 
-    // Allocate new page on current NUMA node
-    void *physical_page = allocate_page_on_numa(target_numa);
-
-    if (physical_page == NULL) {
-        // Out of memory on this NUMA node
-        send_error_to_actor(actor_id, "OutOfMemory");
+    // Commit the next chunk below the current committed run (the stack grows down).
+    int64 chunk = meta->next_chunk_bytes;                         // one page at first
+    void *new_low = committed_low(meta) - chunk;
+    if (new_low < meta->virtual_base) {                           // end of a LOWERED reservation
+        fail_actor(meta->actor_id, EXPLICIT(:stack_exhausted));   // never reached with the default
         return;
     }
-
-    // Map virtual page to physical page
-    map_virtual_to_physical(meta->virtual_base, new_page_addr, physical_page);
-
-    // Update metadata
-    meta->allocated_pages[meta->page_count] = PageInfo {
-        virtual_addr: new_page_addr,
-        numa_node: target_numa,
-        accessed_count: 0
-    };
-    meta->page_count += 1;
-    meta->pages_per_numa[target_numa] += 1;
-
-    // Move guard page up by one page
-    unmap_page(guard_page_addr);
-    meta->guard_page_addr = new_page_addr + PAGE_SIZE;
-    install_guard_page(meta->guard_page_addr);
-
-    // Update current stack pointer if needed
-    // (may be updated by instruction that faulted)
-
-    // Resume execution at faulting instruction
-    return;  // CPU resumes at faulting instruction
+    int target_numa = numa_node_of(current_core);                 // platforms without NUMA: 0
+    if (!commit(new_low, chunk, target_numa)) {                   // the machine is out of memory
+        return;                                                   // host OOM behaviour; no cap of ours
+    }
+    meta->committed_bytes += chunk;
+    if (meta->committed_bytes > meta->high_water_bytes) meta->high_water_bytes = meta->committed_bytes;
+    if (chunk < 1 MB) meta->next_chunk_bytes = chunk * 2;         // double up to 1 MB, then 1 MB per fault
+    // Resume at the faulting instruction.
 }
 ```
+
+At the message boundary the behavior has returned and the stack is empty, so release needs no inspection:
+
+```pseudocode
+void on_message_return(ActorStackMetadata *meta) {
+    int64 keep = retained_by(meta->release_algorithm, meta);     // e.g. last chunk, or a high-water average
+    release_down_to(meta, keep);                                  // same chunk sizes it grew by; MADV_FREE-style
+    meta->next_chunk_bytes = next_chunk_for(keep);
+}
+void on_idle_grace_expired(ActorStackMetadata *meta) { release_down_to(meta, 0); }
+```
+
+#### 4.2.1 Release algorithms
+
+The five algorithms of spec §15.1.2.2, with the policies they descend from and the per-actor state each
+needs in the control block. `stack_policy` is a required spawn argument, so every actor names one.
+
+| `release` | retains | lineage | ACB state |
+|---|---|---|---|
+| `:release_on_return` | nothing | decommit-on-free, as in Windows heaps and musl | none |
+| `:keep_last_message` | the last message's usage | trim to the last request's working set | last usage |
+| `:track_recent_peak` | maximum over the last 32 messages | sliding-window maximum; the same idea as jemalloc's decay-based purging of dirty pages | a 32-entry ring of per-message usage, 256 bytes |
+| `:release_when_idle` | everything while busy, nothing after 1 s idle | the JVM's periodic uncommit of unused committed memory (JEP 346) and jemalloc's `dirty_decay_ms` | time of the last message; a runtime idle sweep |
+| `:keep_high_water` | the high-water mark | conventional thread stacks, and glibc's cache of freed thread stacks | none beyond the high-water mark |
+
+The idle sweep that `:release_when_idle` needs runs on the runtime's carrier threads, not on the actor,
+and only touches actors that named that algorithm.
 
 ### 4.3 Lazy Page Migration Handler
 
@@ -384,34 +405,18 @@ void handle_lazy_migration(int actor_id, void *remote_page_addr, int current_cor
 
 ### 4.4 Error Handling
 
-**Stack Overflow**:
-```silica
-// If actor stack exceeds limit:
-// Option 1: Send StackOverflow message to actor (actor can handle or crash)
-// Option 2: Terminate actor immediately
-// Recommendation: Send message, let actor respond
+There is no stack-overflow error and no message to the actor. Growth is not a failure (spec
+§15.1.2.2, §15.4.11.2). The only two failures are:
 
-sequence proc[concurrency]
-    // Actor receives this in error case
-    error_msg: StackOverflowError <- StackOverflowError {
-        actor_id: my_id,
-        stack_used: current_stack_size
-    };
-    // Actor decides how to handle
-produces
-    pure error_msg
-end
-```
+- **Reservation exhausted**, possible only when a spawn lowered the reservation: the actor fails with
+  `failure_reason` `(:explicit, :stack_exhausted)`. Its supervisor, if any, applies its restart policy.
+- **Reservation impossible**, possible only when a program has chosen its own reservation sizes and run
+  the process out of address space: the spawn fails and the spawning actor fails with
+  `(:explicit, :stack_reserve_failed)`.
 
-**Out of Memory on Allocation**:
-```silica
-// If page allocation fails on current NUMA node:
-// Option 1: Try slower allocation from different NUMA node
-// Option 2: Fail and terminate actor
-
-// Recommendation: Fail with error message
-// Actor should not rely on unbounded allocations
-```
+Running the machine out of memory is not an error the runtime reports: there is no cap, a single actor may
+consume everything, and the host's out-of-memory behaviour then decides. `:oom` is deliberately not a
+`failure_reason`.
 
 ---
 
@@ -1537,79 +1542,41 @@ fn process_list(items: ListItem, acc: int64) -> int64 {
 
 ### 7.1 Stack Size Limits
 
-**Per-Actor Configuration**:
+There are none. Neither a per-actor maximum nor a runtime-wide cap exists, and a stack grows until the
+machine, including its swap, is exhausted (spec §15.1.2.2). What a spawn can set is the reservation,
+which bounds address space rather than memory, and the release algorithm:
 
 ```silica
-// At spawn time
-actor1: actor_ref <- spawn(state1, behavior1,
-                           core_affinity: performance_core,
-                           stack_size: 256_MB);  // Optional explicit limit
+// Default reservation = machine memory + swap; the release algorithm is always named
+actor1: actor_ref <- spawn(state1, behavior1, stack_policy(0, :keep_high_water));
 
-// Or use defaults
-actor2: actor_ref <- spawn(state2, behavior2);  // Default: no limit; grows until machine memory runs out
+// A program spawning millions of actors lowers the reservation so they fit in address space
+actor2: actor_ref <- spawn(state2, behavior2, stack_policy(33554432, :release_on_return), core_id(3));
 ```
 
-**System-Wide Defaults**:
+**Runtime constants** (the platform page is read at start; nothing else is configurable):
 
 ```
-Configuration (via settings or command line):
-- Default stack limit per actor: none. A stack grows on demand, bounded only by machine memory (spec §15.1.2.2:
-  "no hard max size limit"). An explicit per-actor limit at spawn is this design's proposal; the spec's `spawn` (§15.1.1) has no such parameter yet.
-- Min stack: 8 MB (initial allocation)
-- Guard page size: 4 KB
-- Page size: 4 KB (AArch64 standard)
+- Committed at spawn: 0
+- First chunk: one platform page (16 KB on Apple silicon and Raspberry Pi 5, 4 KB on most other Linux)
+- Growth: double per fault up to 1 MB, then 1 MB per fault
+- Default reservation: physical memory + swap, page-rounded, just under the total where the host refuses the exact amount
+- Mappings per actor: 2 (committed run, inaccessible remainder); no guard mapping
 ```
 
 ### 7.2 Memory Monitoring
 
-**Per-Actor Tracking**:
-
-```silica
-fn get_actor_memory_usage(actor_ref: actor_ref) -> int64 {
-    // Returns bytes allocated for this actor
-    // Includes:
-    // - All stack pages
-    // - Metadata overhead
-    // Excludes:
-    // - Virtual address space (doesn't cost physical memory)
-    // - Guard page (counted as overhead)
-}
-
-fn get_actor_page_locations(actor_ref: actor_ref) -> MapInt64ToInt64 {
-    // Returns: NUMA node -> page count
-    // Shows where pages are physically located
-}
 ```
+get_actor_memory_usage(ref: actor_ref) -> { reserved: int64, committed: int64, retained: int64, high_water: int64 }   proc[concurrency]
+```
+
+All four in bytes (spec §15.1.2.2, §22.4). `get_actor_page_locations`, the NUMA-node breakdown, applies
+only on platforms with NUMA nodes.
 
 ### 7.3 Out-of-Memory Handling
 
-**Actor Stack Overflow**:
-```silica
-// Actor exceeds an explicit stack limit given at spawn (there is none by default)
-// Runtime sends error message to actor
-
-fn safe_actor_behavior(msg: Message, state: State) -> State {
-    sequence proc[mem(normal)]
-        // If stack overflows:
-        error_msg: StackOverflowError <- handle_stack_error();
-        // Actor can catch and handle
-    produces
-        pure state  // Or terminate gracefully
-    end
-}
-```
-
-**NUMA Allocation Failure**:
-```silica
-// If page allocation fails on current NUMA node:
-// Option 1: Allocate from different NUMA (slower, but works)
-// Option 2: Fail and terminate actor
-
-// Recommendation: Implement with fallback allocation
-// "Try current NUMA, fall back to other NUMA if needed"
-```
-
----
+See §4.4: exhausting a lowered reservation fails the actor with `(:explicit, :stack_exhausted)`; exhausting
+the machine is the host's affair and is reported by no actor.
 
 ## 8. Performance Characteristics
 

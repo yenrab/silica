@@ -35,8 +35,10 @@ APP_GUARDED_ONCE_DIR := app_legacy_math_add_guarded
 APP_GUARDED_TWICE_DIR := app_legacy_math_add_twice
 APP_TEXT_ECHO_DIR := app_text_echo_guarded
 APP_TEXT_ECHO_TWICE_DIR := app_text_echo_twice
-APP_SUPERVISOR_DANGEROUS_DIR := app_supervisor_dangerous_guarded_restart
-APP_SUPERVISOR_DANGEROUS_REGISTERED_DIR := app_supervisor_dangerous_guarded_cast_registered
+# Every supervised-failure trial lives in one directory: a dangerous child faults, the
+# supervisor consumes the failure and restarts it, and the trial ends when the restarted
+# child services a message. New trials of that shape are added there, not in a directory
+# of their own, so the harness needs no per-trial special casing.
 APP_SUPERVISOR_DANGEROUS_FAULT_DIR := app_supervisor_dangerous_guarded_fault_trials
 
 APP_DIRS := \
@@ -51,8 +53,7 @@ APP_DIRS := \
 	$(APP_GUARDED_TWICE_DIR) \
 	$(APP_TEXT_ECHO_DIR) \
 	$(APP_TEXT_ECHO_TWICE_DIR) \
-	$(APP_SUPERVISOR_DANGEROUS_DIR) \
-	$(APP_SUPERVISOR_DANGEROUS_REGISTERED_DIR)
+	$(APP_SUPERVISOR_DANGEROUS_FAULT_DIR)
 
 GUARDED_APP_DIRS := \
 	$(APP_GUARDED_ONCE_DIR) \
@@ -222,8 +223,6 @@ phase-13: fixtures
 
 phase-14: fixtures
 	@$(ENSURE_SILICA_COMPILER)
-	@$(MAKE) -C "$(THIS_DIR)$(APP_SUPERVISOR_DANGEROUS_DIR)" integrate
-	@$(MAKE) -C "$(THIS_DIR)$(APP_SUPERVISOR_DANGEROUS_REGISTERED_DIR)" integrate
 	@$(MAKE) -C "$(THIS_DIR)$(APP_SUPERVISOR_DANGEROUS_FAULT_DIR)" integrate
 	@echo "✅ ffi_addition phase-14 complete (supervisor + dangerous guarded FFI restart)"
 

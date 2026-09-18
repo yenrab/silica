@@ -177,8 +177,8 @@ record-positive-golden: lib-sources silica.config
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
 		[ "$$base" = "__silica_runtime" ] && continue; \
-		cp "$$sams" "$$base.ascomp"; \
-		echo "Recorded $$base.ascomp"; \
+		cp "$$sams" "$$base$(ASCOMP_EXT)"; \
+		echo "Recorded $$base$(ASCOMP_EXT)"; \
 	done
 	@cd "$(LEAF_DIR)" && for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \

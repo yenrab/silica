@@ -71,21 +71,30 @@ stdlib-objs:
 	} > "$(SDS_STDLIB_CACHE)/silica.config"
 	@cp "$(SDS_STDLIB_CACHE)/silica.config" "$(SDS_STDLIB_CACHE)/silica.compile.order"
 	@cd "$(SDS_STDLIB_CACHE)" && $(RUN_SILICA_COMPILER)
-	@cd "$(SDS_STDLIB_CACHE)" && for sams in lib/*.sams; do \
-		[ -f "$$sams" ] || continue; \
-		base=$$(basename "$$sams" .sams); \
-		echo "Assembling $$sams -> lib/$$base.o"; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "lib/$$base.o" || exit 1; \
-	done
-	@missing=0; \
+	@if [ "$(SILICA_TARGET_IS_HOST)" = 1 ]; then \
+		cd "$(SDS_STDLIB_CACHE)" && for sams in lib/*.sams; do \
+			[ -f "$$sams" ] || continue; \
+			base=$$(basename "$$sams" .sams); \
+			echo "Assembling $$sams -> lib/$$base.o"; \
+			$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "lib/$$base.o" || exit 1; \
+		done; \
+	else \
+		echo "  $(SILICA_CROSS_NOTE)"; \
+	fi
+	@missing=0; ext=o; \
+	[ "$(SILICA_TARGET_IS_HOST)" = 1 ] || ext=sams; \
 	for m in $(SDS_STDLIB_MODULES); do \
-		if [ ! -f "$(SDS_STDLIB_CACHE)/lib/$$m.o" ]; then \
-			echo "FAIL: stdlib compile did not produce $(SDS_STDLIB_CACHE)/lib/$$m.o"; \
+		if [ ! -f "$(SDS_STDLIB_CACHE)/lib/$$m.$$ext" ]; then \
+			echo "FAIL: stdlib compile did not produce $(SDS_STDLIB_CACHE)/lib/$$m.$$ext"; \
 			missing=1; \
 		fi; \
 	done; \
 	[ "$$missing" -eq 0 ]
-	@echo "✅ standard_data_structures: reusing .stdlib_cache/lib/*.o for every trial"
+	@if [ "$(SILICA_TARGET_IS_HOST)" = 1 ]; then \
+		echo "✅ standard_data_structures: reusing .stdlib_cache/lib/*.o for every trial"; \
+	else \
+		echo "✅ standard_data_structures: compiled .stdlib_cache/lib/*.sams for $(SILICA_EMIT_TARGET)"; \
+	fi
 
 # Fast assembly-drift report for bringing up a new compiler.
 #
@@ -114,10 +123,10 @@ gate-stdlib: stdlib-objs
 	for m in $(SDS_STDLIB_MODULES); do \
 		sams="$(SDS_STDLIB_CACHE)/lib/$$m.sams"; \
 		case "$$m" in \
-			OrderedMap|OrderedSet) golden="$(THIS_DIR)ordered_collections/lib/$$m.ascomp";; \
-			skew_ral*) golden="$(THIS_DIR)skew_ral_core/lib/$$m.ascomp";; \
-			brodal_okasaki*) golden="$(THIS_DIR)brodal_okasaki_core/lib/$$m.ascomp";; \
-			*) golden="$(THIS_DIR)wbt_core/lib/$$m.ascomp";; \
+			OrderedMap|OrderedSet) golden="$(THIS_DIR)ordered_collections/lib/$$m$(ASCOMP_EXT)";; \
+			skew_ral*) golden="$(THIS_DIR)skew_ral_core/lib/$$m$(ASCOMP_EXT)";; \
+			brodal_okasaki*) golden="$(THIS_DIR)brodal_okasaki_core/lib/$$m$(ASCOMP_EXT)";; \
+			*) golden="$(THIS_DIR)wbt_core/lib/$$m$(ASCOMP_EXT)";; \
 		esac; \
 		if [ ! -f "$$sams" ]; then \
 			echo "❌❌ gate-stdlib: $$m produced no assembly"; ko=$$((ko + 1)); continue; \

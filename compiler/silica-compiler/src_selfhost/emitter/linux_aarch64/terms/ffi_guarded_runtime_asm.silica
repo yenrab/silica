@@ -80,6 +80,7 @@ silica_rt_guarded_ffi_state_get_or_create:
 	.cfi_startproc
 	stp	x29, x30, [sp, #-16]!
 	mov	x29, sp
+	stp	x19, x20, [sp, #-16]!
 	.cfi_def_cfa w29, 16
 	.cfi_offset w30, -8
 	.cfi_offset w29, -16
@@ -89,21 +90,33 @@ silica_rt_guarded_ffi_state_get_or_create:
 	ldr	x0, [x8]
 	bl	pthread_getspecific
 	cbnz	x0, L_gffi_state_have
-	mov	x0, #512
+// calloc(count, size): both arguments must be set. This site passed only the size in X0 and
+// left X1 holding whatever the previous call returned, so the per-thread guarded state was
+// allocated at an unpredictable size. A short block makes the depth field read garbage,
+// which skips the sigsetjmp below and leaves the guarded region with no recovery point.
+	mov	x0, #1
+	mov	x1, #512
 	bl	calloc
 	cbz	x0, L_gffi_state_fail
-	mov	x9, x0
+// X9 is caller-saved, so pthread_setspecific may clobber it and the function would return a
+// garbage pointer while the real block sits in thread-local storage. The caller then
+// writes depth into that garbage, the depth check below reads 0 from the real block,
+// and the guarded region is left without a recovery point. Keep it in a callee-saved
+// register (X20 is saved by this function's prologue).
+	mov	x20, x0
 	adrp	x8, silica_guarded_ffi_pthread_key
 	add	x8, x8, :lo12:silica_guarded_ffi_pthread_key
 	ldr	x0, [x8]
-	mov	x1, x9
+	mov	x1, x20
 	bl	pthread_setspecific
-	mov	x0, x9
+	mov	x0, x20
 L_gffi_state_have:
+	ldp	x19, x20, [sp], #16
 	ldp	x29, x30, [sp], #16
 	ret
 L_gffi_state_fail:
 	mov	x0, xzr
+	ldp	x19, x20, [sp], #16
 	ldp	x29, x30, [sp], #16
 	ret
 	.cfi_endproc
@@ -154,10 +167,42 @@ silica_rt_ffi_guarded_setjmp:
 	cmp	x9, #1
 	b.ne	L_gffi_sj_zero
 	bl	silica_rt_install_sync_fault_handlers
+// Stash this frame -- the caller's return address, the frame pointer and the two callee-saved
+// registers -- in the state block before arming the recovery point. The foreign call runs at
+// the stack depth this frame occupies, so it overwrites these slots; by the time a fault
+// longjmps back here they hold the foreign call's frame. Reloading them from the stack
+// returned into the middle of the guarded block, past the fault branch, and the actor walked
+// away from a fault it should have died on.
+	ldr	x9, [sp, #0]
+	str	x9, [x19, #448]
+	ldr	x9, [sp, #8]
+	str	x9, [x19, #456]
+	ldr	x9, [sp, #16]
+	str	x9, [x19, #464]
+	ldr	x9, [sp, #24]
+	str	x9, [x19, #472]
 	add	x0, x19, #64
 	mov	x1, xzr
 	bl	__sigsetjmp
+	cbz	x0, L_gffi_sj_done
+// Longjmp return. siglongjmp has already restored X19-X28, the frame pointer and SP, so the
+// frame is rebuilt from the state block and this returns straight into the guarded block
+// with X0 set to 1, which is the caller's signal to take the fault branch.
+	ldr	x30, [x19, #472]
+	ldr	x29, [x19, #464]
+	ldr	x10, [x19, #456]
+	ldr	x9, [x19, #448]
+	add	sp, sp, #32
+	mov	x0, #1
+	mov	x20, x10
+	mov	x19, x9
+	ret
 L_gffi_sj_zero:
+// Not a longjmp return: every path that skips the setjmp must report 0, or the caller's
+// CBNZ takes the fault path on a healthy call. Two exits reach here (no TLS state, and
+// depth != 1) and both used to fall through carrying whatever X0 happened to hold.
+	mov	x0, #0
+L_gffi_sj_done:
 	ldp	x19, x20, [sp], #16
 	ldp	x29, x30, [sp], #16
 	ret

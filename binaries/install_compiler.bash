@@ -58,14 +58,14 @@ detect_local_platform() {
                 id_like="${ID_LIKE:-}"
             fi
             case "${distro}:${arch}" in
-                debian:aarch64|ubuntu:aarch64) echo "debian-aarch64" ;;
-                debian:x86_64|ubuntu:x86_64)   echo "debian-x86_64" ;;
+                debian:aarch64|ubuntu:aarch64) echo "linux-aarch64" ;;
+                debian:x86_64|ubuntu:x86_64)   echo "linux-x86_64" ;;
                 *)
                     case " ${id_like} " in
                         *" debian "*)
                             case "$arch" in
-                                aarch64) echo "debian-aarch64" ;;
-                                x86_64)  echo "debian-x86_64" ;;
+                                aarch64) echo "linux-aarch64" ;;
+                                x86_64)  echo "linux-x86_64" ;;
                                 *)       return 1 ;;
                             esac
                             ;;

@@ -16,9 +16,8 @@ These steps build the self-hosted toolchain ([roadmap](https://github.com/yenrab
 
 | Name | Source | Built by | Published as |
 | ---- | ------ | -------- | ------------ |
-| Bootstrap | [compiler/silica-bootstrap-compiler/](https://github.com/yenrab/silica/tree/main/compiler/silica-bootstrap-compiler/) (Rust) | `cargo` | `target/release/silica-boot` (not in `binaries/`) |
-| Seed | [compiler/silica-compiler/src/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/src/) (Silica) | the bootstrap | `binaries/silica-NNNNNN-seed-<platform>`, reached through `binaries/seed-compiler` |
-| Selfhost | [compiler/silica-compiler/src_selfhost/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/src_selfhost/) (Silica, Rust-free) | the seed (**gen1**) or a previous selfhost (**gen2**) | `binaries/silica-NNNNNN-<platform>`, reached through `binaries/silica-compiler` |
+| Seed | the previous fixed-point self-host, kept as a binary; `binaries/seed-compiler` points at it | itself, one generation earlier | `binaries/silica-NNNNNN-<platform>`. The original Rust bootstrap (`silica-boot`) and the seeds it produced (`silica-NNNNNN-seed-<platform>`) stay in `binaries/` for the record; their sources are in the repository's history |
+| Selfhost | [compiler/silica-compiler/src_selfhost/](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/src_selfhost/) (Silica, Rust-free) | the seed, itself an earlier selfhost (**gen1**), or the selfhost that produced (**gen2**) | `binaries/silica-NNNNNN-<platform>`, reached through `binaries/silica-compiler` |
 | ESP32-S3 compiler | the same tree with `TARGET=ESP32-S3_raw`: runs on the Mac, emits ESP32-S3 (Xtensa) assembly | the seed | `binaries/silica-NNNNNN-ESP32_S3_raw-<platform>`, reached through `binaries/silica-compiler-ESP32-S3_raw` |
 
 Generation numbers in `binaries/` count **down**: the lowest `NNNNNN` is the newest build. Each kind (seed, selfhost, and each emit target such as ESP32-S3_raw) is numbered on its own, and its symlink always points at its newest build. `gen1` is the selfhost tree compiled by the seed; `gen2` is the same tree compiled by gen1, and it is the build that must pass every trial before the selfhost can replace the seed.
@@ -29,19 +28,13 @@ The complete list, with versions, install commands and the ESP32-S3 board tools,
 
 | Requirement | Role |
 | ----------- | ---- |
-| Seed compiler | `binaries/seed-compiler` (symlink to a versioned `silica-NNNNNN-seed-<platform>`). Present in the checkout; rebuilt by step 2 when the seed sources change. `binaries/update_silica_compiler_link.bash` repairs the links for your host platform (where the compiler runs, not an emit target). |
+| Seed compiler | `binaries/seed-compiler` (symlink to the previous fixed-point self-host, a versioned `silica-NNNNNN-<platform>`). Present in the checkout; it advances only when a new fixed point is released. `binaries/update_silica_compiler_link.bash` repairs the `silica-compiler` link for your host platform (where the compiler runs, not an emit target). |
 | GNU Make | Drives every build and the trial tree. |
 | Clang | Assembles `.sams` → `.o` and links. On Apple Silicon with Homebrew LLVM, the Makefiles prefer `/opt/homebrew/opt/llvm/bin/clang` when present. |
-| Rust toolchain (`cargo`) and LLVM (`llvm-as`, `llc`) | Only for step 2, rebuilding the seed: the bootstrap compiler is a Cargo project and the seed build goes through LLVM IR. |
 
-## 2. Rebuild the seed (only after editing `src/`)
+## 2. The seed
 
-```bash
-cd compiler/silica-compiler/src
-make
-```
-
-This builds the Rust bootstrap if needed (`cargo build --release --no-default-features`), compiles the seed sources with it, links `silica-compiler` in `src/`, and installs it as the next `binaries/silica-NNNNNN-seed-<platform>`, moving `seed-compiler` to it. Without that install a seed fix stays invisible to the selfhost tree. `make INSTALL_SEED=0` builds without publishing.
+There is no seed to rebuild. The seed is the previous fixed-point self-host, so a change to the compiler is made in `src_selfhost` and becomes the next seed when it reaches fixed point and is released. The Rust bootstrap and the seed source it compiled were retired once the self-host reproduced itself; their binaries stay in `binaries/` and their sources in the repository's history.
 
 ## 3. Build gen1: the selfhost from the seed
 

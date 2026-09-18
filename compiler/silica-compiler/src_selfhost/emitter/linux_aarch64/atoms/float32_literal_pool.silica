@@ -233,10 +233,111 @@ fn reverse_f32_values(values: List[string, mem(normal)]) -> List[string, mem(nor
     end
 }
 
+// GNU as refuses a .single whose decimal text is outside float32's range ("cannot create
+// floating-point number"), where Apple's assembler quietly yields +/-inf or +/-0. Every float
+// literal is interned into this pool regardless of its declared type (see is_float_const), so a
+// float64-only value such as 1.0e100 lands here and must be emitted as the bit pattern it means.
+fn f32_digit_value(c: string) -> int64 {
+    case c of {
+        "0" -> 0; "1" -> 1; "2" -> 2; "3" -> 3; "4" -> 4;
+        "5" -> 5; "6" -> 6; "7" -> 7; "8" -> 8; "9" -> 9;
+        _: string -> 0 - 1
+    }
+}
+
+fn f32_exp_marker_at(s: string, i: int64, n: int64) -> int64 {
+    case i >= n of {
+        true -> 0 - 1;
+        false -> {
+            c: string <- substring(s, i, i + 1);
+            case c == "e" or c == "E" of {
+                true -> i;
+                false -> f32_exp_marker_at(s, i + 1, n)
+            }
+        }
+    }
+}
+
+fn f32_digits_to_int(s: string, i: int64, n: int64, acc: int64) -> int64 {
+    case i >= n of {
+        true -> acc;
+        false -> {
+            d: int64 <- f32_digit_value(substring(s, i, i + 1));
+            case d < 0 of {
+                true -> acc;
+                false -> f32_digits_to_int(s, i + 1, n, acc * 10 + d)
+            }
+        }
+    }
+}
+
+// Decimal exponent of the literal; 0 when it is written without one.
+fn f32_exponent(value: string) -> int64 {
+    n: int64 <- length_bytes(value);
+    m: int64 <- f32_exp_marker_at(value, 0, n);
+    case m < 0 of {
+        true -> 0;
+        false -> {
+            after: int64 <- m + 1;
+            sign_char: string <- case after < n of {
+                true -> substring(value, after, after + 1);
+                false -> ""
+            };
+            negative: boolean <- sign_char == "-";
+            start: int64 <- case negative or sign_char == "+" of {
+                true -> after + 1;
+                false -> after
+            };
+            magnitude: int64 <- f32_digits_to_int(value, start, n, 0);
+            case negative of {
+                true -> 0 - magnitude;
+                false -> magnitude
+            }
+        }
+    }
+}
+
+// First non-zero digit, or 0 for a literal whose digits are all zero.
+fn f32_first_significant_digit(value: string, i: int64, n: int64) -> int64 {
+    case i >= n of {
+        true -> 0;
+        false -> {
+            d: int64 <- f32_digit_value(substring(value, i, i + 1));
+            case d > 0 of {
+                true -> d;
+                false -> f32_first_significant_digit(value, i + 1, n)
+            }
+        }
+    }
+}
+
+fn f32_literal_directive(value: string) -> string {
+    n: int64 <- length_bytes(value);
+    exponent: int64 <- f32_exponent(value);
+    lead: int64 <- f32_first_significant_digit(value, 0, n);
+    negative: boolean <- substring(value, 0, 1) == "-";
+    // float32 tops out just above 3.4e38 and its smallest subnormal is about 1.4e-45.
+    overflows: boolean <- exponent > 38 or (exponent == 38 and lead >= 4);
+    underflows: boolean <- lead > 0 and exponent < 0 - 45;
+    case overflows of {
+        true -> case negative of {
+            true -> concat(concat("    .word 0xff800000 // ", value), " overflows float32 (-inf)\n");
+            false -> concat(concat("    .word 0x7f800000 // ", value), " overflows float32 (+inf)\n")
+        };
+        false -> case underflows of {
+            true -> case negative of {
+                true -> concat(concat("    .word 0x80000000 // ", value), " underflows float32 (-0.0)\n");
+                false -> concat(concat("    .word 0x00000000 // ", value), " underflows float32 (+0.0)\n")
+            };
+            false -> concat(concat("    .single ", value), "\n")
+        }
+    }
+}
+
 fn emit_float32_literal_values_rodata_cons(head: string, tail: List[string, mem(normal)], index: int64) -> string {
     rest: string <- emit_float32_literal_values_rodata(tail, index + 1);
     label_colon: string <- concat(concat(concat("L_f32_", atom_table@int64_to_decimal_string(index)), ":"), "\n");
-    single_line: string <- concat(concat("    .single ", head), "\n");
+    single_line: string <- f32_literal_directive(head);
     one: string <- concat(label_colon, single_line);
     case length_bytes(rest) > 0 of {
         true -> concat(concat(one, "\n"), rest);

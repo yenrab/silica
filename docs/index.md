@@ -10,7 +10,7 @@ layout: default
   <a class="card" href="{{ '/learn-silica/' | relative_url }}"><b>Silica for Programmers</b><span>A short introduction to Silica if you already write software.</span></a>
   <a class="card" href="{{ '/design-principles/' | relative_url }}"><b>Design Principles</b><span>The choices the language is built around, stated for readers.</span></a>
   <a class="card" href="https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md"><b>Language Specification</b><span>The normative source: effects, regions, actors, and the FFI contract.</span></a>
-  <a class="card" href="{{ '/build-and-test/' | relative_url }}"><b>Build and Test</b><span>Rebuild the seed, build the self-hosted compiler (gen1, gen2), and run the trials.</span></a>
+  <a class="card" href="{{ '/build-and-test/' | relative_url }}"><b>Build and Test</b><span>Build the self-host, build the self-hosted compiler (gen1, gen2), and run the trials.</span></a>
   <a class="card" href="{{ '/required-software/' | relative_url }}"><b>Required Software</b><span>What to install to build the compilers and run the trials, on a Mac and on an ESP32-S3 board.</span></a>
   <a class="card" href="{{ '/participate/' | relative_url }}"><b>Participate</b><span>In-flight work on parallel language and runtime tracks.</span></a>
 </div>
@@ -75,6 +75,8 @@ Memory allocation happens in each actor’s stack—storage is stack-shaped and 
 Lifetimes follow calls and frames, which keeps memory easy to reason about and wipes out typical heap-style mistakes (use-after-free, double-free, leaks, etc.) without a garbage collector.
 
 Sharing stays message-shaped and execution stays predictable.
+
+An actor's stack is reserved at spawn, committed only as it is used, and released after each message under one of five named policies the program picks per actor, from giving everything back after every message to keeping its high-water mark for life. An idle actor holds no stack memory at all.
 
 See [§15.1.2.2 — Actor stack architecture](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md#spec-actor-stack-architecture) (stack allocation, growable stacks, handler-local memory); [§12.1.5 — Region handles and actor spawn](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md#spec-region-handles-actor-spawn) (regions move in at `spawn`); and [§12.1.6 — Region handles in actor messages](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md#spec-region-handles-actor-messages) (regions and related payloads move in `call` and `cast`, including reply ownership on `call`).
 

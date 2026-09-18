@@ -3293,7 +3293,7 @@ device_actor_ref                     // device-worker actor reference (primitive
 supervisor_ref                       // supervisor reference (primitive type)
 ```
 
-The `actor_ref` type is not parameterized by message type. It is a primitive type that represents a reference to an ordinary actor, created by the `spawn()` function. Every actor reference denotes its actor by a 64-bit identity that is never reused. Equality and ordering on actor references compare that identity (§15.1.4).
+The `actor_ref` type is not parameterized by message type. It is a primitive type that represents a reference to an ordinary actor, created by the `spawn()` function. Every actor reference denotes its actor by a 64-bit identity that is never reused. References are compared with `actor_ref_equal` and `actor_ref_not_equal` (§22.4), which compare that identity (§15.1.4); the comparison operators do not apply to references.
 
 The `dangerous_actor_ref` type is distinct from `actor_ref`. It represents a reference to an FFI worker actor that executes outbound foreign calls inside `external_danger` sequences in its behavior. It is created only by `spawn_dangerous(...)`. There is no subtyping or coercion between `actor_ref` and `dangerous_actor_ref`.
 
@@ -4004,7 +4004,7 @@ m > n       // greater than
 u >= v      // greater than or equal
 ```
 
-On the actor reference types (`actor_ref`, `dangerous_actor_ref`, `device_actor_ref`, `supervisor_ref`), all six operators compare actor identity (§15.1.4). Both operands must have the same reference type.
+The six comparison operators are not defined on the actor reference types (`actor_ref`, `dangerous_actor_ref`, `device_actor_ref`, `supervisor_ref`). Identity comparison on references is written with the built-in functions `actor_ref_equal` and `actor_ref_not_equal` (§22.4). Both arguments must have the same reference type, and the comparison is on actor identity (§15.1.4).
 
 ### 7.5 Logical Expressions
 Logical operators work on booleans:
@@ -4679,7 +4679,7 @@ Silica defines several built-in effects that track different kinds of side effec
 - `concurrency` - Actor spawning, message passing, and scheduling
 - `atomic` - Atomic memory operations
 - `device_io` - Limited to: print (stdout), read from file, write to file, read from console
-- `network_io` - Network communications of all kinds (sockets, HTTP, etc.)
+- `network_io` - Network communications of all kinds (sockets, HTTP, etc.), reached through Fifi wrappers (§20.4)
 - `hot_swap` - Code loading (dynamic loading, JIT, self-modifying code). On AArch64, requires `ISB` barrier to ensure instruction fetch sees code writes.
 - `register_rwr` - Direct device register (MMIO) access. On AArch64, requires `DSB SY` before and `ISB` after for device ordering. This effect authorizes **execution** of the poke prims `map_device`, `peek`, and `poke` (§9.2.2) inside a **device worker** behavior installed by `spawn_device` / `spawn_device_registered`; it does **not** authorize `main`, ordinary `spawn` behaviors, or the spawn install site. Full rules: [silica_device_actor_specification.md](silica_device_actor_specification.md). Named exceptions (reset, early panic, IRQ enqueue) are listed in that document §7.
 - `external_danger` - Outbound calls to `dangerous_*` FFI wrapper modules inside an FFI worker actor's `external_danger` sequence. This effect authorizes **execution** of foreign calls inside the worker behavior installed by `spawn_dangerous`; it does **not** authorize callers at the `spawn_dangerous` install site. Full rules: [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4. On macOS, same-process guarded-FFI crash handling is best-effort and platform-specific; see [macos_crash_handling_for_silica.md](macos_crash_handling_for_silica.md). Other platform-specific crash-handling notes will be added as Silica expands to support those targets.
@@ -7420,13 +7420,13 @@ alloc_ref(r, 42)    // Runtime error: capability violation
 Actors are created with initial state and behavior function:
 
 ```
-spawn(initial_state, behavior_fn [, core_id]) -> actor_ref
-spawn_dangerous(initial_state, behavior_fn [, core_id]) -> dangerous_actor_ref proc[concurrency]
-spawn_device(initial_state, behavior_fn [, core_id]) -> device_actor_ref proc[concurrency]
-spawn_device_registered(initial_state, behavior_fn, name: atom [, core_id]) -> device_actor_ref proc[concurrency]
-spawn_registered(initial_state, behavior_fn, name: atom [, core_id]) -> actor_ref proc[concurrency]
-spawn_registered_supervisor(supervisor_impl_type, initial_state, name: atom [, core_id]) -> supervisor_ref proc[concurrency]
-spawn_state_machine(state_machine_impl_type, initial_state [, core_id]) -> actor_ref proc[concurrency]
+spawn(initial_state, behavior_fn, stack_policy [, core_id]) -> actor_ref
+spawn_dangerous(initial_state, behavior_fn, stack_policy [, core_id]) -> dangerous_actor_ref proc[concurrency]
+spawn_device(initial_state, behavior_fn, stack_policy [, core_id]) -> device_actor_ref proc[concurrency]
+spawn_device_registered(initial_state, behavior_fn, name: atom, stack_policy [, core_id]) -> device_actor_ref proc[concurrency]
+spawn_registered(initial_state, behavior_fn, name: atom, stack_policy [, core_id]) -> actor_ref proc[concurrency]
+spawn_registered_supervisor(supervisor_impl_type, initial_state, name: atom, stack_policy [, core_id]) -> supervisor_ref proc[concurrency]
+spawn_state_machine(state_machine_impl_type, initial_state, stack_policy [, core_id]) -> actor_ref proc[concurrency]
 stop_self(reason: :normal | (:explicit, atom)) -> :ok  proc[concurrency]
 fail_self(reason: atom) -> !  proc[concurrency]
 link(target: actor_ref) -> :ok  proc[concurrency]
@@ -7598,7 +7598,7 @@ Every actor is **pinned** to a core from the moment it is spawned until it termi
 - **When a move takes effect**: nothing interrupts a dispatch to move the actor. A move requested while the actor is running takes effect at its next dispatch boundary; migration is handled by the runtime outside the behavior function (§16.2.6.6), and message order is preserved (§15.1.2.4.1).
 - **Dispatch boundary and scheduler yield point (definitions)**:
   - A **dispatch boundary** is the moment a behavior function returns. A pending migration, and a stop requested by `stop_self` or `remove_actor`, take effect only there.
-  - A **scheduler yield point** is a dispatch boundary, or a point where the running actor suspends to wait: a `call()` or `call_with_timeout()` awaiting its reply, or any other operation this specification says suspends only the calling actor (for example a socket that is not ready, §20.4, or a foreign call on a thread-isolated target, §15.4.13.5). At a yield point the runtime's per-core scheduler may run another actor on the same core. A suspended actor resumes on the same core, inside the same dispatch.
+  - A **scheduler yield point** is a dispatch boundary, or a point where the running actor suspends to wait: a `call()` or `call_with_timeout()` awaiting its reply, or any other operation this specification says suspends only the calling actor (for example a foreign call on a thread-isolated target, §15.4.13.5). At a yield point the runtime's per-core scheduler may run another actor on the same core. A suspended actor resumes on the same core, inside the same dispatch.
   - Between yield points an actor is never preempted. A program that wants long computation to share its core ends its dispatch early and continues the work by sending itself a message with `cast(self(), …)` (§16.2.6.5).
   - **Ending is the exception.** `fail_self`, `kill_abnormal`, a failure, and a supervisor's kill (§15.4.12.2) end an actor where it stands, even in the middle of a dispatch. The dispatch is abandoned, never resumed.
 
@@ -7620,19 +7620,61 @@ Every actor is **pinned** to a core from the moment it is spawned until it termi
 
 #### 15.1.2.2 Actor Stack Architecture
 
-**Runtime-Managed Stacks**: Each actor has its own **dedicated stack** maintained by the Silica runtime, **not** by the operating system.
+**Runtime-Managed Stacks**: Each actor has its own **dedicated stack** maintained by the Silica runtime, **not** by the operating system. This section is the language's contract for those stacks. The hosted-platform mechanics behind it are in [actor_growable_stack_design.md](actor_growable_stack_design.md) §2, §4 and §7, and the work that implements them is chunk 1 of the [ROADMAP](../../../ROADMAP.md), planned in [Phase1_TODOs/actor_stack_growth_plan.md](Phase1_TODOs/actor_stack_growth_plan.md).
 
 **Key Properties**:
 - **Not OS Threads**: Actors are not backed by OS threads. Multiple actors can execute on the same OS thread
-- **Lightweight**: Actor stacks are lightweight runtime objects, enabling massive numbers of concurrent actors
-- **Dedicated Allocation**: Each actor receives a dedicated stack with configurable initial size
-- **Theoretically Infinite**: Stacks grow on demand up to system memory limits (no hard max size limit)
-- **Runtime Managed**: The runtime allocates, manages, and deallocates actor stacks
+- **Lightweight**: An idle actor holds no stack memory at all, only its control block and mailbox, so the number of actors a machine can hold is limited by what they are doing, not by how many there are
+- **Dedicated Allocation**: Each actor's stack occupies one contiguous reservation of address space made at spawn
+- **Unbounded**: A stack grows on demand. There is no per-actor maximum and no runtime-wide cap: a single actor may grow until the machine, including its swap, is exhausted
+- **Runtime Managed**: The runtime reserves, commits, releases and finally frees each stack; the program never sees an address
 
-**Stack Initialization**: When an actor is spawned, the runtime allocates a stack with:
-- **`initial_stack_size`**: The initial stack size in bytes (e.g., 50,000 bytes = ~50 KB)
-- Stack grows automatically as needed during message processing
-- No maximum size limit—growth limited only by available system memory
+**Reservation**: At spawn the runtime reserves a contiguous range of address space for the actor's stack and maps it with no access rights. A reservation is address space, not memory. It costs nothing to the process, to other processes or to the operating system until pages inside it are committed, and the runtime makes it in the form the host does not count against its memory commitment (an inaccessible mapping on Linux, the equivalent lazy reservation on macOS).
+
+- The **default reservation** is the machine's physical memory plus its swap, read once when the runtime starts and rounded to the platform page. Where a host refuses a single mapping that large by heuristic, the runtime reserves just under the total. The default is therefore always large enough that an actor reaches the machine's limit before the end of its reservation.
+- A program may **lower the reservation** for an actor with a stack policy at spawn (below). A program that spawns millions of actors must: every reservation consumes address space, and a million whole-machine reservations exceed what any processor can address. The program that spawns them is the one that knows their number and their depth, so it chooses.
+- A reservation that cannot be made fails the spawn: the spawning actor fails with `failure_reason` `(:explicit, :stack_reserve_failed)`. Address space runs out only in a program that has chosen its own reservation sizes, so the failure is that program's to handle.
+- An actor whose stack reaches the end of a **lowered** reservation fails with `failure_reason` `(:explicit, :stack_exhausted)`; no other actor is affected. With the default reservation this cannot happen: memory runs out first.
+
+**Commitment and Growth**: Nothing is committed at spawn. The first stack access of the first message faults in the first chunk, and every later access beyond the committed part faults in the next. The runtime's fault handler commits memory in chunks: the first chunk is one platform page, each further fault commits twice the previous chunk until a chunk reaches 1 MB, and from then on each fault commits 1 MB. Chunk sizes follow the **platform's page size**, 16 KB on Apple silicon and the Raspberry Pi 5, 4 KB on most other Linux systems; the specification does not fix a page size. The committed part of a stack is one mapping and the untouched remainder of the reservation a second, inaccessible one; there is no separate guard mapping. A fault at an address inside an actor's reservation **is stack growth**, and the handler establishes that before it considers any other meaning of the fault, in particular a foreign fault inside a guarded call (§15.4).
+
+**Message Boundary and Release**: Each message handler execution is a finite call on the actor's stack. When the behavior returns, the stack pointer resets for the next message and the stack is empty, so the runtime can release memory without inspecting it. It releases committed chunks it no longer needs, in the same chunk sizes it grew by, down to what the actor's **release algorithm** retains, and whether an idle actor later releases the rest is that algorithm's rule.
+
+**Release Algorithms**: `release` names one of these five. Each is a memory-retention policy that allocators and language runtimes have long used, the name says what the actor keeps, and between them they cover the ways actors behave, from one that handles a message every few microseconds to one that wakes rarely. The two constants, a window of 32 messages and an idle period of one second, are part of the algorithms' definitions.
+
+| `release` | keeps while idle | releases | choose it for |
+|---|---|---|---|
+| `:release_on_return` | nothing | everything, each time the handler returns | actors that mostly sleep, and very large populations, where an idle actor must cost no stack memory at all; every message pays the growth faults again |
+| `:keep_last_message` | what the last message used | the excess, each time the handler returns | actors whose depth varies from message to message with no pattern; waste is bounded by one message, and a deeper message faults again |
+| `:track_recent_peak` | the most used by any of the last 32 messages | gradually, as the deep messages leave the window | actors with bursts and phases: a burst does not fault on every message, and a quiet stretch drains the memory over 32 messages |
+| `:release_when_idle` | everything, while messages keep arriving | all of it, once no message has arrived for one second | request-driven actors that are busy in periods and quiet between them |
+| `:keep_high_water` | the most it has ever used | nothing, until the actor ends | steady high-rate actors that must never fault again once warm, and workers that grow large once and stay busy |
+
+`get_actor_memory_usage` reports the retained amount an algorithm currently holds (below).
+
+Spawn calls elsewhere in this specification that show no stack policy were written before the policy became a required argument; they are updated together with the compiler in chunk 1 of the roadmap.
+
+**Stack Policy at Spawn**: Every spawn form takes a stack policy as its last required argument, before the optional core id. There is no spawn without one: the program states, for every actor, how its stack is reserved and released, which is the nothing-hidden rule applied to memory.
+
+```
+stack_policy(reserve: int64, release: atom) -> stack_policy
+```
+
+`reserve` is the reservation in bytes, rounded up to the platform page; `0` takes the default reservation. `release` names one of the five release algorithms below. The policy is the only knob: there is no initial size, because nothing is committed at spawn, and no maximum, because there is none.
+
+**Memory Exhaustion**: Stack growth is never a failure and never a supervision event, and there is no cap under which the runtime would refuse to grow a stack or refuse a spawn. When the machine's memory and swap are exhausted, the outcome is the host's: on a hosted platform its out-of-memory handling chooses a process, which may or may not be the Silica program. This is why `:oom` is not a `failure_reason` (§15.4.11.2).
+
+**The main Function**: `main` is not an actor and does not receive a runtime-managed stack. It runs on the platform's ordinary program stack, with no growth and no release, which is the nothing-hidden rule applied to the program's entry: nothing is provisioned that the program cannot see. A `main` is therefore kept small; a program whose work needs a deep or long-lived stack spawns an actor for it and calls or casts into it. The compiler itself is written this way.
+
+**Platform Notes**: Lazy page migration and NUMA-aware placement of stack pages (design document §4.3, §5.3) apply on platforms that have NUMA nodes and are not implemented on those that do not. Actor stacks as described here require demand paging; the rules for targets without it are decided per target in its port design.
+
+**Observing a Stack**:
+
+```
+get_actor_memory_usage(ref: actor_ref) -> { reserved: int64, committed: int64, retained: int64, high_water: int64 }   proc[concurrency]
+```
+
+All four are bytes: the reservation, what is committed now, what the release algorithm holds for the actor while idle, and the most the stack has ever had committed.
 
 **Stack Usage**: During message handler execution:
 - Handler runs on the actor's dedicated stack
@@ -7647,26 +7689,27 @@ fn handler(msg: int64, state: int64) -> (:reply, int64, int64) {
     // Local variables allocated on stack
     result: int64 <- msg + state;
 
-    // When this returns, stack is reset for next message
+    // When this returns, stack is reset for next message and released
     (:reply, result, result)
 }
 
 fn main() -> atom {
     sequence proc[concurrency]
-        // Spawn with 100KB initial stack
-        // Stack grows as needed, limited only by system memory
-        actor: actor_ref <- spawn(0, handler);
+        // Nothing is committed yet; the first message faults in the first page.
+        // The stack grows as needed, limited only by machine memory, and this
+        // actor gives it all back after every message.
+        actor: actor_ref <- spawn(0, handler, stack_policy(0, :release_on_return));
     produces pure :ok end
 }
 ```
 
 **Advantages**:
-- **Scalability**: Thousands/millions of actors with minimal overhead
-- **Predictability**: Each actor's stack is isolated; one actor's stack overflow doesn't affect others
+- **Scalability**: Thousands or millions of actors, because an idle one costs no stack memory
+- **Predictability**: Each actor's stack is isolated; one actor's growth never corrupts another's
 - **Flexibility**: Stack grows naturally; no need to pre-allocate all memory
-- **Efficiency**: Only allocated memory that's actually used
+- **Efficiency**: Only memory that is actually in use stays committed
 
-**Important**: The behavior function returns a tagged tuple `(:reply, Reply, State) | (:no_reply, State)` that encodes both the reply and new state. This keeps each message handler a finite call stack on the actor’s stack (see `actor_growable_stack_design.md`).
+**Important**: The behavior function returns a tagged tuple `(:reply, Reply, State) | (:no_reply, State)` that encodes both the reply and new state. This keeps each message handler a finite call stack on the actor's stack (see `actor_growable_stack_design.md`).
 
 #### 15.1.2.3 Actor Termination
 
@@ -9168,11 +9211,11 @@ The failure reason is an **inline sum type** — a built-in language construct, 
 | `:normal` | The actor ended normally, through `stop_self(:normal)` or `remove_actor` (§15.1.2.3) |
 | `:language_error` | Language-level failure: pattern-match exhaustion, a type mismatch, `panic` (§22.16), or similar |
 | `:memory_fault` | Hardware-detected memory fault (MTE tag mismatch, guard page violation) |
-| `(:explicit, atom)` | Termination with a reason atom: `fail_self(reason)` or `stop_self((:explicit, reason))` (§15.1.2.3). The runtime uses `(:explicit, :killed)` for `kill_abnormal`, `(:explicit, :shutdown)` for a supervisor's orderly shutdown (§15.4.12.2), and `(:explicit, :identity_exhausted)` for exhausted identities (§15.1.4). |
+| `(:explicit, atom)` | Termination with a reason atom: `fail_self(reason)` or `stop_self((:explicit, reason))` (§15.1.2.3). The runtime uses `(:explicit, :killed)` for `kill_abnormal`, `(:explicit, :stack_exhausted)` for a stack that reached the end of a reservation the program lowered and `(:explicit, :stack_reserve_failed)` for a spawn whose reservation could not be made (§15.1.2.2), `(:explicit, :shutdown)` for a supervisor's orderly shutdown (§15.4.12.2), and `(:explicit, :identity_exhausted)` for exhausted identities (§15.1.4). |
 | `:noproc` | Used only in a `DOWN` message: the monitored actor had already ended when `monitor` was called (§15.4.8.6) |
 | `:unknown` | Runtime could not determine the reason |
 
-**Note**: `:oom` is intentionally absent. Actor stacks grow without bound (§15.1.2.2); stack growth is not a failure condition and does not produce a supervision notification. System-level host memory exhaustion that prevents stack growth fails the containment gate (§15.4.4) and aborts the process rather than delivering a per-actor exit notification.
+**Note**: `:oom` is intentionally absent. Actor stacks grow without bound and without a cap (§15.1.2.2); stack growth is not a failure condition and does not produce a supervision notification, and when the machine's memory and swap run out the outcome is the host's, not a reason any actor reports. System-level host memory exhaustion that prevents stack growth fails the containment gate (§15.4.4) and aborts the process rather than delivering a per-actor exit notification.
 
 ##### 15.4.11.4 Unwind Report Delivery
 
@@ -12052,252 +12095,9 @@ demonitor(ref: monitor_ref) -> :ok          proc[concurrency]
 
 Monitors are specified in §15.4.8.6 and §15.4.8.7. When the target ends, the monitoring actor receives `(:down, monitor_ref, actor_ref, failure_reason)`.
 
-### 20.4 Networking (core language)
+### 20.4 Networking
 
-**Normative:** Networking is part of the **core Silica language**, not the standard library. This section keeps its number in chapter 20 so existing references stay valid; its contents are core language. Specifically:
-
-- **Built in.** The types in §20.4.1 and the operations in §20.4.2–§20.4.6 are provided by the compiler and runtime in the same way as the actor operations (§22.4) and file I/O (§22.6). Every program can use them without a `use` declaration, and the compiler type-checks and effect-checks every call. They are listed with the other built-ins in §22.17.
-- **Reserved names.** `net.socket`, `net.tcp`, `net.udp`, `net.packet`, and `net.utils` are built-in namespaces, not library modules; a program cannot define or shadow them.
-- **One effect.** Every operation that touches the network requires the `network_io` effect (§9). The pure helpers of §20.4.5 (packet parsing and checksums) require no effect.
-- **Actors, not threads, wait.** A socket operation that cannot complete immediately suspends only the calling actor; no carrier thread and no core blocks while it waits.
-- **Every target.** OS-hosted targets implement networking over the host's socket interface, with readiness notification (for example kqueue on macOS, epoll on Linux) delivered to the waiting actors. OS-free targets implement it with a TCP/IP stack in the Silica runtime (ARP, IPv4, ICMP, UDP, TCP, DHCP), running as supervised actors over a device-actor network driver ([silica_device_actor_specification.md](silica_device_actor_specification.md)). Programs see the same types, operations, and effect on both.
-
-#### 20.4.1 Core Networking Types
-```
-type socket_addr = {
-    ip: ip_addr,
-    port: int
-}
-
-type ip_addr = ipv4_addr | ipv6_addr
-type ipv4_addr = (int, int, int, int)  // IPv4 tuple
-type ipv6_addr = buf(R, normal, int, 16)  // 16-byte IPv6 address
-
-type protocol_type = tcp | udp | raw
-type socket_state = closed | listening | connected | error
-
-type net_error =
-    ConnectionRefused
-  | ConnectionTimeout
-  | NetworkUnreachable
-  | AddressInUse
-  | PermissionDenied
-  | BufferOverflow
-  | InvalidAddress
-```
-
-#### 20.4.2 Sockets (`net.socket`)
-```
-// Built-in namespace: core language, no `use` required
-module net.socket {
-
-    pub type socket<T: protocol_type>  // Protocol-specific socket
-
-    pub fn create_socket(protocol: protocol_type)
-        -> result<socket<protocol>, net_error> proc[network_io]
-
-    pub fn bind_socket(sock: socket<T>, addr: socket_addr)
-        -> result<atom, net_error> proc[network_io]
-
-    pub fn close_socket(sock: socket<T>)
-        -> atom proc[network_io]
-
-    pub fn get_socket_addr(sock: socket<T>)
-        -> socket_addr proc[network_io]
-
-    pub fn set_socket_option<T>(sock: socket<T>, option: socket_option, value: T)
-        -> result<atom, net_error> proc[network_io]
-}
-```
-
-#### 20.4.3 TCP (`net.tcp`)
-```
-// Built-in namespace: core language, no `use` required
-module net.tcp {
-
-    pub type tcp_socket = socket<tcp>
-    pub type tcp_connection = {
-        socket: tcp_socket,
-        local_addr: socket_addr,
-        remote_addr: socket_addr,
-        state: connection_state
-    }
-
-    pub fn connect(sock: tcp_socket, addr: socket_addr)
-        -> result<tcp_connection, net_error> proc[network_io]
-
-    pub fn listen(sock: tcp_socket, backlog: int)
-        -> result<atom, net_error> proc[network_io]
-
-    pub fn accept(sock: tcp_socket)
-        -> result<tcp_connection, net_error> proc[network_io]
-
-    pub fn write(sock: tcp_connection, data: buf(R, normal, uint8, size))
-        -> result<int, net_error> proc[network_io]
-
-    pub fn receive(sock: tcp_connection, buffer: buf(R, normal, uint8, max_size))
-        -> result<int, net_error> proc[network_io]
-
-    pub fn shutdown(sock: tcp_connection, direction: shutdown_direction)
-        -> result<atom, net_error> proc[network_io]
-}
-```
-
-#### 20.4.4 UDP (`net.udp`)
-```
-// Built-in namespace: core language, no `use` required
-module net.udp {
-
-    pub type udp_socket = socket<udp>
-    pub type udp_endpoint = socket_addr
-
-    pub fn transmit_to(sock: udp_socket, data: buf(R, normal, uint8, size), dest: socket_addr)
-        -> result<int, net_error> proc[network_io]
-
-    pub fn receive_from(sock: udp_socket, buffer: buf(R, normal, uint8, max_size))
-        -> result<(int, socket_addr), net_error> proc[network_io]
-
-    pub fn join_multicast_group(sock: udp_socket, group_addr: ip_addr, interface: ip_addr)
-        -> result<atom, net_error> proc[network_io]
-
-    pub fn leave_multicast_group(sock: udp_socket, group_addr: ip_addr, interface: ip_addr)
-        -> result<atom, net_error> proc[network_io]
-}
-```
-
-#### 20.4.5 Packet Processing (`net.packet`)
-```
-// Built-in namespace: core language, no `use` required
-module net.packet {
-
-    use module arch.sve  // Optional: for SIMD acceleration
-
-    pub type ethernet_frame = {
-        dest_mac: mac_addr,
-        src_mac: mac_addr,
-        ethertype: int,
-        payload: buf(R, normal, uint8, size)
-    }
-
-    pub type ipv4_packet = {
-        version: int,
-        ihl: int,
-        tos: int,
-        total_len: int,
-        id: int,
-        flags: int,
-        frag_offset: int,
-        ttl: int,
-        protocol: int,
-        checksum: int,
-        src_ip: ipv4_addr,
-        dest_ip: ipv4_addr,
-        options: buf(R, normal, uint8, opt_size),
-        payload: buf(R, normal, uint8, payload_size)
-    }
-
-    pub fn parse_ethernet_frame(data: buf(R, normal, uint8, frame_size))
-        -> result<ethernet_frame, parse_error> proc[]
-
-    pub fn parse_ipv4_packet(data: buf(R, normal, uint8, packet_size))
-        -> result<ipv4_packet, parse_error> proc[]
-
-    pub fn calculate_ipv4_checksum(packet: ipv4_packet)
-        -> int proc[]
-
-    pub fn validate_packet(packet: ipv4_packet)
-        -> result<atom, validation_error> proc[]
-
-    // SIMD-accelerated batch processing (when SVE available)
-    pub fn process_packet_batch(packets: buf(R, normal, packet, batch_size))
-        -> processed_results proc[]
-}
-```
-
-#### 20.4.6 Networking Utilities (`net.utils`)
-```
-// Built-in namespace: core language, no `use` required
-module net.utils {
-
-    pub fn resolve_hostname(hostname: string)
-        -> result<ip_addr, resolve_error> proc[network_io]
-
-    pub fn get_network_interfaces()
-        -> list<network_interface> proc[network_io]
-
-    pub fn create_network_buffer(size: int)
-        -> buf(R, normal_noncacheable, uint8, size) proc[network_io, mem(normal_noncacheable)]
-
-    pub fn optimize_buffer_for_nic(buffer: buf(R, normal_noncacheable, T, size), nic_device: device_ref)
-        -> buf(R, normal_noncacheable, T, size) proc[network_io]
-}
-```
-
-**Note**: Network buffers use `normal_noncacheable` memory space because network interface cards (NICs) use DMA to access packet buffers. Non-cacheable memory ensures that NIC DMA operations see data immediately without cache coherency overhead. Device memory (`device`) is reserved for future device driver library code that directly accesses NIC control registers via memory-mapped I/O.
-}
-```
-
-### 20.5 Networking Integration with Chip Features
-
-Silica's built-in networking operations leverage AArch64 chip capabilities for optimal performance:
-
-#### 20.5.1 NUMA-Aware Networking
-Network buffers and processing can be NUMA-optimized:
-
-**NUMA Topology Detection:**
-The runtime provides functions to discover NUMA topology:
-```silica
-// Get NUMA node information
-get_numa_node_count() -> int
-get_numa_node_for_core(core_id: int) -> int
-get_numa_node_memory_ranges(numa_node: int) -> list<memory_range>
-```
-
-**NUMA-Optimized Allocation:**
-```silica
-// Place network buffers close to NIC for minimal latency
-nic_numa_node: int <- get_nic_numa_node(network_interface)
-region: region(R, normal) <- alloc_region_on_numa_node(nic_numa_node, normal)
-rx_buffers: buf(R, normal, packet, N) <- alloc_buf(region, buffer_count)
-
-// Allocate actor on same NUMA node as its data
-actor_ref: actor_ref <- spawn(initial_state, behavior)
-pin_actor_to_numa_node(actor_ref, nic_numa_node)  // a move: re-pins the actor to a core on that node
-```
-
-**NUMA-Aware Actor Placement:**
-Actors processing NUMA-local data should be placed on cores within the same NUMA node to minimize cross-NUMA memory access latency. The runtime provides NUMA-aware scheduling hints.
-
-#### 20.5.2 CPU Affinity for Network Processing
-Every actor is pinned from spawn; these helpers move a freshly spawned actor to a better core class (spawning it on the right core directly avoids the move):
-```silica
-// Pin network processing to efficiency cores (continuous I/O)
-network_actor: actor_ref <- spawn_actor(network_state, packet_processor)
-pin_actor_to_efficiency_core(network_actor)
-
-// Pin application logic to performance cores (bursty processing)
-app_actor: actor_ref <- spawn_actor(app_state, app_logic)
-pin_actor_to_performance_core(app_actor)
-```
-
-#### 20.5.3 SIMD-Accelerated Packet Processing
-When SVE is available, packet processing is automatically vectorized:
-```silica
-// net.packet is built in; no `use` required
-use module arch.sve  // Enables SIMD acceleration
-
-// Automatic vectorization for batch packet processing
-results <- net.packet.process_packet_batch(packet_batch)
-```
-
-#### 20.5.4 Hardware-Assisted Security
-Network buffers can use memory tagging for security:
-```silica
-use module arch.mte
-
-// Tagged network buffers prevent overflow exploits
-secure_buffer <- net.utils.create_secure_network_buffer(size)
-```
+Networking is not part of the Silica language. There are no built-in network types, operations, namespaces or runtime support for it. A program that needs sockets, TCP, UDP or any other network access reaches the host's networking through the Foreign Function Interface, Fifi (§26.3), exactly as it reaches any other foreign library: the foreign calls run inside guarded regions in dangerous actors (§15.4.13), and carry the effects the wrapper declares, which for network access include `network_io` (§9). The section number is kept so that existing references resolve; it has no further content.
 
 ## 21. Architecture-Specific Modules
 
@@ -14525,6 +14325,30 @@ actor_id(ref: actor_ref | dangerous_actor_ref | device_actor_ref | supervisor_re
 
 Returns the 64-bit identity (§15.1.4) of the actor any reference type denotes.
 
+```
+get_actor_memory_usage(ref: actor_ref) -> { reserved: int64, committed: int64, retained: int64, high_water: int64 }   proc[concurrency]
+```
+
+Reports the actor's stack in bytes: its reservation, what is committed now, what its release algorithm keeps while it is idle, and the most it has ever had committed (§15.1.2.2).
+
+#### Actor Reference Identity Comparison
+```
+actor_ref_equal(left, right) -> boolean         // []
+actor_ref_not_equal(left, right) -> boolean     // []
+```
+
+`actor_ref_equal` returns `true` when `left` and `right` denote the same actor, comparing the 64-bit identity of §15.1.4. `actor_ref_not_equal` returns the negation. Both arguments must have the **same** reference type: `actor_ref`, `dangerous_actor_ref`, `device_actor_ref`, or `supervisor_ref`. Mixing reference types is an error (`E2003`), and so is passing a value that is not a reference.
+
+Both functions are **pure**. They carry effect `[]`, may be called anywhere an expression is allowed, and do not require `concurrency`. They read only the reference words the caller already holds; they do not contact the actors and do not report whether either actor is still alive.
+
+Because an identity is never reused (§15.1.4), a reference to an actor that has ended never equals a reference to its replacement. A supervisor that restarts a child therefore produces a reference for which `actor_ref_not_equal(new_ref, old_ref)` is `true` (§15.4.12.2).
+
+```
+first: actor_ref <- ...;
+second: actor_ref <- ...;
+restarted: boolean <- actor_ref_not_equal(second, first);
+```
+
 #### Ending Actors
 ```
 stop_self(reason: :normal | (:explicit, atom)) -> :ok   proc[concurrency]
@@ -14539,7 +14363,10 @@ kill_abnormal(target: actor_ref | atom) -> :ok          proc[concurrency]
 **Note**: `call()` and `cast()` may be used from within actor behavior functions (and elsewhere) when the enclosing `sequence` declares the required effects (see §15.1.2, §16.1).
 
 **Core id parameter:**
-The `spawn()` function accepts an optional third argument: a **`uint64`** logical core id, or **`core_id(n)`** with **`n: uint64`**. Lists of ids, `core_set`, `performance_cores`, and `efficiency_cores` are not accepted; use topology builtins to pick an id, then pass it here.
+The `spawn()` function accepts an optional argument after the stack policy: a **`uint64`** logical core id, or **`core_id(n)`** with **`n: uint64`**. Lists of ids, `core_set`, `performance_cores`, and `efficiency_cores` are not accepted; use topology builtins to pick an id, then pass it here.
+
+**Stack policy parameter:**
+Every spawn form takes a `stack_policy(reserve, release)` value (§15.1.2.2) as its last required argument, before the optional core id. `reserve` lowers the actor's stack reservation from the default, which is the machine's memory plus swap, and is what a program that spawns millions of actors uses; `0` takes the default. `release` names one of the five release algorithms of §15.1.2.2, which decide how much committed stack the actor keeps while idle. There is no spawn without a stack policy.
 
 ### 22.5 Print Functions
 
@@ -14854,51 +14681,7 @@ unreachable() -> ! proc[]                   // mark unreachable code
 
 ### 22.17 Networking Operations
 
-Networking is part of the core language (§20.4). These operations are built in, need no `use` declaration, and require the `network_io` effect unless marked pure. Their types and full semantics are in §20.4; a socket operation that cannot complete immediately suspends only the calling actor.
-
-#### 22.17.1 Sockets
-```
-net.socket.create_socket(protocol: protocol_type) -> result<socket<protocol>, net_error> proc[network_io]
-net.socket.bind_socket(sock: socket<T>, addr: socket_addr) -> result<atom, net_error> proc[network_io]
-net.socket.close_socket(sock: socket<T>) -> atom proc[network_io]
-net.socket.get_socket_addr(sock: socket<T>) -> socket_addr proc[network_io]
-net.socket.set_socket_option<T>(sock: socket<T>, option: socket_option, value: T) -> result<atom, net_error> proc[network_io]
-```
-
-#### 22.17.2 TCP
-```
-net.tcp.connect(sock: tcp_socket, addr: socket_addr) -> result<tcp_connection, net_error> proc[network_io]
-net.tcp.listen(sock: tcp_socket, backlog: int) -> result<atom, net_error> proc[network_io]
-net.tcp.accept(sock: tcp_socket) -> result<tcp_connection, net_error> proc[network_io]
-net.tcp.write(sock: tcp_connection, data: buf(R, normal, uint8, size)) -> result<int, net_error> proc[network_io]
-net.tcp.receive(sock: tcp_connection, buffer: buf(R, normal, uint8, max_size)) -> result<int, net_error> proc[network_io]
-net.tcp.shutdown(sock: tcp_connection, direction: shutdown_direction) -> result<atom, net_error> proc[network_io]
-```
-
-#### 22.17.3 UDP
-```
-net.udp.transmit_to(sock: udp_socket, data: buf(R, normal, uint8, size), dest: socket_addr) -> result<int, net_error> proc[network_io]
-net.udp.receive_from(sock: udp_socket, buffer: buf(R, normal, uint8, max_size)) -> result<(int, socket_addr), net_error> proc[network_io]
-net.udp.join_multicast_group(sock: udp_socket, group_addr: ip_addr, interface: ip_addr) -> result<atom, net_error> proc[network_io]
-net.udp.leave_multicast_group(sock: udp_socket, group_addr: ip_addr, interface: ip_addr) -> result<atom, net_error> proc[network_io]
-```
-
-#### 22.17.4 Packet Processing (pure)
-```
-net.packet.parse_ethernet_frame(data: buf(R, normal, uint8, frame_size)) -> result<ethernet_frame, parse_error> proc[]
-net.packet.parse_ipv4_packet(data: buf(R, normal, uint8, packet_size)) -> result<ipv4_packet, parse_error> proc[]
-net.packet.calculate_ipv4_checksum(packet: ipv4_packet) -> int proc[]
-net.packet.validate_packet(packet: ipv4_packet) -> result<atom, validation_error> proc[]
-net.packet.process_packet_batch(packets: buf(R, normal, packet, batch_size)) -> processed_results proc[]
-```
-
-#### 22.17.5 Networking Utilities
-```
-net.utils.resolve_hostname(hostname: string) -> result<ip_addr, resolve_error> proc[network_io]
-net.utils.get_network_interfaces() -> list<network_interface> proc[network_io]
-net.utils.create_network_buffer(size: int) -> buf(R, normal_noncacheable, uint8, size) proc[network_io, mem(normal_noncacheable)]
-net.utils.optimize_buffer_for_nic(buffer: buf(R, normal_noncacheable, T, size), nic_device: device_ref) -> buf(R, normal_noncacheable, T, size) proc[network_io]
-```
+There are none. Networking is reached through Fifi (§20.4, §26.3). The number is kept so that existing references resolve.
 
 ### 22.18 Checked Integer Arithmetic
 ```

@@ -14,12 +14,21 @@ normalize_pointer_lines() {
     {
       gsub(/\r/, "", $0)
     }
-    /^[[:space:]]*actor_id:[[:space:]]*0x[0-9a-fA-F]+$/ {
+    # A null pointer prints as (nil) under glibc and as 0x0 on Darwin: same value either way.
+    /^[[:space:]]*actor_id:[[:space:]]*(0x[0-9a-fA-F]+|\(nil\))$/ {
       print "actor_id:        <PTR>"
       next
     }
-    /^[[:space:]]*supervisor_acb:[[:space:]]*0x[0-9a-fA-F]+$/ {
+    /^[[:space:]]*supervisor_acb:[[:space:]]*(0x[0-9a-fA-F]+|\(nil\))$/ {
       print "supervisor_acb:  <PTR>"
+      next
+    }
+    /^[[:space:]]*#[0-9]+[[:space:]]+_[A-Za-z_]/ {
+      # Call-stack frame naming a C symbol: Mach-O decorates it with a leading underscore and
+      # ELF does not, so the same function prints two ways. Compare the undecorated name.
+      # (No apostrophes in this awk program: it is inside a single-quoted shell string.)
+      sub(/_/, "")
+      print
       next
     }
     { print }

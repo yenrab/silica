@@ -67,8 +67,10 @@ main_driver_read_lines:
     MOV X3, #0x22
     MOV X4, #-1
     MOV X5, #0
+    STR X8, [SP, #-16]!          // X8 is the syscall number here but scratch elsewhere
     MOV X8, #222
     SVC #0
+    LDR X8, [SP], #16
     // check mmap fail: raw Linux syscall returns -errno
     TBNZ X0, #63, rl_fail
     MOV X19, X0

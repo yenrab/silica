@@ -9,7 +9,9 @@ APP_EXECUTABLES := \
 	dangerous_supervisor_guarded_sigfpe_restart \
 	dangerous_supervisor_guarded_sigfpe_cast_registered \
 	dangerous_supervisor_guarded_arena_bounds_restart \
-	dangerous_supervisor_guarded_arena_bounds_cast_registered
+	dangerous_supervisor_guarded_arena_bounds_cast_registered \
+	dangerous_supervisor_guarded_cast_registered \
+	dangerous_supervisor_guarded_restart
 
 FFI_TRIAL_DIR := $(abspath $(THIS_DIR)/..)
 include $(THIS_DIR)../../silica_compiler.mk
@@ -52,14 +54,14 @@ integrate-run: fixtures
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
 		[ "$$base" = "__silica_runtime" ] && continue; \
-		if [ ! -f "$$base.ascomp" ]; then \
+		if [ ! -f "$$base$(ASCOMP_EXT)" ]; then \
 			echo "  ❌ $(APP_LABEL)/$$base: missing .ascomp"; \
 			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
-		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
+		elif ! diff -Bw -q "$$sams" "$$base$(ASCOMP_EXT)" > /dev/null 2>&1; then \
 			echo "  ❌ $(APP_LABEL)/$$base .sams differs from .ascomp"; \
 			$(INTEGRATE_DOT_FAIL); \
-			diff -Bw "$$sams" "$$base.ascomp" || true; \
+			diff -Bw "$$sams" "$$base$(ASCOMP_EXT)" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		else \
 			echo "  ✅✅ $(APP_LABEL)/$$base assembly matches .ascomp"; \

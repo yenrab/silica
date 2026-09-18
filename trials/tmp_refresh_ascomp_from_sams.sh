@@ -34,7 +34,7 @@ start_dir="$(CDPATH="" cd "$(dirname -- "$script_here")" && pwd -P)"
 is_silica_compiler_trials_dir() {
 	local d="$1"
 	[[ "$(basename "$d")" == "trials" ]] || return 1
-	[[ -f "$d/../src/silica-compiler" ]] || [[ -x "$d/../src/silica-compiler" ]] || return 1
+	[[ -d "$d/../compiler/silica-compiler/src_selfhost" ]] || return 1
 	return 0
 }
 
@@ -69,7 +69,18 @@ skipped_no_ascomp=0
 while IFS= read -r -d '' sams; do
 	dir="$(dirname -- "$sams")"
 	base="$(basename -- "$sams" .sams)"
-	ascomp="${dir}/${base}.ascomp"
+	# ASCOMP_EXT selects the target's golden name (see trials/silica_compiler.mk): .ascomp is the
+	# macOS golden, .<target>.ascomp any other target's. Default is the macOS name.
+	ascomp="${dir}/${base}${ASCOMP_EXT:-.ascomp}"
+	# Another target's golden is created, not only refreshed, wherever the trial has a macOS
+	# golden: the pairing rule is "one golden per target for every trial that compares assembly",
+	# and the macOS .ascomp is what says a trial compares assembly at all.
+	if [[ ! -f "$ascomp" && "${ASCOMP_EXT:-.ascomp}" != ".ascomp" && -f "${dir}/${base}.ascomp" ]]; then
+		cp "$sams" "$ascomp"
+		printf 'created %s\n' "$ascomp"
+		updated=$((updated + 1))
+		continue
+	fi
 	if [[ ! -f "$ascomp" ]]; then
 		skipped_no_ascomp=$((skipped_no_ascomp + 1))
 		[[ -n "${VERBOSE:-}" ]] && printf 'skip (no sibling .ascomp): %s\n' "$sams" >&2

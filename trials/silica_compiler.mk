@@ -28,6 +28,52 @@ endif
 
 UPDATE_SILICA_COMPILER_LINK := $(BINARIES_DIR)/update_silica_compiler_link.bash
 
+include $(_SILICA_COMPILER_MK_DIR)linux_host.mk
+
+# ---- Emit target -------------------------------------------------------------------
+# SILICA_EMIT_TARGET names the target the compiler in use generates code FOR, which is not
+# always the machine the trials run ON. Compiling is target independent and always happens.
+# Assembling, linking and running need a toolchain for the emitted target, and a host only
+# has one for its own: a macOS host cannot assemble the ELF that the linux_aarch64 emitter
+# produces, and a Linux host cannot assemble Mach-O. When the two differ the trial stops
+# after compiling, and the emitted assembly is the deliverable -- that is what lets one host
+# compile the whole suite for the other and hand the assembly over.
+#
+# The target is taken from the compiler's own name, which install_compiler.bash sets:
+# binaries/silica-compiler-<emit-target> for a cross build, plain binaries/silica-compiler
+# for a build that emits for this host. Override it when the compiler reaches the trials
+# under some other name, e.g. through a wrapper:
+#   make integrate SILICA_EMIT_TARGET=linux_aarch64
+SILICA_HOST_UNAME_S := $(shell uname -s 2>/dev/null)
+SILICA_HOST_UNAME_M := $(shell uname -m 2>/dev/null)
+ifeq ($(SILICA_HOST_UNAME_S),Darwin)
+  SILICA_HOST_EMIT_TARGET := apple_silicon_mac
+else ifeq ($(SILICA_HOST_UNAME_S),Linux)
+  ifneq ($(filter $(SILICA_HOST_UNAME_M),aarch64 arm64),)
+    SILICA_HOST_EMIT_TARGET := linux_aarch64
+  else ifeq ($(SILICA_HOST_UNAME_M),x86_64)
+    SILICA_HOST_EMIT_TARGET := linux_x86_64
+  endif
+endif
+
+_SILICA_COMPILER_NAME := $(notdir $(SILICA_COMPILER))
+SILICA_EMIT_TARGET ?= $(if $(filter silica-compiler-%,$(_SILICA_COMPILER_NAME)),$(patsubst silica-compiler-%,%,$(_SILICA_COMPILER_NAME)),$(SILICA_HOST_EMIT_TARGET))
+
+# 1 when the emitted code is for this host and the whole pipeline can run; 0 when the trial
+# can only be compiled here. An unknown host leaves SILICA_HOST_EMIT_TARGET empty, which is
+# treated as "this host runs its own code" so an unrecognised platform behaves as before.
+SILICA_TARGET_IS_HOST := $(if $(SILICA_HOST_EMIT_TARGET),$(if $(filter $(SILICA_EMIT_TARGET),$(SILICA_HOST_EMIT_TARGET)),1,0),1)
+
+# Printed once by a suite that stops after compiling, so the run says why rather than
+# looking like the trials silently did nothing.
+SILICA_CROSS_NOTE := emit target $(SILICA_EMIT_TARGET) is not this host ($(SILICA_HOST_EMIT_TARGET)): compiling only, not assembling or running
+
+# The assembly golden a trial is compared against. Assembly is target-specific, so each emit
+# target keeps its own: the plain .ascomp is the original macOS (Darwin) golden, and every other
+# target's golden carries the target name, <stem>.<target>.ascomp, beside it. Recording a golden
+# writes the same name, so one checkout serves every target it has goldens for.
+ASCOMP_EXT := $(if $(filter apple_silicon_mac,$(SILICA_EMIT_TARGET)),.ascomp,.$(SILICA_EMIT_TARGET).ascomp)
+
 # If silica-compiler is missing, run update_silica_compiler_link.bash and re-check.
 define ENSURE_SILICA_COMPILER
 	if [ ! -x "$(SILICA_COMPILER)" ]; then \
@@ -188,7 +234,7 @@ INTEGRATE_DOT_FAIL = { printf F >> "$$SILICA_INTEGRATE_ROOT/.integrate_fail_mark
 
 # One redraw of the live counter line on fd 9 (the terminal). $(1) = directory holding the marks.
 define INTEGRATE_DRAW_COUNTS
-{ pm=$$(stat -f %z "$(1).integrate_pass_marks" 2>/dev/null || echo 0); fm=$$(stat -f %z "$(1).integrate_fail_marks" 2>/dev/null || echo 0); \
+{ pm=$$(stat -f %z "$(1).integrate_pass_marks" 2>/dev/null || stat -c %s "$(1).integrate_pass_marks" 2>/dev/null || echo 0); fm=$$(stat -f %z "$(1).integrate_fail_marks" 2>/dev/null || stat -c %s "$(1).integrate_fail_marks" 2>/dev/null || echo 0); \
   printf '\r✅✅ %-8s ❌❌ %-8s' "$$pm" "$$fm" >&9; } 2>/dev/null || true
 endef
 
@@ -303,7 +349,7 @@ else
 			kill -0 "$$parent" 2>/dev/null || exit 0; \
 			if [ "$$tty" = 1 ]; then $(call INTEGRATE_DRAW_COUNTS,$(INTEGRATE_DIR)); fi; \
 			tick=$$((tick + 1)); [ $$((tick % 30)) -eq 0 ] || continue; \
-			p=$$(stat -f %m "$(INTEGRATE_DIR).integrate_pass_marks" 2>/dev/null || echo 0); f=$$(stat -f %m "$(INTEGRATE_DIR).integrate_fail_marks" 2>/dev/null || echo 0); \
+			p=$$(stat -f %m "$(INTEGRATE_DIR).integrate_pass_marks" 2>/dev/null || stat -c %Y "$(INTEGRATE_DIR).integrate_pass_marks" 2>/dev/null || echo 0); f=$$(stat -f %m "$(INTEGRATE_DIR).integrate_fail_marks" 2>/dev/null || stat -c %Y "$(INTEGRATE_DIR).integrate_fail_marks" 2>/dev/null || echo 0); \
 			last=$$p; [ "$$f" -gt "$$last" ] && last=$$f; now=$$(date +%s); \
 			if [ $$((now - last)) -ge "$$wd_secs" ]; then \
 				for reg in "$(INTEGRATE_RUNNING_DIR)"/*; do \

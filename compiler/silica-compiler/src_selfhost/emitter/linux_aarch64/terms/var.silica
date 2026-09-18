@@ -1077,15 +1077,16 @@ fn find_reg_pref_rec(outer_reg: string, key: string, start: int64, best: string,
         true -> case length_bytes(best) > 0 of { true -> best; false -> last };
         false -> {
             v: string <- find_sp_binding_extract(outer_reg, pos + length_bytes(key));
-            // Kinds in order of durability: a register, then an X29 frame slot (survives SP
-            // movement), then whatever came last (an SP-relative alias).
-            v_is_reg: boolean <- length_bytes(v) > 0 and is_memory_ref(v) == false;
+            // Kinds in order of durability: a callee-saved register, then an X29 frame slot
+            // (survives SP movement), then a caller-saved register (a case scrutinee's X3 that
+            // the next argument staging reuses -- brodal_okasaki_link@link read n2 as d2), then
+            // whatever came last (an SP-relative alias).
+            v_is_cs: boolean <- is_callee_saved_reg(v);
             v_is_slot: boolean <- is_frame_slot_ref(v);
-            best_is_reg: boolean <- length_bytes(best) > 0 and is_memory_ref(best) == false;
-            nb: string <- case v_is_reg of {
-                true -> v;
-                false -> case v_is_slot and best_is_reg == false of { true -> v; false -> best }
-            };
+            v_is_reg: boolean <- length_bytes(v) > 0 and is_memory_ref(v) == false;
+            best_rank: int64 <- case is_callee_saved_reg(best) of { true -> 3; false -> case is_frame_slot_ref(best) of { true -> 2; false -> case length_bytes(best) > 0 and is_memory_ref(best) == false of { true -> 1; false -> 0 } } };
+            v_rank: int64 <- case v_is_cs of { true -> 3; false -> case v_is_slot of { true -> 2; false -> case v_is_reg of { true -> 1; false -> 0 } } };
+            nb: string <- case v_rank > best_rank of { true -> v; false -> best };
             find_reg_pref_rec(outer_reg, key, pos + 1, nb, v)
         }
     }

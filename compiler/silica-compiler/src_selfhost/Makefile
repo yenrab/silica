@@ -60,7 +60,7 @@ else
 ASSEMBLER := cc
 ASFLAGS_host :=
 LINKER_CLANG := cc
-LDFLAGS_STACK := -no-pie
+LDFLAGS_STACK := -no-pie -rdynamic
 HOST_RT_ASM := runtime_asm/linux_aarch64/deviceio_link_thunks.s runtime_asm/linux_aarch64/silica_rt_shim.s
 endif
 
@@ -286,7 +286,10 @@ assembly: check-seed silica.config record-compile-start
 	@echo "Assembling: $< -> $@"
 	@$(ASSEMBLER) $(ASFLAGS_host) -c -x assembler "$<" -o "$@"
 
-objects: assembly
+# `objects` normally re-emits stale units first. The Pi bootstrap (below) runs it with
+# OBJECTS_PREREQ empty, because no compiler exists there yet to re-emit anything.
+OBJECTS_PREREQ ?= assembly
+objects: $(OBJECTS_PREREQ)
 	@cd "$(THIS_DIR)" && \
 	obj_targets=$$(find . -type f -name '*.sams' ! -path './_wd_probe/*' \
 		| sed 's|^\./||' | sed 's|\.sams$$|.o|' | LC_ALL=C sort | tr '\n' ' '); \
@@ -336,6 +339,27 @@ executables: objects
 		fi; \
 	fi; \
 	$(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,executables)
+
+# ---- Bootstrap of the first Linux-hosted compiler (temporary) ----------------------
+# No Linux compiler exists yet, so the first one is built in two halves on two machines.
+#   Mac:  make bootstrap-assembly    the macOS-hosted cross compiler emits every unit of this
+#                                    tree as Linux assembly (.sams); nothing is assembled here.
+#   Pi:   make bootstrap-link        the system assembler and linker turn the shipped .sams and
+#                                    the Linux hand-written runtime into silica-compiler, and
+#                                    install it as this host's selfhost compiler. No compiler runs.
+# Between the two, copy this tree with its .sams to the Pi. Once a Linux compiler exists the
+# ordinary `make build` runs natively there and these two targets are no longer needed.
+BOOTSTRAP_CROSS_COMPILER := $(BINARIES_DIR)/silica-compiler-linux_aarch64
+
+bootstrap-assembly:
+	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" assembly TARGET=linux_aarch64 \
+		SILICA_COMPILER="$(BOOTSTRAP_CROSS_COMPILER)" INSTALL_SELFHOST=0 SILICA_TARGET_PROMPT=0
+	@n=$$(find "$(THIS_DIR)" -name '*.sams' -type f ! -path '*/_wd_probe/*' | wc -l | tr -d ' '); \
+	echo "bootstrap-assembly: $$n .sams emitted for linux_aarch64; copy this tree to the Pi and run make bootstrap-link there"
+
+bootstrap-link:
+	@if [ "$$(uname -s)" != Linux ]; then echo "FAIL: bootstrap-link assembles and links on the Linux host, not here"; exit 1; fi
+	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" executables OBJECTS_PREREQ= SILICA_TARGET_PROMPT=0
 
 # Plain `make` / `build`: if silica.config (topo unit list) is missing or stale,
 # build it first; then run the normal assembly → objects → link pipeline.

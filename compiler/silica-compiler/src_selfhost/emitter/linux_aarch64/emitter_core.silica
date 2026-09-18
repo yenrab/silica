@@ -1471,6 +1471,47 @@ fn fs_all_params_simple_gpr(param_types: string) -> boolean {
     }
 }
 
+// A float scalar param is shadowed too, into D8-D15 (callee-saved): the registers the float let
+// spills already take, and fp_spill_reg_chain_from_outer skips one the env binds. Without this a
+// float param stayed in its ABI home D0-D7, which every float prim also uses to stage its operands
+// (`FMOV D2, D1` / `FMOV D1, D0` before an FCMP or FADD), so the first compare or add in the body
+// overwrote the second parameter and `case a < b of { true -> b; false -> a }` returned a.
+// See trials/float64_addition/case_float_compare_params.
+fn fs_param_is_shadowable(ptype: string) -> boolean {
+    fs_param_is_simple_gpr(ptype) or param_consumes_fp_only(ptype)
+}
+
+fn fs_all_params_shadowable(param_types: string) -> boolean {
+    case length_bytes(param_types) == 0 of {
+        true -> true;
+        false -> {
+            pipe: int64 <- find_pipe_in_param_names(param_types, 0);
+            case pipe < 0 of {
+                true -> fs_param_is_shadowable(param_types);
+                false -> {
+                    head: string <- substring(param_types, 0, pipe);
+                    rest: string <- substring(param_types, pipe + 1, length_bytes(param_types));
+                    case fs_param_is_shadowable(head) of {
+                        false -> false;
+                        true -> fs_all_params_shadowable(rest)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// How many of the first n params are GPR params / float params (the AAPCS slot counters after them).
+fn fs_gpr_param_count(param_types: string, n: int64) -> int64 {
+    (g: int64, _: int64) <- aapcs_arg_slots_at_index(param_types, n);
+    g
+}
+
+fn fs_float_param_count(param_types: string, n: int64) -> int64 {
+    (_: int64, f: int64) <- aapcs_arg_slots_at_index(param_types, n);
+    f
+}
+
 fn fs_count_params(param_names: string) -> int64 {
     case length_bytes(param_names) == 0 of {
         true -> 0;
@@ -1763,7 +1804,9 @@ fn use_full_param_shadow(fn_val: { name: string, return_type: string, effects: s
                             n: int64 <- fs_count_params(fn_val.param_names);
                             case n >= 1 and n <= 8 of {
                                 false -> false;
-                                true -> case fs_all_params_simple_gpr(fn_val.param_types) of {
+                                // A float param joins the shadow (D8-D15) except in a tail-call body: the D-pair saves are
+                                // not emitted there (needs_callee_d8_d9_frame), so those keep their ABI homes as before.
+                                true -> case fs_all_params_shadowable(fn_val.param_types) and (fs_float_param_count(fn_val.param_types, n) == 0 or sir_term_root_node(fn_val.body).kind != 5) of {
                                     false -> false;
                                     // A memory prim is a call too: alloc_rec/alloc_buf branch to
                                 // L_region_grow, which clobbers X0-X18. Gating only on user calls
@@ -1795,7 +1838,7 @@ fn use_full_param_shadow(fn_val: { name: string, return_type: string, effects: s
 // See trials/codegen_regressions/shadow_x21.silica.
 fn full_shadow_pressure_bump(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> int64 {
     case use_full_param_shadow(fn_val) of {
-        true -> fs_count_params(fn_val.param_names);
+        true -> fs_gpr_param_count(fn_val.param_types, fs_count_params(fn_val.param_names));
         false -> shadowed_param_reg_count(fn_val)
     }
 }
@@ -1812,8 +1855,25 @@ fn shadowed_param_reg_count(fn_val: { name: string, return_type: string, effects
     }
 }
 
-fn fs_callee_reg_for_index(i: int64) -> string {
-    concat("X", atom_table@int64_to_decimal_string(19 + i))
+// Callee-saved home of the param at idx: X19.. for GPR params, D8.. (S8/H8 for the narrower floats)
+// for float params, each numbered within its own kind so a mixed list packs both sets.
+fn fs_fp_shadow_prefix(ptype: string) -> string {
+    case reg_conventions@is_float64_type(ptype) of {
+        true -> "D";
+        false -> case reg_conventions@is_float32_type(ptype) of {
+            true -> "S";
+            false -> "H"
+        }
+    }
+}
+
+fn fs_callee_reg_for_param(param_types: string, idx: int64) -> string {
+    ptype: string <- param_type_at_index(param_types, idx);
+    (g: int64, f: int64) <- aapcs_arg_slots_at_index(param_types, idx);
+    case param_consumes_fp_only(ptype) of {
+        true -> concat(fs_fp_shadow_prefix(ptype), atom_table@int64_to_decimal_string(8 + f));
+        false -> concat("X", atom_table@int64_to_decimal_string(19 + g))
+    }
 }
 
 // 64-bit view of a param's ABI register (W3 -> X3) so the entry copy moves the full register.
@@ -1831,10 +1891,13 @@ fn fs_emit_moves_loop(param_types: string, idx: int64, n: int64) -> string {
             ptype: string <- param_type_at_index(param_types, idx);
             abi: string <- param_reg_for_index(param_types, idx, ptype);
             xabi: string <- fs_x_view_of_abi(abi);
-            dest: string <- fs_callee_reg_for_index(idx);
+            dest: string <- fs_callee_reg_for_param(param_types, idx);
             mv: string <- case dest == xabi of {
                 true -> "";
-                false -> concat("    MOV ", concat(dest, concat(", ", concat(xabi, "\n"))))
+                false -> case param_consumes_fp_only(ptype) of {
+                    true -> concat("    FMOV ", concat(dest, concat(", ", concat(abi, "\n"))));
+                    false -> concat("    MOV ", concat(dest, concat(", ", concat(xabi, "\n"))))
+                }
             };
             concat(mv, fs_emit_moves_loop(param_types, idx + 1, n))
         }
@@ -1856,21 +1919,21 @@ fn fs_name_at_index(param_names: string, idx: int64) -> string {
     }
 }
 
-fn fs_build_param_outer_loop(param_names: string, idx: int64, n: int64, acc: string) -> string {
+fn fs_build_param_outer_loop(param_names: string, param_types: string, idx: int64, n: int64, acc: string) -> string {
     case idx >= n of {
         true -> acc;
         false -> {
             nm: string <- fs_name_at_index(param_names, idx);
-            dest: string <- fs_callee_reg_for_index(idx);
+            dest: string <- fs_callee_reg_for_param(param_types, idx);
             entry: string <- concat("|%", concat(nm, concat("=", dest)));
-            fs_build_param_outer_loop(param_names, idx + 1, n, concat(acc, entry))
+            fs_build_param_outer_loop(param_names, param_types, idx + 1, n, concat(acc, entry))
         }
     }
 }
 
 // Binding env mapping each param name to its callee-saved register, with X19 as the base reg.
-fn fs_build_param_outer(param_names: string, n: int64) -> string {
-    concat("X19", fs_build_param_outer_loop(param_names, 0, n, ""))
+fn fs_build_param_outer(param_names: string, param_types: string, n: int64) -> string {
+    concat("X19", fs_build_param_outer_loop(param_names, param_types, 0, n, ""))
 }
 
 // STP/LDP X21,X22 when spill pressure (lets + weighted list-cons tails) reaches 2, or when X21 holds the second GPR parameter (actor reply sret + int64 shadow).
@@ -2128,31 +2191,40 @@ fn emit_sp_add_sub_imm(op: string, nbytes: int64) -> string {
     }
 }
 
+// Float params the full shadow parks in D8-D15, so the D-pair frame predicates cover them as well
+// as the float let spills (the GPR pairs get the same bump through full_shadow_pressure_bump).
+fn fs_shadowed_float_param_count(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> int64 {
+    case use_full_param_shadow(fn_val) of {
+        true -> fs_float_param_count(fn_val.param_types, fs_count_params(fn_val.param_names));
+        false -> 0
+    }
+}
+
 fn needs_callee_d8_d9_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> boolean {
     case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
-        false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 1
+        false -> count_float_spill_eligible_lets_in_term(fn_val.body) + fs_shadowed_float_param_count(fn_val) >= 1
     }
 }
 
 fn needs_callee_d10_d11_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> boolean {
     case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
-        false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 3
+        false -> count_float_spill_eligible_lets_in_term(fn_val.body) + fs_shadowed_float_param_count(fn_val) >= 3
     }
 }
 
 fn needs_callee_d12_d13_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> boolean {
     case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
-        false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 5
+        false -> count_float_spill_eligible_lets_in_term(fn_val.body) + fs_shadowed_float_param_count(fn_val) >= 5
     }
 }
 
 fn needs_callee_d14_d15_frame(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> boolean {
     case sir_term_root_node(fn_val.body).kind == 5 of {
         true -> false;
-        false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 7
+        false -> count_float_spill_eligible_lets_in_term(fn_val.body) + fs_shadowed_float_param_count(fn_val) >= 7
     }
 }
 
@@ -2342,10 +2414,31 @@ fn esf_tuple_ret_dealloc(fn_val: { name: string, return_type: string, effects: s
         }
 }
 
+// The program entry on Linux. Darwin links every executable with a 256 MB main stack
+// (-Wl,-stack_size in the Makefile), and the compiler's parser recurses deeply enough to need
+// it; Linux instead gives the main thread whatever `ulimit -s` allows, 8 MB by default, and the
+// first large unit faulted at that limit on the Pi. A program must not depend on the caller's
+// shell limits, so `main` here is a trampoline: it reserves a private 256 MB stack (lazily, the
+// pages cost nothing until touched), moves SP onto it, and calls the real entry, which is
+// emitted as silica_program_main. If the reservation fails the program runs on the stack it was
+// given. X19/X20 carry argc/argv across the system call; X29 keeps the original SP for the
+// return, so the body's own frame handling is untouched.
+fn program_main_stack_trampoline(is_program_main: boolean) -> string {
+    case is_program_main of {
+        false -> "";
+        true -> "main:\n    STP X29, X30, [SP, #-32]!\n    STP X19, X20, [SP, #16]\n    MOV X29, SP\n    MOV X19, X0\n    MOV X20, X1\n    MOV X0, #0\n    MOV X1, #0x10000000\n    MOV X2, #3\n    MOV X3, #0x4022\n    MOV X4, #-1\n    MOV X5, #0\n    MOV X8, #222\n    SVC #0\n    TBNZ X0, #63, L_main_stack_ready\n    MOV X1, #0x10000000\n    ADD X0, X0, X1\n    MOV SP, X0\nL_main_stack_ready:\n    MOV X0, X19\n    MOV X1, X20\n    BL silica_program_main\n    MOV SP, X29\n    LDP X19, X20, [SP, #16]\n    LDP X29, X30, [SP], #32\n    RET\n"
+    }
+}
+
 fn emit_sir_function(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, all_functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)], ctx: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, int64_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int32_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int16_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, int8_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }, debug: boolean, module_name: string, foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)] }, arena_ok: boolean, region_ok: boolean) -> string {
-    entry_label: string <- module_linkage@asm_symbol_for_definition(ctx.module_name, fn_val.name);
+    entry_is_program_main: boolean <- fn_val.name == "main" or fn_val.name == "main.main" or fn_val.name == "main.m";
+    // The program entry is emitted as silica_program_main behind the `main` trampoline above.
+    entry_label: string <- case entry_is_program_main of {
+        true -> "silica_program_main";
+        false -> module_linkage@asm_symbol_for_definition(ctx.module_name, fn_val.name)
+    };
         eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
-        prologue: string <- control@function_prologue_with_effects(entry_label, fn_val.effects);
+        prologue: string <- concat(program_main_stack_trampoline(entry_is_program_main), control@function_prologue_with_effects(entry_label, fn_val.effects));
         dest_reg: string <- case fn_val.return_type == "float32" of {
             true -> "S0";
             false -> case fn_val.return_type == "float64" of {
@@ -2370,7 +2463,7 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
         reply_sret_second_x21: boolean <- actor_reply_sret_second_param_uses_x21(fn_val);
         hold_second_param_in_x21: boolean <- needs_second_param_x21_bl_survival(fn_val);
         param_outer_for_body: string <- case full_shadow of {
-            true -> fs_build_param_outer(fn_val.param_names, full_shadow_n);
+            true -> fs_build_param_outer(fn_val.param_names, fn_val.param_types, full_shadow_n);
             false -> case use_int64_abi_shadow of {
                 true -> build_param_outer_reg_int64_abi_shadow(fn_val.param_names, fn_val.param_types, string_shadow, second_param_shadow, reply_sret_second_x21, hold_second_param_in_x21);
                 false -> param_outer

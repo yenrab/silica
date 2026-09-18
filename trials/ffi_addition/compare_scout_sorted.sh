@@ -24,6 +24,15 @@ sort_normalized_lines() {
         print "supervisor_acb:  <PTR>"
         next
       }
+      # A call stack frame names a linker symbol, and Mach-O decorates those with a leading
+      # underscore while ELF does not. The same program therefore prints _actor_thread_main on
+      # macOS and actor_thread_main on Linux, so the leading underscore is dropped before the
+      # comparison and one golden serves both targets.
+      if (line ~ /^[[:space:]]*#[0-9]+[[:space:]]+_[A-Za-z_]/) {
+        sub(/_/, "", line)
+        print line
+        next
+      }
       print line
     }
   ' "$1" | LC_ALL=C sort

@@ -201,7 +201,9 @@ Lsfh_no_actor:
 	adrp	x3, _silica_rt_own_image_base@PAGE
 	add	x3, x3, _silica_rt_own_image_base@PAGEOFF
 	str	x2, [x3]
-	bl	_silica_rt_print_fault_site
+; No diagnostic here: a fault inside a guarded FFI region is recovered just below and
+; reported as an actor failure, so printing the site first would add a line that the
+; caller never sees on a healthy recovery. The unrecoverable paths below still print it.
 Lsfh_pc_done:
 	mov	x0, x22
 	mov	x1, x23
@@ -282,6 +284,13 @@ Lloh_gk0:
 Lloh_gk1:
 	add	x8, x8, _silica_guarded_ffi_pthread_key@PAGEOFF
 	ldr	x0, [x8]
+; The key is zero until the first guarded region creates it. Reading a thread-specific
+; value for key zero does NOT fail: on Darwin it returns a live pointer from a slot the C
+; library reserves for itself. Without this check a fault raised before any guarded call
+; took that pointer for the per-thread guarded state, wrote the fault record over the
+; library's memory, and jumped through a sigjmp_buf made of unrelated bytes, which hung
+; the process inside longjmp instead of reporting the fault and exiting.
+	cbz	x0, L_gft_no
 	bl	_pthread_getspecific
 	cbz	x0, L_gft_no
 	mov	x20, x0
@@ -324,12 +333,13 @@ L_gft_store_arena:
 	add	x3, x3, _silica_rt_own_image_base@PAGEOFF
 	ldr	x3, [x3]
 	cbz	x3, Lgft_do_jmp
+; The fault image used to be compared against our own image, and a fault inside it was
+; treated as not-a-foreign-fault and left unrecovered. That only distinguishes anything
+; when the dangerous library is a separate dylib. The trials, and any static archive,
+; link the foreign code into this image, so every guarded fault was declined and the
+; process died instead of reporting reason_tag 5. Being inside the guarded window,
+; which the depth and inside flags above establish, is what makes a fault ours.
 	cmp	x2, x3
-	b.ne	Lgft_do_jmp
-	mov	x0, xzr
-	ldp	x19, x30, [sp], #16
-	ldp	x21, x20, [sp], #16
-	ret
 Lgft_do_jmp:
 	add	x0, x20, #64
 	mov	w1, #1
@@ -354,6 +364,13 @@ Lloh_gff0:
 Lloh_gff1:
 	add	x8, x8, _silica_guarded_ffi_pthread_key@PAGEOFF
 	ldr	x0, [x8]
+; The key is zero until the first guarded region creates it. Reading a thread-specific
+; value for key zero does NOT fail: on Darwin it returns a live pointer from a slot the C
+; library reserves for itself. Without this check a fault raised before any guarded call
+; took that pointer for the per-thread guarded state, wrote the fault record over the
+; library's memory, and jumped through a sigjmp_buf made of unrelated bytes, which hung
+; the process inside longjmp instead of reporting the fault and exiting.
+	cbz	x0, L_gff_actor
 	bl	_pthread_getspecific
 	mov	x20, x0
 	cbz	x20, L_gff_actor

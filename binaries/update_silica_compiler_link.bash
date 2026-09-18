@@ -13,7 +13,7 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 # single hyphen-free token (e.g. seed).
 
 # Host platforms this script understands (must match detect_local_platform).
-CANONICAL_PLATFORMS=$'macos-applesilicon\nmacos-x86_64\ndebian-aarch64\ndebian-x86_64'
+CANONICAL_PLATFORMS=$'macos-applesilicon\nmacos-x86_64\nlinux-aarch64\nlinux-x86_64'
 
 is_canonical_platform() {
     local needle="$1"
@@ -168,18 +168,18 @@ detect_local_platform() {
             fi
             case "${distro}:${arch}" in
                 debian:aarch64|ubuntu:aarch64)
-                    echo "debian-aarch64"
+                    echo "linux-aarch64"
                     ;;
                 debian:x86_64|ubuntu:x86_64)
-                    echo "debian-x86_64"
+                    echo "linux-x86_64"
                     ;;
                 *)
                     # Debian-family IDs (e.g. raspbian) via ID_LIKE.
                     case " ${id_like} " in
                         *" debian "*)
                             case "$arch" in
-                                aarch64) echo "debian-aarch64" ;;
-                                x86_64)  echo "debian-x86_64" ;;
+                                aarch64) echo "linux-aarch64" ;;
+                                x86_64)  echo "linux-x86_64" ;;
                                 *)       return 1 ;;
                             esac
                             ;;

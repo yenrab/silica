@@ -49,8 +49,10 @@ Linux (`HOST_RT_ASM`, `LDFLAGS_STACK`).
 - 390 emitted `.sams` files from 18 `trials/` directories (base, actors, strings, floats 16/32/64,
   int64, lists, records, case, memory regions, recursion, ...) all assemble with
   `clang --target=aarch64-unknown-linux-gnu -c`. Not linked or run: no Linux box was available.
-- `pi_bundle_base/` holds the emitted `trials/base` program plus the emitted runtime, with a
-  `build_on_pi.sh` that assembles, links and runs it on the Pi.
+- `../../../design_documents/ports/pi_bundle_base/` holds the emitted `trials/base` program plus the
+  emitted runtime, with a `build_on_pi.sh` that assembles, links and runs it on the Pi. It lives
+  outside `src_selfhost/` on purpose: the build assembles every `.sams` under that tree and links
+  every `.o`, so a trial program parked inside it collides with the compiler's own `main`.
 - Emitting the compiler's own `.sams` tree with the cross compiler stops at
   `emitter/linux_aarch64/control/control.silica` with the same effect-checker crash (it is built
   from the current sources, which carry the bug). Once that fix lands, `make assembly

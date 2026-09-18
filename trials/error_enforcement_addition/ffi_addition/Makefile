@@ -21,8 +21,13 @@ MACOS_SDK := $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
 LDFLAGS_rust-lld := -arch $(ARCH) -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
-# Link-fail stderr shape differs between rust-lld and Apple ld (via clang); match other trials' linker choice.
-LINK_FAIL_GOLDEN_SUFFIX := $(shell test -x "$(RUST_LLD)" && echo .rust-lld || echo .clang)
+# Link-fail stderr shape differs between rust-lld, Apple ld (via clang) and GNU ld; match the
+# linker this host actually uses.
+ifeq ($(shell uname -s),Linux)
+  LINK_FAIL_GOLDEN_SUFFIX := .gnu-ld
+else
+  LINK_FAIL_GOLDEN_SUFFIX := $(shell test -x "$(RUST_LLD)" && echo .rust-lld || echo .clang)
+endif
 
 FAIL_CASES := \
 	module_addition/dangerous_export_raw \
@@ -117,8 +122,8 @@ link-fail:
 			echo "❌❌ $(MSG_PREFIX)$$case: missing link golden $$(basename "$$golden")"; ko=$$((ko + 1)); failed=1; \
 			$(INTEGRATE_DOT_FAIL); \
 		else \
-			sed -E 's/\(symbol ([^)]+)\+0x[0-9A-Fa-f]+\)/(symbol \1+0xADDR)/g' "$$cur" > "$$cur_norm"; \
-			sed -E 's/\(symbol ([^)]+)\+0x[0-9A-Fa-f]+\)/(symbol \1+0xADDR)/g' "$$golden" > "$$golden_norm"; \
+			sed -E -e 's/\(symbol ([^)]+)\+0x[0-9A-Fa-f]+\)/(symbol \1+0xADDR)/g' -e 's/\((\.[a-z._]+)\+0x[0-9A-Fa-f]+\)/(\1+0xADDR)/g' "$$cur" > "$$cur_norm"; \
+			sed -E -e 's/\(symbol ([^)]+)\+0x[0-9A-Fa-f]+\)/(symbol \1+0xADDR)/g' -e 's/\((\.[a-z._]+)\+0x[0-9A-Fa-f]+\)/(\1+0xADDR)/g' "$$golden" > "$$golden_norm"; \
 			if ! diff -q "$$cur_norm" "$$golden_norm" > /dev/null 2>&1; then \
 				echo "❌❌ $(MSG_PREFIX)$$case: .cur_link_fail differs from $$(basename "$$golden")"; \
 				$(INTEGRATE_DOT_FAIL); \

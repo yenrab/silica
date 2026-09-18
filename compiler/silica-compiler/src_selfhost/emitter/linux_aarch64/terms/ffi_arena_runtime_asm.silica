@@ -32,7 +32,13 @@ silica_rt_ffi_arena_ensure:
 	ldr	x8, [x19, #352]
 	cbnz	x8, L_arena_ensure_done
 	mov	x0, xzr
+// The arena is 256 KB followed by one inaccessible 16 KB guard page. Without the guard,
+// whether a write just past the arena faults depended on whether the kernel happened to
+// place another mapping directly after it; under a loaded trial run on the Pi it did, and
+// the arena-bounds fault vanished. The guard is not part of the arena: [x19, #360] still
+// marks the arena end, so the guard reads as past-the-end to the fault handler.
 	mov	x1, #262144
+	add	x1, x1, #16384
 	mov	x2, #3
 	mov	x3, #34
 	mov	x4, #-1
@@ -43,6 +49,12 @@ silica_rt_ffi_arena_ensure:
 	cbz	x0, L_arena_ensure_fail
 	mov	x8, x0
 	add	x9, x8, #262144
+	stp	x8, x9, [sp, #-16]!
+	mov	x0, x9
+	mov	x1, #16384
+	mov	x2, xzr
+	bl	mprotect
+	ldp	x8, x9, [sp], #16
 	str	x8, [x19, #352]
 	str	x9, [x19, #360]
 	str	x8, [x19, #368]

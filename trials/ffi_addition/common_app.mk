@@ -59,14 +59,14 @@ define APP_INTEGRATE_BODY
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
 		[ "$$base" = "__silica_runtime" ] && continue; \
-		if [ ! -f "$$base.ascomp" ]; then \
+		if [ ! -f "$$base$(ASCOMP_EXT)" ]; then \
 			echo "  ❌ $(APP_LABEL)/$$base: missing .ascomp"; \
 			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
-		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
+		elif ! diff -Bw -q "$$sams" "$$base$(ASCOMP_EXT)" > /dev/null 2>&1; then \
 			echo "  ❌ $(APP_LABEL)/$$base .sams differs from .ascomp"; \
 			$(INTEGRATE_DOT_FAIL); \
-			diff -Bw "$$sams" "$$base.ascomp" || true; \
+			diff -Bw "$$sams" "$$base$(ASCOMP_EXT)" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		else \
 			echo "  ✅✅ $(APP_LABEL)/$$base assembly matches .ascomp"; \

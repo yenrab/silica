@@ -28,7 +28,12 @@ def quiesce_pty(
             break
         r, _, _ = select.select([master], [], [], timeout)
         if r:
-            chunk = os.read(master, 65536)
+            try:
+                chunk = os.read(master, 65536)
+            except OSError as exc:
+                if exc.errno == errno.EIO:   # Linux: child gone, treat as EOF (macOS gives b"")
+                    return
+                raise
             if not chunk:
                 return
             out_f.write(chunk)
@@ -124,7 +129,14 @@ def main() -> int:
                 r, _, _ = select.select([master], [], [], wait_sec)
                 if not r:
                     continue
-                chunk = os.read(master, 65536)
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError as exc:
+                    # Linux raises EIO on the PTY master once the child has exited and closed the
+                    # slave; macOS returns b"" (EOF). Both mean "no more output".
+                    if exc.errno == errno.EIO:
+                        break
+                    raise
                 if not chunk:
                     break
                 out_f.write(chunk)

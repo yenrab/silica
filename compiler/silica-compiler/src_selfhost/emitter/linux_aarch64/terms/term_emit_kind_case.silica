@@ -46,10 +46,6 @@ fn emit_case_one_branch_inner(branch: { nodes: List[{ kind: int64, type_name: st
         true -> case length_bytes(term_sir_helpers@sir_term_root_node(branch).name) > 1 of { true -> substring(term_sir_helpers@sir_term_root_node(branch).name, 1, length_bytes(term_sir_helpers@sir_term_root_node(branch).name)); false -> "" };
         false -> bound.bound_name
     };
-    br_br: string <- case pkind == "bind" of {
-        true -> case_env.scrut_reg;
-        false -> bound.bound_reg
-    };
     // A `bind` arm names the unwrapped scrutinee (e.g. `right_ref: ref(...) -> ...`).
     // It was carried only in bound_name/bound_reg, which holds ONE name and is
     // replaced as soon as the arm body nests into lets -- so a use deeper in the arm
@@ -61,6 +57,16 @@ fn emit_case_one_branch_inner(branch: { nodes: List[{ kind: int64, type_name: st
     bind_slot: string <- case pkind == "bind" and length_bytes(br_bn) > 0 of {
         true -> term_reg_spill@next_frame_spill_slot(bound.outer_reg);
         false -> ""
+    };
+    // The body's immediate bound_reg must be the same home the outer binding names: the
+    // scrutinee register is caller-saved scratch that the arm's own calls and argument
+    // staging reuse (brodal_okasaki link read n2 from X3 after X3 was restaged with d2).
+    br_br: string <- case length_bytes(bind_slot) > 0 of {
+        true -> bind_slot;
+        false -> case pkind == "bind" of {
+            true -> case_env.scrut_reg;
+            false -> bound.bound_reg
+        }
     };
     bind_save: string <- case length_bytes(bind_slot) > 0 of {
         true -> concat(var@emit_str_mem_ref(case_env.scrut_reg, bind_slot), "\n");
@@ -143,6 +149,22 @@ fn emit_case_branch_seq(rest: { nodes: List[{ kind: int64, type_name: string, va
 // If bound.outer_reg binds X1 (e.g. |%extended=X1) but we would use scrutinee X1, a prior case may have loaded
 // another list into X1 — use X3+ so the scrutinee load runs in a fresh reg and reloads the right pointer.
 
+// The fallback arm after silica_rt_case_clause is never reached (the runtime ends the process or the
+// actor), but it still has to assemble: a float destination (Dn / Sn / Hn) is zeroed from the zero
+// register with FMOV; `MOV Dn, #0` is not an AArch64 instruction. Integer destinations keep MOV #0.
+fn case_fallback_zero(dest: string) -> string {
+    first: string <- case length_bytes(dest) > 0 of {
+        true -> substring(dest, 0, 1);
+        false -> ""
+    };
+    case first of {
+        "D" -> concat(concat("    FMOV ", dest), ", XZR\n");
+        "S" -> concat(concat("    FMOV ", dest), ", WZR\n");
+        "H" -> concat(concat("    FMOV ", dest), ", WZR\n");
+        _: string -> concat(concat("    MOV ", dest), ", #0\n")
+    }
+}
+
 // Case scrutinee default: dest X0/X1 -> X2 so we do not use X0 (result). If bound.outer_reg already binds X2
 // (e.g. let value <- 2; case cmd of { ... } with cmd in X1), use X3+ so loading the scrutinee does not clobber value.
 // emit_child passes bound.bound_reg = body_bound: the register for the enclosing let's binding in the
@@ -166,7 +188,7 @@ fn emit_case_expression(term: { nodes: List[{ kind: int64, type_name: string, va
     arm_bound: { bound_name: string, bound_reg: string, outer_reg: string, debug: boolean } <- { bound_name: bound.bound_name, bound_reg: bound.bound_reg, outer_reg: arm_outer, debug: bound.debug };
     branches_asm: string <- emit_case_branch_seq(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr), { scrut_t: term_sir_helpers@sir_term_root_node(term).value, scrut_reg: scrut_reg, lit_reg: lit_reg, guard_reg: guard_reg, dest: dest, done_l: done_l, fb_l: fb_l, case_name: case_name }, 0, pattern_pools, arm_bound, pools, emit_child);
     fb_head: string <- concat(fb_l, ":\n    BL silica_rt_case_clause\n");
-    fb_tail: string <- concat(concat(concat("    MOV ", dest), ", #0\n    B "), concat(done_l, "\n"));
+    fb_tail: string <- concat(case_fallback_zero(dest), concat(concat("    B ", done_l), "\n"));
     fb_asm: string <- concat(fb_head, fb_tail);
     scr_nl: string <- concat(scrut_asm, "\n");
     scr_br: string <- concat(scr_nl, branches_asm);

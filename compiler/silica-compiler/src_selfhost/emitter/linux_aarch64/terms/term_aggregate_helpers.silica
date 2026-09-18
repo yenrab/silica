@@ -702,13 +702,15 @@ fn flat_record_sum_nested_inners(term: { nodes: List[{ kind: int64, type_name: s
         true -> case prims_record@record_type_has_only_scalar_fields(term_sir_helpers@sir_term_root_node(term).type_name) of {
             true -> 0;
             false -> {
-                // 2-element tuple fields are emitted inline in emit_flat_record_stores (no nested SUB).
+                // A tuple literal field is heap-promoted by emit_flat_record_stores and holds a pointer, so it
+                // adds nothing to the record's own slab (it used to be inlined for two elements and counted
+                // for more, which put the record base off by the nested slab).
                 // A nested record field is inlined the same way: record_make_stack_alloc_size already reserves
                 // its words inside the shell (its value-flat size recurses), so counting it again over-stated
                 // the slab and the branch popped SP past the saved registers. This must stay in step with
                 // inline_nested_rec in emit_flat_record_stores -- the two decide the same thing.
                 inner_inline_rec: boolean <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_make";
-                here: int64 <- case (term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make" and prims_tuple@count_flat_elements(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) == 2) or inner_inline_rec of {
+                here: int64 <- case (term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make") or inner_inline_rec of {
                     true -> 0;
                     false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 4 or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 5 of {
                         true -> case record_field_call_reclaims_own_sret(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of {

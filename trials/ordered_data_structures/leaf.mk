@@ -248,6 +248,7 @@ endef
 
 # Assemble lib/*.sams that have no .o yet (stdlib objects arrive prebuilt from the cache).
 define LEAF_ASSEMBLE_LIBS
+if [ "$(SILICA_TARGET_IS_HOST)" != 1 ]; then :; else \
 for sams in lib/*.sams; do \
 	[ -f "$$sams" ] || continue; \
 	base=$$(basename "$$sams" .sams); \
@@ -258,7 +259,8 @@ for sams in lib/*.sams; do \
 		$(INTEGRATE_DOT_FAIL); \
 		printf 'FAIL\tlib/%s\tassemble failed\n' "$$base" >> .integrate_results; \
 	fi; \
-done
+done; \
+fi
 endef
 
 # One unit, start to finish: compile in a sandbox (unless the trial cache restored it),
@@ -296,6 +298,10 @@ else \
 		cp -f "$$sb/__silica_runtime.sams" "__silica_runtime.sams.$$b" && mv -f "__silica_runtime.sams.$$b" __silica_runtime.sams; \
 	fi; \
 fi; \
+if [ "$(SILICA_TARGET_IS_HOST)" != 1 ]; then \
+	printf 'XTARGET\t%s\n' "$$b" >> "$$res"; \
+	rm -rf "$$sb"; touch "$$b.checked"; exit 0; \
+fi; \
 rt=""; \
 if [ -f "$$sb/__silica_runtime.sams" ]; then \
 	if $(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sb/__silica_runtime.sams" -o "$$sb/__silica_runtime.o"; then \
@@ -306,14 +312,14 @@ if [ -f "$$sb/__silica_runtime.sams" ]; then \
 		printf 'FAIL\t%s\t__silica_runtime assemble failed\n' "$$b" >> "$$res"; \
 	fi; \
 fi; \
-if [ ! -f "$$b.ascomp" ]; then \
+if [ ! -f "$$b$(ASCOMP_EXT)" ]; then \
 	echo "❌❌ $(MSG_PREFIX)$$b has no .ascomp file (run make record-golden from trial root)"; \
 	$(INTEGRATE_DOT_FAIL); \
 	printf 'FAIL\t%s\thas no .ascomp file\n' "$$b" >> "$$res"; \
-elif ! diff -Bw -q "$$b.sams" "$$b.ascomp" > /dev/null 2>&1; then \
-	raw=$$(diff -Bw "$$b.sams" "$$b.ascomp" | grep -c '^[<>]'); \
+elif ! diff -Bw -q "$$b.sams" "$$b$(ASCOMP_EXT)" > /dev/null 2>&1; then \
+	raw=$$(diff -Bw "$$b.sams" "$$b$(ASCOMP_EXT)" | grep -c '^[<>]'); \
 	sed -E 's/o[0-9]+/oN/g' "$$b.sams" > "$$sb/norm"; \
-	sed -E 's/o[0-9]+/oN/g' "$$b.ascomp" > "$$sb/gnorm"; \
+	sed -E 's/o[0-9]+/oN/g' "$$b$(ASCOMP_EXT)" > "$$sb/gnorm"; \
 	norm=$$(diff -Bw "$$sb/norm" "$$sb/gnorm" | grep -c '^[<>]'); \
 	subst=$$(diff -Bw "$$sb/norm" "$$sb/gnorm" | grep '^[<>]' | grep -vc '^[<>][[:space:]]*;'); \
 	echo "❌❌ $(MSG_PREFIX)$$b .sams differs from .ascomp -- $$raw diff lines; $$norm after normalising o<N> counters; $$subst of those are code, not comments"; \
@@ -416,6 +422,7 @@ positive-integrate: silica.config
 	rm -rf "$(LEAF_SANDBOX)"; \
 	ok=$$(grep -c '^PASS' .integrate_results); ko=$$(grep -c '^FAIL' .integrate_results); \
 	asc_ok=$$(grep -c '^ASCOK' .integrate_results); asc_warn=$$(grep -c '^FAIL.*\.ascomp' .integrate_results); \
+	xt=$$(grep -c '^XTARGET' .integrate_results); \
 	missing=0; \
 	for u in $(LEAF_UNITS); do [ -f "$${u%.silica}.checked" ] || missing=$$((missing + 1)); done; \
 	if [ "$$missing" -ne 0 ]; then \
@@ -424,6 +431,10 @@ positive-integrate: silica.config
 		ko=$$((ko + missing)); \
 	fi; \
 	echo "$(MSG_PREFIX)assembly: $$asc_ok matched .ascomp, $$asc_warn differed or missing"; \
+	if [ "$$xt" -ne 0 ]; then \
+		echo "$(MSG_PREFIX)$$xt unit(s) compiled for $(SILICA_EMIT_TARGET); not assembled, not run, and not compared against .ascomp, which holds $(SILICA_HOST_EMIT_TARGET) assembly"; \
+		ok=$$((ok + xt)); \
+	fi; \
 	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
 	[ "$$ko" -eq 0 ]
 
@@ -440,8 +451,8 @@ record-positive-golden: silica.config
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
 		[ "$$base" = "__silica_runtime" ] && continue; \
-		cp "$$sams" "$$base.ascomp"; \
-		echo "Recorded $$base.ascomp"; \
+		cp "$$sams" "$$base$(ASCOMP_EXT)"; \
+		echo "Recorded $$base$(ASCOMP_EXT)"; \
 	done
 	@cd "$(THIS_DIR)" && for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \

@@ -80,14 +80,14 @@ integrate-run:
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
 		[ "$$base" = "__silica_runtime" ] && continue; \
-		if [ ! -f "$$base.ascomp" ]; then \
+		if [ ! -f "$$base$(ASCOMP_EXT)" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; \
 			$(INTEGRATE_DOT_FAIL); \
 			ko=$$((ko + 1)); failed=1; \
-		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
+		elif ! diff -Bw -q "$$sams" "$$base$(ASCOMP_EXT)" > /dev/null 2>&1; then \
 			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
 			$(INTEGRATE_DOT_FAIL); \
-			diff -Bw "$$sams" "$$base.ascomp" || true; \
+			diff -Bw "$$sams" "$$base$(ASCOMP_EXT)" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		else \
 			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \

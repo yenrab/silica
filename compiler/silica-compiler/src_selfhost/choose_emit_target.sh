@@ -9,7 +9,11 @@
 # host default is printed without asking, so non-interactive builds behave as before.
 default="$1"; shift
 if [ $# -eq 0 ]; then exit 0; fi
-if ! { : </dev/tty; } 2>/dev/null || ! { : >/dev/tty; } 2>/dev/null; then
+# The probe uses `true`, not `:`. `:` is a special builtin, and POSIX lets a non-interactive
+# shell exit outright when a redirection on a special builtin fails; dash (Debian's /bin/sh)
+# does exactly that, so on Linux with no controlling terminal the script died here without
+# printing anything and every headless build failed its target check.
+if ! { true </dev/tty; } 2>/dev/null || ! { true >/dev/tty; } 2>/dev/null; then
     printf '%s\n' "$default"; exit 0
 fi
 while :; do
