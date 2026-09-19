@@ -120,14 +120,14 @@ silica_rt_ordering_bundle_make:
     .size   silica_rt_ordering_bundle_make, . - silica_rt_ordering_bundle_make
 
 // key in a2 (low word; keys are non-zero). Slot = key mod 512, linear probing over at most 512
-// entries; an empty slot inserts a fresh 4128-byte region block. A full table or a zero key aborts,
-// as on the host.
+// entries; an empty slot inserts a fresh 4128-byte region block. A zero key or a full table is a
+// runtime abort (banner + status 71), with the same reasons as on the host.
     .align  4
     .global silica_rt_canonical_arena_lookup
     .type   silica_rt_canonical_arena_lookup, @function
 silica_rt_canonical_arena_lookup:
     entry   a1, 32
-    beqz    a2, 9f
+    beqz    a2, 8f
     movi    a3, silica_rt_canonical_arena_table
     extui   a4, a2, 0, 9          // slot
     movi    a5, 0                 // probes
@@ -161,7 +161,8 @@ silica_rt_canonical_arena_lookup:
 4:  l32i    a2, a6, 8
     movi    a3, 0
     retw
-9:  call8   silica_rt_abort
+8:  call8   silica_rt_abort_arena_key
+9:  call8   silica_rt_abort_arena_full
     retw
     .size   silica_rt_canonical_arena_lookup, . - silica_rt_canonical_arena_lookup
 

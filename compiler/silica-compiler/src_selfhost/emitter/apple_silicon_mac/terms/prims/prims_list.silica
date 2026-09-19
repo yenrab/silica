@@ -49,6 +49,7 @@ export chunk_elem_slot_bytes/1;
 export chunk_data_bytes/1;
 export chunk_elem_slot_bytes_from_list_t/1;
 export chunk_data_bytes_from_list_t/1;
+export list_elem_is_inline_aggregate/1;
 
 
 // Local SIRTerm arena helpers (sir_ast node accessors are not exported).
@@ -330,14 +331,23 @@ fn element_type_is_child_spec_record(elem_t: string) -> boolean {
 fn chunk_elem_slot_bytes(elem_t: string) -> int64 {
     case reg_conventions@is_inline_struct_type(elem_t) of {
         true -> {
+            // Boxed layout (prims_record header): a record element is one pointer word to the
+            // region copy emit_list_cons makes, the same word a generic List[ItemType] cell holds.
+            // The lists the actor runtime reads or builds itself are the exception and keep the
+            // record spliced into the cell: child-spec lists (+8 for the hidden trampoline word in
+            // the initial_state form) and the supervisor's which_children list of child-info
+            // records (_silica_rt_supervisor_which_children writes 32-byte cells).
             visible_bytes: int64 <- prims_record@record_type_list_cons_payload_bytes(elem_t);
             case element_type_is_child_spec_record(elem_t) of {
                 true -> visible_bytes + 8;
-                false -> visible_bytes
+                false -> case element_type_is_runtime_inline_record(elem_t) of {
+                    true -> visible_bytes;
+                    false -> 8
+                }
             }
         };
         false -> case reg_conventions@is_tuple_type(elem_t) of {
-            true -> prims_tuple@flat_alloc_size(prims_tuple@count_type_elements(elem_t));
+            true -> 8;
             false -> case elem_t of {
                 "int8"  -> 1;
                 "uint8" -> 1;
@@ -382,6 +392,66 @@ fn list_element_payload_bytes(elem_t: string) -> int64 {
     chunk_elem_slot_bytes(elem_t)
 }
 
+
+// Only a record whose list the actor runtime reads or builds is spliced into its cell (child
+// specs, supervisor child info); every other aggregate element is a pointer word, so `.head`, `list_at` and `[h | t]`
+// load it like a scalar. See chunk_elem_slot_bytes.
+fn list_elem_is_inline_aggregate(elem_t: string) -> boolean {
+    reg_conventions@is_aggregate_struct_or_tuple_return_type(elem_t)
+        and (element_type_is_child_spec_record(elem_t) or element_type_is_runtime_inline_record(elem_t))
+}
+
+// Element records whose list cells the actor runtime lays out itself (besides the initial_state
+// child spec above): the `start:`-form child spec, and the supervisor child-info record
+// { id, agent_type, child, restart } of which_children replies.
+fn element_type_is_runtime_inline_record(elem_t: string) -> boolean {
+    prims_record@record_type_is_start_child_spec(elem_t)
+        or (prims_record@count_record_fields(elem_t) == 4
+            and length_bytes(prims_record@find_field_type_in_record(elem_t, "id")) > 0
+            and length_bytes(prims_record@find_field_type_in_record(elem_t, "agent_type")) > 0
+            and length_bytes(prims_record@find_field_type_in_record(elem_t, "child")) > 0
+            and length_bytes(prims_record@find_field_type_in_record(elem_t, "restart")) > 0)
+}
+
+// Bytes the region copy of one boxed element carries: the element's own flat size.
+fn list_elem_box_bytes(elem_t: string) -> int64 {
+    case reg_conventions@is_inline_struct_type(elem_t) of {
+        true -> prims_record@record_type_value_flat_byte_size(elem_t);
+        false -> case reg_conventions@is_tuple_type(elem_t) of {
+            true -> prims_tuple@flat_alloc_size(prims_tuple@count_type_elements(elem_t));
+            false -> 0
+        }
+    }
+}
+
+fn list_head_box_copy_words(i: int64, words: int64) -> string {
+    case i >= words of {
+        true -> "";
+        false -> {
+            off: string <- atom_table@int64_to_decimal_string(i * 8);
+            one: string <- concat(concat("    LDR X3, [X1, #", concat(off, "]\n")), concat("    STR X3, [X0, #", concat(off, "]\n")));
+            concat(one, list_head_box_copy_words(i + 1, words))
+        }
+    }
+}
+
+// Box the aggregate head in X1 before the prepend: copy it to the region and leave the copy's
+// pointer in X1, keeping X2 (the tail). The cell then stores that word. Copying (rather than
+// storing the pointer we were handed) is what keeps a let-bound, frame-resident record safe in
+// the list after the frame is gone, exactly as the old inline memcpy did.
+fn emit_list_head_box(nbytes: int64) -> string {
+    case nbytes <= 0 of {
+        true -> "";
+        false -> {
+            save: string <- "    STP X1, X2, [SP, #-16]!\n";
+            alloc: string <- concat("    MOV X0, #", concat(atom_table@int64_to_decimal_string(nbytes), "\n    BL _silica_rt_region_alloc\n"));
+            restore: string <- "    LDP X1, X2, [SP], #16\n";
+            copy: string <- list_head_box_copy_words(0, nbytes / 8);
+            concat(save, concat(alloc, concat(restore, concat(copy, "    MOV X1, X0\n"))))
+        }
+    }
+}
+
 fn emit_list_nil(dest: string) -> string {
     concat(concat("    MOV ", dest), ", #0\n")
 }
@@ -395,9 +465,16 @@ fn emit_list_cons(term: { nodes: List[{ kind: int64, type_name: string, value: s
     es_s: string <- atom_table@int64_to_decimal_string(es);
     cd_s: string <- atom_table@int64_to_decimal_string(cd);
     is_agg: boolean <- reg_conventions@is_aggregate_struct_or_tuple_return_type(et);
+    // Boxed layout: an aggregate head is copied to the region here and its pointer is stored as
+    // a plain word (X5 = 0); only a child-spec head is still memcpy'd into the cell (X5 = 1).
+    inline_agg: boolean <- list_elem_is_inline_aggregate(et);
+    box_asm: string <- case is_agg and inline_agg == false of {
+        true -> emit_list_head_box(list_elem_box_bytes(et));
+        false -> ""
+    };
     mov_es: string <- concat("    MOV X3, #", concat(es_s, "\n"));
     mov_cd: string <- concat("    MOV X4, #", concat(cd_s, "\n"));
-    agg_flag: string <- case is_agg of {
+    agg_flag: string <- case inline_agg of {
         true -> "    MOV X5, #1\n";
         false -> "    MOV X5, #0\n"
     };
@@ -406,7 +483,7 @@ fn emit_list_cons(term: { nodes: List[{ kind: int64, type_name: string, value: s
         true -> "";
         false -> concat(concat("    MOV ", dest), ", X0\n")
     };
-    concat(concat(concat(concat(mov_es, mov_cd), agg_flag), bl), mov_d)
+    concat(box_asm, concat(concat(concat(concat(mov_es, mov_cd), agg_flag), bl), mov_d))
 }
 
 // X9 = list handle pointer.  Dereference handle → chunk → cursor → element.
@@ -414,7 +491,7 @@ fn emit_list_head(term: { nodes: List[{ kind: int64, type_name: string, value: s
     load_chunk: string <- "    LDR X10, [X9, #8]\n";
     load_cursor: string <- "    LDR X11, [X9, #16]\n";
     addr: string <- "    ADD X10, X10, X11\n";
-    case reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(term).type_name) of {
+    case list_elem_is_inline_aggregate(sir_term_root_node(term).type_name) of {
         true -> concat(concat(load_chunk, load_cursor), concat(addr, concat(concat("    MOV ", dest), ", X10\n")));
         false -> {
             ed: string <- case reg_conventions@is_narrow_type(sir_term_root_node(term).type_name) of {
@@ -452,7 +529,7 @@ fn emit_list_at(term: { nodes: List[{ kind: int64, type_name: string, value: str
     cd: int64 <- chunk_data_bytes(et);
     setup: string <- concat("    MOV X0, X9\n    MOV X1, X10\n    MOV X2, #", concat(atom_table@int64_to_decimal_string(es), concat("\n    MOV X3, #", concat(atom_table@int64_to_decimal_string(cd), "\n"))));
     bl: string <- "    BL L_list_at_helper\n    MOV X10, X0\n";
-    case reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(term).type_name) of {
+    case list_elem_is_inline_aggregate(sir_term_root_node(term).type_name) of {
         true -> concat(concat(setup, bl), concat(concat("    MOV ", dest), ", X10\n"));
         false -> {
             ed: string <- case reg_conventions@is_narrow_type(sir_term_root_node(term).type_name) of {
@@ -530,6 +607,13 @@ fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: str
 // X1 = head value (or pointer to aggregate), X2 = old handle (0=nil),
 // X3 = elem_slot_bytes, X4 = chunk_data_bytes, X5 = is_aggregate (0 or 1).
 // Returns X0 = new list handle.
+// Chunk: [data: chunk_data_bytes][next chunk][claim]. The claim word is the lowest data offset
+// already handed out. A prepend fills the free slot in front of the old list's first element only
+// when the old list owns that frontier (claim == its cursor), and then claims the slot; otherwise
+// it starts a new chunk. Lists are persistent values: without the claim, `b <- 2 : a; c <- 3 : a`
+// wrote both heads into the same slot and b's head read 3. That was latent while aggregate
+// elements filled whole chunks; one-word boxed elements (prims_record header) share chunks like
+// int64 does. See trials/list_addition/prepend_twice_to_one_list.
 fn emit_list_prepend_helper() -> string {
     concat(
     concat(
@@ -547,7 +631,7 @@ fn emit_list_prepend_helper() -> string {
     ))))),
     concat(
     concat(
-    "    LDR X7, [X2, #8]\n    SUB X8, X6, X3\n",
+    "    LDR X7, [X2, #8]\n    ADD X12, X7, X4\n    LDR X9, [X12, #8]\n    CMP X9, X6\n    B.NE L_lph_cow\n    SUB X8, X6, X3\n    STR X8, [X12, #8]\n",
     concat(
     "    ADD X10, X7, X8\n",
     concat(
@@ -585,9 +669,25 @@ fn emit_list_prepend_helper() -> string {
     ))))))))),
     concat(
     concat(
+    // Copy-on-write: the slot in front of the old list is taken, so the new element goes into a
+    // fresh chunk that copies the old list's part of its chunk (cursor .. chunk end) to the same
+    // offsets and inherits the old chunk's successor; the element sits just in front of the copy.
+    "L_lph_cow:\n    ADD X0, X4, #16\n    BL _silica_rt_region_alloc\n    MOV X6, X0\n    LDR X5, [SP]\n    LDP X3, X4, [SP, #16]\n    LDP X1, X2, [SP, #32]\n",
+    concat(
+    "    LDR X7, [X2, #8]\n    LDR X9, [X2, #16]\n    MOV X12, X9\nL_lph_cow_copy:\n    CMP X12, X4\n    B.GE L_lph_cow_copied\n    LDR X13, [X7, X12]\n    STR X13, [X6, X12]\n    ADD X12, X12, #8\n    B L_lph_cow_copy\n",
+    concat(
+    "L_lph_cow_copied:\n    ADD X12, X7, X4\n    LDR X13, [X12]\n    ADD X12, X6, X4\n    STR X13, [X12]\n    SUB X8, X9, X3\n    ADD X10, X6, X8\n    CBZ X5, L_lph_cow_scalar\n",
+    concat(
+    "    MOV X12, #0\nL_lph_cow_agg:\n    CMP X12, X3\n    B.GE L_lph_alloc_handle\n    LDR X13, [X1, X12]\n    STR X13, [X10, X12]\n    ADD X12, X12, #8\n    B L_lph_cow_agg\n",
+    concat(
+    "L_lph_cow_scalar:\n    CMP X3, #8\n    B.EQ L_lph_cs8\n    CMP X3, #4\n    B.EQ L_lph_cs4\n    CMP X3, #2\n    B.EQ L_lph_cs2\n    STRB W1, [X10]\n    B L_lph_alloc_handle\n",
+    "L_lph_cs2:\n    STRH W1, [X10]\n    B L_lph_alloc_handle\nL_lph_cs4:\n    STR W1, [X10]\n    B L_lph_alloc_handle\nL_lph_cs8:\n    STR X1, [X10]\n    B L_lph_alloc_handle\n"
+    ))))),
+    concat(
+    concat(
     "L_lph_new_chunk:\n",
     concat(
-    "    ADD X0, X4, #8\n    BL _silica_rt_region_alloc\n    MOV X6, X0\n",
+    "    ADD X0, X4, #16\n    BL _silica_rt_region_alloc\n    MOV X6, X0\n",
     concat(
     "    LDR X5, [SP]\n    LDP X3, X4, [SP, #16]\n    LDP X1, X2, [SP, #32]\n",
     concat(
@@ -620,7 +720,7 @@ fn emit_list_prepend_helper() -> string {
     concat(
     "L_lph_next_nil:\n    STR XZR, [X6, X4]\n",
     concat(
-    "L_lph_alloc_handle:\n    STP X6, X8, [SP, #-16]!\n",
+    "L_lph_alloc_handle:\n    ADD X9, X6, X4\n    STR X8, [X9, #8]\n    STP X6, X8, [SP, #-16]!\n",
     concat(
     "    MOV X0, #24\n    BL _silica_rt_region_alloc\n",
     concat(
@@ -635,7 +735,7 @@ fn emit_list_prepend_helper() -> string {
     "L_lph_setlen:\n    STR X9, [X0]\n    STR X6, [X0, #8]\n    STR X8, [X0, #16]\n",
     "    LDP X29, X30, [SP], #16\n    RET\n"
     )))))))))))
-    )))
+    ))))
 }
 
 // Module-level helper: L_list_tail_helper
@@ -689,7 +789,7 @@ fn emit_list_at_helper() -> string {
     "    LDR X5, [X0, #8]\n    LDR X6, [X0, #16]\nL_lat_loop:\n    CBZ X1, L_lat_done\n    ADD X6, X6, X2\n    CMP X6, X3\n    B.LT L_lat_step\n",
     concat(
     "    LDR X5, [X5, X3]\n    MOV X6, #0\nL_lat_step:\n    SUB X1, X1, #1\n    B L_lat_loop\n",
-    "L_lat_done:\n    ADD X0, X5, X6\n    RET\nL_lat_oob:\n    BL _abort\n"
+    "L_lat_done:\n    ADD X0, X5, X6\n    RET\nL_lat_oob:\n    BL _silica_rt_abort_list_index\n"
     )))
 }
 fn emit_list_helpers() -> string {

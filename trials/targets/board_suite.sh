@@ -48,6 +48,24 @@ COMPILE_TIMEOUT="${SILICA_COMPILE_TIMEOUT:-300}"
 mark_ok()   { { printf P >> "$MARK_ROOT/.integrate_pass_marks"; } 2>/dev/null || true; }
 mark_fail() { { printf F >> "$MARK_ROOT/.integrate_fail_marks"; } 2>/dev/null || true; }
 
+# Program output against its golden: through the suite's compare_scout_normalized.sh when it has one (the
+# host Makefile's convention; it folds the addresses in the process-fatal report lines of spec §15.4.5.5,
+# which differ between the board and the host), otherwise diff -Bw.
+scout_matches() {
+    if [ -f "$src/compare_scout_normalized.sh" ]; then
+        bash "$src/compare_scout_normalized.sh" "$1" "$2" > /dev/null 2>&1
+    else
+        diff -Bw -q "$1" "$2" > /dev/null 2>&1
+    fi
+}
+scout_diff() {
+    if [ -f "$src/compare_scout_normalized.sh" ]; then
+        bash "$src/compare_scout_normalized.sh" "$1" "$2"
+    else
+        diff -Bw "$1" "$2"
+    fi
+}
+
 # The compiler's reclaim loop (exit 75 = continue with the next unit), with the per-unit alarm.
 run_compiler() {
     local ec
@@ -233,13 +251,13 @@ if [ "${#programs[@]}" -gt 0 ]; then
             [ -f "$src/$stem.$target.scout" ] && golden="$src/$stem.$target.scout"
             if [ ! -f "$golden" ]; then
                 mark_fail; printf '❌❌ %s%s has no .scout file\n' "$prefix" "$stem"; ko=$((ko + 1))
-            elif diff -Bw -q "build/$stem.sout" "$golden" > /dev/null 2>&1; then
+            elif scout_matches "build/$stem.sout" "$golden"; then
                 mark_ok; printf '✅✅ %s%s output matches %s\n' "$prefix" "$stem" "$(basename "$golden")"; ok=$((ok + 1))
                 rm -rf "build/$stem" "build/$stem".*        # keep the artefacts of failures only
             else
                 mark_fail
                 printf '❌❌ %s%s .sout differs from %s\n' "$prefix" "$stem" "$(basename "$golden")"
-                diff -Bw "build/$stem.sout" "$golden" || true
+                scout_diff "build/$stem.sout" "$golden" || true
                 if [ -s "build/$stem.run.err" ]; then printf '   (board diagnostic: %s)\n' "$(head -n 1 "build/$stem.run.err")"; fi
                 ko=$((ko + 1))
             fi

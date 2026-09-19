@@ -106,7 +106,7 @@ silica_rt_list_at:
 3:  add     a2, a3, a2
     movi    a3, 0
     retw
-9:  call8   silica_rt_abort
+9:  call8   silica_rt_abort_list_index
     retw
     .size   silica_rt_list_at, . - silica_rt_list_at
 
@@ -143,6 +143,11 @@ silica_rt_list_at:
 .endm
 
 // Frame 48: [0] aggregate flag, [4] unused, [8] new chunk; top 32 reserved.
+// Chunk: [data: chunk data bytes][next chunk][claim]. The claim word is the lowest data offset
+// already handed out; a prepend fills the slot in front of the old list's first element only when
+// the old list owns that frontier (claim == its cursor), so two prepends onto one list no longer
+// write into the same slot (the AArch64 L_list_prepend_helper in emitter/apple_silicon_mac/terms/
+// prims/prims_list.silica has the same rule).
     .align  4
     .global silica_rt_list_prepend
     .type   silica_rt_list_prepend, @function
@@ -155,6 +160,11 @@ silica_rt_list_prepend:
     l32i    a8, a6, 16            // tail cursor
     beqz    a8, 5f                // no room in front of the tail's first element
     l32i    a9, a6, 8
+    add     a11, a9, a3           // chunk + data bytes: [next chunk][claim]
+    l32i    a10, a11, 8           // claim = lowest data offset already handed out
+    bne     a10, a8, 8f           // another list already took the slot in front: copy-on-write
+    sub     a10, a8, a2
+    s32i    a10, a11, 8           // claim the slot
     add     a9, a9, a8
     sub     a9, a9, a2            // the slot just before the tail's first element
     STORE_ELEMENT
@@ -171,10 +181,48 @@ silica_rt_list_prepend:
     mov     a2, a10
     movi    a3, 0
     retw
-5:  addi    a10, a3, 8            // a new chunk, the element in its last slot
+// Copy-on-write: copy the old list's part of its chunk (cursor .. chunk end) into a fresh chunk at
+// the same offsets, inherit the old chunk's successor, and put the element just in front of it.
+8:  addi    a10, a3, 16
+    call8   silica_rt_alloc
+    s32i    a10, a1, 8            // new chunk
+    l32i    a9, a6, 8             // old chunk
+    l32i    a8, a6, 16            // old cursor
+    mov     a11, a8
+81: bge     a11, a3, 82f
+    add     a12, a9, a11
+    l32i    a13, a12, 0
+    add     a12, a10, a11
+    s32i    a13, a12, 0
+    addi    a11, a11, 4
+    j       81b
+82: add     a12, a9, a3
+    l32i    a13, a12, 0           // old successor
+    add     a12, a10, a3
+    s32i    a13, a12, 0
+    sub     a11, a8, a2           // the element's offset
+    s32i    a11, a12, 8           // claim
+    add     a9, a10, a11
+    STORE_ELEMENT
+    movi    a10, 24
+    call8   silica_rt_alloc
+    l32i    a8, a6, 0
+    addi    a8, a8, 1
+    s32i    a8, a10, 0
+    l32i    a8, a1, 8
+    s32i    a8, a10, 8
+    l32i    a8, a6, 16
+    sub     a8, a8, a2
+    s32i    a8, a10, 16
+    mov     a2, a10
+    movi    a3, 0
+    retw
+5:  addi    a10, a3, 16           // a new chunk, the element in its last slot
     call8   silica_rt_alloc
     s32i    a10, a1, 8
     add     a9, a10, a3
+    sub     a11, a3, a2
+    s32i    a11, a9, 8            // claim = the element's offset
     sub     a9, a9, a2
     STORE_ELEMENT
     l32i    a8, a1, 8

@@ -51,6 +51,7 @@ export chunk_elem_slot_bytes/1;
 export chunk_data_bytes/1;
 export chunk_elem_slot_bytes_from_list_t/1;
 export chunk_data_bytes_from_list_t/1;
+export list_elem_is_inline_aggregate/1;
 
 
 // Local SIRTerm arena helpers (sir_ast node accessors are not exported).
@@ -332,14 +333,23 @@ fn element_type_is_child_spec_record(elem_t: string) -> boolean {
 fn chunk_elem_slot_bytes(elem_t: string) -> int64 {
     case reg_conventions@is_inline_struct_type(elem_t) of {
         true -> {
+            // Boxed layout (prims_record header): a record element is one pointer word to the
+            // region copy emit_list_cons makes, the same word a generic List[ItemType] cell holds.
+            // The lists the actor runtime reads or builds itself are the exception and keep the
+            // record spliced into the cell: child-spec lists (+8 for the hidden trampoline word in
+            // the initial_state form) and the supervisor's which_children list of child-info
+            // records (_silica_rt_supervisor_which_children writes 32-byte cells).
             visible_bytes: int64 <- prims_record@record_type_list_cons_payload_bytes(elem_t);
             case element_type_is_child_spec_record(elem_t) of {
                 true -> visible_bytes + 8;
-                false -> visible_bytes
+                false -> case element_type_is_runtime_inline_record(elem_t) of {
+                    true -> visible_bytes;
+                    false -> 8
+                }
             }
         };
         false -> case reg_conventions@is_tuple_type(elem_t) of {
-            true -> prims_tuple@flat_alloc_size(prims_tuple@count_type_elements(elem_t));
+            true -> 8;
             false -> case elem_t of {
                 "int8"  -> 1;
                 "uint8" -> 1;
@@ -384,6 +394,66 @@ fn list_element_payload_bytes(elem_t: string) -> int64 {
     chunk_elem_slot_bytes(elem_t)
 }
 
+
+// Only a record whose list the actor runtime reads or builds is spliced into its cell (child
+// specs, supervisor child info); every other aggregate element is a pointer word, so `.head`, `list_at` and `[h | t]`
+// load it like a scalar. See chunk_elem_slot_bytes.
+fn list_elem_is_inline_aggregate(elem_t: string) -> boolean {
+    reg_conventions@is_aggregate_struct_or_tuple_return_type(elem_t)
+        and (element_type_is_child_spec_record(elem_t) or element_type_is_runtime_inline_record(elem_t))
+}
+
+// Element records whose list cells the actor runtime lays out itself (besides the initial_state
+// child spec above): the `start:`-form child spec, and the supervisor child-info record
+// { id, agent_type, child, restart } of which_children replies.
+fn element_type_is_runtime_inline_record(elem_t: string) -> boolean {
+    prims_record@record_type_is_start_child_spec(elem_t)
+        or (prims_record@count_record_fields(elem_t) == 4
+            and length_bytes(prims_record@find_field_type_in_record(elem_t, "id")) > 0
+            and length_bytes(prims_record@find_field_type_in_record(elem_t, "agent_type")) > 0
+            and length_bytes(prims_record@find_field_type_in_record(elem_t, "child")) > 0
+            and length_bytes(prims_record@find_field_type_in_record(elem_t, "restart")) > 0)
+}
+
+// Bytes the region copy of one boxed element carries: the element's own flat size.
+fn list_elem_box_bytes(elem_t: string) -> int64 {
+    case reg_conventions@is_inline_struct_type(elem_t) of {
+        true -> prims_record@record_type_value_flat_byte_size(elem_t);
+        false -> case reg_conventions@is_tuple_type(elem_t) of {
+            true -> prims_tuple@flat_alloc_size(prims_tuple@count_type_elements(elem_t));
+            false -> 0
+        }
+    }
+}
+
+fn list_head_box_copy_words(i: int64, words: int64) -> string {
+    case i >= words of {
+        true -> "";
+        false -> {
+            off: string <- atom_table@int64_to_decimal_string(i * 8);
+            one: string <- concat(x86_mem@x86_ldr("X3", concat("[X1, #", concat(off, "]"))), x86_mem@x86_str("X3", concat("[X0, #", concat(off, "]"))));
+            concat(one, list_head_box_copy_words(i + 1, words))
+        }
+    }
+}
+
+// Box the aggregate head in X1 before the prepend: copy it to the region and leave the copy's
+// pointer in X1, keeping X2 (the tail). The cell then stores that word. Copying (rather than
+// storing the pointer we were handed) is what keeps a let-bound, frame-resident record safe in
+// the list after the frame is gone, exactly as the old inline memcpy did.
+fn emit_list_head_box(nbytes: int64) -> string {
+    case nbytes <= 0 of {
+        true -> "";
+        false -> {
+            save: string <- x86_mem@x86_stp("X1", "X2", "[SP, #-16]!");
+            alloc: string <- concat(x86_isa@x86_movi("X0", nbytes), x86_isa@x86_call("silica_rt_region_alloc"));
+            restore: string <- x86_mem@x86_ldp("X1", "X2", "[SP], #16");
+            copy: string <- list_head_box_copy_words(0, nbytes / 8);
+            concat(save, concat(alloc, concat(restore, concat(copy, x86_isa@x86_mov("X1", "X0")))))
+        }
+    }
+}
+
 fn emit_list_nil(dest: string) -> string {
     x86_isa@x86_mov(dest, "#0")
 }
@@ -397,9 +467,16 @@ fn emit_list_cons(term: { nodes: List[{ kind: int64, type_name: string, value: s
     es_s: string <- atom_table@int64_to_decimal_string(es);
     cd_s: string <- atom_table@int64_to_decimal_string(cd);
     is_agg: boolean <- reg_conventions@is_aggregate_struct_or_tuple_return_type(et);
+    // Boxed layout: an aggregate head is copied to the region here and its pointer is stored as
+    // a plain word (X5 = 0); only a child-spec head is still memcpy'd into the cell (X5 = 1).
+    inline_agg: boolean <- list_elem_is_inline_aggregate(et);
+    box_asm: string <- case is_agg and inline_agg == false of {
+        true -> emit_list_head_box(list_elem_box_bytes(et));
+        false -> ""
+    };
     mov_es: string <- x86_isa@x86_movi_text("X3", es_s);
     mov_cd: string <- x86_isa@x86_movi_text("X4", cd_s);
-    agg_flag: string <- case is_agg of {
+    agg_flag: string <- case inline_agg of {
         true -> x86_isa@x86_movi("X5", 1);
         false -> x86_isa@x86_movi("X5", 0)
     };
@@ -408,7 +485,7 @@ fn emit_list_cons(term: { nodes: List[{ kind: int64, type_name: string, value: s
         true -> "";
         false -> x86_isa@x86_mov(dest, "X0")
     };
-    concat(concat(concat(concat(mov_es, mov_cd), agg_flag), bl), mov_d)
+    concat(box_asm, concat(concat(concat(concat(mov_es, mov_cd), agg_flag), bl), mov_d))
 }
 
 // X9 = list handle pointer.  Dereference handle → chunk → cursor → element.
@@ -416,7 +493,7 @@ fn emit_list_head(term: { nodes: List[{ kind: int64, type_name: string, value: s
     load_chunk: string <- x86_mem@x86_ldr("X10", "[X9, #8]");
     load_cursor: string <- x86_mem@x86_ldr("X11", "[X9, #16]");
     addr: string <- x86_isa@x86_add("X10", "X10", "X11");
-    case reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(term).type_name) of {
+    case list_elem_is_inline_aggregate(sir_term_root_node(term).type_name) of {
         true -> concat(concat(load_chunk, load_cursor), concat(addr, x86_isa@x86_mov(dest, "X10")));
         false -> {
             ed: string <- case reg_conventions@is_narrow_type(sir_term_root_node(term).type_name) of {
@@ -454,7 +531,7 @@ fn emit_list_at(term: { nodes: List[{ kind: int64, type_name: string, value: str
     cd: int64 <- chunk_data_bytes(et);
     setup: string <- concat(concat(x86_isa@x86_mov("X0", "X9"), x86_isa@x86_mov("X1", "X10")), concat(x86_isa@x86_movi("X2", es), x86_isa@x86_movi("X3", cd)));
     bl: string <- concat(x86_isa@x86_call("L_list_at_helper"), x86_isa@x86_mov("X10", "X0"));
-    case reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(term).type_name) of {
+    case list_elem_is_inline_aggregate(sir_term_root_node(term).type_name) of {
         true -> concat(concat(setup, bl), x86_isa@x86_mov(dest, "X10"));
         false -> {
             ed: string <- case reg_conventions@is_narrow_type(sir_term_root_node(term).type_name) of {
@@ -534,8 +611,10 @@ fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: str
 // Returns X0 = rdi = new list handle. Temps: X6 r14, X7 r15, X8 rbx, X9 r10, X10 r11, X11 r12,
 // X12 r13, X13 rax. Every value live across silica_rt_region_alloc (which returns in rdi and may
 // clobber anything but rbp/rsp) sits in the 16-byte stack slots the AArch64 code already used.
+// Chunk: [data][next chunk][claim]; see the AArch64 helper (apple_silicon_mac prims_list) for the
+// claim word that keeps a second prepend onto the same list from overwriting the first one's head.
 fn emit_list_prepend_helper() -> string {
-    concat(concat("L_list_prepend_helper:\n    push rbp\n    mov rbp, rsp\n    sub rsp, 16\n    mov QWORD PTR [rsp], rsi\n    mov QWORD PTR [rsp + 8], rdx\n    sub rsp, 16\n    mov QWORD PTR [rsp], rcx\n    mov QWORD PTR [rsp + 8], r8\n    sub rsp, 16\n    mov QWORD PTR [rsp], r9\n    test rdx, rdx\n    jz L_lph_new_chunk\n    mov r14, QWORD PTR [rdx + 16]\n    test r14, r14\n    jz L_lph_new_chunk\n    mov r15, QWORD PTR [rdx + 8]\n    mov rbx, r14\n    sub rbx, rcx\n    lea r11, [r15 + rbx]\n    mov r12, QWORD PTR [rsp]\n    test r12, r12\n    jz L_lph_room_scalar\n    xor r13d, r13d\nL_lph_room_agg:\n    cmp r13, rcx\n    jge L_lph_room_stored\n    mov rax, QWORD PTR [rsi + r13]\n    mov QWORD PTR [r11 + r13], rax\n    add r13, 8\n    jmp L_lph_room_agg\n    jmp L_lph_room_stored\nL_lph_room_scalar:\n    cmp rcx, 8\n    je L_lph_rs8\n    cmp rcx, 4\n    je L_lph_rs4\n    cmp rcx, 2\n    je L_lph_rs2\n    mov BYTE PTR [r11], sil\n    jmp L_lph_room_stored\nL_lph_rs2:\n    mov WORD PTR [r11], si\n    jmp L_lph_room_stored\nL_lph_rs4:\n    mov DWORD PTR [r11], esi\n    jmp L_lph_room_stored\nL_lph_rs8:\n    mov QWORD PTR [r11], rsi\nL_lph_room_stored:\n    mov edi, 24\n    call silica_rt_region_alloc\n    mov r9, QWORD PTR [rsp]\n    add rsp, 16\n    mov rcx, QWORD PTR [rsp]\n    mov r8, QWORD PTR [rsp + 8]\n    add rsp, 16\n    mov rsi, QWORD PTR [rsp]\n    mov rdx, QWORD PTR [rsp + 8]\n    add rsp, 16\n    mov r14, QWORD PTR [rdx]\n    add r14, 1\n", "    mov QWORD PTR [rdi], r14\n    mov r15, QWORD PTR [rdx + 8]\n    mov QWORD PTR [rdi + 8], r15\n    mov rbx, QWORD PTR [rdx + 16]\n    sub rbx, rcx\n    mov QWORD PTR [rdi + 16], rbx\n    pop rbp\n    ret\nL_lph_new_chunk:\n    lea rdi, [r8 + 8]\n    call silica_rt_region_alloc\n    mov r14, rdi\n    mov r9, QWORD PTR [rsp]\n    mov rcx, QWORD PTR [rsp + 16]\n    mov r8, QWORD PTR [rsp + 24]\n    mov rsi, QWORD PTR [rsp + 32]\n    mov rdx, QWORD PTR [rsp + 40]\n    mov rbx, r8\n    sub rbx, rcx\n    lea r11, [r14 + rbx]\n    test r9, r9\n    jz L_lph_new_scalar\n    xor r13d, r13d\nL_lph_new_agg:\n    cmp r13, rcx\n    jge L_lph_new_stored\n    mov rax, QWORD PTR [rsi + r13]\n    mov QWORD PTR [r11 + r13], rax\n    add r13, 8\n    jmp L_lph_new_agg\n    jmp L_lph_new_stored\nL_lph_new_scalar:\n    cmp rcx, 8\n    je L_lph_ns8\n    cmp rcx, 4\n    je L_lph_ns4\n    cmp rcx, 2\n    je L_lph_ns2\n    mov BYTE PTR [r11], sil\n    jmp L_lph_new_stored\nL_lph_ns2:\n    mov WORD PTR [r11], si\n    jmp L_lph_new_stored\nL_lph_ns4:\n    mov DWORD PTR [r11], esi\n    jmp L_lph_new_stored\nL_lph_ns8:\n    mov QWORD PTR [r11], rsi\nL_lph_new_stored:\n    test rdx, rdx\n    jz L_lph_next_nil\n    mov r10, QWORD PTR [rdx + 8]\n    mov QWORD PTR [r14 + r8], r10\n    jmp L_lph_alloc_handle\nL_lph_next_nil:\n    mov QWORD PTR [r14 + r8], 0\nL_lph_alloc_handle:\n    sub rsp, 16\n    mov QWORD PTR [rsp], r14\n    mov QWORD PTR [rsp + 8], rbx\n"), "    mov edi, 24\n    call silica_rt_region_alloc\n    mov r14, QWORD PTR [rsp]\n    mov rbx, QWORD PTR [rsp + 8]\n    add rsp, 16\n    mov r9, QWORD PTR [rsp]\n    add rsp, 16\n    mov rcx, QWORD PTR [rsp]\n    mov r8, QWORD PTR [rsp + 8]\n    add rsp, 16\n    mov rsi, QWORD PTR [rsp]\n    mov rdx, QWORD PTR [rsp + 8]\n    add rsp, 16\n    test rdx, rdx\n    jz L_lph_len1\n    mov r10, QWORD PTR [rdx]\n    add r10, 1\n    jmp L_lph_setlen\nL_lph_len1:\n    mov r10d, 1\nL_lph_setlen:\n    mov QWORD PTR [rdi], r10\n    mov QWORD PTR [rdi + 8], r14\n    mov QWORD PTR [rdi + 16], rbx\n    pop rbp\n    ret\n")
+    concat(concat("L_list_prepend_helper:\n    push rbp\n    mov rbp, rsp\n    sub rsp, 16\n    mov QWORD PTR [rsp], rsi\n    mov QWORD PTR [rsp + 8], rdx\n    sub rsp, 16\n    mov QWORD PTR [rsp], rcx\n    mov QWORD PTR [rsp + 8], r8\n    sub rsp, 16\n    mov QWORD PTR [rsp], r9\n    test rdx, rdx\n    jz L_lph_new_chunk\n    mov r14, QWORD PTR [rdx + 16]\n    test r14, r14\n    jz L_lph_new_chunk\n    mov r15, QWORD PTR [rdx + 8]\n    lea rbx, [r15 + r8]\n    mov rax, QWORD PTR [rbx + 8]\n    cmp rax, r14\n    jne L_lph_cow\n    mov rbx, r14\n    sub rbx, rcx\n    mov QWORD PTR [r15 + r8 + 8], rbx\n    lea r11, [r15 + rbx]\n    mov r12, QWORD PTR [rsp]\n    test r12, r12\n    jz L_lph_room_scalar\n    xor r13d, r13d\nL_lph_room_agg:\n    cmp r13, rcx\n    jge L_lph_room_stored\n    mov rax, QWORD PTR [rsi + r13]\n    mov QWORD PTR [r11 + r13], rax\n    add r13, 8\n    jmp L_lph_room_agg\n    jmp L_lph_room_stored\nL_lph_room_scalar:\n    cmp rcx, 8\n    je L_lph_rs8\n    cmp rcx, 4\n    je L_lph_rs4\n    cmp rcx, 2\n    je L_lph_rs2\n    mov BYTE PTR [r11], sil\n    jmp L_lph_room_stored\nL_lph_rs2:\n    mov WORD PTR [r11], si\n    jmp L_lph_room_stored\nL_lph_rs4:\n    mov DWORD PTR [r11], esi\n    jmp L_lph_room_stored\nL_lph_rs8:\n    mov QWORD PTR [r11], rsi\nL_lph_room_stored:\n    mov edi, 24\n    call silica_rt_region_alloc\n    mov r9, QWORD PTR [rsp]\n    add rsp, 16\n    mov rcx, QWORD PTR [rsp]\n    mov r8, QWORD PTR [rsp + 8]\n    add rsp, 16\n    mov rsi, QWORD PTR [rsp]\n    mov rdx, QWORD PTR [rsp + 8]\n    add rsp, 16\n    mov r14, QWORD PTR [rdx]\n    add r14, 1\n", "    mov QWORD PTR [rdi], r14\n    mov r15, QWORD PTR [rdx + 8]\n    mov QWORD PTR [rdi + 8], r15\n    mov rbx, QWORD PTR [rdx + 16]\n    sub rbx, rcx\n    mov QWORD PTR [rdi + 16], rbx\n    pop rbp\n    ret\nL_lph_cow:\n    lea rdi, [r8 + 16]\n    call silica_rt_region_alloc\n    mov r14, rdi\n    mov r9, QWORD PTR [rsp]\n    mov rcx, QWORD PTR [rsp + 16]\n    mov r8, QWORD PTR [rsp + 24]\n    mov rsi, QWORD PTR [rsp + 32]\n    mov rdx, QWORD PTR [rsp + 40]\n    mov r15, QWORD PTR [rdx + 8]\n    mov r10, QWORD PTR [rdx + 16]\n    mov r13, r10\nL_lph_cow_copy:\n    cmp r13, r8\n    jge L_lph_cow_copied\n    mov rax, QWORD PTR [r15 + r13]\n    mov QWORD PTR [r14 + r13], rax\n    add r13, 8\n    jmp L_lph_cow_copy\nL_lph_cow_copied:\n    mov rax, QWORD PTR [r15 + r8]\n    mov QWORD PTR [r14 + r8], rax\n    mov rbx, r10\n    sub rbx, rcx\n    lea r11, [r14 + rbx]\n    test r9, r9\n    jz L_lph_cow_scalar\n    xor r13d, r13d\nL_lph_cow_agg:\n    cmp r13, rcx\n    jge L_lph_alloc_handle\n    mov rax, QWORD PTR [rsi + r13]\n    mov QWORD PTR [r11 + r13], rax\n    add r13, 8\n    jmp L_lph_cow_agg\nL_lph_cow_scalar:\n    cmp rcx, 8\n    je L_lph_cs8\n    cmp rcx, 4\n    je L_lph_cs4\n    cmp rcx, 2\n    je L_lph_cs2\n    mov BYTE PTR [r11], sil\n    jmp L_lph_alloc_handle\nL_lph_cs2:\n    mov WORD PTR [r11], si\n    jmp L_lph_alloc_handle\nL_lph_cs4:\n    mov DWORD PTR [r11], esi\n    jmp L_lph_alloc_handle\nL_lph_cs8:\n    mov QWORD PTR [r11], rsi\n    jmp L_lph_alloc_handle\nL_lph_new_chunk:\n    lea rdi, [r8 + 16]\n    call silica_rt_region_alloc\n    mov r14, rdi\n    mov r9, QWORD PTR [rsp]\n    mov rcx, QWORD PTR [rsp + 16]\n    mov r8, QWORD PTR [rsp + 24]\n    mov rsi, QWORD PTR [rsp + 32]\n    mov rdx, QWORD PTR [rsp + 40]\n    mov rbx, r8\n    sub rbx, rcx\n    lea r11, [r14 + rbx]\n    test r9, r9\n    jz L_lph_new_scalar\n    xor r13d, r13d\nL_lph_new_agg:\n    cmp r13, rcx\n    jge L_lph_new_stored\n    mov rax, QWORD PTR [rsi + r13]\n    mov QWORD PTR [r11 + r13], rax\n    add r13, 8\n    jmp L_lph_new_agg\n    jmp L_lph_new_stored\nL_lph_new_scalar:\n    cmp rcx, 8\n    je L_lph_ns8\n    cmp rcx, 4\n    je L_lph_ns4\n    cmp rcx, 2\n    je L_lph_ns2\n    mov BYTE PTR [r11], sil\n    jmp L_lph_new_stored\nL_lph_ns2:\n    mov WORD PTR [r11], si\n    jmp L_lph_new_stored\nL_lph_ns4:\n    mov DWORD PTR [r11], esi\n    jmp L_lph_new_stored\nL_lph_ns8:\n    mov QWORD PTR [r11], rsi\nL_lph_new_stored:\n    test rdx, rdx\n    jz L_lph_next_nil\n    mov r10, QWORD PTR [rdx + 8]\n    mov QWORD PTR [r14 + r8], r10\n    jmp L_lph_alloc_handle\nL_lph_next_nil:\n    mov QWORD PTR [r14 + r8], 0\nL_lph_alloc_handle:\n    mov QWORD PTR [r14 + r8 + 8], rbx\n    sub rsp, 16\n    mov QWORD PTR [rsp], r14\n    mov QWORD PTR [rsp + 8], rbx\n"), "    mov edi, 24\n    call silica_rt_region_alloc\n    mov r14, QWORD PTR [rsp]\n    mov rbx, QWORD PTR [rsp + 8]\n    add rsp, 16\n    mov r9, QWORD PTR [rsp]\n    add rsp, 16\n    mov rcx, QWORD PTR [rsp]\n    mov r8, QWORD PTR [rsp + 8]\n    add rsp, 16\n    mov rsi, QWORD PTR [rsp]\n    mov rdx, QWORD PTR [rsp + 8]\n    add rsp, 16\n    test rdx, rdx\n    jz L_lph_len1\n    mov r10, QWORD PTR [rdx]\n    add r10, 1\n    jmp L_lph_setlen\nL_lph_len1:\n    mov r10d, 1\nL_lph_setlen:\n    mov QWORD PTR [rdi], r10\n    mov QWORD PTR [rdi + 8], r14\n    mov QWORD PTR [rdi + 16], rbx\n    pop rbp\n    ret\n")
 }
 
 // Module-level helper: L_list_tail_helper (hand-written x86-64)
@@ -551,7 +630,7 @@ fn emit_list_tail_helper() -> string {
 // successor pointer sits at chunk + chunk_data_bytes), but held in registers: a walk of k
 // steps allocates nothing. Out of range (or nil) aborts.
 fn emit_list_at_helper() -> string {
-    "L_list_at_helper:\n    test rdi, rdi\n    jz L_lat_oob\n    mov r8, QWORD PTR [rdi]\n    cmp rsi, r8\n    jae L_lat_oob\n    mov r9, QWORD PTR [rdi + 8]\n    mov r14, QWORD PTR [rdi + 16]\nL_lat_loop:\n    test rsi, rsi\n    jz L_lat_done\n    add r14, rdx\n    cmp r14, rcx\n    jl L_lat_step\n    mov r9, QWORD PTR [r9 + rcx]\n    xor r14d, r14d\nL_lat_step:\n    sub rsi, 1\n    jmp L_lat_loop\nL_lat_done:\n    lea rdi, [r9 + r14]\n    ret\nL_lat_oob:\n    push rbp\n    mov rbp, rsp\n    call abort\n"
+    "L_list_at_helper:\n    test rdi, rdi\n    jz L_lat_oob\n    mov r8, QWORD PTR [rdi]\n    cmp rsi, r8\n    jae L_lat_oob\n    mov r9, QWORD PTR [rdi + 8]\n    mov r14, QWORD PTR [rdi + 16]\nL_lat_loop:\n    test rsi, rsi\n    jz L_lat_done\n    add r14, rdx\n    cmp r14, rcx\n    jl L_lat_step\n    mov r9, QWORD PTR [r9 + rcx]\n    xor r14d, r14d\nL_lat_step:\n    sub rsi, 1\n    jmp L_lat_loop\nL_lat_done:\n    lea rdi, [r9 + r14]\n    ret\nL_lat_oob:\n    push rbp\n    mov rbp, rsp\n    call silica_rt_abort_list_index\n"
 }
 fn emit_list_helpers() -> string {
     concat(emit_list_prepend_helper(), concat("\n", concat(emit_list_tail_helper(), concat("\n", emit_list_length_helper()))))

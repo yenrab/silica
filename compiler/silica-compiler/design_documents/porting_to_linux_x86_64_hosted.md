@@ -251,7 +251,7 @@ operation into x86-64 text, so a site conversion is mechanical: `"    ADD dest, 
 | 3.3 | `silica_03_case_bool` | flag transparency between `CMP` and its consumer; short-circuit pushes |
 | 3.4 | `silica_04_print`, `silica_05_int64_wide` | the print helpers' `write` syscall path; 64-bit multiply/divide |
 | 3.5 | `silica_06_strings` | the mmap string arena (syscall 9) |
-| 3.6 | `silica_07_recursion_depth`, `silica_08_stack_guard` | frame size under deep recursion; the fault handler leaving a non-actor SIGSEGV alone (status 139) |
+| 3.6 | `silica_07_recursion_depth`, `silica_08_stack_guard` | frame size under deep recursion; the fault handler not taking a non-actor SIGSEGV for stack growth, and reporting it as a fatal fault (`[silica] fault at ...`, status 70, [runtime_failure_reporting.md](runtime_failure_reporting.md)) |
 | 3.7 | `silica_09_lists` … `silica_11_regions` | lists, records/tuples on frame regions off `rbp - SVR_AREA`, regions/refs/bufs, `L_region_grow` |
 | 3.8 | `silica_12_floats` | xmm arithmetic, `ucomisd` conditions, F16C, the digit-exact float printers |
 | 3.9 | `silica_13_checked`, `silica_14_wbt_map` | overflow flags, tuple returns, the stdlib map |
@@ -380,13 +380,14 @@ The Darwin → Linux column of the old appendix is done by the AArch64 port; wha
 
 | Item | `linux_aarch64` | `linux_x86_64` |
 | --- | --- | --- |
-| libc calls (`malloc`, `free`, `abort`, `pthread_*`, `sigaction`, `__sigsetjmp`, `siglongjmp`, `mmap`) | undecorated, `BL sym` | undecorated, `call sym`; `rsp` 16-aligned; `rax` = 0 vector registers before variadic calls |
+| libc calls (`malloc`, `free`, `_exit`, `pthread_*`, `sigaction`, `__sigsetjmp`, `siglongjmp`, `mmap`) | undecorated, `BL sym` | undecorated, `call sym`; `rsp` 16-aligned; `rax` = 0 vector registers before variadic calls |
 | Locks, waits | futex shims with `LDAXR`/`STLXR`, `svc` 98 | futex syscall 202, `lock cmpxchg` / `xchg` |
 | Thread id | `gettid` 178 | `gettid` 186 |
 | `write` | `MOV X8, #64; SVC #0`, `X8` saved around it | `mov eax, 1; syscall`; `rcx`, `r11` clobbered |
 | `mmap`, `munmap`, `mprotect` | 222, 215, 226; `MAP_ANONYMOUS = 0x20` | 9, 11, 10; `MAP_PRIVATE\|MAP_ANONYMOUS = 0x22`, `MAP_FIXED = 0x10` |
 | Process exit | `exit_group` 94 | `exit_group` 231 |
 | Fault bridge | `SIGSEGV` 11 / `SIGBUS` 7, `si_addr` +16, PC `ucontext+440`, SP `+432` | same signals and `si_addr`; `RIP` at `ucontext+168`, `RSP` at `+160`, `RBP` at `+120` |
+| Fatal reports (spec §15.4.5.5) | `silica_rt_print_fault_site` + `exit(70)` today; `_exit(70)` as decided 2026-09-19 (spec §15.4.5.5); runtime aborts `silica_rt_abort_with` (`BL`, pc = `X30 - 4`) + `_exit(71)` | the same routines; the abort's pc is the return address `- 5` (`call rel32`); see [runtime_failure_reporting.md](runtime_failure_reporting.md) |
 | `sigjmp_buf` | 312 bytes | 200 bytes (448-byte slot unchanged) |
 | Topology (`silica_rt_sysctlbyname`) | `sysconf`, `getauxval(AT_HWCAP)` | `sysconf`, `cpuid` leaves 1/7 (no HWCAP on x86) |
 | Relocations | `adrp` + `:lo12:` | `lea r, [rip + sym]`, `QWORD PTR [rip + sym]`, `OFFSET sym` |

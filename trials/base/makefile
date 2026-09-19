@@ -16,21 +16,8 @@ EXECUTABLES := $(CONFIG_FILES:%.silica=%)
 SAMS_FILES := $(addsuffix .sams, $(EXECUTABLES))
 OBJ_FILES := $(addsuffix .o, $(EXECUTABLES))
 
-# Rust toolchain linker (rust-lld) - optional override
-RUST_SYSROOT := $(shell rustc --print sysroot 2>/dev/null)
-RUST_TARGET := $(shell rustc -vV 2>/dev/null | sed -n "s/^host: *//p")
-RUST_LLD := $(RUST_SYSROOT)/lib/rustlib/$(RUST_TARGET)/bin/rust-lld
-
-# Use rust-lld if it exists, otherwise clang for linking
-LINKER := $(shell test -x "$(RUST_LLD)" && echo "$(RUST_LLD)" || echo "clang")
-ASSEMBLER := clang
-
-# macOS: linker flags for minimal executable (when using rust-lld)
-MACOS_SDK := $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
-MACOS_MIN_VERSION ?= 26.0
-ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
-LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
-LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
+# Assembler, linker and link flags come from trials/platform/<emit target>.mk, included by
+# silica_compiler.mk above (ASSEMBLER, ASFLAGS_macos, LINKER, RUST_LLD, LDFLAGS_rust-lld, LDFLAGS_clang).
 
 TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
 MSG_PREFIX := $(TRIAL_DIR)/

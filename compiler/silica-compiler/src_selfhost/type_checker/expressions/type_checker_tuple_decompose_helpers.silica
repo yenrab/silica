@@ -43,6 +43,8 @@ export case_extend_context_for_pattern/3;
 export case_pattern_matches_scrutinee/2;
 export case_pattern_has_named_binding/2;
 export case_pattern_binding_name/1;
+export case_tuple_elem_at/2;
+export case_count_tuple_elems/1;
 export case_merge_bool_coverage/2;
 export case_bool_coverage_from_pattern_str/2;
 export case_bool_coverage_ok/1;
@@ -1746,7 +1748,22 @@ fn case_pattern_has_named_binding(pi: { is_valid: boolean, pattern_kind: int64, 
             2 -> length_bytes(pi.bind_name) > 0;
             6 -> (length_bytes(pi.bind_name) > 0 and pi.bind_name != "_") or (length_bytes(pi.list_tail_name) > 0 and pi.list_tail_name != "_");
             8 -> case_record_pattern_has_nonwildcard_bind_loop(type_checker_record_types@record_case_inner_body(pi.bind_type), scrutinee_type);
+            9 -> {
+                p_inner: string <- substring(pi.bind_type, 1, length_bytes(pi.bind_type) - 1);
+                st: string <- strip_spaces(scrutinee_type);
+                case_tuple_pattern_has_named_binding(p_inner, substring(st, 1, length_bytes(st) - 1), 0, case_count_tuple_elems(p_inner))
+            };
             _: int64 -> false
+        }
+    }
+}
+
+fn case_tuple_pattern_has_named_binding(p_inner: string, s_inner: string, idx: int64, n: int64) -> boolean {
+    case idx >= n of {
+        true -> false;
+        false -> case case_pattern_has_named_binding(case_parse_pattern(case_tuple_elem_at(p_inner, idx)), case_tuple_elem_at(s_inner, idx)) of {
+            true -> true;
+            false -> case_tuple_pattern_has_named_binding(p_inner, s_inner, idx + 1, n)
         }
     }
 }
@@ -1790,7 +1807,28 @@ fn case_extend_context_for_pattern(context: { env: List[{ name: string, type_id:
                 false -> context;
                 true -> case_extend_record_fields_rem(context, type_checker_record_types@record_case_inner_body(pi.bind_type), scrutinee_type)
             };
+            // Tuple pattern `(:ok, n: int64)`: each named element binds its declared type (§3.5
+            // tuple_pattern, §4.1.7 tagged tuples); literal and wildcard elements bind nothing.
+            9 -> case case_pattern_matches_scrutinee(pi, scrutinee_type) of {
+                false -> context;
+                true -> {
+                    p_inner: string <- substring(pi.bind_type, 1, length_bytes(pi.bind_type) - 1);
+                    st: string <- strip_spaces(scrutinee_type);
+                    s_inner: string <- substring(st, 1, length_bytes(st) - 1);
+                    case_extend_tuple_pattern_elems(context, p_inner, s_inner, 0, case_count_tuple_elems(p_inner))
+                }
+            };
             _: int64 -> context
+        }
+    }
+}
+
+fn case_extend_tuple_pattern_elems(context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, p_inner: string, s_inner: string, idx: int64, n: int64) -> { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } {
+    case idx >= n of {
+        true -> context;
+        false -> {
+            ctx1: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- case_extend_context_for_pattern(context, case_tuple_elem_at(s_inner, idx), case_tuple_elem_at(p_inner, idx));
+            case_extend_tuple_pattern_elems(ctx1, p_inner, s_inner, idx + 1, n)
         }
     }
 }

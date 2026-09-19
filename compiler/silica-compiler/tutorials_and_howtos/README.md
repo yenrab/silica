@@ -75,6 +75,12 @@ When a **short facade** still exhausts RAM while compiling because it `use`s eve
 
 ---
 
+## [reducing_parameter_and_return_sizes.md](./reducing_parameter_and_return_sizes.md)
+
+Why **large inline records and tuples** in parameters and returns are the naive choice (one 8-byte slot per field, a separate heap object per nested group, copies at call and return, copied messages, shapes spelled at every use and carried in every interface), and seven **before/after** techniques for the few cases a **first-class data structure** does not fit: choose a structure first, pass only needed fields, split stages, return a status plus one value, keep state in an actor, use lists and structures instead of nested tuples, and narrow exports.
+
+---
+
 ## [building_apps_with_project_makefiles.md](./building_apps_with_project_makefiles.md)
 
 How to build a **general application** with the drop-in Makefiles under repository-root `project_makefiles/`: what to copy into your app root and subdirectories, prerequisites (`silica-compiler`, Make, Clang), `make` targets and options (`EXECUTABLE`, `SILICA_COMPILER`), how `silica.config` / topo sort / reclaim / link work, and a small multi-module example.

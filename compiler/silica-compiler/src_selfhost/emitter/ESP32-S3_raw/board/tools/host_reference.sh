@@ -16,6 +16,9 @@
 # Produce an app's expected.sout on the macOS host: compile the app with the host compiler, link
 # and run it, and write "<stdout><exit status>\n" -- the same text the trial harness writes and the
 # form run_on_board.py prints for the board. Run it once per app, before the app is tried on the board.
+# A process-fatal report line (spec §15.4.5.5) is written folded, "[silica] fault at <PTR>" or
+# "[silica] abort: <reason> at <PTR>" (trials/normalize_fatal_reports.awk), since its addresses and the
+# fields after them differ between the host and the board; compare with tools/compare_sout.sh.
 #
 #   host_reference.sh <apps/silica_NN_name> [host-compiler]
 #
@@ -35,6 +38,7 @@ selfhost=$(cd "$here/../../../.." && pwd)     # src_selfhost
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 compiler_root=$(cd "$here/../../../../.." && pwd)     # silica-compiler
+normalizer=$(cd "$compiler_root/../.." && pwd)/trials/normalize_fatal_reports.awk
 : > "$tmp/silica.config"
 if [ -f "$app/extra_sources.txt" ]; then
     while IFS= read -r rel; do
@@ -54,5 +58,5 @@ set +e
 ./prog > out.txt 2>&1
 status=$?
 set -e
-{ cat out.txt; echo "$status"; } > "$OLDPWD/$app/expected.sout"
+{ cat out.txt; echo "$status"; } | awk -f "$normalizer" > "$OLDPWD/$app/expected.sout"
 echo "wrote $app/expected.sout (status $status)"

@@ -44,17 +44,9 @@ include $(_SILICA_COMPILER_MK_DIR)linux_host.mk
 # for a build that emits for this host. Override it when the compiler reaches the trials
 # under some other name, e.g. through a wrapper:
 #   make integrate SILICA_EMIT_TARGET=linux_aarch64
-SILICA_HOST_UNAME_S := $(shell uname -s 2>/dev/null)
-SILICA_HOST_UNAME_M := $(shell uname -m 2>/dev/null)
-ifeq ($(SILICA_HOST_UNAME_S),Darwin)
-  SILICA_HOST_EMIT_TARGET := apple_silicon_mac
-else ifeq ($(SILICA_HOST_UNAME_S),Linux)
-  ifneq ($(filter $(SILICA_HOST_UNAME_M),aarch64 arm64),)
-    SILICA_HOST_EMIT_TARGET := linux_aarch64
-  else ifeq ($(SILICA_HOST_UNAME_M),x86_64)
-    SILICA_HOST_EMIT_TARGET := linux_x86_64
-  endif
-endif
+# The host's own emit target comes from the one platform table.
+include $(_SILICA_COMPILER_MK_DIR)../project_makefiles/platform/platforms.mk
+# (SILICA_HOST_EMIT_TARGET, SILICA_HOST_PLATFORM, SILICA_HOST_UNAME_S/_M are defined there.)
 
 _SILICA_COMPILER_NAME := $(notdir $(SILICA_COMPILER))
 SILICA_EMIT_TARGET ?= $(if $(filter silica-compiler-%,$(_SILICA_COMPILER_NAME)),$(patsubst silica-compiler-%,%,$(_SILICA_COMPILER_NAME)),$(SILICA_HOST_EMIT_TARGET))
@@ -73,6 +65,11 @@ SILICA_CROSS_NOTE := emit target $(SILICA_EMIT_TARGET) is not this host ($(SILIC
 # target's golden carries the target name, <stem>.<target>.ascomp, beside it. Recording a golden
 # writes the same name, so one checkout serves every target it has goldens for.
 ASCOMP_EXT := $(if $(filter apple_silicon_mac,$(SILICA_EMIT_TARGET)),.ascomp,.$(SILICA_EMIT_TARGET).ascomp)
+
+# Toolchain for the emitted target's code: trials/platform/<emit target>.mk (assembler, linker,
+# link flags, FFI fixture flags, golden suffix, skip list). Optional while the per-trial makefiles
+# still carry their own macOS values; once those lines are deleted this include is the only source.
+-include $(_SILICA_COMPILER_MK_DIR)platform/$(SILICA_EMIT_TARGET).mk
 
 # If silica-compiler is missing, run update_silica_compiler_link.bash and re-check.
 define ENSURE_SILICA_COMPILER
@@ -234,7 +231,7 @@ INTEGRATE_DOT_FAIL = { printf F >> "$$SILICA_INTEGRATE_ROOT/.integrate_fail_mark
 
 # One redraw of the live counter line on fd 9 (the terminal). $(1) = directory holding the marks.
 define INTEGRATE_DRAW_COUNTS
-{ pm=$$(stat -f %z "$(1).integrate_pass_marks" 2>/dev/null || stat -c %s "$(1).integrate_pass_marks" 2>/dev/null || echo 0); fm=$$(stat -f %z "$(1).integrate_fail_marks" 2>/dev/null || stat -c %s "$(1).integrate_fail_marks" 2>/dev/null || echo 0); \
+{ pm=$$(stat -c %s "$(1).integrate_pass_marks" 2>/dev/null || stat -f %z "$(1).integrate_pass_marks" 2>/dev/null || echo 0); fm=$$(stat -c %s "$(1).integrate_fail_marks" 2>/dev/null || stat -f %z "$(1).integrate_fail_marks" 2>/dev/null || echo 0); \
   printf '\r✅✅ %-8s ❌❌ %-8s' "$$pm" "$$fm" >&9; } 2>/dev/null || true
 endef
 
@@ -349,7 +346,7 @@ else
 			kill -0 "$$parent" 2>/dev/null || exit 0; \
 			if [ "$$tty" = 1 ]; then $(call INTEGRATE_DRAW_COUNTS,$(INTEGRATE_DIR)); fi; \
 			tick=$$((tick + 1)); [ $$((tick % 30)) -eq 0 ] || continue; \
-			p=$$(stat -f %m "$(INTEGRATE_DIR).integrate_pass_marks" 2>/dev/null || stat -c %Y "$(INTEGRATE_DIR).integrate_pass_marks" 2>/dev/null || echo 0); f=$$(stat -f %m "$(INTEGRATE_DIR).integrate_fail_marks" 2>/dev/null || stat -c %Y "$(INTEGRATE_DIR).integrate_fail_marks" 2>/dev/null || echo 0); \
+			p=$$(stat -c %Y "$(INTEGRATE_DIR).integrate_pass_marks" 2>/dev/null || stat -f %m "$(INTEGRATE_DIR).integrate_pass_marks" 2>/dev/null || echo 0); f=$$(stat -c %Y "$(INTEGRATE_DIR).integrate_fail_marks" 2>/dev/null || stat -f %m "$(INTEGRATE_DIR).integrate_fail_marks" 2>/dev/null || echo 0); \
 			last=$$p; [ "$$f" -gt "$$last" ] && last=$$f; now=$$(date +%s); \
 			if [ $$((now - last)) -ge "$$wd_secs" ]; then \
 				for reg in "$(INTEGRATE_RUNNING_DIR)"/*; do \

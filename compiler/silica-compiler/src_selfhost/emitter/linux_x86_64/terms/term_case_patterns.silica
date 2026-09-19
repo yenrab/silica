@@ -416,7 +416,20 @@ fn emit_record_field_subpat(sub_st: string, fty: string, scrut_reg: string, abs_
         false -> case prims_record@record_type_starts(sub_st) and prims_record@record_type_braces_balanced(sub_st) of {
             true -> {
                 inner_rem: string <- prims_record@record_case_inner_body(sub_st);
-                emit_record_case_rem(inner_rem, fty, scrut_reg, abs_off, lit_reg, fail_l, outer_acc, pools)
+                // Boxed layout (prims_record header): the field holds a pointer to the nested
+                // record. Load it into a fresh register, keep that register reserved while the
+                // nested fields are matched, and match the sub-pattern from offset 0 of it. The outer
+                // scrutinee register is reserved as well: the nested bindings are taken from the same
+                // pool, and one landing on it destroyed the base of every later outer field.
+                // (The runtime-laid-out supervisor reply, whose nested record is spliced inline,
+                // is matched by emit_record_case_rem before it gets here.)
+                mem_ref: string <- var@reg_offset_for_byte(scrut_reg, abs_off);
+                keep_scrut: string <- concat(outer_acc, var@reg_binding("%__silica_rec_scrut", scrut_reg));
+                tr: string <- var@next_free_int_reg(keep_scrut);
+                ld_ptr: string <- emit_ldr_record_field("int64", tr, mem_ref);
+                held: string <- concat(keep_scrut, var@reg_binding("%__silica_nested_rec", tr));
+                (asm_n: string, outer_n: string) <- emit_record_case_rem(inner_rem, fty, tr, 0, lit_reg, fail_l, held, pools);
+                (concat(ld_ptr, asm_n), outer_n)
             };
             false -> case fty == "boolean" and (sub_st == "true" or sub_st == "false") of {
                 true -> {
@@ -493,6 +506,7 @@ fn emit_record_case_rem(rem: string, type_t: string, scrut_reg: string, base_off
                 false -> {
                     fo: int64 <- prims_record@offset_bytes_before_field(type_t, fname);
                     fty: string <- prims_record@find_field_type_in_record(type_t, fname);
+                    inline_rem: boolean <- prims_record@record_type_keeps_inline_layout(type_t);
                     abs_off: int64 <- case fo < 0 of {
                         true -> -1;
                         false -> base_off + fo
@@ -504,7 +518,12 @@ fn emit_record_case_rem(rem: string, type_t: string, scrut_reg: string, base_off
                         };
                         false -> {
                             sub_st: string <- prims_record@strip_spaces_rt(sub);
-                            (asm_f: string, outer_f: string) <- emit_record_field_subpat(sub_st, fty, scrut_reg, abs_off, lit_reg, fail_l, outer_acc, pools);
+                            // The supervisor reply record is laid out inline by the actor runtime: a nested
+                            // record sub-pattern there is matched in place, at its absolute offset.
+                            (asm_f: string, outer_f: string) <- case inline_rem and prims_record@record_type_starts(sub_st) and prims_record@record_type_braces_balanced(sub_st) of {
+                                true -> emit_record_case_rem(prims_record@record_case_inner_body(sub_st), fty, scrut_reg, abs_off, lit_reg, fail_l, outer_acc, pools);
+                                false -> emit_record_field_subpat(sub_st, fty, scrut_reg, abs_off, lit_reg, fail_l, outer_acc, pools)
+                            };
                             (asm_r: string, outer_r: string) <- emit_record_case_rem(rest, type_t, scrut_reg, base_off, lit_reg, fail_l, outer_f, pools);
                             (concat(asm_f, asm_r), outer_r)
                         }
@@ -611,7 +630,9 @@ fn list_cons_emit_head_ldr(scrut_reg: string, head_t: string, dest: string) -> s
     ld_chunk: string <- x86_mem@x86_ldr("X10", concat("[", concat(scrut_reg, ", #8]")));
     ld_cursor: string <- x86_mem@x86_ldr("X11", concat("[", concat(scrut_reg, ", #16]")));
     add_addr: string <- x86_isa@x86_add("X10", "X10", "X11");
-    case reg_conventions@is_aggregate_struct_or_tuple_return_type(head_t) of {
+    // Boxed layout: only a child-spec head is spliced into its cell (the actor runtime reads
+    // it there); every other aggregate head is a pointer word and is loaded like a scalar.
+    case prims_list@list_elem_is_inline_aggregate(head_t) of {
         true -> concat(ld_chunk, concat(ld_cursor, concat(add_addr, x86_isa@x86_mov(dest, "X10"))));
         false -> {
             ed: string <- case reg_conventions@is_narrow_type(head_t) of {

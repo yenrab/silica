@@ -51,6 +51,7 @@ export chunk_elem_slot_bytes/1;
 export chunk_data_bytes/1;
 export chunk_elem_slot_bytes_from_list_t/1;
 export chunk_data_bytes_from_list_t/1;
+export list_elem_is_inline_aggregate/1;
 
 
 // Local SIRTerm arena helpers (sir_ast node accessors are not exported).
@@ -332,14 +333,23 @@ fn element_type_is_child_spec_record(elem_t: string) -> boolean {
 fn chunk_elem_slot_bytes(elem_t: string) -> int64 {
     case reg_conventions@is_inline_struct_type(elem_t) of {
         true -> {
+            // Boxed layout (prims_record header): a record element is one pointer word to the
+            // region copy emit_list_cons makes, the same word a generic List[ItemType] cell holds.
+            // The lists the actor runtime reads or builds itself are the exception and keep the
+            // record spliced into the cell: child-spec lists (+8 for the hidden trampoline word in
+            // the initial_state form) and the supervisor's which_children list of child-info
+            // records (_silica_rt_supervisor_which_children writes 32-byte cells).
             visible_bytes: int64 <- prims_record@record_type_list_cons_payload_bytes(elem_t);
             case element_type_is_child_spec_record(elem_t) of {
                 true -> visible_bytes + 8;
-                false -> visible_bytes
+                false -> case element_type_is_runtime_inline_record(elem_t) of {
+                    true -> visible_bytes;
+                    false -> 8
+                }
             }
         };
         false -> case reg_conventions@is_tuple_type(elem_t) of {
-            true -> prims_tuple@flat_alloc_size(prims_tuple@count_type_elements(elem_t));
+            true -> 8;
             false -> case elem_t of {
                 "int8"  -> 1;
                 "uint8" -> 1;
@@ -384,6 +394,66 @@ fn list_element_payload_bytes(elem_t: string) -> int64 {
     chunk_elem_slot_bytes(elem_t)
 }
 
+
+// Only a record whose list the actor runtime reads or builds is spliced into its cell (child
+// specs, supervisor child info); every other aggregate element is a pointer word, so `.head`, `list_at` and `[h | t]`
+// load it like a scalar. See chunk_elem_slot_bytes.
+fn list_elem_is_inline_aggregate(elem_t: string) -> boolean {
+    reg_conventions@is_aggregate_struct_or_tuple_return_type(elem_t)
+        and (element_type_is_child_spec_record(elem_t) or element_type_is_runtime_inline_record(elem_t))
+}
+
+// Element records whose list cells the actor runtime lays out itself (besides the initial_state
+// child spec above): the `start:`-form child spec, and the supervisor child-info record
+// { id, agent_type, child, restart } of which_children replies.
+fn element_type_is_runtime_inline_record(elem_t: string) -> boolean {
+    prims_record@record_type_is_start_child_spec(elem_t)
+        or (prims_record@count_record_fields(elem_t) == 4
+            and length_bytes(prims_record@find_field_type_in_record(elem_t, "id")) > 0
+            and length_bytes(prims_record@find_field_type_in_record(elem_t, "agent_type")) > 0
+            and length_bytes(prims_record@find_field_type_in_record(elem_t, "child")) > 0
+            and length_bytes(prims_record@find_field_type_in_record(elem_t, "restart")) > 0)
+}
+
+// Bytes the region copy of one boxed element carries: the element's own flat size.
+fn list_elem_box_bytes(elem_t: string) -> int64 {
+    case reg_conventions@is_inline_struct_type(elem_t) of {
+        true -> prims_record@record_type_value_flat_byte_size(elem_t);
+        false -> case reg_conventions@is_tuple_type(elem_t) of {
+            true -> prims_tuple@flat_alloc_size(prims_tuple@count_type_elements(elem_t));
+            false -> 0
+        }
+    }
+}
+
+fn list_head_box_copy_words(i: int64, words: int64) -> string {
+    case i >= words of {
+        true -> "";
+        false -> {
+            off: string <- atom_table@int64_to_decimal_string(i * 8);
+            one: string <- concat(xt_mem@xt_ldr("X3", concat("[X1, #", concat(off, "]"))), xt_mem@xt_str("X3", concat("[X0, #", concat(off, "]"))));
+            concat(one, list_head_box_copy_words(i + 1, words))
+        }
+    }
+}
+
+// Box the aggregate head in X1 before the prepend: copy it to the region and leave the copy's
+// pointer in X1, keeping X2 (the tail). The cell then stores that word. Copying (rather than
+// storing the pointer we were handed) is what keeps a let-bound, frame-resident record safe in
+// the list after the frame is gone, exactly as the old inline memcpy did.
+fn emit_list_head_box(nbytes: int64) -> string {
+    case nbytes <= 0 of {
+        true -> "";
+        false -> {
+            save: string <- xt_mem@xt_stp("X1", "X2", "[SP, #-16]!");
+            alloc: string <- concat(xt_isa@xt_movi("X0", nbytes), xt_isa@xt_call("_silica_rt_region_alloc"));
+            restore: string <- xt_mem@xt_ldp("X1", "X2", "[SP], #16");
+            copy: string <- list_head_box_copy_words(0, nbytes / 8);
+            concat(save, concat(alloc, concat(restore, concat(copy, xt_isa@xt_mov("X1", "X0")))))
+        }
+    }
+}
+
 fn emit_list_nil(dest: string) -> string {
     xt_isa@xt_mov(dest, "#0")
 }
@@ -396,10 +466,18 @@ fn emit_list_cons(term: { nodes: List[{ kind: int64, type_name: string, value: s
     et: string <- sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name;
     es: int64 <- chunk_elem_slot_bytes(et);
     cd: int64 <- chunk_data_bytes(et);
-    agg: int64 <- case reg_conventions@is_aggregate_struct_or_tuple_return_type(et) of { true -> 1; false -> 0 };
+    is_agg: boolean <- reg_conventions@is_aggregate_struct_or_tuple_return_type(et);
+    // Boxed layout: an aggregate head is copied to the region here and its pointer is stored as
+    // a plain word; only a child-spec head is still memcpy'd into the cell (agg flag = 1).
+    inline_agg: boolean <- list_elem_is_inline_aggregate(et);
+    box_asm: string <- case is_agg and inline_agg == false of {
+        true -> emit_list_head_box(list_elem_box_bytes(et));
+        false -> ""
+    };
+    agg: int64 <- case inline_agg of { true -> 1; false -> 0 };
     packed: string <- xt_isa@xt_movi("X0", es + cd * 65536 + agg * 4294967296);
     bl: string <- xt_isa@xt_call("silica_rt_list_prepend");
-    concat(concat(packed, bl), xt_isa@xt_mov(dest, "X0"))
+    concat(box_asm, concat(concat(packed, bl), xt_isa@xt_mov(dest, "X0")))
 }
 
 // X9 = list handle pointer.  Dereference handle → chunk → cursor → element.
@@ -407,7 +485,7 @@ fn emit_list_head(term: { nodes: List[{ kind: int64, type_name: string, value: s
     load_chunk: string <- xt_mem@xt_ldr("X10", "[X9, #8]");
     load_cursor: string <- xt_mem@xt_ldr("X11", "[X9, #16]");
     addr: string <- xt_isa@xt_add("X10", "X10", "X11");
-    case reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(term).type_name) of {
+    case list_elem_is_inline_aggregate(sir_term_root_node(term).type_name) of {
         true -> concat(load_chunk, concat(load_cursor, concat(addr, xt_isa@xt_mov(dest, "X10"))));
         false -> {
             ed: string <- case reg_conventions@is_narrow_type(sir_term_root_node(term).type_name) of {
@@ -446,7 +524,7 @@ fn emit_list_at(term: { nodes: List[{ kind: int64, type_name: string, value: str
     // silica_rt_list_at(X0 = handle, X1 = index, X2 = slot | chunk << 16) -> X0 = element address
     setup: string <- concat(xt_isa@xt_mov("X0", "X9"), concat(xt_isa@xt_mov("X1", "X10"), xt_isa@xt_movi("X2", es + cd * 65536)));
     bl: string <- concat(xt_isa@xt_call("silica_rt_list_at"), xt_isa@xt_mov("X10", "X0"));
-    case reg_conventions@is_aggregate_struct_or_tuple_return_type(sir_term_root_node(term).type_name) of {
+    case list_elem_is_inline_aggregate(sir_term_root_node(term).type_name) of {
         true -> concat(setup, concat(bl, xt_isa@xt_mov(dest, "X10")));
         false -> {
             ed: string <- case reg_conventions@is_narrow_type(sir_term_root_node(term).type_name) of {

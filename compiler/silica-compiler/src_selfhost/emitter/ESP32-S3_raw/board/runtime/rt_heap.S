@@ -18,8 +18,9 @@
 // _silica_heap_end), which rt_start zeroes before main runs.
 //
 // This is bring-up scaffolding with a known limit, not the region allocator the language needs:
-// free is a no-op, so a long-running program eventually exhausts the heap. Exhaustion is a hard
-// stop (message after the exit marker, status 134) rather than a NULL the caller might not check.
+// free is a no-op, so a long-running program eventually exhausts the heap. Exhaustion is a runtime
+// abort ("[silica] abort: heap exhausted at 0x...", status 71) rather than a NULL the caller might
+// not check.
 //
 //   silica_rt_heap_init()          reset the bump pointer (called once by rt_start)
 //   silica_rt_alloc(size) -> ptr   8-byte aligned, zeroed; size is a 32-bit byte count
@@ -68,11 +69,7 @@ silica_rt_alloc:
     mov     a2, a4
     movi    a3, 0                 // the high word of the pair the emitter reads as X0
     retw
-1:  movi    a10, 134
-    call8   silica_rt_exit_marker
-    movi    a10, silica_rt_heap_oom_msg
-    call8   silica_rt_puts
-    call8   silica_rt_halt
+1:  call8   silica_rt_abort_heap_exhausted   // runtime abort, status 71; allocates nothing
     retw
     .size   silica_rt_alloc, . - silica_rt_alloc
 
@@ -115,7 +112,7 @@ silica_rt_region_grow:
     mov     a9, a8
 1:  s32i    a9, a1, 0             // keep the size across the call
     addi    a10, a9, 32
-    call8   silica_rt_alloc       // never returns 0 (exhaustion halts)
+    call8   silica_rt_alloc       // never returns 0 (exhaustion aborts)
     l32i    a9, a1, 0
     addi    a8, a10, 32           // data start
     add     a9, a8, a9            // data end
@@ -169,6 +166,3 @@ silica_rt_heap_used:
     retw
     .size   silica_rt_heap_used, . - silica_rt_heap_used
 
-    .section .rodata.silica_rt_heap, "a"
-silica_rt_heap_oom_msg:
-    .asciz  " heap exhausted\n"

@@ -20,20 +20,10 @@ HOST_UNAME_M := $(shell uname -m 2>/dev/null)
 # directories that actually exist under emitter/. Computed whether or not TARGET is given:
 # the Makefile's publish step compares TARGET with it (a host build installs as the selfhost,
 # any other target as its own kind -- see install_compiler.bash).
-TARGET_CANDIDATES :=
-ifeq ($(HOST_UNAME_S),Darwin)
-  ifeq ($(HOST_UNAME_M),arm64)
-    TARGET_CANDIDATES := apple_silicon_mac
-  endif
-endif
-ifeq ($(HOST_UNAME_S),Linux)
-  ifneq ($(filter $(HOST_UNAME_M),aarch64 arm64),)
-    TARGET_CANDIDATES := linux_aarch64
-  endif
-  ifeq ($(HOST_UNAME_M),x86_64)
-    TARGET_CANDIDATES := linux_x86_64
-  endif
-endif
+# The host default comes from the one platform table (project_makefiles/platform/platforms.mk):
+# uname -s / uname -m -> SILICA_HOST_EMIT_TARGET (empty when this host has no emitter yet).
+include $(THIS_DIR)../../../project_makefiles/platform/platforms.mk
+TARGET_CANDIDATES := $(SILICA_HOST_EMIT_TARGET)
 HOST_DEFAULT_TARGET := $(firstword $(filter $(TARGET_CANDIDATES),$(ALLOWED_TARGETS)))
 # Default TARGET to the current host platform when the user does not pass
 # TARGET=... on the command line or via the environment.

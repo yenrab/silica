@@ -631,7 +631,11 @@ fn sir_infer_binop_left_preferred(expr: { nodes: List[{ kind: int64, value: stri
                 false -> sir_negate_type_if_call(right_e)
             };
             case sir_is_arith_op(op) or sir_is_cmp_op(op) of {
-                true -> case sir_is_floatish_type(lt) of {
+                // An unsuffixed float literal infers float32; beside a float binding of another width
+                // (`0.0 < v` with v: float64) the binding's width wins, as the type checker accepts it.
+                true -> case sir_is_floatish_type(lt) and sir_is_floatish_type(rt) and lt != rt and type_checker_expressions_helpers@expr_kind(left_e) == 0 and type_checker_expressions_helpers@expr_kind(right_e) != 0 of {
+                    true -> rt;
+                    false -> case sir_is_floatish_type(lt) of {
                     true -> lt;
                     false -> case sir_is_floatish_type(rt) of {
                         true -> rt;
@@ -639,6 +643,7 @@ fn sir_infer_binop_left_preferred(expr: { nodes: List[{ kind: int64, value: stri
                             true -> lt;
                             false -> rt
                         }
+                    }
                     }
                 };
                 false -> lt
@@ -669,12 +674,29 @@ fn sir_case_extend_context_for_pattern(context: { env: List[{ name: string, type
     pi: { is_valid: boolean, pattern_kind: int64, bool_lit: boolean, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } <- type_checker_tuple_decompose_helpers@case_parse_pattern(pat_str);
     case pi.is_valid of {
         false -> context;
-        true -> case length_bytes(pi.bind_name) > 0 and pi.bind_name != "_" of {
+        // Tuple pattern: bind each named element with its declared type (type checker: case_extend_tuple_pattern_elems).
+        true -> case pi.pattern_kind == 9 of {
+            true -> {
+                p_inner: string <- substring(pi.bind_type, 1, length_bytes(pi.bind_type) - 1);
+                sir_case_extend_tuple_elems(context, p_inner, 0, type_checker_tuple_decompose_helpers@case_count_tuple_elems(p_inner))
+            };
+            false -> case length_bytes(pi.bind_name) > 0 and pi.bind_name != "_" of {
             true -> { env: sir_env_add_symbol(context.env, pi.bind_name, case length_bytes(pi.bind_type) > 0 of { true -> pi.bind_type; false -> scrutinee_type }) };
             false -> case length_bytes(pi.list_tail_name) > 0 and pi.list_tail_name != "_" of {
                 true -> { env: sir_env_add_symbol(context.env, pi.list_tail_name, case length_bytes(pi.list_tail_type) > 0 of { true -> pi.list_tail_type; false -> scrutinee_type }) };
                 false -> context
             }
+            }
+        }
+    }
+}
+
+fn sir_case_extend_tuple_elems(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, p_inner: string, idx: int64, n: int64) -> { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] } {
+    case idx >= n of {
+        true -> context;
+        false -> {
+            ctx1: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] } <- sir_case_extend_context_for_pattern(context, "", type_checker_tuple_decompose_helpers@case_tuple_elem_at(p_inner, idx));
+            sir_case_extend_tuple_elems(ctx1, p_inner, idx + 1, n)
         }
     }
 }

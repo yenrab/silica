@@ -27,6 +27,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 die() {
     echo "install_compiler: $*" >&2
@@ -36,6 +37,13 @@ die() {
 # Must agree with detect_local_platform in update_silica_compiler_link.bash.
 detect_local_platform() {
     local os arch distro id_like
+    # The one platform table decides when it is present (project_makefiles/platform/platforms.mk);
+    # the case statement below is the fallback for a checkout without it.
+    local table="$ROOT_DIR/project_makefiles/platform/platforms.mk" from_table
+    if [[ -f "$table" ]] && from_table="$(MAKEFLAGS= MAKELEVEL= make -s --no-print-directory -f "$table" host-platform 2>/dev/null)" && [[ -n "$from_table" ]]; then
+        echo "$from_table"
+        return 0
+    fi
     os="$(uname -s)"
     arch="$(uname -m)"
 

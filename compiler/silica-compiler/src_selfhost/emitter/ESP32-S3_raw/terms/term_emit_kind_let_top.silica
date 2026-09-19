@@ -139,7 +139,14 @@ fn emit_kind_let_toplevel(term: { nodes: List[{ kind: int64, type_name: string, 
                             base_stack_tl: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_make" of {
                                 true -> term_aggregate_helpers@aggregate_callee_return_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
                                 false -> case length_bytes(tuple_sret_outer_tl) > 0 of {
-                                    true -> 0;
+                                    // The call emitter reserves a caller sret slab for every tuple-returning
+                                    // user call unless the enclosing function passes its own X8 through
+                                    // (`_callee_sret`); a behaviour's `_tuple_sret` reply buffer is not that,
+                                    // so the let must pop what the call pushed. Returning 0 here left the slab
+                                    // under the callee-saved restores: `(status, value) <- safe_divide(100, msg)`
+                                    // in a behaviour returned to a garbage LR (exit 70).
+                                    // See trials/supervisors_addition/tuple_unpack_in_behaviour.
+                                    true -> term_aggregate_helpers@let_user_call_tuple_sret_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner), bound.outer_reg, bound.bound_name);
                                     false -> {
                                         agg_tl: int64 <- term_aggregate_helpers@aggregate_callee_return_stack_bytes(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
                                         case agg_tl > 0 of {

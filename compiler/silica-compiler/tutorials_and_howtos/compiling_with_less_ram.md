@@ -1,5 +1,7 @@
 # Using less RAM when compiling with `silica-compiler`
 
+> **Note.** Splitting an application into many compilation units is a work-around for the compiler's memory use, not the language's model: a Silica application is one compilation unit. See [APPLICATION_IS_ONE_COMPILATION_UNIT.md](../design_documents/APPLICATION_IS_ONE_COMPILATION_UNIT.md).
+
 Large Silica programs can push host memory during compile even when the finished binary is modest. Peak RAM is dominated by **how much source the compiler holds at once** for a unit (its own AST plus whatever it needs from dependencies), not by how clever your algorithms are at runtime.
 
 This how-to is for **general applications** you build with `silica-compiler`. The same tactics are how the self-hosted compiler tree stays buildable; you can apply them to any multi-module app.

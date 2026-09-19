@@ -75,7 +75,9 @@ executables: objects
 # integrate: compile, diff .sams vs .ascomp, run, diff .sout vs .scout.
 # Trials with <base>.wait_for_exit print one or more "done" markers and then call wait_for_exit/0; they are
 # run through run_integration_exit_after_marker.py, which sends "exit\n" after seeing the marker count.
-# Unmarked trials use the ordinary direct executable runner.
+# Unmarked trials use the ordinary direct executable runner. Outside the .scout.multiset trials, .sout vs
+# .scout goes through compare_scout_normalized.sh: diff -Bw after folding the addresses in the
+# process-fatal report lines (spec §15.4.5.5) with ../normalize_fatal_reports.awk.
 integrate-run:
 	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
 	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
@@ -203,10 +205,10 @@ integrate-run:
 						$(INTEGRATE_DOT_OK); \
 						ok=$$((ok + 1)); \
 					fi; \
-				elif ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
-					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
+				elif ! bash "$(THIS_DIR)compare_scout_normalized.sh" "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
+					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout (normalized compare)"; \
 					$(INTEGRATE_DOT_FAIL); \
-					diff -Bw "$$base.sout" "$$base.scout" || true; \
+					bash "$(THIS_DIR)compare_scout_normalized.sh" "$$base.sout" "$$base.scout" || true; \
 					ko=$$((ko + 1)); failed=1; \
 				else \
 					echo "✅✅ $(MSG_PREFIX)$$base output matches .scout"; \

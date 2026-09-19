@@ -38,8 +38,11 @@ one, is an error (exit 4) so a caller never runs on an unexpected device.
 The runtime (board/runtime/rt_start.S, rt_console.S) brackets program output with
     \\x02SILICA:START\\x03 ... \\x02SILICA:EXIT:<status>\\x03 [diagnostic]
 This prints (or writes to --out) exactly what the trial harness writes to a .sout file:
-the program's bytes followed by the status on its own line. Anything after the exit marker
-(fault details) goes to stderr.
+the program's bytes followed by the status on its own line. A process-fatal report (spec
+§15.4.5.5: "[silica] fault at 0x<pc>..." with status 70, "[silica] abort: <reason> at 0x<pc>"
+with status 71) is part of the program's bytes, as the host's stderr line is part of a .sout.
+Anything after the exit marker (the board-only fault details) goes to stderr. Compare with an
+expected.sout through tools/compare_sout.sh, which folds the addresses in those report lines.
 
 Exit status: 0 a marker pair was seen; 3 no exit marker before the timeout (the raw console goes
 to stderr); 4 the board is unavailable (no or ambiguous port, cannot connect, not an ESP32-S3,

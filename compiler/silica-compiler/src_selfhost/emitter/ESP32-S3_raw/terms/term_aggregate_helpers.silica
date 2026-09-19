@@ -20,6 +20,7 @@
 use atom_table;
 use prims_tuple;
 use prims_checked_int64;
+use prims_list;
 use prims_record;
 use reg_conventions;
 use term_child_spec;
@@ -43,7 +44,7 @@ export tuple_flat_memref_at/2;
 export tuple_make_rec_flat_outer_alloc_bytes/2;
 export tuple_make_rec_flat_nested_trim_bytes/2;
 export flat_record_sum_nested_reserved_in_outer/1;
-export record_field_inline_pointer_value/2;
+export record_field_inline_pointer_value/3;
 export let_user_call_tuple_sret_stack_bytes/3;
 export branch_tail_user_call_sret_stack_bytes/3;
 export let_suppress_base_stack_overlay_rec_flat/2;
@@ -65,7 +66,7 @@ export call_tuple_args_dealloc_bytes/1;
 export flat_tuple_total_alloc/1;
 export agg_alloc_inner/1;
 export flat_record_sum_nested_inners/1;
-export record_field_nested_return_bytes/3;
+export record_field_nested_return_bytes/4;
 export flat_record_total_alloc/1;
 export flat_tuple_nested_alloc/3;
 export flat_tuple_dealloc_size/1;
@@ -251,9 +252,14 @@ fn flat_record_sum_nested_reserved_in_outer(term: { nodes: List[{ kind: int64, t
                 here: int64 <- case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make" and prims_tuple@count_flat_elements(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) == 2 of {
                     true -> 0;
                     false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 4 or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 5 of {
-                        true -> case record_field_call_reclaims_own_sret(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of {
-                            true -> 0;
-                            false -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name)
+                        // Boxed layout: a call's aggregate result is a heap pointer (a record
+                        // callee promotes; a tuple call reclaims its own sret slab) and the field
+                        // stores that pointer, so nothing is reserved or memcpy'd in this frame.
+                        true -> case prims_record@record_type_keeps_inline_layout(term_sir_helpers@sir_term_root_node(term).type_name) and record_field_call_reclaims_own_sret(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) == false of {
+                            // A runtime-laid-out record still memcpy's a record-returning call's result
+                            // into bytes reserved here (legacy inline rules).
+                            true -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name);
+                            false -> 0
                         };
                         false -> 0
                     }
@@ -281,8 +287,15 @@ fn record_field_call_reclaims_own_sret(elem: { nodes: List[{ kind: int64, type_n
     (term_sir_helpers@sir_term_root_node(elem).kind == 4 or term_sir_helpers@sir_term_root_node(elem).kind == 5) and reg_conventions@is_tuple_type(term_sir_helpers@sir_term_root_node(elem).type_name)
 }
 
-fn record_field_inline_pointer_value(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fty: string) -> boolean {
-    case reg_conventions@is_inline_struct_type(fty) of {
+// Boxed layout (prims_record header): a record-typed field holds a pointer, never an inline
+// copy, so no field value is ever memcpy'd into the outer slab. A variable is copied to the
+// region first (record_field_nested_return_bytes); calls and projections already hand back
+// heap pointers.
+fn record_field_inline_pointer_value(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fty: string, R: string) -> boolean {
+    // The runtime-laid-out records (prims_record@record_type_keeps_inline_layout) keep the legacy
+    // inline copy: an inline-struct field value from a variable, call or projection is memcpy'd
+    // into the outer slab (the supervisor reply's child_info).
+    case prims_record@record_type_keeps_inline_layout(R) and reg_conventions@is_inline_struct_type(fty) of {
         false -> false;
         true -> case term_sir_helpers@sir_term_root_node(elem).kind == 1 of {
             true -> true;
@@ -382,13 +395,27 @@ fn record_proj_skip_lets(term: { nodes: List[{ kind: int64, type_name: string, v
 // base reports the record it produced, so projecting an embedded substruct out of `slots.head` takes
 // the same address-of path a variable base does.
 
+// Boxed layout: a record-typed field holds a POINTER, so `s.end.x` is the projection `s.end`
+// (a pointer, evaluated into a register like `slots.head.token.kind` already was) followed by a
+// load at x's offset. Only the supervisor reply record, laid out by the actor runtime with
+// child_info spliced inline, still folds its links into a single offset from the root variable.
+fn record_proj_link_is_inline(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
+    case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_proj" of {
+        false -> false;
+        true -> prims_record@record_type_keeps_inline_layout(record_proj_root_record_type(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)))
+    }
+}
+
 fn record_proj_root_record_type(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
     case term_sir_helpers@sir_term_root_node(term).kind == 6 and term_sir_helpers@sir_term_root_node(term).name == "record_proj" of {
         false -> "";
         true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 of {
             true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name;
             false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_proj" of {
-                true -> record_proj_root_record_type(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                true -> case record_proj_link_is_inline(term) of {
+                    true -> record_proj_root_record_type(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
+                    false -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name
+                };
                 false -> term_sir_helpers@sir_term_root_node(record_proj_skip_lets(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))).type_name
             }
         }
@@ -402,7 +429,7 @@ fn record_proj_chain_root_var_name(term: { nodes: List[{ kind: int64, type_name:
         false -> "";
         true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 of {
             true -> term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name;
-            false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_proj" of {
+            false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_proj" and record_proj_link_is_inline(term) of {
                 true -> record_proj_chain_root_var_name(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
                 false -> ""
             }
@@ -415,7 +442,7 @@ fn record_proj_chain_byte_offset(term: { nodes: List[{ kind: int64, type_name: s
         false -> 0;
         true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 of {
             true -> prims_record@offset_bytes_before_field(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name, term_sir_helpers@sir_term_root_node(term).value);
-            false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_proj" of {
+            false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_proj" and record_proj_link_is_inline(term) of {
                 true -> {
                     pre: int64 <- record_proj_chain_byte_offset(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
                     here: int64 <- prims_record@offset_bytes_before_field(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name, term_sir_helpers@sir_term_root_node(term).value);
@@ -438,7 +465,7 @@ fn record_proj_chain_byte_offset(term: { nodes: List[{ kind: int64, type_name: s
 // base is classified (and evaluated) once, whatever it turns out to be.
 
 fn record_proj_chain_base_term(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_proj" of {
+    case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_proj" and record_proj_link_is_inline(term) of {
         true -> record_proj_chain_base_term(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
         false -> term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)
     }
@@ -452,7 +479,7 @@ fn record_proj_chain_base_is_value(term: { nodes: List[{ kind: int64, type_name:
         false -> false;
         true -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 1 of {
             true -> false;
-            false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_proj" of {
+            false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "record_proj" and record_proj_link_is_inline(term) of {
                 true -> record_proj_chain_base_is_value(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner));
                 false -> true
             }
@@ -708,9 +735,14 @@ fn flat_record_sum_nested_inners(term: { nodes: List[{ kind: int64, type_name: s
                 here: int64 <- case (term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 6 and term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).name == "tuple_make") or inner_inline_rec of {
                     true -> 0;
                     false -> case term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 4 or term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).kind == 5 of {
-                        true -> case record_field_call_reclaims_own_sret(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of {
-                            true -> 0;
-                            false -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name)
+                        // Boxed layout: a call's aggregate result is a heap pointer (a record
+                        // callee promotes; a tuple call reclaims its own sret slab) and the field
+                        // stores that pointer, so nothing is reserved or memcpy'd in this frame.
+                        true -> case prims_record@record_type_keeps_inline_layout(term_sir_helpers@sir_term_root_node(term).type_name) and record_field_call_reclaims_own_sret(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) == false of {
+                            // A runtime-laid-out record still memcpy's a record-returning call's result
+                            // into bytes reserved here (legacy inline rules).
+                            true -> term_user_call_abi@user_call_aggregate_return_alloc_bytes(term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)).type_name);
+                            false -> 0
                         };
                         false -> agg_alloc_inner(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner))
                     }
@@ -739,10 +771,31 @@ fn flat_record_sum_nested_inners(term: { nodes: List[{ kind: int64, type_name: s
 // it is memcpy'd out of the returned pointer into space the outer SUB already reserved -- so it is
 // counted once up front, for every field, via flat_record_sum_nested_reserved_in_outer at the
 // emit_flat_record_stores call. Counting it here as well would shift the fields after it twice.
-fn record_field_nested_return_bytes(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fty: string, elem_is_agg: boolean) -> int64 {
+fn record_field_nested_return_bytes(elem: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fty: string, elem_is_agg: boolean, R: string) -> int64 {
     case elem_is_agg of {
         true -> agg_alloc_inner(elem);
-        false -> 0
+        // Boxed layout: an aggregate VARIABLE stored into a field is copied to the region first
+        // (the let that bound it may still hold it in this frame, and the outer record may
+        // outlive the frame) and the field holds the copy's pointer. The size comes from the
+        // field type, the same authority the readers use. Calls, projections and case results
+        // already hand back heap pointers and are stored as they are.
+        false -> case term_sir_helpers@sir_term_root_node(elem).kind == 1 and prims_record@record_type_keeps_inline_layout(R) == false of {
+            true -> aggregate_type_flat_bytes(fty);
+            false -> 0
+        }
+    }
+}
+
+// Flat byte size of a record or tuple type (0 for anything else): what a region copy of one
+// value of that type must carry.
+fn aggregate_type_flat_bytes(fty: string) -> int64 {
+    t: string <- prims_record@strip_spaces_rt(fty);
+    case reg_conventions@is_inline_struct_type(t) of {
+        true -> prims_record@record_type_value_flat_byte_size(t);
+        false -> case reg_conventions@is_tuple_type(t) of {
+            true -> prims_tuple@flat_alloc_size(prims_tuple@count_type_elements(t));
+            false -> 0
+        }
     }
 }
 
@@ -853,6 +906,15 @@ fn term_is_checked_int64_prim(term: { nodes: List[{ kind: int64, type_name: stri
     term_sir_helpers@sir_term_root_node(term).kind == 6 and prims_checked_int64@is_checked_int64_prim(term_sir_helpers@sir_term_root_node(term).name)
 }
 
+// A list_at result is the element's region pointer under the boxed layout (prims_list
+// chunk_elem_slot_bytes); only an inline child-spec cell still needs its bytes copied out.
+fn list_at_result_promote_bytes(elem_t: string) -> int64 {
+    case prims_list@list_elem_is_inline_aggregate(elem_t) of {
+        true -> prims_record@record_type_value_flat_byte_size(elem_t);
+        false -> 0
+    }
+}
+
 // Promote size counterpart of aggregate_callee_return_stack_bytes: a make in a
 // frame region pops 0 bytes but still needs its real size copied to the heap
 // before the pointer leaves the frame.
@@ -860,7 +922,11 @@ fn aggregate_callee_return_promote_bytes(rhs: { nodes: List[{ kind: int64, type_
     case reg_conventions@is_aggregate_struct_or_tuple_return_type(term_sir_helpers@sir_term_root_node(rhs).type_name) of {
         false -> 0;
         true -> case term_sir_helpers@sir_term_root_node(rhs).kind == 6 and term_sir_helpers@sir_term_root_node(rhs).name == "list_at" of {
-            true -> prims_record@record_type_value_flat_byte_size(term_sir_helpers@sir_term_root_node(rhs).type_name);
+            // Boxed layout: list_at hands back the element's own region pointer (not an address
+            // inside the list chunk), so there is nothing to promote -- except a child-spec cell,
+            // still spliced inline. Copying record_type_value_flat_byte_size of a TUPLE element
+            // copied one word of it.
+            true -> list_at_result_promote_bytes(term_sir_helpers@sir_term_root_node(rhs).type_name);
             false -> case term_sir_helpers@sir_term_root_node(rhs).kind == 6 and (term_sir_helpers@sir_term_root_node(rhs).name == "tuple_make" or term_sir_helpers@sir_term_root_node(rhs).name == "record_make") of {
                 true -> agg_promote_bytes(rhs);
                 false -> 0
@@ -915,7 +981,7 @@ fn let_tail_aggregate_promote_bytes(tail: { nodes: List[{ kind: int64, type_name
     case term_sir_helpers@sir_term_root_node(tail).kind == 2 of {
         true -> let_tail_aggregate_promote_bytes(term_sir_helpers@sir_term_at(tail, term_sir_helpers@sir_term_root_node(tail).right_expr));
         false -> case term_sir_helpers@sir_term_root_node(tail).kind == 6 and term_sir_helpers@sir_term_root_node(tail).name == "list_at" of {
-            true -> prims_record@record_type_value_flat_byte_size(term_sir_helpers@sir_term_root_node(tail).type_name);
+            true -> list_at_result_promote_bytes(term_sir_helpers@sir_term_root_node(tail).type_name);
             false -> case term_sir_helpers@sir_term_root_node(tail).kind == 6 and (term_sir_helpers@sir_term_root_node(tail).name == "record_make" or term_sir_helpers@sir_term_root_node(tail).name == "tuple_make") of {
                 true -> agg_promote_bytes(tail);
                 false -> 0

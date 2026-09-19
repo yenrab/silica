@@ -142,7 +142,7 @@ here, called with the Silica pair convention of §4:
 | --- | --- |
 | `rt_vectors.S` | window overflow/underflow handlers (the ESP-IDF ones), alloca, fatal vectors, the debug vector for the stack guards |
 | `rt_start.S` | `_start`: interrupts off, VECBASE, fresh window, stack, watchdogs, `.bss`/heap zeroing, stack-guard watchpoints, `main`, exit marker; `silica_rt_vrg` and the auxiliary stack |
-| `rt_console.S` | UART0 output, `print_i64/u64/bool/string`, `exit`, `abort`, `badarith`, `case_clause`, the fault report |
+| `rt_console.S` | UART0 output, `print_i64/u64/bool/string`, `exit`, the runtime-abort entries (`silica_rt_abort_with`, `silica_rt_abort_<site>`), `badarith`, `case_clause`, the fatal fault report ([runtime_failure_reporting.md](../runtime_failure_reporting.md)) |
 | `rt_heap.S` | bump allocator (`alloc`, `region_alloc`, `raw_alloc`), region blocks (`region_grow`, `region_contains`), `free`/`region_free`/`region_destroy` as no-ops |
 | `rt_string.S` | `string_concat`, `length_bytes/chars`, `eq`, `cmp`, `starts_with/ends_with/contains`, `substring`, `substring_until_char`; the 24-byte string header of the host |
 | `rt_list.S` | `list_length/tail/at/prepend` over the emitter's chunked lists (constants packed into one argument word) |
@@ -156,8 +156,9 @@ here, called with the Silica pair convention of §4:
 - Everything runs from internal SRAM (~390 KB for code, data, heap and stack). No flash XIP, no PSRAM.
 - Machine stack 128 KB, auxiliary stack 64 KB (the emitter's `SP`), heap = the rest; `free` is a
   no-op (bump allocator). Both stacks have a 64-byte guard at the bottom watched by an Xtensa data
-  breakpoint (`DBREAKA0/1`, store-only); an overflow is reported as a fault with cause 1006 and status
-  139, the status a host process gets from the same overflow (SIGSEGV).
+  breakpoint (`DBREAKA0/1`, store-only); an overflow is reported as a fatal fault (spec §15.4.5.5:
+  `[silica] fault at 0x<pc>`, status 70, the report a host process gives for the same overflow), with
+  cause 1006 in the details after the exit marker.
 - Single core; interrupts off; no actors yet; no FFI (the guarded-FFI runtime is setjmp/signal based).
 - Non-self tail calls use stack.
 

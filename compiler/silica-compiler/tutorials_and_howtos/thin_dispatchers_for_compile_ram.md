@@ -2,6 +2,8 @@
 # Thin dispatchers when compiling uses too much RAM
 ```
 
+> **Note.** Splitting an application into many compilation units is a work-around for the compiler's memory use, not the language's model: a Silica application is one compilation unit. See [APPLICATION_IS_ONE_COMPILATION_UNIT.md](../design_documents/APPLICATION_IS_ONE_COMPILATION_UNIT.md).
+
 You can already split a recursive walk across leaf modules and keep `use` acyclic by passing callbacks (see [open_recursion_callbacks.md](./open_recursion_callbacks.md)). Compiling can still fail on the **facade**: a short file that `use`s every specialist at once.
 
 This how-to is for that case. It is an extra cut in the module graph, not a replacement for smaller files, leaf-to-root `silica.config` order, or process-per-unit reclaim ([compiling_with_less_ram.md](./compiling_with_less_ram.md)).

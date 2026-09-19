@@ -56,7 +56,7 @@ fn add(x: int64, y: int64) -> int64 {
 fn main() -> int64 {
     sequence proc[device_io]
         println("hi");
-        n: int64 <- add(2, 3);
+        n: int64 <- add(2, 3)
     produces
         pure n
     end
@@ -212,11 +212,13 @@ A sequence that only produces `42`: `[sequence_block_addition](https://github.co
 **Lists** are immutable, head-oriented, and shared structurally. They are not a Python `list`: there is no `xs[i]`, no in-place `append` or `pop`, and no slice assignment.
 
 ```silica
-xs: List[int64] <- [1, 2, 3]: List[int64];
-ys: List[int64] <- prepend[int64](0, xs);   // xs unchanged
+xs: List[int64, mem(normal)] <- [1, 2, 3];
+ys: List[int64, mem(normal)] <- prepend[int64, mem(normal)](0, xs);   // xs unchanged
 ```
 
-`prepend` returns a new list. `xs` is still `[1, 2, 3]`. Growing a list allocates, so it belongs in `sequence proc[mem(Space)]`. There is no primitive that deletes from the middle. In the trials, list types are written `List[int64, mem(normal)]`, and walking a list is usually a `case` on `[]` and `[h, t]` rather than a family of `head` / `tail` calls. Prefer those files when you write something you expect to compile.
+Every list type names its memory space: `List[int64, mem(normal)]`, not `List[int64]`. The same holds for every other data structure (`OrderedMap[...]`, `OrderedSet[...]`, `Heap[...]` and the rest take `mem(Space)` as their last type argument). In casual prose a list of integers may be called `List[int64]`, but code always writes the space.
+
+`prepend` returns a new list. `xs` is still `[1, 2, 3]`. Growing a list allocates, so it belongs in `sequence proc[mem(Space)]`. There is no primitive that deletes from the middle. Walking a list is usually a `case` on `[]` and `[h, t]` rather than a family of `head` / `tail` calls.
 
 **Tagged results** are how you represent failure. Prefer data over exceptions. There is no `try` / `except`, no `raise`, and no Python `None` meaning “missing.”
 
@@ -231,7 +233,80 @@ fn safe_div(x: int64, y: int64) -> (atom, int64) {
 
 The caller must look at the atom. Forget an arm and `case` is incomplete.
 
-**Recursive tuples** replace named recursive ADTs. Self-reference is the keyword `rec` inside a tuple, allocated in a region, with `ref?` / `:none` for the empty case. A Python class with a `next` field hides allocation. Here the region is explicit. See [why no named types](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/why_no_named_types.md).
+**Recursive tuples** replace named recursive ADTs. Self-reference is the keyword `rec` inside a tuple type, where it means "this same tuple type" (spec §4.2.2). A Python class with a `next` field hides allocation. Here the region is explicit.
+
+This applies only to tuples whose type contains `rec`. An ordinary tuple such as `(3, true)` is a plain value: no region, no `ref?`, no `:none`, and the compiler decides where it lives. A recursive tuple is different in four ways:
+
+- **It always lives in a region.** Every cell is allocated with `alloc_rec(region, (…))` in a region of type `region(L, Space)`, and `alloc_rec` returns a reference `ref(L, Space, …)` to the new cell. There is no other way to build one.
+- **Its memory space is part of its type.** Each recursive position is `ref?(L, Space, …)`, shorthand for `ref(L, Space, …) | :none`, naming the region's lifetime `L` and its space. Region and reference types write the space bare (`ref?(L, normal, rec)`, `region(L, normal)`); collection types wrap it (`List[int64, mem(normal)]`).
+- **`:none` is the empty case.** It fills a recursive position that points nowhere, like the end of a list or a missing child.
+- **Allocation and reading are memory effects.** `alloc_rec` and `read_ref` carry `mem(Space)`, so the sequence that does them declares it, for example `sequence proc[mem(normal)] … end`.
+
+Here is a node from a real structure: the weight-balanced tree behind `OrderedSet`, `OrderedMap` and `SearchTree`. The standard library declares the node type in `stdlib/data_structures/wbt_set.silica`:
+
+```silica
+(ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))
+```
+
+The four positions are the item, the cached size of the subtree rooted at this node, the left subtree and the right subtree. The cached size is what keeps every insert and delete logarithmic: rebalancing compares subtree sizes without walking the subtrees.
+
+The three functions below fix `ItemType` to `int64` so they compile on their own.
+
+Reading a node. `subtree_size` returns 0 for an empty subtree (`:none`); otherwise it reads the cell with `read_ref` and takes the cached size out of it:
+
+```silica
+fn subtree_size(subtree: ref?(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)))) -> int64 {
+    case subtree of {
+        :none -> 0;
+        node_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+            sequence proc[mem(normal)]
+                node: (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+                (_: int64, size: int64, _: ref?(L, normal, rec), _: ref?(L, normal, rec)) <- node
+            produces
+                pure size
+            end
+        }
+    }
+}
+```
+
+Building a node. `make_node` computes the new node's size from its two subtrees and allocates the cell in the region with `alloc_rec`. It returns the region together with the new reference: a function that returns a reference into a region must return the region too (spec §12.1.4). The standard library's own node constructor does the same.
+
+```silica
+fn make_node(
+    arena: region(L, normal),
+    item: int64,
+    left: ref?(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right: ref?(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> (region(L, normal), ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)))) {
+    sequence proc[mem(normal)]
+        size: int64 <- subtree_size(left) + subtree_size(right) + 1;
+        cell: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) <- alloc_rec(arena, (item, size, left, right))
+    produces
+        pure (arena, cell)
+    end
+}
+```
+
+Using them. `main` creates a region, builds a three-node tree with 2 at the root and 1 and 3 below it, and prints the root's cached size, 3:
+
+```silica
+fn main() -> int64 {
+    sequence proc[mem(normal), device_io]
+        L: lifetime <- fresh_lifetime();
+        arena: region(L, normal) <- alloc_region(normal);
+        (a1: region(L, normal), one: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)))) <- make_node(arena, 1, :none, :none);
+        (a2: region(L, normal), three: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)))) <- make_node(a1, 3, :none, :none);
+        (a3: region(L, normal), root: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)))) <- make_node(a2, 2, one, three);
+        print_int64(subtree_size(root));
+        println("")
+    produces
+        pure 0
+    end
+}
+```
+
+Recursive tuples are only for building non-naive data structures of the kind the built-in ones exemplify: `OrderedMap`, `OrderedSet`, `SearchTree`, `Heap`, `PriorityQueue`, `Tree`, `BinaryTree` and the graph structures are written this way, as balanced, persistent structures with stated bounds, inside the standard library. Application code does not hand-build linked lists or ad hoc trees from them; it uses `List[T, mem(Space)]` and the built-in structures, and reaches for recursive tuples only when it is writing a new data structure of that quality. See [why no named types](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/why_no_named_types.md) and [region handles and references](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/region_handles_and_references.md).
 
 **Strings** are UTF-8. Join and slice with the string operations (`concatenate` / `concat`, `substring` with character indices, `length_chars` / `length_bytes`, `starts_with` / `ends_with` / `contains`). There is no `+` for strings, no f-string, and no `str.format`. See `[string_addition](https://github.com/yenrab/silica/tree/main/trials/string_addition)` (`test_concat_literals.silica`, `test_length_chars.silica`).
 
@@ -242,10 +317,11 @@ Tuples: `[tuples_addition](https://github.com/yenrab/silica/tree/main/trials/tup
 There is no `for`, `while`, or `loop`. You walk data by recursion. There is no Python `for x in xs`, no `while`, and no comprehension. The mailbox “infinite loop” is inside the runtime. Your actor behavior returns.
 
 ```silica
-fn sum(xs: List[int64]) -> int64 {
-    case is_empty[int64](xs) of {
-        true -> 0;
-        false -> head[int64](xs) + sum(tail[int64](xs))
+fn sum(xs: List[int64, mem(normal)]) -> int64 {
+    case xs of {
+        []: List[int64, mem(normal)] -> 0;
+        [h: int64, t: List[int64, mem(normal)]] -> h + sum(t);
+        _: List[int64, mem(normal)] -> 0
     }
 }
 ```
@@ -288,7 +364,267 @@ If two compilation units need to recurse into each other, do not create a `use` 
 
 Modules: `[modules_addition](https://github.com/yenrab/silica/tree/main/trials/modules_addition)` (`one_use_main.silica`, `lib/lib_base.silica`). Traits: `[traits_addition](https://github.com/yenrab/silica/tree/main/trials/traits_addition)` (`shape_main.silica`, `traits/Shape.silica`).
 
-## 9. Regions
+## 9. Standard data structures
+
+Large types built from many items and layers are the naive design. Silica's standard library supplies persistent data structures instead, each defined by a **trait** (the queries) and one or more **construction modules** (building and updating). The designs are in [data_structure_designs](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/README.md). Bounds below are the designs' stated bounds. The implementations are in [stdlib/data_structures](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/stdlib/data_structures), and each module header lists the deviations the current compiler forces.
+
+| Trait | For | Construction modules | Representation | Headline bounds |
+|---|---|---|---|---|
+| `OrderedSet` | membership, ordered iteration | `wbt_set` | corrected Adams weight-balanced tree, (δ, γ) = (3, 2) | contains, insert, delete `O(log n)`; size `O(1)` |
+| `OrderedMap` | lookup by key | `wbt_map` | the same WBT, with a value per node | get, insert, delete `O(log n)`; find by value `O(n)` |
+| `SearchTree` | search-tree view of a set | `wbt_set` (same value as `OrderedSet`) | the same WBT | contains `O(log n)` |
+| `Heap` | min or max first | `brodal_okasaki_min`, `brodal_okasaki_max` | Brodal–Okasaki bootstrapped skew-binomial queue | peek, push, meld `O(1)`; pop `O(log n)` |
+| `PriorityQueue` | (priority, value), most urgent first | `brodal_okasaki_priority` | the same queue over entries | peek, push, meld `O(1)`; pop `O(log n)` |
+| `Tree` | ordered hierarchy, any fan-out | `tree_rose` | rose tree, child slots in a skew binary random-access list | add or replace at depth h: `O(Σ log b_i + h)` |
+| `BinaryTree` | fixed left/right roles | `tree_binary` | persistent fixed-arity binary tree, with a zipper | root `O(1)`; path ops `O(h)` |
+| `DirectedGraph` | one-way edges | `graph_wbt_directed`, `graph_csr_directed`, `graph_dense_directed` | live WBT graph, CSR snapshot, dense matrix | has/add edge `O(log V + log d)` (live) |
+| `UndirectedGraph` | two-way edges | `graph_wbt_undirected`, `graph_weighted_undirected`, `graph_csr_undirected`, `graph_csr_weighted_undirected`, `graph_dense_undirected`, `graph_dense_weighted_undirected` | as above | connected `O((V_c + A_c) log V)` |
+| `WeightedGraph` | edge weights | `graph_weighted`, `graph_weighted_undirected`, `graph_csr_weighted`, `graph_csr_weighted_undirected`, `graph_dense_weighted`, `graph_dense_weighted_undirected` | as above | weight lookup `O(log V + log d)` |
+
+Everything is persistent. An update returns a new root, the old root stays valid, and every node off the changed path is shared between the two ([README](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/README.md), suite-wide decisions). Recursive nodes are region-allocated in one canonical arena per representation, linked by `ref?`, with `:none` as the empty position. Comparators return `:less | :equal | :greater` and define identity as well as order. A comparator that returns anything else is a deterministic collection error, not a branch.
+
+### Ordered sets, maps and search trees
+
+`wbt_set` and `wbt_map` are the corrected Adams-family weight-balanced tree ([weight_balanced_tree.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/weight_balanced_tree.md)), with the (3, 2) parameters proved in Hirai and Yamamoto (2011). Each node caches its subtree size, so `size` is `O(1)`. Search, insert and delete are `O(log n)` and path-copy `O(log n)` nodes on change. A duplicate insert or an absent delete allocates nothing. `from_sorted` builds in `O(n)`, `from_list` in `O(n log u)`, and `fold` visits in ascending order in `O(n)` ([ordered_set_trait.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/ordered_set_trait.md) §9, [ordered_map_trait.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/ordered_map_trait.md) §12).
+
+`OrderedSet` and `OrderedMap` forward to those cores. `OrderedMap@get` takes a placeholder value to return with `:not_found`, because Silica source cannot conjure a zero of a programmer-declared type. `SearchTree` is not a third structure. It is a behavioural view over the same `wbt_set` value, so one value implements both traits ([SearchTree.silica](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/stdlib/data_structures/SearchTree.silica) header).
+
+### Heaps and priority queues
+
+`brodal_okasaki` is the Brodal–Okasaki bootstrapped skew-binomial queue ([brodal_okasaki_queue.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/brodal_okasaki_queue.md)): `peek`, `push` and `meld` are `O(1)`, and `pop` is `O(log n)`. `brodal_okasaki_min` and `brodal_okasaki_max` are thin forwarders that fix the orientation; one `Heap` impl serves both. `brodal_okasaki_priority` runs the same core over `{ priority, value }` entries, compared priority-first and then by value. Equal entries coexist. Arbitrary deletion and decrease-key are deliberately absent ([priority_queue_trait.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/priority_queue_trait.md)). The priority and value placeholders are spelled `KeyType` and `ValueType` in the code (module header, deviation 1).
+
+### Trees
+
+`tree_rose` is a rose tree whose child slots are a skew binary random-access list in reverse orientation, so appending a child is `O(1)` and slot numbers stay stable ([tree_trait.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/tree_trait.md)). Removing a child vacates its slot. Siblings are never renumbered. Paths are `List[int64, mem(normal)]` of slot numbers, with the empty list as the root. The design's `add_child` is exported as `add_leaf`, because `add_child` is a supervisor built-in name.
+
+`tree_binary` is a persistent fixed-arity binary tree with fixed left and right roles, cached subtree counts, and a zipper whose down and up moves are `O(1)` ([persistent_binary_tree.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/persistent_binary_tree.md)). Paths are built with `tree_binary@path_root`, `path_left` and `path_right`, because atoms are numbered per compilation unit and `:left` / `:right` written in another unit would not match.
+
+### Graphs
+
+There are three representations, all behind the same traits, each a distinct concrete record with no runtime tag:
+
+- **Live WBT graph.** `graph_wbt_core` is a WBT map from node to a WBT map from target to edge value, over `wbt_map`. It supports updates. `has_edge` and `add_edge` are `O(log V + log d)`, and `reachable` / `connected` walk with a WBT visited set ([live_wbt_graph.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/live_wbt_graph.md)).
+- **CSR snapshot.** `graph_csr_core` freezes a live graph in `O(V + A)` into offset, target and value buffers plus a node-to-slot WBT index. It is read-only. `has_edge` is a binary search, `O(log V + log d)` ([csr_graph_snapshot.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/csr_graph_snapshot.md)).
+- **Dense matrix.** `graph_dense_core` has a fixed vertex universe and `V × V` cells in a skew binary random-access list. An edge update path-copies one cell in `O(log V)`, and a neighbour scan is `O(log V + V)` ([dense_matrix_graph.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/dense_matrix_graph.md)).
+
+Vertex IDs are any type the node comparator accepts. They are never slot indexes. A weighted undirected graph also implements `UndirectedGraph`. The weighted directed `graph_weighted` does not implement `DirectedGraph` today; it offers the same directed queries as its own module functions ([DirectedGraph.silica](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/stdlib/data_structures/DirectedGraph.silica) header, deviation 5).
+
+### What the current compiler forces
+
+The module headers list these deviations. You will meet them today:
+
+- **Bracket types.** A bracket-typed binding such as `OrderedMap[string, int64, mem(normal)]` is accepted for a `module@empty/1` result, and for parameters and returns. The record an update returns (`{ map, inserted, replaced }`, `{ set, inserted }`, `{ tree, added, child_slot }`) is rejected when its field is written with the bracket type (E2003). It must be bound with the representation's inline record. `BinaryTree[...]` is not recognised at all (E1040), so tree-binary values use the inline record.
+- **Placeholders.** Lookups take a placeholder argument to return with `:not_found` (`get`, `peek`, `root_item`, `weight_of`).
+- **Trait dispatch.** A bracket-typed receiver, and a method whose result mentions a placeholder, are dispatched to the last listed implementation. The graph trait headers name the affected methods. Call the representation module's function of the same name instead.
+- **Memory space.** Only `mem(normal)` is supported.
+- **Atoms.** Atoms are numbered per compilation unit, so atom-valued paths and error codes are built and decoded inside their module.
+
+## 10. Building new data structures
+
+Each trait impl is a thin forwarder. `OrderedMap@get`, for example, is the whole of this:
+
+```silica
+impl fn get(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    placeholder: ValueType
+) -> { status: :not_found | :found, value: ValueType } {
+    wbt_map@get(map, key, placeholder)
+}
+```
+
+The work is in the core modules, and their exported functions are building blocks you can compose:
+
+- **`wbt_set` / `wbt_map`:** `empty`, `singleton`, `insert`, `delete`, `delete_min` / `delete_max`, `minimum` / `maximum`, `fold`, `from_sorted`, `size`, and the balancing primitives `smart_node`, `balance_left`, `balance_right`. These give multisets, interval maps (key = interval start, value = end), counters and indexes.
+- **`brodal_okasaki` / `brodal_okasaki_priority`:** `push`, `peek`, `pop`, `meld`, `from_list`. Pair one with a `wbt_set` of seen items and you have a deduplicating queue.
+- **`skew_ral`:** `prepend`, `head`, `tail`, `lookup` / `update` (physical), `get` / `set` / `append` (logical), `fold_range`, `from_list`. These give indexed sequences and O(1) front and back access.
+- **`tree_rose` / `tree_binary`:** `with_root`, `add_leaf`, `find_first`, `child_at`, `node`, `replace_item`, and the folds. These give ordered hierarchies and prefix trees keyed by path.
+- **Graph cores:** the families' `add_edge`, `neighbors`, `fold_neighbors`, and `freeze` into CSR.
+
+The rules:
+
+- **Compose before you build nodes.** Recursive tuples in regions are for structures the existing cores cannot express (§6). A new structure should first be a module over existing cores.
+- **Every collection type names its memory space:** `OrderedMap[string, int64, mem(normal)]`, `List[int64, mem(normal)]`.
+- **Generic modules follow the witness conventions.** The record that carries `compare_item` (or `compare_key` / `compare_priority`) comes first, because a bare `ItemType` resolves from argument one. A fold's accumulator comes second. Bind a nested generic call to a typed let rather than passing it straight into another qualified call.
+- **One trait impl per representation.** Dispatch by bracket receiver picks the last impl.
+- **Keep the representation record inside the module.** Update results must be bound with the core's inline record (D6 above). That layout is private to one compiler version, so spell it in the one module that builds the structure, and export functions typed with the short bracket type.
+- **One collection per exported value, for now.** A record or tuple holding two collections, returned from one module and passed back into it, arrives corrupted in the current compiler: the fields read as garbage. Keep such composites inside one module.
+
+### Example: a word multiset over `wbt_map`
+
+A multiset counts occurrences. It is a `wbt_map` from word to count. Every update is two core calls, a `get` and an `insert` or `delete`, and every value is persistent.
+
+`word_bag.silica` uses the map core and its trait, and exports six operations:
+
+```silica
+use wbt_map;
+use OrderedMap;
+export empty_bag/0;
+export add/2;
+export remove_one/2;
+export count/2;
+export distinct/1;
+export total/1;
+```
+
+The map orders words alphabetically:
+
+```silica
+fn compare_words(a: string, b: string) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+```
+
+It also needs a comparator for its values, the counts:
+
+```silica
+fn compare_counts(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+```
+
+`empty_bag` is the map constructor. Its result is the one update result that may be bound with the bracket type:
+
+```silica
+fn empty_bag() -> OrderedMap[string, int64, mem(normal)] {
+    wbt_map@empty({ compare_key: compare_words, compare_value: compare_counts })
+}
+```
+
+`count` reads through the trait. `0` is the placeholder returned for an absent word:
+
+```silica
+fn count(bag: OrderedMap[string, int64, mem(normal)], word: string) -> int64 {
+    found: { status: :not_found | :found, value: int64 } <- OrderedMap@get(bag, word, 0);
+    found.value
+}
+```
+
+`store` and `drop` are the only functions that spell the representation record, because `insert` and `delete` return it inside their result records:
+
+```silica
+fn store(bag: OrderedMap[string, int64, mem(normal)], word: string, n: int64) -> OrderedMap[string, int64, mem(normal)] {
+    updated: { map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, inserted: boolean, replaced: boolean } <- wbt_map@insert(bag, word, n);
+    updated.map
+}
+```
+
+```silica
+fn drop(bag: OrderedMap[string, int64, mem(normal)], word: string) -> OrderedMap[string, int64, mem(normal)] {
+    updated: { map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, removed: boolean } <- wbt_map@delete(bag, word);
+    updated.map
+}
+```
+
+`add` and `remove_one` are the multiset operations:
+
+```silica
+fn add(bag: OrderedMap[string, int64, mem(normal)], word: string) -> OrderedMap[string, int64, mem(normal)] {
+    n: int64 <- count(bag, word);
+    store(bag, word, n + 1)
+}
+```
+
+```silica
+fn remove_one(bag: OrderedMap[string, int64, mem(normal)], word: string) -> OrderedMap[string, int64, mem(normal)] {
+    n: int64 <- count(bag, word);
+    case n <= 1 of {
+        true -> drop(bag, word);
+        false -> store(bag, word, n - 1)
+    }
+}
+```
+
+`distinct` is the map's cached size, `O(1)`:
+
+```silica
+fn distinct(bag: OrderedMap[string, int64, mem(normal)]) -> int64 {
+    OrderedMap@size(bag)
+}
+```
+
+`total` folds the counts. The fold step's argument order is `(accumulator, key, value)`:
+
+```silica
+fn add_count(acc: int64, word: string, n: int64) -> int64 {
+    acc + n
+}
+```
+
+```silica
+fn total(bag: OrderedMap[string, int64, mem(normal)]) -> int64 {
+    OrderedMap@fold(bag, 0, add_count)
+}
+```
+
+A caller sees only `OrderedMap[string, int64, mem(normal)]`. This `main` exercises the module directly: it is a test of a data structure, not an application (§12 shows the application shape). It uses one small printing helper:
+
+```silica
+fn show(label: string, n: int64) -> atom {
+    sequence proc[device_io]
+        print_string(label);
+        _: atom <- print_int64(n);
+        println("")
+    produces
+        pure :ok
+    end
+}
+```
+
+and then:
+
+```silica
+fn main() -> int64 {
+    sequence
+        b0: OrderedMap[string, int64, mem(normal)] <- word_bag@empty_bag();
+        b1: OrderedMap[string, int64, mem(normal)] <- word_bag@add(b0, "the");
+        b2: OrderedMap[string, int64, mem(normal)] <- word_bag@add(b1, "calf");
+        b3: OrderedMap[string, int64, mem(normal)] <- word_bag@add(b2, "the");
+        _: atom <- show("the: ", word_bag@count(b3, "the"));
+        _: atom <- show("distinct: ", word_bag@distinct(b3));
+        _: atom <- show("total: ", word_bag@total(b3));
+        b4: OrderedMap[string, int64, mem(normal)] <- word_bag@remove_one(b3, "calf");
+        _: atom <- show("distinct after removing calf: ", word_bag@distinct(b4));
+        show("the, in the older bag b1: ", word_bag@count(b1, "the"))
+    produces
+        pure 0
+    end
+}
+```
+
+Compiled with `stdlib/data_structures/wbt_map.silica` and `OrderedMap.silica` listed before `word_bag.silica` in `silica.config`, it prints:
+
+```
+the: 2
+distinct: 2
+total: 3
+distinct after removing calf: 1
+the, in the older bag b1: 1
+```
+
+The last line is persistence at work. `b1`, the bag from before the second `"the"` was added, still counts one.
+
+## 11. Regions
 
 Allocation is not `malloc`, and it is not “the Python heap will get it.” You create a region, then allocate into it. Handles move. A `ref` does not outlive its region. The compiler rejects a `ref` returned without that region: at the end of a sequence the region is freed unless the result still contains the handle. There is no refcounting, no cyclic-GC pause, and no `del`.
 
@@ -333,7 +669,7 @@ Tutorials: [memory region types](https://github.com/yenrab/silica/blob/main/comp
 
 Regions: `[memory_region_addition](https://github.com/yenrab/silica/tree/main/trials/memory_region_addition)` (`alloc_region_normal.silica`, `alloc_ref_int64.silica`, `read_ref_int64.silica`, `write_ref_int64.silica`).
 
-## 10. Actors
+## 12. Actors
 
 A well-designed Silica application is a set of actors that pass messages. Functions still do the work *inside* a turn — they are not the shape of the program. If the architecture is only `main` calling helpers calling helpers, you have not yet designed the application.
 
@@ -353,7 +689,7 @@ A **cast-only** behavior never replies:
 ```silica
 fn log(msg: string, state: int64) -> (:no_reply, int64) {
     sequence proc[device_io]
-        println(msg);
+        println(msg)
     produces
         pure (:no_reply, state + 1)
     end
@@ -362,18 +698,20 @@ fn log(msg: string, state: int64) -> (:no_reply, int64) {
 
 One behavior is one convention. The compiler tracks call-only versus cast-only on each `actor_ref`. `call` on a cast-only ref is a type error. You do not write a union of `(:reply, …)` and `(:no_reply, …)` and hope.
 
+Spawning the counter and calling it once:
+
 ```silica
 fn main() -> int64 {
     sequence proc[concurrency]
-        a: actor_ref <- spawn(0, counter);
-        n: int64 <- call(a, 3 impl ActorMessage {});
+        a: actor_ref <- spawn(0, counter, stack_policy(0, :keep_last_message));
+        n: int64 <- call(a, 3 impl ActorMessage {})
     produces
         pure n
     end
 }
 ```
 
-`spawn(0, counter)` starts an actor whose state is `0`. `call` sends `3` and waits for the reply. Messages need `ActorMessage`, usually written `expr impl ActorMessage {}` at the send site.
+`spawn(0, counter, stack_policy(0, :keep_last_message))` starts an actor whose state is `0`. Every spawn form takes a stack policy (spec §15.1.2.2): the reservation in bytes (`0` takes the default, the machine's memory plus swap) and a release algorithm (`:keep_last_message` keeps what the last message used). `call` sends `3` and waits for the reply. Messages need `ActorMessage`, usually written `expr impl ActorMessage {}` at the send site.
 
 The runtime model is Erlang `gen_server`, not a user-level receive loop:
 
@@ -386,11 +724,219 @@ The runtime model is Erlang `gen_server`, not a user-level receive loop:
 
 Supervisors are a different handle (`supervisor_ref`). You maintain them with `call_supervisor`, not ordinary `call` / `cast`. See the [supervisors tutorial](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/supervisors_and_failure_reporter_tutorial.md).
 
+### Keep `main` small
+
+Well designed Silica applications have a very small `main` function consisting of a sequence that includes the launch of a supervisor and any initialization calls needed. The last line in `main`'s sequence is almost always `wait_for_exit()`.
+
+That is an architectural rule, not a style preference, and the reason is in the runtime model. `main` is not an actor (spec §15.1.2.2, "The main Function"). It runs on the platform's ordinary program stack, with no growth and no release, and nothing supervises it.
+
+So a failure in `main` ends the process. Exhausting its stack is a fatal fault: the `[silica] fault at …` report and exit status 70 (§15.4.5.5). A pattern-match or arithmetic failure raised in `main` prints `case_clause` or `badarith` and exits with status 1.
+
+The same failures inside a supervised actor are contained. The actor's stack is runtime-managed and grows on demand, the failure goes to its supervisor, and the supervisor restarts it. So the work belongs in actors under a supervisor. `main` only starts the tree, sends whatever initialization messages the application needs, and blocks in `wait_for_exit()` while the actors run. The compiler itself is written this way.
+
+Here is the shape with one supervised worker. The worker, `logger.silica`, numbers each line it is sent and prints it:
+
+```silica
+export log/2;
+
+fn log(msg: string, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        _: atom <- print_int64(state + 1);
+        println(concat(": ", msg))
+    produces
+        pure (:no_reply, state + 1)
+    end
+}
+```
+
+`main.silica` names the modules it uses and the supervisor it defines:
+
+```silica
+use Supervisor;
+use logger;
+
+impl AppSupervisor for Supervisor;
+```
+
+`init` is the supervisor's child table: the restart policy, then one child, the logger. Its long return type is the `Supervisor` trait's contract, written once:
+
+```silica
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: string, state: int64) -> (:no_reply, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: string, state: int64) -> (:no_reply, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :log,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: logger@log,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+```
+
+`main` launches the supervisor, sends one initialization message, and waits:
+
+```silica
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        _: supervisor_ref <- spawn_registered_supervisor(AppSupervisor, 0, :app_supervisor, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_registered(:log, "service started" impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}
+```
+
+Compiled with the standard-library `Supervisor.silica`, it prints `1: service started` and keeps running until standard input delivers `exit`. `init` is the supervisor's child table; everything after `main`'s first line is initialization and waiting.
+
+The other `main` functions in this book are deliberately not in this shape. The one in §2, the tree-node `main` in §6, the `math@add(2, 3)` in §8 and the `spawn` / `call` above each isolate one construct, and a bare `main` is the shortest place to show it. An application's `main` looks like the one here.
+
+### Prefer cast and cast back
+
+The preferred request/response shape between actors is asynchronous: the requester casts a request, carries on, and the responder casts the answer back as a new message. Synchronous `call` is the fallback. This is how people text: few send a message and then do nothing until the reply comes; most send it, do other things, and read the reply when it arrives.
+
+What `call` costs, per the spec:
+
+- **The caller is suspended for the whole round trip.** `call` blocks until the target returns `(:reply, …)`, and it has no timeout: the caller stays blocked until the target replies or ends (§16.1.1). `call_with_timeout` bounds the wait; on `:timeout` the request is not withdrawn, and the late reply is discarded (§16.1.1.2).
+- **Its mailbox is not served meanwhile.** A behaviour runs one message per turn, and the suspended call is inside that turn, so every message queued for the caller waits as well. A caller's latency and throughput are therefore bound by its slowest callee.
+- **Waiting can deadlock.** `call(self(), …)` is a compile error because the reply could never come (§16.2.6.5). The compiler cannot see a cycle through other actors, and with no timeout, actors that `call` each other in a cycle wait until one of them ends.
+- **The callee can die.** If the target is dead, or ends before replying, `call` raises `actor_not_found` in the caller (§16.1.1).
+
+What `cast` gives instead: it returns immediately after enqueueing (§16.1.2), and mailboxes are unbounded, so a cast never blocks on capacity (§18.4.1). The answer arrives as an ordinary message that the requester's behaviour handles in its own turn, between whatever else it is doing. Two consequences follow:
+
+- **The requester's one message type carries both its requests' triggers and the answers**, so the behaviour dispatches on the message. Replies must be matched to requests. Include a request id, or the requester's registered name, in the request, and have the responder echo it in the answer.
+- **Nothing slows a fast sender.** Unbounded mailboxes mean there is no built-in backpressure. The spec lists `call` as one way to slow a producer, beside explicit acknowledgements and bounded application queues (§16.2.8).
+
+`call` is still right when the next step genuinely cannot proceed without the answer, and for simple request/response at the edges of a system: a `main` or a test that needs one value, or a producer that must be throttled. BEAM programmers will recognise `gen_server:cast` and `gen_server:call`. One difference: `gen_server:call` has a default timeout of 5000 ms, while Silica's `call` waits indefinitely unless you use `call_with_timeout`.
+
+An example with two supervised actors. The client asks a translator for words. Each reply echoes the word it answers, which is how the client matches replies to requests. Both actors live in `main.silica`, and their supervisor's `init` lists them with the behaviour type `fn(msg: string, state: int64) -> (:no_reply, int64)`, in the same shape as the logger's.
+
+The client dispatches on the message. A reply contains ` = `; anything else is a word to ask about:
+
+```silica
+fn client(msg: string, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        _: atom <- case contains(msg, " = ") of {
+            true -> println(concat("reply ", msg));
+            false -> request(msg)
+        }
+    produces
+        pure (:no_reply, state)
+    end
+}
+```
+
+`request` casts the word to the translator and returns at once:
+
+```silica
+fn request(word: string) -> atom {
+    sequence proc[concurrency, device_io]
+        _: boolean <- cast_registered(:translator, word impl ActorMessage {});
+        println(concat("sent ", word))
+    produces
+        pure :ok
+    end
+}
+```
+
+The translator casts its answer back to the client as a new message:
+
+```silica
+fn translator(msg: string, state: int64) -> (:no_reply, int64) {
+    sequence proc[concurrency]
+        _: boolean <- cast_registered(:client, spanish(msg) impl ActorMessage {})
+    produces
+        pure (:no_reply, state + 1)
+    end
+}
+```
+
+`spanish` is the lookup:
+
+```silica
+fn spanish(word: string) -> string {
+    case word == "hello" of {
+        true -> "hello = hola";
+        false -> case word == "thanks" of {
+            true -> "thanks = gracias";
+            false -> "unknown = ?"
+        }
+    }
+}
+```
+
+`main` starts the supervisor, sends two initialization messages, and waits:
+
+```silica
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        _: supervisor_ref <- spawn_registered_supervisor(AppSupervisor, 0, :app_supervisor, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_registered(:client, "hello" impl ActorMessage {});
+        _: boolean <- cast_registered(:client, "thanks" impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}
+```
+
+It prints:
+
+```
+sent hello
+sent thanks
+reply hello = hola
+reply thanks = gracias
+```
+
+Both requests are in flight before either answer is handled; the client never blocks. The replies here are string literals because today's compiler has a defect: a record message cast from one actor to another can arrive corrupted. The general form carries a record such as `{ kind: atom, reply_to: atom, id: int64, value: int64 }` and replies with `cast_registered(msg.reply_to, …)`.
+
 `spawn` has variants for pinning, registration, device workers, and FFI workers. Migration strategy (`lazy`, `eager_copy`, `static_core`) is about how much stack one message uses and how often the actor moves, not about “how long the actor lives.” [Spawning tutorial](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/actor_spawning_tutorial.md).
 
 Actors: `[actors_addition](https://github.com/yenrab/silica/tree/main/trials/actors_addition)` (`actor_boolean_state_reply.silica`, `actor_cast_fire_and_forget.silica`). Supervisors: `[supervisors_addition](https://github.com/yenrab/silica/tree/main/trials/supervisors_addition)`. Pinning: `[cpu_discovery_and_spawn_pinning](https://github.com/yenrab/silica/tree/main/trials/cpu_discovery_and_spawn_pinning)`.
 
-## 11. Fifi
+## 13. Fifi
 
 Fifi is outbound FFI: the way a Silica program calls C or anything with a C ABI. Non-Silica code is outside Silica’s memory and type guarantees. This is not `ctypes`, not `cffi`, and not `subprocess` dressed up as a function.
 
@@ -410,7 +956,7 @@ A proposed alternative to in-process FFI is [brokered IPC](https://github.com/ye
 
 FFI trials: `[ffi_addition](https://github.com/yenrab/silica/tree/main/trials/ffi_addition)`. Compile-fail goldens for the taint rules: `[error_enforcement_addition](https://github.com/yenrab/silica/tree/main/trials/error_enforcement_addition)`.
 
-## 12. What the compiler rejects
+## 14. What the compiler rejects
 
 Silica would rather stop you than “optimize away” a mistake or wait for a test to notice it. These are hard errors, not warnings you can train yourself to ignore, and not Python’s “run it and see”:
 
@@ -432,7 +978,7 @@ Diagnostics carry a code (`E2000`, …), a location, and a spec section. Read th
 
 Programs the compiler is supposed to refuse: `[error_enforcement_addition](https://github.com/yenrab/silica/tree/main/trials/error_enforcement_addition)`, `[warning_enforcement_addition](https://github.com/yenrab/silica/tree/main/trials/warning_enforcement_addition)`.
 
-## 13. Next
+## 15. Next
 
 Read the trials when you want a small program in hand. Read the specification when you want the rule. The tutorials are the middle ground for actors, regions, and FFI.
 

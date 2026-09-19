@@ -6932,13 +6932,18 @@ _silica_rt_actor_fail_current:
 	mov	x19, x0
 	str	x1, [x19, #496]
 ; Move onto the thread's alt stack (its top; nothing there is needed again) so the actor stack
-; this may be running on can be unmapped below. On the exhaustion path we are already there.
+; this may be running on can be unmapped now. On the exhaustion path we are already there.
+; The stack is given back before any waiter is woken, as at a message boundary: a caller that
+; wakes on the death and asks get_actor_memory_usage must already see the reservation gone.
 	ldr	x9, [x19, #464]
 	cbz	x9, Lafc_on_stack
 	mov	x10, #65536
 	add	x9, x9, x10
 	mov	sp, x9
 Lafc_on_stack:
+	mov	x0, x19
+	mov	x1, #1
+	bl	_silica_rt_actor_stack_free
 	add	x0, x19, #16
 	bl	_os_unfair_lock_lock
 	mov	x8, #4
@@ -6959,9 +6964,6 @@ Lafc_report_done:
 	bl	_silica_rt_actor_signal_pending_call_deaths
 	ldr	x20, [x19, #208]
 	ldr	x21, [x19, #192]
-	mov	x0, x19
-	mov	x1, #1
-	bl	_silica_rt_actor_stack_free
 	cbz	x21, Lafc_thread_exit
 	mov	x0, x19
 	bl	_silica_rt_ffi_arena_teardown

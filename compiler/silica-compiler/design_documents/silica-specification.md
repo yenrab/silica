@@ -7635,7 +7635,7 @@ Every actor is **pinned** to a core from the moment it is spawned until it termi
 
 - The **default reservation** is the machine's physical memory plus its swap, read once when the runtime starts and rounded to the platform page. Where a host refuses a single mapping that large by heuristic, the runtime reserves just under the total. The default is therefore always large enough that an actor reaches the machine's limit before the end of its reservation.
 - A program may **lower the reservation** for an actor with a stack policy at spawn (below). A program that spawns millions of actors must: every reservation consumes address space, and a million whole-machine reservations exceed what any processor can address. The program that spawns them is the one that knows their number and their depth, so it chooses.
-- A reservation that cannot be made fails the spawn: the spawning actor fails with `failure_reason` `(:explicit, :stack_reserve_failed)`. Address space runs out only in a program that has chosen its own reservation sizes, so the failure is that program's to handle.
+- A reservation that cannot be made fails the spawn: the spawning actor fails with `failure_reason` `(:explicit, :stack_reserve_failed)`. When the spawner is `main`, which is not an actor and has no supervisor, the process ends with a runtime abort, reason `stack reservation failed`, exit status 71 (§15.4.5.5). Address space runs out only in a program that has chosen its own reservation sizes, so the failure is that program's to handle.
 - An actor whose stack reaches the end of a **lowered** reservation fails with `failure_reason` `(:explicit, :stack_exhausted)`; no other actor is affected. With the default reservation this cannot happen: memory runs out first.
 
 **Commitment and Growth**: Nothing is committed at spawn. The first stack access of the first message faults in the first chunk, and every later access beyond the committed part faults in the next. The runtime's fault handler commits memory in chunks: the first chunk is one platform page, each further fault commits twice the previous chunk until a chunk reaches 1 MB, and from then on each fault commits 1 MB. Chunk sizes follow the **platform's page size**, 16 KB on Apple silicon and the Raspberry Pi 5, 4 KB on most other Linux systems; the specification does not fix a page size. The committed part of a stack is one mapping and the untouched remainder of the reservation a second, inaccessible one; there is no separate guard mapping. A fault at an address inside an actor's reservation **is stack growth**, and the handler establishes that before it considers any other meaning of the fault, in particular a foreign fault inside a guarded call (§15.4).
@@ -7666,7 +7666,7 @@ stack_policy(reserve: int64, release: atom) -> stack_policy
 
 **Memory Exhaustion**: Stack growth is never a failure and never a supervision event, and there is no cap under which the runtime would refuse to grow a stack or refuse a spawn. When the machine's memory and swap are exhausted, the outcome is the host's: on a hosted platform its out-of-memory handling chooses a process, which may or may not be the Silica program. This is why `:oom` is not a `failure_reason` (§15.4.11.2).
 
-**The main Function**: `main` is not an actor and does not receive a runtime-managed stack. It runs on the platform's ordinary program stack, with no growth and no release, which is the nothing-hidden rule applied to the program's entry: nothing is provisioned that the program cannot see. A `main` is therefore kept small; a program whose work needs a deep or long-lived stack spawns an actor for it and calls or casts into it. The compiler itself is written this way.
+**The main Function**: `main` is not an actor and does not receive a runtime-managed stack. It runs on the platform's ordinary program stack, with no growth and no release, which is the nothing-hidden rule applied to the program's entry: nothing is provisioned that the program cannot see. A `main` is therefore kept small; a program whose work needs a deep or long-lived stack spawns an actor for it and calls or casts into it. The compiler itself is written this way. Exhausting the stack of `main` is a fatal fault: there is no supervisor to notify, so the process ends with the fault report and exit status 70 (§15.4.5.5).
 
 **Platform Notes**: Lazy page migration and NUMA-aware placement of stack pages (design document §4.3, §5.3) apply on platforms that have NUMA nodes and are not implemented on those that do not. Actor stacks as described here require demand paging; the rules for targets without it are decided per target in its port design.
 
@@ -8719,7 +8719,7 @@ This section specifies when the runtime may attempt **non-local recovery** (cont
 
 **If any condition fails**:
 → Generate diagnostics (actor id, fault address, instruction pointer) and enqueue unwind report for delivery to `FailureReporter` (§15.4.13.4)
-→ **Abort the entire OS process**
+→ **End the entire OS process** with a fatal fault report and exit status 70 (§15.4.5.5)
 
 This gate is the native-binary analogue of BEAM's "VM must be intact" rule: recovery is permitted only when the substrate needed to run other actors is known to be sound.
 
@@ -8733,8 +8733,12 @@ This gate is the native-binary analogue of BEAM's "VM must be intact" rule: reco
 
 The runtime installs signal handlers at startup:
 
-- `sigaction(SIGSEGV, ...)` and `sigaction(SIGBUS, ...)`
+- `sigaction(SIGSEGV, ...)`, `sigaction(SIGBUS, ...)`, `sigaction(SIGILL, ...)` and `sigaction(SIGFPE, ...)`
 - `sigaltstack` to provide an alternate stack for signal delivery to the **host runtime thread** (not the actor's growable execution stack; see §15.1.2.2)
+
+On OS-free targets there are no signals. The runtime installs the processor's exception vectors and, where the
+processor has them, data breakpoints over the guard at the end of each fixed stack; an exception taken there enters
+the same decision algorithm (§15.4.5.3) with the exception cause in place of the signal number.
 
 ##### 15.4.5.2 Signal Handler Requirements
 
@@ -8742,7 +8746,7 @@ The signal handler must be async-signal-safe:
 
 - **No allocation**: The handler must not call any allocator.
 - **No locks**: The handler must not acquire any lock that may be held by interrupted code.
-- **No complex runtime logic**: The handler reads pre-established TLS variables and performs a non-local jump or calls `abort()`.
+- **No complex runtime logic**: The handler reads pre-established TLS variables and either performs a non-local jump or ends the process with a fatal fault report (§15.4.5.5). When the fault is a growing stack whose memory the runtime cannot commit, it ends the process with a runtime abort instead (§15.4.5.5, §15.4.10.2). It ends the process with `_exit`, never with C `exit()` or `abort()`.
 - **Minimal state writes**: Only writes to actor metadata fields that are designated async-signal-safe (fault reason).
 
 ##### 15.4.5.3 Signal Handler Decision Algorithm
@@ -8764,7 +8768,7 @@ signal_handler(signo, siginfo, ucontext):
              siglongjmp(current_actor.recovery_point, FAULT_REASON_MEMORY)
          else:
              emit_crash_dump(current_actor, signo, siginfo, ucontext)
-             abort()
+             fatal_fault_exit(siginfo, ucontext)      // banner + exit status 70, §15.4.5.5
 ```
 
 `in_critical_section()` and `runtime_invariants_hold()` must themselves be async-signal-safe. In practice, these are implemented as atomic flag reads set/cleared by the runtime around critical sections.
@@ -8779,6 +8783,40 @@ Each OS thread that executes actor mutator code maintains:
 | `in_mutator` | `boolean` | True only when the thread is executing user (mutator) code inside the behavior function |
 
 `in_mutator` is set to `true` immediately before calling the behavior function and cleared immediately after the call returns or before calling any trusted runtime function.
+
+##### 15.4.5.5 Process-Fatal Reports and Exit Status
+
+A Silica process ends abnormally in exactly one of the following ways. The report and the exit status are the
+same on every target, hosted or OS-free; only where the report is written differs (below).
+
+| Class | When | Report (one line) | Exit status |
+|-------|------|-------------------|-------------|
+| **Fatal fault** | A synchronous hardware exception that is not recovered: the containment gate fails (§15.4.4); the fault is outside any actor, including exhausting the stack of `main`, which is not an actor (§15.1.2.2); the fault is in trusted runtime code; a fault in guarded foreign code (§26) when no actor is current; a fault inside the fault handler itself; or debug mode (§15.4.15.1) | `[silica] fault at 0x<pc>` followed, where available, by ` in <symbol>+0x<offset>`, then `  addr=0x<fault address>` and, on targets with actors, `  actor=0x<actor>  sbase=0x<stack base>  ssize=0x<stack size>` | **70** |
+| **Runtime abort** | The runtime detects a condition it cannot continue from: a failed runtime check (region capacity, buffer validity or bounds, list index, an internal invariant), a resource the runtime cannot obtain (memory to commit for a growing stack, §15.4.10.2; an actor stack reservation requested by `main`, §15.1.2.2), or a containment failure that was not raised by hardware | `[silica] abort: <reason> at 0x<pc>` followed, where available, by ` in <symbol>+0x<offset>` | **71** |
+| **Language-level failure in `main`** | A pattern-match or arithmetic failure raised in `main`, which has no supervisor | the failure's atom name (`case_clause`, `badarith`) | **1** |
+
+Rules:
+
+- The runtime never ends a process through C `abort()`, `SIGABRT` (status 134) or the default action of a caught
+  signal (status 139). To make that true from the first instruction, the fault handlers are installed by the startup
+  code before `main` runs, and a fault raised while the handler itself is running takes a last-resort path that
+  writes the fault report line and exits 70 without re-entering the handler.
+- A process-fatal path ends the process with the async-signal-safe `_exit` (status 70 or 71), never with C `exit()`,
+  which would run exit handlers and flush buffers from inside a signal handler. Statuses 70 and 71 are reserved to the runtime reports above; a `main` that returns 70 or 71 is
+  told apart from them by the absence of the report line.
+- The report line is all a process-fatal path writes. It runs in a signal or exception handler, where delivering an unwind report through `FailureReporter` (§15.4.13.4) is not possible, so unwind reports belong to actor failures (§15.4.6.4) and are not part of a process-fatal report.
+- A failure inside an actor that the containment gate recovers, and every actor exit reason in §15.4.11 (including
+  `(:explicit, :stack_exhausted)` and `(:explicit, :stack_reserve_failed)`), is delivered through supervision and is
+  not a process-fatal report.
+- **Where the report goes.** Hosted: the report line is written to standard error and the process exits with the
+  status. OS-free: the report line is written to the console as program output, followed by the console's exit
+  marker carrying the status; target-specific details (for example an exception cause code) may follow the marker.
+- **Fields a target cannot supply are omitted, never invented.** The symbol needs a runtime symbol lookup and
+  symbol sizes; the actor fields need an actor runtime. Addresses differ from run to run and between targets, so
+  tools that compare reports treat every `0x` value as opaque.
+
+The mechanisms each target uses to meet this contract are described in
+[runtime_failure_reporting.md](runtime_failure_reporting.md) (non-normative).
 
 ---
 
@@ -9153,7 +9191,7 @@ The dying actor's behavior function does **not** participate. No user code in th
 
 Actor stacks grow on demand without a fixed upper bound (§15.1.2.2). Stack growth — successful or in progress — is transparent to the supervision layer. The supervisor is **never** notified about stack growth events.
 
-If host memory is fully exhausted and a stack grow attempt cannot be satisfied, this is a system-level resource condition. The runtime treats it as a containment gate failure (§15.4.4 condition 4: runtime invariants cannot be guaranteed without memory) and aborts the OS process rather than delivering a per-actor exit notification.
+If host memory is fully exhausted and a stack grow attempt cannot be satisfied, this is a system-level resource condition. The runtime treats it as a containment gate failure (§15.4.4 condition 4: runtime invariants cannot be guaranteed without memory) and ends the OS process with a runtime abort (§15.4.5.5, exit status 71) rather than delivering a per-actor exit notification.
 
 ##### 15.4.10.3 Async-Signal-Safe Constraint
 
@@ -9470,7 +9508,7 @@ The `reason` field is `:memory_fault` (or `:language_error` if the fault was a l
 
 - Only 16 MPK protection keys are available system-wide on x86-64; the runtime uses one for all Silica regions.
 - AArch64 thread isolation adds one thread per actor that makes FFI calls; the FFI thread is pooled where possible.
-- Faults in foreign code that corrupt the FFI thread's own stack beyond recovery abort the process after delivering the unwind report.
+- Faults in foreign code that corrupt the FFI thread's own stack beyond recovery end the process with a fatal fault report (§15.4.5.5, exit status 70). The report line is all that path writes (§15.4.5.5).
 
 ##### 15.4.13.6 Region Dump Format
 
@@ -9523,8 +9561,8 @@ This is the same philosophy as BEAM: recovery is permitted only when the analogu
 
 In debug builds the runtime should:
 
-- **Abort** the entire process on any fault, regardless of the containment gate.
-- Produce a full unwind report (§15.4.6.4) before aborting, including local variable values if DWARF debug info is present.
+- **End** the entire process on any fault, regardless of the containment gate, with a fatal fault report (§15.4.5.5, exit status 70).
+- Produce a full unwind report (§15.4.6.4) for every actor failure, including local variable values if DWARF debug info is present. A process-fatal fault writes only its report line (§15.4.5.5).
 - Enqueue the report for delivery per §15.4.13.4 (`FailureReporter.handle_report` on the reporter thread); fall back to stderr if no `FailureReporter` actor is running or enqueue fails.
 
 Rationale: in development, crashing immediately and noisily reveals bugs faster than silently recovering.
@@ -9534,9 +9572,9 @@ Rationale: in development, crashing immediately and noisily reveals bugs faster 
 In release builds the runtime should:
 
 - Apply the containment gate (§15.4.4) and recover single-actor faults where invariants hold.
-- Produce a full unwind report (§15.4.6.4) for every actor death (whether contained or process-fatal), without local variable values.
+- Produce a full unwind report (§15.4.6.4) for every contained actor death, without local variable values. A process-fatal fault writes only its report line (§15.4.5.5).
 - Enqueue the report for delivery per §15.4.13.4 (`FailureReporter.handle_report` on the reporter thread); fall back to stderr if no `FailureReporter` actor is running or enqueue fails.
-- Abort the process when the gate fails, after delivering the unwind report.
+- End the process with a fatal fault report (§15.4.5.5, exit status 70) when the gate fails. The report line is all that path writes (§15.4.5.5).
 
 ---
 
@@ -9558,7 +9596,8 @@ No open items. All previously deferred decisions have been resolved and their sp
 |-------|-----------|-----------|
 | Language | No UB, no raw pointers | No silent corruption possible from user code |
 | Hardware (MTE) | Tag mismatch → synchronous SIGSEGV/SIGBUS | Memory misuse becomes deterministic signal |
-| Signal handler | Containment gate (§15.4.4) | Gate passes → single actor dies, process continues; gate fails → process aborts |
+| Signal handler | Containment gate (§15.4.4) | Gate passes → single actor dies, process continues; gate fails → process ends with the fatal fault report, status 70 |
+| Process-fatal reports | One report line and a reserved status (§15.4.5.5) | Fault 70, runtime abort 71, the same on hosted and OS-free targets |
 | Recovery (`siglongjmp`) | Non-local jump to per-actor recovery point | Mutator torn down cleanly; runtime stack intact |
 | Actor isolation | Per-actor stacks (§15.1.2.2) | One actor's stack cannot corrupt another's; stack growth is transparent |
 | Supervised child table | Runtime-owned rows created from `child_spec` | Supervisor notified of every child death regardless of cause; restart policy has stored spawn metadata |

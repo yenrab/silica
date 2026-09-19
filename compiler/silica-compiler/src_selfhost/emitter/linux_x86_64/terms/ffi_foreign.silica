@@ -358,17 +358,62 @@ fn c_call_float_args(param_types: string) -> int64 {
     counts.floats
 }
 
-// Number of integer arguments beyond the six register homes (they sit in X6 / X7 and are pushed by
-// x86_call_c), at most 2.
-fn c_call_stack_args(param_types: string) -> int64 {
+// Number of integer arguments of the C call (the fields that are not floats).
+fn c_call_int_args(param_types: string) -> int64 {
     counts: { all: int64, floats: int64 } <- count_param_fields_from(param_types, 0, 0, 0);
-    ints: int64 <- counts.all - counts.floats;
+    counts.all - counts.floats
+}
+
+// Number of integer arguments beyond the six register homes (they sit in X6 / X7 and are pushed by
+// x86_call_c), at most 2. `hidden` is 1 when a MEMORY-class result pointer takes the first
+// integer register (see emit_sret_hidden_arg_shift), 0 otherwise.
+fn c_call_stack_args(param_types: string, hidden: int64) -> int64 {
+    ints: int64 <- c_call_int_args(param_types) + hidden;
     case ints > 8 of {
         true -> 2;
         false -> case ints > 6 of {
             true -> ints - 6;
             false -> 0
         }
+    }
+}
+
+// The VR home of the C call's integer argument `i`: X0-X5 are rdi rsi rdx rcx r8 r9, X6 / X7 the
+// 7th / 8th arguments x86_call_c pushes.
+fn int_arg_vr(i: int64) -> string {
+    case i of {
+        0 -> "X0";
+        1 -> "X1";
+        2 -> "X2";
+        3 -> "X3";
+        4 -> "X4";
+        5 -> "X5";
+        6 -> "X6";
+        _: int64 -> "X7"
+    }
+}
+
+// Moves integer argument i - 1 into argument i, for i from `i` down to 1.
+fn shift_int_args_from(i: int64, acc: string) -> string {
+    case i <= 0 of {
+        true -> acc;
+        false -> shift_int_args_from(i - 1, concat(acc, x86_isa@x86_mov(int_arg_vr(i), int_arg_vr(i - 1))))
+    }
+}
+
+// A foreign result record (sret_bytes > 0: the 32-byte ptr/len/tag records) is returned in memory.
+// AArch64 passes the buffer in X8 beside the arguments; System V AMD64 passes it as a hidden FIRST
+// integer argument (rdi), so every integer argument moves up one home and the buffer (X8, the
+// arena slot reloaded from scratch[+0]) goes into X0. The callee returns the same pointer in rax;
+// the result is read from scratch[+0] as on AArch64. Float arguments do not move.
+fn emit_sret_hidden_arg_shift(param_types: string, sret_bytes: int64) -> string {
+    case sret_bytes > 0 of {
+        true -> {
+            ints: int64 <- c_call_int_args(param_types);
+            n: int64 <- case ints > 7 of { true -> 7; false -> ints };
+            concat(shift_int_args_from(n, ""), x86_isa@x86_mov("X0", "X8"))
+        };
+        false -> ""
     }
 }
 
@@ -389,11 +434,11 @@ fn emit_guarded_preserver_restore_result() -> string {
     concat(x86_mem@x86_ldr("X0", "[SP, #0]"), x86_isa@x86_add("SP", "SP", "#80"))
 }
 
-fn emit_guarded_foreign_call_lines(c_symbol: string, nfp: int64, nstack: int64) -> string {
+fn emit_guarded_foreign_call_lines(c_symbol: string, nfp: int64, nstack: int64, arg_shift: string) -> string {
     save: string <- emit_guarded_preserver_save();
     enter_line: string <- x86_isa@x86_call("silica_rt_ffi_guarded_enter");
     setjmp_line: string <- concat(x86_isa@x86_call("silica_rt_ffi_guarded_setjmp"), x86_isa@x86_cbnz("X0", "1f"));
-    restore_args: string <- emit_guarded_preserver_restore_args();
+    restore_args: string <- concat(emit_guarded_preserver_restore_args(), arg_shift);
     call_line: string <- emit_foreign_bl_line(c_symbol, nfp, nstack);
     stash_result: string <- x86_mem@x86_str("X0", "[SP, #0]");
     exit_line: string <- x86_isa@x86_call("silica_rt_ffi_guarded_exit");
@@ -469,7 +514,9 @@ fn emit_foreign_user_call(
         true -> x86_mem@x86_ldr("X8", "[SP, #0]");
         false -> ""
     };
-    bl: string <- emit_guarded_foreign_call_lines(ctx.c_symbol, c_call_float_args(ctx.param_types), c_call_stack_args(ctx.param_types));
+    hidden_ret: int64 <- case ctx.sret_bytes > 0 of { true -> 1; false -> 0 };
+    arg_shift: string <- emit_sret_hidden_arg_shift(ctx.param_types, ctx.sret_bytes);
+    bl: string <- emit_guarded_foreign_call_lines(ctx.c_symbol, c_call_float_args(ctx.param_types), c_call_stack_args(ctx.param_types, hidden_ret), arg_shift);
     string_out: string <- case expects_string_out of {
         true -> emit_string_out_unmarshal_heap();
         false -> ""
@@ -540,16 +587,19 @@ fn emit_foreign_tail_call(c_symbol: string, call_effects: string, fn_effects: st
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
     // The parameter types are not known on this path: no float / stack argument counts.
-    bl: string <- emit_guarded_foreign_call_lines(c_symbol, 0, 0);
+    bl: string <- emit_guarded_foreign_call_lines(c_symbol, 0, 0, "");
     // The C call returns here; unlike a Silica tail transfer we must RET to our caller (kind-5 epilogue is omitted).
-    ret_line: string <- x86_isa@x86_ret();
+    // The frame is released AFTER the guarded call, not before as on AArch64: after `leave` rsp holds
+    // only the return address (8 mod 16), so the guarded runtime and the C callee ran on a misaligned
+    // stack (glibc's aligned SSE spills faulted with addr 0); the X0 result survives `leave`.
+    ret_line: string <- concat(frame_release, x86_isa@x86_ret());
     with_comment: string <- case length_bytes(eff_comment) > 0 of {
         true -> concat(eff_comment, "\n");
         false -> ""
     };
     with_pre: string <- case length_bytes(pre_barrier) > 0 of {
-        true -> concat(with_comment, concat(pre_barrier, concat("\n", frame_release)));
-        false -> concat(with_comment, frame_release)
+        true -> concat(with_comment, concat(pre_barrier, "\n"));
+        false -> with_comment
     };
     concat(concat(with_pre, bl), ret_line)
 }

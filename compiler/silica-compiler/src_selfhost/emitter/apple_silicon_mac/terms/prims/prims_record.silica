@@ -15,8 +15,26 @@
    limitations under the License.
 -}
 
-// Inline record struct layout for AArch64 emitter (silica-spec §3.3.7 / §3.4.2, sir_design_spec §7.6).
+// Record layout for the emitter (silica-spec §3.3.7 / §3.4.2, sir_design_spec §7.6).
 // record_make / record_proj mirror tuple flat stack layout: field order matches `{ f1: T1, ... }`.
+//
+// Uniform boxed layout (2026-09-18): EVERY field is one 8-byte slot. A scalar field holds its
+// value; a record-, tuple-, list-, string- or function-typed field holds a pointer. A nested
+// record or tuple literal is built in its own slab, heap-promoted, and its pointer is stored;
+// a nested aggregate variable is copied to the region and its pointer is stored. This is the
+// layout generic code (ItemType / KeyType / ValueType fields, one word each) has always used,
+// so a value built in a generic unit and read in a concrete one -- or the reverse -- has the
+// same shape by construction: no boundary conversion, no per-shape rule.
+// Before this, a record-typed field was INLINED (its flat size, fields spliced into the outer)
+// and a tuple-typed field kept a 16-byte-rounded shell around its pointer, so a generic
+// `{ status, value: ItemType, path }` and its concrete instantiation disagreed on every
+// offset after `value` (trials/generic_modules_addition/record_item_through_generic_result,
+// record_tuple_field_then_list_read, and the *_through_generic trials beside them).
+// The exceptions are the two records the actor runtime lays out by hand, and only those
+// (record_type_keeps_inline_layout): the supervisor reply (80 bytes, child_info spliced inline)
+// and the `start:`-form child spec, whose (state, behaviour) tuple keeps its 16-byte shell so
+// restart/shutdown/flavor sit at the runtime's child-spec ABI offsets 32/40/48
+// (term_child_spec@child_spec_field_abi_offset). They keep the legacy inline rules.
 
 use reg_conventions;
 
@@ -35,6 +53,9 @@ export record_type_flat_stack_bytes/1;
 export record_type_has_only_scalar_fields/1;
 export record_type_value_flat_byte_size/1;
 export record_type_list_cons_payload_bytes/1;
+export record_type_is_supervisor_reply/1;
+export record_type_keeps_inline_layout/1;
+export record_type_is_start_child_spec/1;
 
 
 // Local SIRTerm arena helpers (sir_ast node accessors are not exported).
@@ -132,11 +153,17 @@ fn inner_field_scalar_ok_for_inline(fty: string) -> boolean {
     }
 }
 
+// Boxed layout: one 8-byte slot per field whatever its type (see the header).
 fn field_value_flat_slot_bytes(fty: string) -> int64 {
+    slot_bytes_for_field_type(fty)
+}
+
+// Legacy inline slot size (nested record spliced in, tuple shell reserved): supervisor reply only.
+fn field_value_flat_slot_bytes_inline(fty: string) -> int64 {
     t: string <- strip_spaces_rt(fty);
     case record_type_starts(t) of {
-        true -> record_type_value_flat_byte_size(t);
-        false -> slot_bytes_for_field_type(t)
+        true -> record_type_value_flat_byte_size_inline(t);
+        false -> slot_bytes_for_field_type_inline(t)
     }
 }
 
@@ -155,11 +182,75 @@ fn sum_field_value_flat_loop(remaining: string) -> int64 {
     }
 }
 
+fn sum_field_value_flat_loop_inline(remaining: string) -> int64 {
+    inner: string <- strip_spaces_rt(remaining);
+    case length_bytes(inner) == 0 of {
+        true -> 0;
+        false -> {
+            (seg, rest) <- record_case_field_step(inner);
+            (fname, fty) <- record_field_segment_name_sub(seg);
+            case length_bytes(fname) == 0 of {
+                true -> sum_field_value_flat_loop_inline(rest);
+                false -> field_value_flat_slot_bytes_inline(fty) + sum_field_value_flat_loop_inline(rest)
+            }
+        }
+    }
+}
+
+// The supervisor reply record is produced by the actor runtime's hand-written assembly with
+// child_info spliced inline (80 bytes); it keeps the legacy inline rules. Same field test as
+// term_child_spec@is_supervisor_reply_record_type (repeated here: that module imports this one).
+fn record_type_is_supervisor_reply(record_str: string) -> boolean {
+    R: string <- strip_spaces_rt(record_str);
+    case record_type_starts(R) of {
+        false -> false;
+        true -> length_bytes(find_field_type_in_record(R, "tag")) > 0
+            and length_bytes(find_field_type_in_record(R, "child")) > 0
+            and length_bytes(find_field_type_in_record(R, "status")) > 0
+            and length_bytes(find_field_type_in_record(R, "children")) > 0
+            and length_bytes(find_field_type_in_record(R, "count")) > 0
+            and length_bytes(find_field_type_in_record(R, "child_info")) > 0
+            and length_bytes(find_field_type_in_record(R, "error")) > 0
+    }
+}
+
+// A `start:`-form child spec ({ id, agent_type, start: (state, behaviour), restart, shutdown, ... }):
+// written at the child-spec ABI offsets by record_make (term_record_layout), which the legacy inline
+// sizes reproduce (the start tuple's 16-byte shell). Same field test as the start branch of
+// term_child_spec@is_child_spec_record_type.
+fn record_type_is_start_child_spec(record_str: string) -> boolean {
+    R: string <- strip_spaces_rt(record_str);
+    case record_type_starts(R) of {
+        false -> false;
+        true -> length_bytes(find_field_type_in_record(R, "id")) > 0
+            and length_bytes(find_field_type_in_record(R, "agent_type")) > 0
+            and length_bytes(find_field_type_in_record(R, "start")) > 0
+            and length_bytes(find_field_type_in_record(R, "restart")) > 0
+            and length_bytes(find_field_type_in_record(R, "shutdown")) > 0
+    }
+}
+
+// The runtime-laid-out records that keep the legacy inline field rules (see the header).
+fn record_type_keeps_inline_layout(record_str: string) -> boolean {
+    record_type_is_supervisor_reply(record_str) or record_type_is_start_child_spec(record_str)
+}
+
 fn record_type_value_flat_byte_size(record_str: string) -> int64 {
     t: string <- strip_spaces_rt(record_str);
     case record_type_starts(t) of {
         false -> 8;
-        true -> sum_field_value_flat_loop(extract_braced_body(t))
+        true -> case record_type_keeps_inline_layout(t) of {
+            true -> sum_field_value_flat_loop_inline(extract_braced_body(t));
+            false -> sum_field_value_flat_loop(extract_braced_body(t))
+        }
+    }
+}
+
+fn record_type_value_flat_byte_size_inline(record_str: string) -> int64 {
+    t: string <- strip_spaces_rt(record_str);
+    case record_type_starts(t) of {
+        false -> 8;
+        true -> sum_field_value_flat_loop_inline(extract_braced_body(t))
     }
 }
 
@@ -504,9 +595,15 @@ fn count_record_fields(record_str: string) -> int64 {
     }
 }
 
+// Boxed layout: every field is one 8-byte slot, aggregates included (see the header).
+fn slot_bytes_for_field_type(fty: string) -> int64 {
+    8
+}
+
+// Legacy inline shell sizes, used only for the supervisor reply record (runtime-laid-out).
 // Fn-value types are often normalized to `(T1,T2) -> R` (same spelling as tuples). Those are
 // one pointer (8 bytes), not a tuple shell — see reg_conventions@is_tuple_type.
-fn slot_bytes_for_field_type(fty: string) -> int64 {
+fn slot_bytes_for_field_type_inline(fty: string) -> int64 {
     t: string <- strip_spaces_rt(fty);
     case record_type_starts(t) of {
         true -> {
@@ -529,7 +626,7 @@ fn slot_bytes_for_field_type(fty: string) -> int64 {
 // slot, left compare_item unwritten, and the stale word was called as the comparator --
 // a SIGFPE and a _sigtramp loop instead of a diagnostic. Callers must treat -1 as poison
 // and never do arithmetic on it; it reaches tuple_flat_memref, which emits `.err`.
-fn offset_bytes_before_field_in_content(content: string, field: string, start: int64, acc: int64) -> int64 {
+fn offset_bytes_before_field_in_content(content: string, field: string, start: int64, acc: int64, inline: boolean) -> int64 {
     case start > length_bytes(content) of {
         true -> -1;
         false -> {
@@ -541,9 +638,13 @@ fn offset_bytes_before_field_in_content(content: string, field: string, start: i
                 false -> {
                     fname: string <- strip_spaces_rt(substring(seg, 0, colon));
                     fty: string <- strip_spaces_rt(substring(seg, colon + 1, length_bytes(seg)));
+                    slot: int64 <- case inline of {
+                        true -> field_value_flat_slot_bytes_inline(fty);
+                        false -> field_value_flat_slot_bytes(fty)
+                    };
                     case fname == field of {
                         true -> acc;
-                        false -> offset_bytes_before_field_in_content(content, field, seg_end + 1, acc + field_value_flat_slot_bytes(fty))
+                        false -> offset_bytes_before_field_in_content(content, field, seg_end + 1, acc + slot, inline)
                     }
                 }
             }
@@ -562,7 +663,7 @@ fn offset_bytes_before_field(record_str: string, field: string) -> int64 {
         false -> -1;
         true -> {
             content: string <- extract_braced_body(t);
-            offset_bytes_before_field_in_content(content, field, 0, 0)
+            offset_bytes_before_field_in_content(content, field, 0, 0, record_type_keeps_inline_layout(t))
         }
     }
 }

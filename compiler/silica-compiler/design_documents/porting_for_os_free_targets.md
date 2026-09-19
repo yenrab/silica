@@ -86,6 +86,7 @@ Raw-metal *applications* need device MMIO. Raw-metal *runtimes* also need privil
 | Privileged CPU regs | — | Runtime-only access at EL1 (or ESP32 equivalent); not app MMIO |
 | Actors | Hosted runtime | [IPC_Bare](IPC_Bare.md) scheduling, no Darwin threads |
 | Fault notes | macOS FFI crash note | Per-board fault/IRQ document |
+| Fatal fault / runtime abort reports (spec §15.4.5.5) | `sigaction` + `sigaltstack` handler, `silica_rt_print_fault_site` (status 70), `silica_rt_abort_with` (status 71), on stderr | Exception vectors and stack-guard data breakpoints into the same report line, written as console output before the exit marker with status 70 / 71; see [runtime_failure_reporting.md](runtime_failure_reporting.md) |
 
 A port is **not complete** if only the MMIO prims land, or only the object format lands.
 
@@ -216,7 +217,8 @@ Fifi is optional for a port. A port that provides it follows these rules.
    stack. Instead, the port's exception or trap vector recognizes a fault raised while an FFI worker is executing
    foreign code, and ends that worker. The worker's supervisor then handles the exit exactly as on a hosted target
    (spec §15.4.13.5). A fault that the vector cannot attribute to an FFI worker falls through to the port's panic
-   path.
+   path, which is the fatal fault report of spec §15.4.5.5 (status 70; how the ESP32-S3 port does it:
+   [runtime_failure_reporting.md](runtime_failure_reporting.md)).
 3. **Blocking foreign code holds its core.** An FFI worker blocked in foreign code holds the core it is pinned to.
    Programs keep such workers on cores they reserve for them.
 4. **The `dangerous_*` naming rule and the taint rules are unchanged**

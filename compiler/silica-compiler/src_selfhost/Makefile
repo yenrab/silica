@@ -44,7 +44,7 @@ INSTALL_SELFHOST ?= 1
 
 # Host toolchain (where this build runs; HOST_UNAME_S comes from emit_target.mk).
 # macOS: clang + Apple ld; main_entry_alias.s supplies _main.
-# Linux (64-bit Raspberry Pi OS / Debian AArch64): cc + GNU ld from build-essential. No entry
+# Linux (Debian-family AArch64 or x86-64): cc + GNU ld from build-essential. No entry
 # alias (crt1 calls `main`), -no-pie (emitted data tables hold absolute pointers).
 # Neither host raises the main-thread stack any more: `main` is not an actor and stays on the
 # platform's ordinary stack (spec §15.1.2.2); the compiler's pipeline runs in an actor whose
@@ -61,7 +61,8 @@ ASSEMBLER := cc
 ASFLAGS_host :=
 LINKER_CLANG := cc
 LDFLAGS_STACK := -no-pie -rdynamic
-HOST_RT_ASM := runtime_asm/linux_aarch64/deviceio_link_thunks.s runtime_asm/linux_aarch64/silica_rt_shim.s
+# The hand-written runtime of the host's own emit target (runtime_asm/<target>/, one per Linux target).
+HOST_RT_ASM := runtime_asm/$(HOST_DEFAULT_TARGET)/deviceio_link_thunks.s runtime_asm/$(HOST_DEFAULT_TARGET)/silica_rt_shim.s
 endif
 
 # Parallel .sams → .o assembly (Stage 2). Silica emission (Stage 1) stays serial
@@ -341,21 +342,23 @@ executables: objects
 	$(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,executables)
 
 # ---- Bootstrap of the first Linux-hosted compiler (temporary) ----------------------
-# No Linux compiler exists yet, so the first one is built in two halves on two machines.
-#   Mac:  make bootstrap-assembly    the macOS-hosted cross compiler emits every unit of this
-#                                    tree as Linux assembly (.sams); nothing is assembled here.
-#   Pi:   make bootstrap-link        the system assembler and linker turn the shipped .sams and
-#                                    the Linux hand-written runtime into silica-compiler, and
-#                                    install it as this host's selfhost compiler. No compiler runs.
-# Between the two, copy this tree with its .sams to the Pi. Once a Linux compiler exists the
-# ordinary `make build` runs natively there and these two targets are no longer needed.
-BOOTSTRAP_CROSS_COMPILER := $(BINARIES_DIR)/silica-compiler-linux_aarch64
+# No compiler exists on a new Linux host, so its first one is built in two halves on two machines.
+#   Mac:   make bootstrap-assembly [BOOTSTRAP_TARGET=linux_x86_64]
+#                                    the macOS-hosted cross compiler for that target emits every
+#                                    unit of this tree as its assembly (.sams); nothing is assembled here.
+#   Linux: make bootstrap-link       the system assembler and linker turn the shipped .sams and
+#                                    runtime_asm/<target>/ into silica-compiler, and install it as
+#                                    this host's selfhost compiler. No compiler runs.
+# Between the two, copy this tree with its .sams to the Linux host. Once a compiler exists there
+# the ordinary `make build` runs natively and these two targets are no longer needed.
+BOOTSTRAP_TARGET ?= linux_aarch64
+BOOTSTRAP_CROSS_COMPILER := $(BINARIES_DIR)/silica-compiler-$(BOOTSTRAP_TARGET)
 
 bootstrap-assembly:
-	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" assembly TARGET=linux_aarch64 \
+	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" assembly TARGET=$(BOOTSTRAP_TARGET) \
 		SILICA_COMPILER="$(BOOTSTRAP_CROSS_COMPILER)" INSTALL_SELFHOST=0 SILICA_TARGET_PROMPT=0
 	@n=$$(find "$(THIS_DIR)" -name '*.sams' -type f ! -path '*/_wd_probe/*' | wc -l | tr -d ' '); \
-	echo "bootstrap-assembly: $$n .sams emitted for linux_aarch64; copy this tree to the Pi and run make bootstrap-link there"
+	echo "bootstrap-assembly: $$n .sams emitted for $(BOOTSTRAP_TARGET); copy this tree to the Linux host and run make bootstrap-link there"
 
 bootstrap-link:
 	@if [ "$$(uname -s)" != Linux ]; then echo "FAIL: bootstrap-link assembles and links on the Linux host, not here"; exit 1; fi
@@ -553,6 +556,7 @@ help:
 	@echo "    make fixpoint                 # build gen3 with gen2; pass iff gen3 == gen2 byte for byte"
 	@echo "    make TARGET=apple_silicon_mac     # explicit emit backend"
 	@echo "    make TARGET=linux_aarch64         # Linux AArch64 backend (64-bit Raspberry Pi OS)"
+	@echo "    make TARGET=linux_x86_64          # Linux x86-64 backend (Debian-family x86-64 hosts)"
 	@echo "    make assembly TARGET=apple_silicon_mac"
 	@echo "    make all-targets              # loop clean/build for each allowable TARGET"
 	@echo ""

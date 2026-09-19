@@ -1116,9 +1116,14 @@ fn resolve_assoc_type_placeholder(placeholder: string, collection_type: string, 
     pk: int64 <- type_interner@placeholder_kind_of_surface(p);
     case is_assoc_type_placeholder(p) of {
         false -> p;
-        true -> case pk == type_interner@kind_ph_item_type() or pk == type_interner@kind_ph_priority_type() of {
-            true -> collection_param_type_for_trait_arg(collection_type, 1);
-            false -> case pk == type_interner@kind_ph_key_type() or pk == type_interner@kind_ph_node_id_type() of {
+        // PriorityQueue[PriorityType, ItemType, mem(S)] (priority_queue_trait.md §1): ItemType is the
+        // stored value, bracket parameter 2; every other family keeps its item first.
+        true -> case pk == type_interner@kind_ph_item_type() of {
+            true -> case is_priority_queue_type(collection_type) of {
+                true -> collection_param_type_for_trait_arg(collection_type, 2);
+                false -> collection_param_type_for_trait_arg(collection_type, 1)
+            };
+            false -> case pk == type_interner@kind_ph_priority_type() or pk == type_interner@kind_ph_key_type() or pk == type_interner@kind_ph_node_id_type() of {
                 true -> collection_param_type_for_trait_arg(collection_type, 1);
                 false -> case pk == type_interner@kind_ph_value_type() or pk == type_interner@kind_ph_edge_payload_type() of {
                     true -> collection_param_type_for_trait_arg(collection_type, 2);
@@ -1174,10 +1179,17 @@ fn assoc_type_from_record_witness(placeholder: string, record_type: string) -> s
     pk: int64 <- type_interner@placeholder_kind_of_surface(p);
     case length_bytes(record_type) == 0 of {
         true -> "";
-        false -> case pk == type_interner@kind_ph_item_type() or pk == type_interner@kind_ph_priority_type() of {
+        // PriorityType is witnessed by compare_priority, ItemType (the stored value) by compare_item
+        // (priority_queue_trait.md §1-§2); each falls back to the other field when it is the only one.
+        false -> case pk == type_interner@kind_ph_priority_type() of {
             true -> case length_bytes(witness_type_from_record_field(record_type, "compare_priority")) > 0 of {
                 true -> witness_type_from_record_field(record_type, "compare_priority");
                 false -> witness_type_from_record_field(record_type, "compare_item")
+            };
+            false -> case pk == type_interner@kind_ph_item_type() of {
+            true -> case length_bytes(witness_type_from_record_field(record_type, "compare_item")) > 0 of {
+                true -> witness_type_from_record_field(record_type, "compare_item");
+                false -> witness_type_from_record_field(record_type, "compare_priority")
             };
             false -> case pk == type_interner@kind_ph_key_type() or pk == type_interner@kind_ph_node_id_type() of {
                 true -> case length_bytes(witness_type_from_record_field(record_type, "compare_node")) > 0 of {
@@ -1191,6 +1203,7 @@ fn assoc_type_from_record_witness(placeholder: string, record_type: string) -> s
                     };
                     false -> ""
                 }
+            }
             }
         }
     }
@@ -1287,7 +1300,9 @@ fn resolve_constructor_call_formal(bind_type: string, formal: string) -> string 
             item_t: string <- constructor_witness_type_for_placeholder(bind_type, "ItemType");
             key_t: string <- constructor_witness_type_for_placeholder(bind_type, "KeyType");
             val_t: string <- constructor_witness_type_for_placeholder(bind_type, "ValueType");
-            s1: string <- replace_assoc_token_in_type(formal, "ItemType", item_t);
+            pri_t: string <- constructor_witness_type_for_placeholder(bind_type, "PriorityType");
+            s0: string <- replace_assoc_token_in_type(formal, "PriorityType", pri_t);
+            s1: string <- replace_assoc_token_in_type(s0, "ItemType", item_t);
             s2: string <- replace_assoc_token_in_type(s1, "KeyType", key_t);
             replace_assoc_token_in_type(s2, "ValueType", val_t)
         }

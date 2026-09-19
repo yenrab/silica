@@ -147,7 +147,11 @@ fn parse_ref_q_type(type_str: string) -> (boolean, string) {
             true -> (true, substring(t, 5, length_bytes(t) - 1));
             false -> (false, "")
         };
-        false -> (false, "")
+        // Token-joined annotation text (a sequence binding's nested type) spells `ref ?(`.
+        false -> case length_bytes(t) >= 6 and substring(t, 0, 6) == "ref ?(" and substring(t, length_bytes(t) - 1, length_bytes(t)) == ")" of {
+            true -> (true, substring(t, 6, length_bytes(t) - 1));
+            false -> (false, "")
+        }
     }
 }
 
@@ -279,7 +283,8 @@ fn ref_fits_ref_optional_slot(actual: string, expected: string) -> boolean {
                             es: string <- trim_type(nth_top_level_param(params_e, 1));
                             elem_a: string <- trim_type(third_param_type(params_a));
                             elem_e: string <- trim_type(third_param_type(params_e));
-                            lr == er and ls == es and elem_e == "rec" and is_tuple_type(elem_a) and type_contains_rec(elem_a)
+                            // The slot may name its element as `rec` or spell the recursive tuple out (§4.2.2).
+                            lr == er and ls == es and is_tuple_type(elem_a) and type_contains_rec(elem_a) and (elem_e == "rec" or recursive_types_equal(elem_a, elem_e))
                         }
                     }
                 }
@@ -288,9 +293,17 @@ fn ref_fits_ref_optional_slot(actual: string, expected: string) -> boolean {
     }
 }
 
+// An empty root means `rec` is unanchored: the compared type is not itself a recursive tuple
+// (e.g. a record field or binding typed ref?(L, S, rec)), so its `rec` names whatever recursive
+// tuple the value belongs to. The token then stays "rec" and equal_core matches it against any
+// recursive tuple (§4.2.2: ref?(L, S, rec) and ref?(L, S, (..., ref?(L, S, rec))) are the same type
+// when rec is that tuple), as ref_fits_ref_optional_slot already does for ref -> ref?.
 fn expand_rec_token(type_str: string, root: string) -> string {
     case trim_type(type_str) == "rec" of {
-        true -> root;
+        true -> case length_bytes(root) == 0 of {
+            true -> "rec";
+            false -> root
+        };
         false -> type_str
     }
 }
@@ -299,8 +312,12 @@ fn recursive_root_for(type_str: string) -> string {
     t: string <- trim_type(type_str);
     case is_tuple_type(t) and type_contains_rec(t) of {
         true -> t;
-        false -> t
+        false -> ""
     }
+}
+
+fn is_recursive_tuple_type(t: string) -> boolean {
+    is_tuple_type(t) and type_contains_rec(t)
 }
 
 fn recursive_types_equal(a: string, b: string) -> boolean {
@@ -319,9 +336,12 @@ fn equal_core(a: string, b: string, root_a: string, root_b: string, depth: int64
             eb: string <- expand_rec_token(trim_type(b), root_b);
             case ea == "rec" and eb == "rec" of {
                 true -> true;
-                false -> case is_ref_optional_type(ea) or is_ref_optional_type(eb) of {
-                    true -> equal_ref_optional(ea, eb, root_a, root_b, depth);
-                    false -> equal_non_optional_types(ea, eb, root_a, root_b, depth)
+                false -> case (ea == "rec" and is_recursive_tuple_type(eb)) or (eb == "rec" and is_recursive_tuple_type(ea)) of {
+                    true -> true;
+                    false -> case is_ref_optional_type(ea) or is_ref_optional_type(eb) of {
+                        true -> equal_ref_optional(ea, eb, root_a, root_b, depth);
+                        false -> equal_non_optional_types(ea, eb, root_a, root_b, depth)
+                    }
                 }
             }
         }
@@ -437,7 +457,17 @@ fn recursive_type_subject(type_str: string) -> string {
     (ok_ref: boolean, ref_params: string) <- parse_ref_type(t);
     case ok_ref of {
         true -> nth_top_level_param(ref_params, 2);
-        false -> t
+        // ref?(L, S, T) as a binding annotation (§4.2.2) is checked on its element like ref(L, S, T), so
+        // the spelled form ref?(L, S, (..., ref?(L, S, rec))) is accepted. A bare `rec` element keeps the
+        // whole type as subject: outside a tuple type `rec` has no enclosing tuple to name (§4.2.2
+        // "rec is valid only inside a tuple type"), so the binding is rejected with E2010.
+        false -> {
+            (ok_q: boolean, q_params: string) <- parse_ref_q_type(t);
+            case ok_q and trim_type(nth_top_level_param(q_params, 2)) != "rec" of {
+                true -> nth_top_level_param(q_params, 2);
+                false -> t
+            }
+        }
     }
 }
 

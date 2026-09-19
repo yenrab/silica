@@ -42,7 +42,7 @@
 //   silica_rt_empty_string                      the shared empty string
 //
 // Register use: a2-a7 hold arguments and state (they survive CALL8), a8-a15 are temporaries that any
-// CALL8 clobbers. Nothing here calls out except silica_rt_alloc and silica_rt_abort.
+// CALL8 clobbers. Nothing here calls out except silica_rt_alloc and silica_rt_abort_not_a_string.
 
     .section .text.silica_rt_string, "ax"
     .literal_position
@@ -93,7 +93,7 @@
 
     .align  4
 silica_rt_string_bad:
-    call8   silica_rt_abort
+    call8   silica_rt_abort_not_a_string
 1:  j       1b
 
 // silica_rt_string_alloc(n): a fresh string of n bytes (data at +24, zeroed, NUL after the last byte).

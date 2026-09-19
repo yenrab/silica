@@ -459,6 +459,16 @@ fn collect_e3b_types_from_functions(fns: List[{ name: string, return_type: strin
     }
 }
 
+fn module_defines_init(fns: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)]) -> boolean {
+    case fns.is_nil of {
+        true -> false;
+        false -> case fns.head.name == "init" of {
+            true -> true;
+            false -> module_defines_init(fns.tail)
+        }
+    }
+}
+
 fn child_start_name_suffix() -> string {
     "_child_start"
 }
@@ -520,7 +530,13 @@ fn emit_supervisor_start_trampolines(sir_module: { module_name: string, used_mod
                 from_exps: List[string, mem(normal)] <- collect_child_start_types_from_exports(sir_module.exports, mod_name, sir_ast@nil_sir_strings());
                 from_fns: List[string, mem(normal)] <- collect_child_start_types_from_functions(sir_module.functions, mod_name, from_exps);
                 fallback_types: List[string, mem(normal)] <- collect_e3b_types_from_functions(sir_module.functions, from_fns);
-                case fallback_types.is_nil of {
+                // The fallback covers a module whose own `impl T for Supervisor` the marker collect
+                // missed. A module that merely SPAWNS a supervisor declared in another unit has no
+                // `init` for the trampoline to call: emitting one here referenced `<this module>_init`
+                // and the program failed to link. The unit holding the impl (and init) defines the
+                // global `_silica_supervisor_start_<T>`; this unit only references it.
+                // See trials/supervisors_addition/supervisor_init_in_other_unit.
+                case fallback_types.is_nil or module_defines_init(sir_module.functions) == false of {
                     true -> "";
                     false -> concat(hdr, emit_supervisor_start_trampolines_loop(mod_name, fallback_types, ""))
                 }

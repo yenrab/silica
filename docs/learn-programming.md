@@ -12,9 +12,9 @@ Copyright © 2026 Lee Scott Barney
 
 Use this book together with a large language model (an LLM — a chat program that can read these pages and answer questions) and the [Silica language documentation](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md). Point the LLM at both. Ask it to walk through examples, check your attempts, and explain a line you do not yet understand. Tell it what computer you are using. It will fill in the practical steps this book leaves out: how to compile a program, how to run it, and how to see the result on your machine. The book and the language documentation are the source of the rules; the LLM is there to help you learn to write programs and to understand how programming works.
 
-This book is for people who have never written a computer program. You do not need to know what a compiler is, what a type is, or how a chip works. We start from one idea: a program is a group of small workers that send each other messages, watched over by someone who helps when one of them makes a mistake. We write those workers in [Silica]({{ '/' | relative_url }}).
+**Do not type programs by hand. Have the LLM write them.** A working program has two kinds of lines. A few lines say what you actually want: add these two numbers, print the total, send this message. The rest are lines that every program of its kind needs around those few: naming the types of things, setting up the supervisor, opening and closing each block of steps. Programmers call that surrounding part *boilerplate*. You do not need to know how to write it, and at first you will not even recognize it. Describe what you want to the LLM and let it write the whole program, boilerplate included. Your job is to read what it wrote, find the lines that do the real work, check them against what you asked for, and ask the LLM about anything you do not understand. This book teaches you to read and judge programs. The typing is the LLM's job. This is also why you can safely read only the lines that end with a `//` comment when a chapter tells you to: those are the lines that say what the program does, and the rest is boilerplate the LLM writes for you.
 
-If you already write software, this is the wrong book. Use [Silica for Programmers]({{ '/learn-silica/' | relative_url }}) instead.
+This book is for people who have never written a computer program. If you already write software, this is the wrong book. Use [Silica for Programmers]({{ '/learn-silica/' | relative_url }}) instead.
 
 ## 1. You already know how this works
 
@@ -28,6 +28,8 @@ There is one more relationship you already understand. Elephant mothers give bir
 
 In Silica that mother is called a **supervisor**. A supervisor starts actors — it gives birth to them — and then watches over them. The actors do the work. If one of them fails, the supervisor notices and starts it again, fresh. Supervisor-and-actor is elephant-mother-and-child. We will come back to this picture whenever it helps, which is often.
 
+That is the one idea this book starts from: a program is a group of small workers that send each other messages, watched over by someone who helps when one of them makes a mistake. You do not need to know what a compiler is, what a type is, or how a chip works to follow it. We write those workers in [Silica]({{ '/' | relative_url }}).
+
 ## 2. How to read this book
 
 Read in order. Each chapter uses only ideas already introduced.
@@ -38,8 +40,8 @@ A few habits will help:
 
 - Read every example slowly. One unfamiliar word is enough reason to pause.
 - When you see a new symbol, treat it as vocabulary, not as decoration.
-- When a chapter tells you to read only the lines that end with a `//` comment, do exactly that. The rest of the code will make sense later.
-- Try the short exercises at the ends of chapters. They are small on purpose.
+- When a chapter tells you to read only the lines that end with a `//` comment, do exactly that. The rest is the boilerplate your LLM writes, and it will make sense later.
+- Try the short exercises at the ends of chapters. Describe each one to your LLM, let it write the program, then read the result and check that it does what the exercise asks. They are small on purpose.
 - If a later chapter feels sudden, go back one chapter. That is normal.
 
 Silica is still growing. The [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) is the source of truth if this book and the compiler ever disagree.
@@ -160,7 +162,7 @@ These two files, with a short README, live in the Silica repository at `docs/exa
 
 ### Try this
 
-Change `(2, 3)` to `(10, 32)` in `main.silica` and predict what the program prints.
+Ask your LLM to change `(2, 3)` to `(10, 32)` in `main.silica`. Before you run it, read the changed line and predict what the program prints.
 
 Answer: `42`. Nothing about the calf changed. Only the message changed.
 
@@ -181,6 +183,8 @@ The computer cannot run the text of a Silica file directly. A program called a *
 Silica's motto is: *secure by default at compile time — fail soft, never fail silent.* In beginner terms: the compiler tries to catch problems before they become surprises, and when a running actor does fail, its supervisor is there — the failure is noticed and handled, never hidden.
 
 **How the rest of this book shows programs.** The supervisor's `init` function in Chapter 3 is long, and it is almost the same in every program. From now on, examples show the actor's behaviour and the lines of `main` that change. The supervisor is the one from Chapter 3 with three things swapped: the child's `id`, the child's `behavior`, and the behaviour's type, which is written in two places inside `init` (both say `behavior: fn(msg: ..., state: ...) -> ...`). When a program needs something else changed, the chapter says so.
+
+The behaviour itself goes in `main.silica` too, next to `init`, and `init` names it without a file name in front: `behavior: greeter` rather than `behavior: adder@add_and_print`. Chapter 19 shows how to give a calf a file of its own, the way `adder.silica` is.
 
 ## 5. Values
 
@@ -224,12 +228,11 @@ You can compare values. Comparisons produce booleans:
 
 `==` asks "are these the same?" `!=` asks "are these different?"
 
-`and`, `or`, and `not` combine booleans:
+`and` and `or` combine booleans:
 
 ```silica
 true and false    // false
 true or false     // true
-not true          // false
 ```
 
 Parentheses control order, as in arithmetic class:
@@ -260,7 +263,7 @@ The name is `total`. The type is `int64`. The value is whatever the sum is. Afte
 
 The semicolon ends the binding. The last line of a function is its result, and it has no semicolon.
 
-A name in Silica is not a box you keep refilling. Once `total` is bound, it stays that value for the rest of that message. If you need a different value, you bind a new name, or you write a new binding that computes from the old one:
+A name in Silica is not a box you keep refilling. Once `total` is bound, it stays that value for the rest of that message. When a different value is needed, the program binds a new name, computed from the old one:
 
 ```silica
 fn add_and_print(msg: (int64, int64), state: int64) -> (:no_reply, int64) {
@@ -282,7 +285,7 @@ Why so strict? Because a name that never changes is a name you can trust. If `to
 
 The name `_` is special. It means "I have to bind this, but I do not need it." The first program wrote `_: atom <- print_int64(total)` because printing gives back a small value nobody wants.
 
-You choose names. Good names read like English: `total`, `left`, `guest_count`. Silica uses **snake_case**: words in lowercase, separated by underscores.
+Names are chosen by whoever writes the program; when your LLM writes it, ask for good ones. Good names read like English: `total`, `left`, `guest_count`. Silica uses **snake_case**: words in lowercase, separated by underscores.
 
 ### Try this
 
@@ -307,7 +310,7 @@ Answer: `28`.
 
 A **type** is a promise about a value. `int64` promises a whole number. `string` promises text. `boolean` promises `true` or `false`.
 
-Silica writes types in the open. Function parameters have types. Bindings have types. Even the catch-all `_` has a type. That looks wordy at first. It is deliberate. You should never have to guess what kind of thing a name is.
+Silica writes types in the open. Function parameters have types. Bindings have types. Even the catch-all `_` has a type. That looks wordy at first, but your AI/LLM will generate it anyway. You don't have to type it. It is deliberate. You should never have to guess what kind of thing a name is.
 
 Look at the first line of the adder's behaviour:
 
@@ -343,7 +346,7 @@ fn add_and_print(msg: (int64, int64), state: int64) -> (:no_reply, int64) {
     sequence proc[device_io]
         (left: int64, right: int64) <- msg;
         name: string <- "Nia";
-        total: int64 <- name + left;
+        total: int64 <- name + left + right;
         _: atom <- print_int64(total);
         println("")
     produces
@@ -352,11 +355,11 @@ fn add_and_print(msg: (int64, int64), state: int64) -> (:no_reply, int64) {
 }
 ```
 
-Answer: `total: int64 <- name + left`. `name` is text. `left` is a number. Silica will not add them.
+Answer: `total: int64 <- name + left + right`. `name` is text. `left` and `right` are numbers. Silica will not add text to a number.
 
 ## 8. Functions
 
-A function is a reusable piece of work with a name, inputs, and a result. A behaviour is a function — a special one that an actor runs once for every message. But you can write ordinary functions too, and a behaviour can call them.
+A function is a reusable piece of work with a name, inputs, and a result. A behaviour is a function — a special one that an actor runs once for every message. A program can have ordinary functions too, and a behaviour can call them.
 
 ```silica
 fn add(x: int64, y: int64) -> int64 {
@@ -384,17 +387,17 @@ Read `fn add(x: int64, y: int64) -> int64` as: "a function named `add`. It needs
 
 The names `x` and `y` belong to `add`. They are **parameters**. The values handed over in `add(6, 8)` are **arguments**. When the call happens, `x` is `6` and `y` is `8` for the duration of that call.
 
-Functions keep programs small. Instead of copying the same arithmetic into ten behaviours, you write it once and every behaviour calls it.
+Functions keep programs small. Instead of copying the same arithmetic into ten behaviours, the program says it once and every behaviour calls it.
 
 Every function in Silica lives at the **top level** of a file. You do not nest one `fn` inside another. If a behaviour needs help, write another function next to it.
 
-A function may have at most eight parameters. If you need more, group related values (Chapter 13).
+A function may have at most eight parameters. If you need more, group a few related values (Chapter 13), or keep them in one of the ready-made structures of Chapter 17.
 
 Notice the split between the two kinds of function. `add` and `double` are pure arithmetic: give them numbers, get a number. `add_and_print` is a behaviour: it is the calf's whole life, one message at a time, and it is the only one of the three that touches the outside world.
 
 ### Try this
 
-Write a function `triple` that multiplies its one `int64` parameter by `3`. Then change the behaviour so the calf prints `triple(left) + triple(right)`. What does it print for `(1, 2)`?
+Ask your LLM for a function `triple` that multiplies its one `int64` parameter by `3`, and for a change to the behaviour so the calf prints `triple(left) + triple(right)`. Read what it wrote: which line does the tripling, and which line uses it? Then predict what the calf prints for `(1, 2)`. Compare the LLM's program with this one:
 
 ```silica
 fn triple(n: int64) -> int64 {
@@ -537,17 +540,17 @@ Silica makes effects visible. You declare them on the sequence that performs the
 
 - `device_io` — this sequence may print or use files. The calf prints, so its sequence says `device_io`.
 - `concurrency` — this sequence may start actors or send messages. `main` in the first program starts a supervisor and sends a message, so it says `proc[concurrency, device_io]`.
-- `mem(normal)` — this sequence may ask for ordinary memory to hold something new, such as a growing list (Chapter 14). The supervisor's `init` builds its list of children, so it says `mem(normal)`.
+- `mem(normal)` — this sequence may ask for ordinary memory to hold something new, such as a growing list (Chapter 15). The supervisor's `init` builds its list of children, so it says `mem(normal)`.
 
 Why the ceremony? Because a function that only adds numbers and a function that writes a file are different kinds of thing. Silica will not let you hide a print inside an innocent-looking helper. If something prints, a sequence above it must admit `device_io`. If something sends a message, a sequence above it must admit `concurrency`.
 
 That is not bureaucracy for its own sake. It is honesty. When you read a program six months later, the word `device_io` tells you: this part talks to the world. The word `concurrency` tells you: this part talks to other actors.
 
-`println` writes a line of text. `print_int64` writes a number without a line break, which is why the calf follows it with `println("")` to end the line. Silica also has `print`, which writes text without adding a new line. All of them need `device_io`.
+`println` writes a line of text. `print_int64` writes a number without a line break, which is why the calf follows it with `println("")` to end the line. Silica also has `print_string`, which writes text without adding a new line. All of them need `device_io`.
 
 ### Try this
 
-Change the adder so it prints `first`, then the total, then `second`, on three lines. Which effect does the sequence need, and why?
+Ask your LLM to change the adder so it prints `first`, then the total, then `second`, on three lines. Before you read its answer, decide which effect the sequence needs, and why. Then check the program it wrote.
 
 Answer: still only `device_io` — printing more does not need anything new. The steps are `println("first");`, then the two printing lines, then `println("second")` as the last step before `produces`.
 
@@ -581,11 +584,35 @@ Because it answers, `main` sends to it with `call_registered`, which waits for t
 
 With `initial_state: 0` in `init`, this prints `1` and then `5`. The first message adds `1` to `0`; the calf answers `1` and remembers `1`. The second adds `4`; the calf answers `5` and remembers `5`.
 
-This is the two kinds of friend from Chapter 2. `cast` is the note you leave and walk away from. `call` is the question you wait on. A behaviour picks one: `:no_reply` for calves that are cast to, `:reply` for calves that are called. The supervisor's `init` must promise the matching type: `fn(msg: int64, state: int64) -> (:reply, int64, int64)` for the counter.
+This is the two kinds of friend from Chapter 1. `cast` is the note you leave and walk away from. `call` is the question you wait on. A behaviour picks one: `:no_reply` for calves that are cast to, `:reply` for calves that are called. The supervisor's `init` must promise the matching type: `fn(msg: int64, state: int64) -> (:reply, int64, int64)` for the counter.
 
 Notice what state gives you. Names inside a behaviour are fresh for every message (Chapter 6). State is the one thing that lasts. It is also private. No other actor can look at the counter's `state`; they can only send a message and read the answer. That privacy is why actors are easy to reason about: the only way in is the mailbox.
 
+### Leave a note when you can
+
+Of the two, leaving a note is the one to reach for first.
+
+Think about how you text. Few people send a text and then stare at the phone, doing nothing, until the answer arrives. You send it and get on with your day, and when the answer comes back it arrives as a new text, which you read when you get to it. Silica programs work best the same way. The asking calf casts its request and carries on with other work. When the other calf has the answer, it casts the answer back, as a new message of its own. Programmers call this **cast and cast back**. Chapter 14 shows two calves doing it.
+
+Now think of the friend who asks you something and then stands in your doorway until you answer. While they stand there, they cannot do anything else. Everything else they meant to do today waits too. A `call` is that friend. The actor that calls is stopped until the answer comes back, and Silica puts no time limit on a `call`: if the answer takes all day, the caller waits all day. If the calf it asked dies before answering, the caller gets no answer at all, only the news that the calf is gone.
+
+A `cast` is the note on the door. It returns at once. The message waits in the calf's mailbox, and both of you get on with your day. A mailbox has no size limit, so leaving a note never has to wait for room.
+
+Waiting can also go wrong in a way notes cannot. A calf that called itself would stand in its own doorway waiting for itself, forever, so Silica refuses to compile a calf that calls itself.
+
+So use cast and cast back unless the sender truly cannot go on without the answer. That is when `call` is the right tool: the fallback, not the first choice. Here `main` uses `call` because the whole point is to print the counter's answers, and `main` cannot print an answer it has not been given.
+
 One more thing to notice: `main` did not use `wait_for_exit()` here. `call_registered` waits for each answer, so by the time `main` prints, the calf has already done its work.
+
+### The calf's scratch paper
+
+Every program in this book starts its supervisor with `stack_policy(0, :keep_last_message)`, and every `spawn` in Silica has a stack policy like it. Here is what it means.
+
+Besides its state, each actor has a **stack**: scratch paper it writes on while it handles one message. The names it binds, the functions it calls, and the sums it is in the middle of all go on that paper. When the message is handled, the paper is not needed any more, because the next message starts fresh (Chapter 6).
+
+A stack policy answers two questions about that paper. The number says how much paper the actor may ever use; `0` means "as much as this computer has," which is almost always what you want. The atom says what the actor keeps on its desk between messages: `:keep_last_message` means "keep as much paper as the last message needed, and give the rest back."
+
+Silica requires this at every spawn so that nothing about an actor's memory is hidden. The [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) (section 15.1.2.2) lists the other choices, such as `:release_on_return`, which gives all the paper back after every message.
 
 ### Try this
 
@@ -668,26 +695,35 @@ fn area_printer(msg: { width: int64, height: int64 }, state: int64) -> (:no_repl
 and `main` sends it a record:
 
 ```silica
-        _: boolean <- cast_registered(:area, { width: 3, height: 4 } impl ActorMessage {});
+        box: { width: int64, height: int64 } <- { width: 3, height: 4 };
+        _: boolean <- cast_registered(:area, box impl ActorMessage {});
         _: int64 <- wait_for_exit()
 ```
 
-The calf prints `12`. `{ width: 3, height: 4 }` is a record value. `{ width: int64, height: int64 }` is a record type. `msg.width` reads the `width` field.
+The calf prints `12`. `main` binds the record to the name `box` before sending it; each record a program sends should have a name of its own like this. `{ width: 3, height: 4 }` is a record value. `{ width: int64, height: int64 }` is a record type. `msg.width` reads the `width` field.
 
-Silica does not ask you to invent a new type name for every record. You write the shape where you need it. Two records with the same fields and field types are the same kind of thing. You have already seen a big one: each child in the supervisor's `init` is a record with fields `id`, `behavior`, `restart`, and so on.
+Silica does not ask you to invent a new type name for every record. The shape is written wherever it is needed. Two records with the same fields and field types are the same kind of thing. You have already seen a big one: each child in the supervisor's `init` is a record with fields `id`, `behavior`, `restart`, and so on. That record is the form the runtime reads when it starts a child. It is filled in once, and it is not a pattern to copy for your own data (see "Keep groups small" below).
 
-Records are also the way to hand back a labeled result — an answer together with a note saying whether it is any good:
+A small tuple with an atom in front is the usual way to hand back an answer together with a note saying whether it is any good:
 
 ```silica
-fn safe_divide(x: int64, y: int64) -> { ok: boolean, value: int64 } {
+fn safe_divide(x: int64, y: int64) -> (atom, int64) {
     case y == 0 of {
-        true -> { ok: false, value: 0 };
-        false -> { ok: true, value: x / y }
+        true -> (:error, 0);
+        false -> (:ok, x / y)
     }
 }
 ```
 
-`{ ok: true, value: 5 }` means "it worked, and the answer is 5." `{ ok: false, value: 0 }` means "it failed." Chapter 16 builds on this.
+`(:ok, 5)` means "it worked, and the answer is 5." `(:error, 0)` means "it failed." The atom is a sticker from Chapter 5. The one who receives the pair unpacks it, `(status: atom, value: int64) <- safe_divide(100, 20)`, and then looks at the sticker. Chapter 18 builds on this.
+
+### Keep groups small
+
+Think about a cook who keeps every spice in one big bag, with smaller bags inside it, and smaller bags inside those. To find the cinnamon, the cook empties bag after bag. Every time someone hands the cook "the spices," the whole bag of bags changes hands. A kitchen has a spice rack instead. Every jar has a label, the jars stand in order, and the cook's hand goes straight to the cinnamon. The rack was built for finding things. The bag was not.
+
+In a program, a record with dozens of fields, or tuples inside tuples inside tuples, is the bag of bags. Every function that takes it has to spell out its whole shape. Every time it is handed to a function or handed back, all of it travels, and each inner group is a separate package the computer has to build and copy. Large types made of many items and layers are naive and inefficient. Silica gives you the spice racks ready-made: **first-class data structures** built for looking things up, checking membership, taking the most urgent item first, and keeping families and networks. Chapter 17 introduces them.
+
+So keep the program's own records and tuples small, and ask your LLM for small ones: two, three, or four values that truly belong together, like a width and a height, or a sticker and an answer. In the few cases where no ready-made structure fits, the [tutorial on reducing parameter and return sizes](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/reducing_parameter_and_return_sizes.md), in the compiler's tutorials section, shows how to keep what goes into and out of functions small.
 
 ### Try this
 
@@ -695,7 +731,186 @@ What does the area calf print for `{ width: 2, height: 10 }`?
 
 Answer: `20`.
 
-## 14. Lists
+## 14. Passing it on
+
+We all know someone who reshares every text they get to everyone they know. A message arrives, and within seconds it is on its way to ten other people. That friend does almost nothing to the message itself. Their gift is getting it to the people who will do something with it.
+
+Actors are most often like that friend. A well-built actor does not sit on a message and grind through a big job by itself. It receives a message, does one small piece of work, and sends messages on to other actors, each of which does its own small piece. The work is spread across many small, simple calves, and the mother watches every one of them.
+
+Here is a resharing calf. Read the three lines that end with a `//` comment first:
+
+```silica
+fn reshare(msg: string, state: int64) -> (:no_reply, int64) {
+    sequence proc[concurrency]
+        _: boolean <- cast_registered(:echo, msg impl ActorMessage {});  // pass it to the friend who repeats things
+        _: boolean <- cast_registered(:measurer, msg impl ActorMessage {});  // and to the friend who judges length
+        _: boolean <- cast_registered(:checker, msg impl ActorMessage {})  // and to the friend who listens for excitement
+    produces
+        pure (:no_reply, state + 1)
+    end
+}
+```
+
+Each of those lines is a `cast`: the resharer leaves a note for another calf and moves straight on to the next one (Chapter 11). Its only other work is keeping count. Its state goes up by one for every message it passes on.
+
+The friend who repeats things:
+
+```silica
+fn echo(msg: string, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        println(concat("I heard: ", msg))
+    produces
+        pure (:no_reply, state)
+    end
+}
+```
+
+The friend who judges length:
+
+```silica
+fn measurer(msg: string, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        _: atom <- case length_chars(msg) > 20 of {
+            true -> println("That was a long one.");
+            false -> println("That was a short one.")
+        }
+    produces
+        pure (:no_reply, state)
+    end
+}
+```
+
+The friend who listens for excitement:
+
+```silica
+fn checker(msg: string, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        _: atom <- case contains(msg, "!") of {
+            true -> println("How exciting!");
+            false -> println("How calm.")
+        }
+    produces
+        pure (:no_reply, state)
+    end
+}
+```
+
+All four calves are children of one supervisor. They share one behaviour type, so `init` promises this in both places:
+
+```silica
+fn(msg: string, state: int64) -> (:no_reply, int64)
+```
+
+Its list of children has four records. The resharer's is:
+
+```silica
+{
+    id: :reshare,
+    agent_type: :worker,
+    initial_state: 0,
+    behavior: reshare,
+    restart: :permanent,
+    shutdown: 0,
+    flavor: :plain
+}
+```
+
+The other three are the same with `id` and `behavior` changed: `:echo` and `echo`, `:measurer` and `measurer`, `:checker` and `checker`.
+
+`main` starts the supervisor, sends the resharer one message, and waits:
+
+```silica
+        _: boolean <- cast_registered(:reshare, "The calf took her first steps today!" impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+```
+
+The program prints three lines:
+
+```
+I heard: The calf took her first steps today!
+How exciting!
+That was a long one.
+```
+
+The three friends work at the same time, so their lines can come out in a different order from one run to the next. Chapter 20 says more about many calves working at once.
+
+Notice what `main` did not do. It sent one message to one calf, and it does not know the other three exist. The resharer decides where the message goes next. Programs grow this way: a new job is a new calf and one more line in the resharer, not a bigger behaviour. When a calf truly cannot go on without an answer, it can `call` instead, but passing work along with `cast` is the usual shape.
+
+### Cast and cast back
+
+Chapter 11 said the best way to ask a calf for something is to text it: cast the question, carry on, and read the answer when it comes back as a new message. Here are two calves doing exactly that.
+
+The texter handles two kinds of text. A text that ends with a question mark is a question to pass to a friend. Anything else is an answer coming back:
+
+```silica
+fn texter(msg: string, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        _: atom <- case ends_with(msg, "?") of {
+            true -> send_question(msg);
+            false -> println(concat("Text received: ", msg))
+        }
+    produces
+        pure (:no_reply, state)
+    end
+}
+```
+
+Sending the question is a small job of its own. Read the line that ends with a `//` comment: the texter casts the question and goes straight on to the next line, without waiting.
+
+```silica
+fn send_question(question: string) -> atom {
+    sequence proc[concurrency, device_io]
+        _: boolean <- cast_registered(:friend, question impl ActorMessage {});  // text the question, and do not wait
+        println("Question sent. Doing other things until the answer comes.")
+    produces
+        pure :ok
+    end
+}
+```
+
+The friend answers by casting a text back to the texter. It does not reply in the way a called calf does. It sends a brand-new message:
+
+```silica
+fn friend(msg: string, state: int64) -> (:no_reply, int64) {
+    sequence proc[concurrency]
+        _: boolean <- cast_registered(:texter, "Yes, see you at noon." impl ActorMessage {})  // text the answer back when it is ready
+    produces
+        pure (:no_reply, state)
+    end
+}
+```
+
+Both calves take a `string` and remember an `int64`, so `init` promises the same type for both, in both places:
+
+```silica
+fn(msg: string, state: int64) -> (:no_reply, int64)
+```
+
+Its list of children has two records, `:texter` with `texter` and `:friend` with `friend`, shaped like the resharer's record above. `main` sends the texter one question and waits:
+
+```silica
+        _: boolean <- cast_registered(:texter, "Lunch tomorrow?" impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+```
+
+The program prints:
+
+```
+Question sent. Doing other things until the answer comes.
+Text received: Yes, see you at noon.
+```
+
+Follow the texts. The question went from `main` to the texter, and from the texter to the friend. The texter printed its first line and was finished with that message; it was free to handle anything else. The friend's answer arrived later, as a message of its own, and the texter handled it in a new turn, the same way you read a reply when it comes in. Nobody stood in a doorway.
+
+### Try this
+
+1. In the resharing program, `main` sends `"Hello"` instead. What three lines does the program print?
+2. You want one more friend for the resharer, who prints every message twice. Which parts of the program change? Ask your LLM to make the change, then find those parts in what it wrote.
+3. In the texting program, what would the texter print if `main` sent it `"See you soon"` instead of `"Lunch tomorrow?"`?
+
+Answers: (1) `I heard: Hello`, `That was a short one.`, and `How calm.`, in any order. (2) One more behaviour, one more record in `init`'s list of children, and one more `cast` line in the resharer. `main` does not change. (3) `Text received: See you soon`. It does not end with a question mark, so the texter treats it as an answer and sends nothing to the friend.
+
+## 15. Lists
 
 A **list** is a sequence of values of the same type: three numbers, a dozen names, no items at all.
 
@@ -733,15 +948,21 @@ Useful list operations:
 
 You cannot reach into the middle and pluck an item with a special "item 7" operation. You take a list apart from the front, with `case`, which is the next chapter. That sounds limiting. It is also simple. There is one way to take a list apart: look at the first element, then look at the rest.
 
+### When a list is the wrong tool
+
+A list is the right tool when you will walk it from the front: add up every number, print every name, handle every item once. It is the wrong tool when you want to *find* one thing. To learn whether "Nia" is on a list of a thousand guests, the program looks at the guests one at a time until it finds her or runs out. To learn who is most urgent, it looks at all of them. A long list that you build by hand and then search is the bag of bags from Chapter 13 in another form. It is naive, and it gets slower with every item you add.
+
+For finding, use the structures built for it. Chapter 17 introduces an ordered map for looking things up by name, an ordered set for "have I seen this one?", a priority queue for "most urgent first," trees for families and yes-or-no questions, and a graph for what is connected to what.
+
 ### Try this
 
 If the keeper has been sent `7`, `8`, and `9`, in that order, what is its state, front to back?
 
 Answer: `[9, 8, 7]`. `prepend` adds at the front.
 
-## 15. Repeating work
+## 16. Repeating work
 
-Many languages have loops: "do this ten times," "keep going while this is true." Silica does not. When you need to repeat work, you write a **recursive** function: a function that calls itself, each time on a smaller piece of the problem, until a simple case remains.
+Many languages have loops: "do this ten times," "keep going while this is true." Silica does not. When work has to be repeated, a program uses a **recursive** function: a function that calls itself, each time on a smaller piece of the problem, until a simple case remains.
 
 That sounds abstract. It is the same idea as a stack of plates. To wash the stack: wash the top plate, then wash the remaining stack. The empty stack is the simple case — you are done.
 
@@ -801,9 +1022,9 @@ fn sum_to(n: int64) -> int64 {
 
 `sum_to(3)` is `3 + 2 + 1 + 0`, which is `6`.
 
-There is a second kind of repetition you have been using all along without naming it. An actor handles one message, then the next, then the next, for as long as messages arrive. The behaviour is written once; the mailbox makes it repeat. The keeper in Chapter 14 never wrote a loop, and yet it counted `1`, `2`, `3`. Recursion repeats work *inside* one message. The mailbox repeats work *across* messages.
+There is a second kind of repetition you have been using all along without naming it. An actor handles one message, then the next, then the next, for as long as messages arrive. The behaviour is written once; the mailbox makes it repeat. The keeper in Chapter 15 never wrote a loop, and yet it counted `1`, `2`, `3`. Recursion repeats work *inside* one message. The mailbox repeats work *across* messages.
 
-Recursion is the ordinary way to walk data in Silica. The runtime is allowed to turn a well-written recursive function into an efficient loop internally. You still write the idea as "solve the small piece, then the rest."
+Recursion is the ordinary way to walk data in Silica. The runtime is allowed to turn a well-written recursive function into an efficient loop internally. The program still states the idea as "solve the small piece, then the rest."
 
 ### Try this
 
@@ -811,7 +1032,7 @@ What does the summer calf print for `[4, 1]`?
 
 Answer: `5`.
 
-Write `product`, like `sum`, but multiply. The empty list should produce `1` (the number that does not change a product).
+Ask your LLM for `product`, like `sum` but multiplying. Read what it wrote: the empty list should produce `1`, the number that does not change a product. Compare it with this one:
 
 ```silica
 fn product(numbers: List[int64, mem(normal)]) -> int64 {
@@ -823,7 +1044,180 @@ fn product(numbers: List[int64, mem(normal)]) -> int64 {
 }
 ```
 
-## 16. When something goes wrong
+## 17. Ready-made structures
+
+Chapter 13 ended with a spice rack, and Chapter 15 with a guest list that has to be searched from the front. This chapter is about the racks.
+
+Large types made of many items and layers are naive and inefficient. Instead, Silica programs use its **first-class data structures**: ready-made structures, supplied with the language, each built for one kind of question. In the few cases where none of them fits, the [tutorial on reducing parameter and return sizes](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/reducing_parameter_and_return_sizes.md), in the compiler's tutorials section, shows what to do instead.
+
+### What they have in common
+
+Every structure in this chapter works the same way, so learn these four things once.
+
+1. **It comes from the standard library.** A file that uses one names two modules with `use`. One module builds the structure and makes updated copies of it, for example `brodal_okasaki_priority`. The other answers questions about it, for example `PriorityQueue`. When you compile, those standard-library files are compiled with yours, the same way `Supervisor.silica` is. Your LLM can help you list them.
+2. **Its type is short.** `PriorityQueue[int64, string, mem(normal)]` reads "a priority queue of strings, ranked by whole numbers, in ordinary memory." However many entries it holds, that is the whole type.
+3. **It needs to know how to put things in order.** The program gives it small functions that compare two values and answer `:less`, `:equal`, or `:greater`. The structure uses them to keep everything sorted, which is what makes finding fast.
+4. **It is never changed in place.** Like a list (Chapter 15), an update gives back a new structure, and the old one is still there, unchanged.
+
+### Most urgent first: a priority queue
+
+In a vet's waiting room, animals are not seen in the order they arrive. The one in the worst trouble goes first. A **priority queue** holds values with a **priority** each, and it always knows which one comes next.
+
+This calf keeps the vet's morning list. Its message is the list of animals that arrived, each one a small record: how urgent it is (`1` is most urgent) and a description. The calf puts them all in a priority queue and says who the vet should see first.
+
+`main.silica` names the queue modules at its top, under `use Supervisor;`:
+
+```silica
+use brodal_okasaki_priority;
+use PriorityQueue;
+```
+
+The queue compares priorities with `compare_urgency`:
+
+```silica
+fn compare_urgency(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+```
+
+It also compares the descriptions, alphabetically, with `compare_names`. Strings compare alphabetically with `<` and `==`:
+
+```silica
+fn compare_names(a: string, b: string) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+```
+
+`empty_waiting_room` builds an empty queue. `brodal_okasaki_priority@empty` takes a small record naming the two compare functions:
+
+```silica
+fn empty_waiting_room() -> PriorityQueue[int64, string, mem(normal)] {
+    brodal_okasaki_priority@empty({ compare_priority: compare_urgency, compare_item: compare_names })
+}
+```
+
+`fill` puts every arrival in the queue. It walks the list the way `sum` did in Chapter 16, and each step hands a queue with one more animal in it to the rest of the walk:
+
+```silica
+fn fill(waiting: PriorityQueue[int64, string, mem(normal)], arrivals: List[{ urgency: int64, animal: string }, mem(normal)]) -> PriorityQueue[int64, string, mem(normal)] {
+    case arrivals of {
+        []: List[{ urgency: int64, animal: string }, mem(normal)] -> waiting;
+        [arrival: { urgency: int64, animal: string }, rest: List[{ urgency: int64, animal: string }, mem(normal)]] -> {
+            longer: PriorityQueue[int64, string, mem(normal)] <- brodal_okasaki_priority@push_priority(waiting, arrival.urgency, arrival.animal);
+            fill(longer, rest)
+        };
+        _: List[{ urgency: int64, animal: string }, mem(normal)] -> waiting
+    }
+}
+```
+
+And here is the calf's behaviour:
+
+```silica
+fn triage(msg: List[{ urgency: int64, animal: string }, mem(normal)], state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        waiting: PriorityQueue[int64, string, mem(normal)] <- fill(empty_waiting_room(), msg);
+        _: atom <- print_int64(PriorityQueue@len(waiting));
+        println(" animals are waiting");
+        first: { status: :not_found | :found, value: string } <- PriorityQueue@peek_value(waiting, 0, "");
+        println(concat("First to see the vet: ", first.value))
+    produces
+        pure (:no_reply, state)
+    end
+}
+```
+
+`brodal_okasaki_priority@push_priority(waiting, arrival.urgency, arrival.animal)` gives back a new queue with one more animal in it. `PriorityQueue@len(waiting)` counts the animals. `PriorityQueue@peek_value(waiting, 0, "")` looks at the front of the queue without taking anything out. Its answer is a small record: `status` is `:found` or `:not_found`, and `value` is the description at the front. The `0` and `""` are what it would hand back if the queue were empty.
+
+In `init`, the behaviour's type, written in both places, is:
+
+```silica
+fn(msg: List[{ urgency: int64, animal: string }, mem(normal)], state: int64) -> (:no_reply, int64)
+```
+
+and the child is:
+
+```silica
+{
+    id: :vet,
+    agent_type: :worker,
+    initial_state: 0,
+    behavior: triage,
+    restart: :permanent,
+    shutdown: 0,
+    flavor: :plain
+}
+```
+
+`main` builds the morning's list and sends it. Because it builds a list, its sequence declares `mem(normal)`, as in Chapter 16:
+
+```silica
+        morning: List[{ urgency: int64, animal: string }, mem(normal)] <- [{ urgency: 3, animal: "zebra with a cough" }, { urgency: 1, animal: "lion with a thorn in its paw" }, { urgency: 2, animal: "giraffe with a stiff neck" }];
+        _: boolean <- cast_registered(:vet, morning impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+```
+
+The calf prints:
+
+```
+3 animals are waiting
+First to see the vet: lion with a thorn in its paw
+```
+
+The lion arrived second, but it goes to the front.
+
+### The other structures
+
+The priority queue is one of a family. Here are the others, each with the question it answers.
+
+**Looking things up by name: an ordered map.** A phone book maps names to numbers. You do not read it from the first page; you go to the right letter. An **ordered map**, `OrderedMap`, is a phone book: it stores a **value** under each **key** and finds the value for a key without looking at every entry. `wbt_map@empty` makes one, `wbt_map@insert` stores a value under a key, and `OrderedMap@get` finds it.
+
+**Have I seen this one? An ordered set.** A guest list at a door answers one question: is this name on it? An **ordered set**, `OrderedSet`, holds each value at most once and answers that question quickly. `wbt_set@empty` makes one, `wbt_set@insert` adds a value, and `OrderedSet@contains` asks the question.
+
+**Families: a tree.** An elephant family is a tree. The grandmother is at the top, her daughters below her, and their calves below them. A **tree**, `Tree`, holds values in exactly that shape: one value at the top, called the **root**, and under every value any number of **children**. `tree_rose@with_root` makes one, and `tree_rose@add_leaf` adds a child under a value.
+
+**Yes or no: a binary tree.** The guessing game "twenty questions" is a tree where every question has exactly two ways forward: yes or no. A **binary tree**, `BinaryTree`, is a tree where every value has at most two children, a **left** one and a **right** one. `tree_binary@with_root` and `tree_binary@node` build one, and `BinaryTree@left_item` and `BinaryTree@right_item` read it.
+
+**What connects to what: a graph.** Elephant herds walk between waterholes along trails they remember. A **graph** holds exactly that: **vertices** (the waterholes) and **edges** between them (the trails). In an **undirected** graph, `UndirectedGraph`, a trail can be walked both ways. `graph_wbt_undirected@add_edge` adds a trail, and `graph_wbt_undirected@connected` answers whether the herd can walk from one waterhole to another.
+
+Adding to these five gives back a small record: the new structure and a note about what happened, such as whether the value was new. Today's compiler does not yet accept that record written with the structure's short type, so this book leaves their full programs for a later edition. The questions they answer are the ones to remember.
+
+### Choosing a structure
+
+| The question your calf asks | Use |
+|---|---|
+| "what is stored under this name?" | an ordered map: `OrderedMap`, built with `wbt_map` |
+| "have I seen this one?" | an ordered set: `OrderedSet`, built with `wbt_set` |
+| "what comes next, most urgent first?" | a priority queue: `PriorityQueue`, built with `brodal_okasaki_priority` |
+| "what is under this one?" | a tree: `Tree`, built with `tree_rose` |
+| "yes or no, left or right?" | a binary tree: `BinaryTree`, built with `tree_binary` |
+| "what is connected to what?" | a graph: `UndirectedGraph`, `DirectedGraph`, or `WeightedGraph` |
+
+Silica has a few more in the same families: `Heap` (a priority queue where each value is its own priority), `SearchTree` (an ordered set that can also answer range questions), and graphs whose trails go one way only. The [data structure designs](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/README.md) list every one.
+
+Use a list when you will walk every item in order. Use a small record or tuple for two or three values that belong together. For anything you will search, count, rank, or connect, use a structure. When none of them fits, the [tutorial on reducing parameter and return sizes](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/reducing_parameter_and_return_sizes.md) shows how to keep what you pass around small anyway.
+
+### Try this
+
+1. A zebra with a broken leg is added to the end of the morning's list, with urgency `1`. What does the calf print? (When two animals have the same urgency, the queue orders them with `compare_names`.)
+2. Which structure would you use to remember each friend's birthday, looked up by the friend's name?
+3. Which structure would you use to find out whether two towns are joined by roads, perhaps through other towns?
+
+Answers: (1) `4 animals are waiting`, then `First to see the vet: lion with a thorn in its paw`: `"lion..."` comes before `"zebra..."` alphabetically. (2) An ordered map from names to birthdays. (3) An undirected graph, with the towns as vertices and the roads as edges.
+
+## 18. When something goes wrong
 
 Some questions have no good numeric answer. What is ten divided by zero? What is the first element of an empty list?
 
@@ -837,7 +1231,7 @@ fn divider(msg: int64, state: int64) -> (:reply, int64, int64) {
 }
 ```
 
-`main` calls it with `0`, then with `5`:
+`main` calls it with `0`, then with `5`. It uses `call` rather than `cast` for the reason in Chapter 11: it prints the answer, so it cannot go on without it.
 
 ```silica
         _: int64 <- call_registered(:divider, 0 impl ActorMessage {});
@@ -859,7 +1253,7 @@ call_stack:
 20
 ```
 
-Read the last line. After the failure report, the program prints `20`. The calf died, the supervisor noticed, and because the child's `restart` field in `init` says `:permanent`, she started a new calf with the same name and the same `initial_state`. The second call reached the new calf, and `100 / 5` is `20`. The rest of the program did not fall over. That is the elephant mother doing exactly what Chapter 2 promised: the child made a mistake, and she helped it get going again.
+The numbers that start with `0x` are places inside the computer's memory. They change every time you run the program, and they are there for the people who build Silica; you can skip them. Read the last line. After the failure report, the program prints `20`. The calf died, the supervisor noticed, and because the child's `restart` field in `init` says `:permanent`, she started a new calf with the same name and the same `initial_state`. The second call reached the new calf, and `100 / 5` is `20`. The rest of the program did not fall over. That is the elephant mother doing exactly what Chapter 1 promised: the child made a mistake, and she helped it get going again.
 
 The numbers in `init`'s `flags` set her patience: `allowed_restart_count: 3, restarts_time_frame: 5` means "if a child fails more than three times in five seconds, something is really wrong; stop restarting and report upward."
 
@@ -868,10 +1262,10 @@ A restart is a fresh start. The new calf's state is the `initial_state` from `in
 Now the other half. Failing and restarting is right for mistakes. For expected situations, do not fail at all — make the situation a value:
 
 ```silica
-fn safe_divide(x: int64, y: int64) -> { ok: boolean, value: int64 } {
+fn safe_divide(x: int64, y: int64) -> (atom, int64) {
     case y == 0 of {
-        true -> { ok: false, value: 0 };
-        false -> { ok: true, value: x / y }
+        true -> (:error, 0);
+        false -> (:ok, x / y)
     }
 }
 
@@ -886,10 +1280,10 @@ fn print_answer(n: int64) -> atom {
 
 fn careful_divider(msg: int64, state: int64) -> (:no_reply, int64) {
     sequence proc[device_io]
-        result: { ok: boolean, value: int64 } <- safe_divide(100, msg);
-        _: atom <- case result.ok of {
-            true -> print_answer(result.value);
-            false -> println("cannot divide by zero")
+        (status: atom, value: int64) <- safe_divide(100, msg);
+        _: atom <- case status of {
+            :ok -> print_answer(value);
+            _: atom -> println("cannot divide by zero")
         }
     produces
         pure (:no_reply, state)
@@ -897,20 +1291,56 @@ fn careful_divider(msg: int64, state: int64) -> (:no_reply, int64) {
 }
 ```
 
-Cast `0` and then `5` to this calf and it prints `cannot divide by zero` and then `20`. No failure report, no restart. This calf never dies. The caller must look at `ok`, and the compiler's exhaustiveness check helps: if you forget the `false` arm, the `case` is incomplete and the program does not compile.
+`safe_divide` is the one from Chapter 13. The calf unpacks its pair into `status` and `value`, then looks at the sticker. Cast `0` and then `5` to this calf and it prints `cannot divide by zero` and then `20`. No failure report, no restart. This calf never dies. The caller must look at `status`, and the compiler's exhaustiveness check helps: a `case` on an atom must end with a catch-all arm, so the program has to say what happens when the sticker is not `:ok`. Leave that arm out and the program does not compile.
 
-The important habit is this: **do not pretend a failure is a success.** Make the two cases visible. The next person to read the program — including you — should see that both paths exist.
+The important habit is this: **do not pretend a failure is a success.** When a situation has to be handled, make the two cases visible. The next person to read the program — including you — should see that both paths exist.
 
-Which to use? If a situation is part of the job — a user typed zero — handle it as data. If a situation should have been impossible — a bug — let the calf fail and the supervisor restart it. Silica gives you both, and the second one is free: every child in an `init` list already has a mother.
+But check only when you have to. You have to in two situations.
+
+The first is when the failure would corrupt data. If a calf would store a wrong value, or pass a wrong answer on to another calf, before it fails, a restart cannot help: the new calf starts fresh, but the wrong value is already out in the world. Check before that can happen.
+
+The second is when the failure happens often. Every failure and restart takes time. A calf that fails again and again slows the whole program down. If people often type zero, dividing by it should not be a failure each time; handle zero as data, the way the careful divider above does.
+
+In every other case, do not check. Let the calf fail. Its mother starts it again fresh, and the failure report shows you exactly where things went wrong. Silica gives you both, and the second one is free: every child in an `init` list already has a mother.
+
+### When there is no mother
+
+Everything above happened inside a calf. `main` is different. It is not an actor, and no supervisor watches it. When `main` itself makes a mistake, nobody can start it again, so the whole program ends:
+
+```silica
+fn divide(x: int64, y: int64) -> int64 {
+    x / y
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        answer: int64 <- divide(10, 0);
+        _: atom <- print_int64(answer);
+        println("")
+    produces
+        pure 0
+    end
+}
+```
+
+This program prints one word, `badarith` (short for "bad arithmetic"), and stops.
+
+Every program, when it ends, hands the computer a small number called its **exit status**. `0` means "all went well." Your LLM can show you how to see the number on your computer. When a Silica program ends because something went wrong, the number and a one-line message tell you what kind of thing:
+
+- **`1`**, after the word `badarith` or `case_clause`: an arithmetic mistake, or a `case` that matched nothing, happened in `main`. The program above ends this way.
+- **`70`**, after a line that begins `[silica] fault at`: the machine itself refused to do something outside any actor, for example because `main` ran out of scratch paper (Chapter 11).
+- **`71`**, after a line that begins `[silica] abort:` and then a reason: the runtime found a problem it cannot carry on from, for example no memory left to give a growing actor more scratch paper.
+
+The rest of those lines is addresses for the people who build Silica. The same mistakes inside a calf end nothing but the calf: they go to its mother, as the divider showed. A calf's mistake is its mother's to handle. A mistake in `main` ends the program.
 
 ### Try this
 
 1. What does `safe_divide(10, 0)` return? What does `safe_divide(10, 2)` return?
 2. If `restart` in `init` said `:temporary` instead of `:permanent`, would the second call in the `divider` program still reach a calf?
 
-Answers: (1) `{ ok: false, value: 0 }` and `{ ok: true, value: 5 }`. (2) No. `:temporary` means "never restart"; there would be no calf to reach.
+Answers: (1) `(:error, 0)` and `(:ok, 5)`. (2) No. `:temporary` means "never restart"; there would be no calf to reach.
 
-## 17. Splitting a program into pieces
+## 19. Splitting a program into pieces
 
 A tiny program can live in one file. A larger program should not. Silica programs are made of **modules**. A module is a file. The file name is the module name.
 
@@ -968,15 +1398,13 @@ fn add_and_print(msg: (int64, int64), state: int64) -> (:no_reply, int64) {
 
 This is how programs stay readable as they grow: each file has a job. One file does arithmetic helpers. One file is a calf's behaviour. `main` holds the supervisor and assembles them.
 
-One rule of today's compiler is worth knowing: the `init` function of a supervisor lives in the same file as the `spawn_registered_supervisor` call that starts it. That is why the first program's `main.silica` holds both.
-
 ### Try this
 
 If `math_helpers@double(5)` is `10`, what does the calf above print for the message `(5, 1)`?
 
 Answer: `12`.
 
-## 18. Many workers at once
+## 20. Many workers at once
 
 An elephant mother rarely has one calf. A supervisor rarely has one child.
 
@@ -1054,21 +1482,23 @@ The longer story — supervisors inside supervisors, `call` versus `cast` in det
 
 Answers: (1) Because two people changing the same bowl at once can ruin the dish, and neither may notice. A note is received and handled as one piece of work. (2) Nothing. Only the squarer is restarted.
 
-## 19. What the compiler is trying to tell you
+## 21. What the compiler is trying to tell you
 
-When Silica refuses to compile a program, it is not being rude. It is pointing at a specific disagreement between what you wrote and what the language allows.
+When Silica refuses to compile a program, it is not being rude. It is pointing at a specific disagreement between the program's text and what the language allows.
 
 A refusal looks like this:
 
 ```
 main.silica
- line: 76
- column: 44
-E1040
+ line: 7
+ column: 9
+E1055
 
-expected ';' after this statement before the next statement
+unused variable 'right' in this scope; use it, pass it to a function, return it, or bind it as '_'
 See specification: spec:sect3
 ```
+
+That is what the compiler says about a calf in `main.silica` whose line 7 unpacks the message into `left` and `right` and whose behaviour then only ever uses `left`.
 
 Read the human sentence first. Then look at the file, line, and column. Then follow the `See specification` pointer if you want the formal rule.
 
@@ -1078,13 +1508,13 @@ You will meet messages about:
 - **Exhaustiveness.** A `case` forgot a possible shape of message.
 - **Effects.** A behaviour printed without `device_io`, sent a message without `concurrency`, or built a list without `mem(normal)` on its sequence.
 - **Names.** You used a name that was never bound, or you bound a name and never used it. (That is why the examples write `_` for values they do not need.)
-- **Punctuation.** A missing semicolon between steps, as above.
+- **Punctuation.** A missing semicolon between two steps, or a semicolon after the last one.
 
-A compiler error is not a verdict on you. It is a fact about the text. Change the text so the fact no longer holds.
+A compiler error is not a verdict on you. It is a fact about the text. Show the message to your LLM, let it change the text so the fact no longer holds, and read what it changed.
 
-Silica also refuses some programs that other compilers would "fix for you": unused names, duplicate work, arithmetic that cancels itself out. The language would rather you write what you mean than hope an optimizer guesses.
+Silica also refuses some programs that other compilers would "fix for you": unused names, duplicate work, arithmetic that cancels itself out. The language would rather the program say what it means than hope an optimizer guesses.
 
-There is a second voice you have now heard: the runtime's failure report from Chapter 16. It speaks when a calf fails while running. The compiler speaks before the program ever runs. Learn to tell them apart. A compiler message means "fix the text." A failure report means "a calf died and its mother is handling it — now find out why."
+There are two more voices you have now heard, both from Chapter 18. The runtime's failure report speaks when a calf fails while running. The one-line report at the very end — `badarith`, `[silica] fault at`, `[silica] abort:` — speaks when the whole program has to stop. The compiler speaks before the program ever runs. Learn to tell them apart. A compiler message means "fix the text." A failure report means "a calf died and its mother is handling it — now find out why." A one-line report at the end means "something failed where no mother was watching."
 
 ### Try this
 
@@ -1092,7 +1522,7 @@ Which kind of error is this: a behaviour declared `-> (:no_reply, int64)` whose 
 
 Answer: a type error. The promised state and the actual state do not match.
 
-## 20. Where to go next
+## 22. Where to go next
 
 You now have the core of programming:
 
@@ -1104,19 +1534,19 @@ You now have the core of programming:
 - `case` chooses
 - sequences order steps and declare effects
 - state is what an actor remembers
-- tuples, records, and lists group data
+- tuples, records, and lists group a few values; ready-made structures hold many
 - recursion repeats work inside a message; the mailbox repeats work across messages
 - expected failures are data; unexpected failures are restarted by the supervisor
 - modules split a program
 - many actors work at once, in isolation
 
-That is enough to read small Silica programs and to write your own.
+That is enough to read small Silica programs, and to judge the ones your LLM writes for you.
 
 When you want the same language, explained for people who already program, read [Silica for Programmers]({{ '/learn-silica/' | relative_url }}).
 
 When you want the rules in full, read the [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md).
 
-When you want hands-on topics — actors, regions, foreign functions, project makefiles — start from the [tutorials](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/tutorials_and_howtos).
+When you want hands-on topics — actors, regions, foreign functions, project makefiles, and keeping what goes into and out of functions small — start from the [tutorials](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/tutorials_and_howtos).
 
 When you want to run programs, [build the compiler]({{ '/build-and-test/' | relative_url }}).
 

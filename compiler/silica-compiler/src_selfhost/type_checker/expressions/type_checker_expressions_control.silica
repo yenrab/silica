@@ -52,6 +52,30 @@ fn expr_references_name(e: { nodes: List[{ kind: int64, value: string, name: str
     }
 }
 
+// A guard on a tuple pattern must read one of the element bindings (same rule as records).
+fn case_tuple_guard_refs_any(branch: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, pat_str: string) -> boolean {
+    p_inner: string <- substring(pat_str, 1, length_bytes(pat_str) - 1);
+    case_tuple_guard_refs_loop(branch, p_inner, 0, type_checker_tuple_decompose_helpers@case_count_tuple_elems(p_inner))
+}
+
+fn case_tuple_guard_refs_loop(branch: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, p_inner: string, idx: int64, n: int64) -> boolean {
+    case idx >= n of {
+        true -> false;
+        false -> {
+            epi: { is_valid: boolean, pattern_kind: int64, bool_lit: boolean, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } <- type_checker_tuple_decompose_helpers@case_parse_pattern(type_checker_tuple_decompose_helpers@case_tuple_elem_at(p_inner, idx));
+            refs: boolean <- case epi.pattern_kind of {
+                2 -> expr_references_name(type_checker_expressions_helpers@expr_child_inner(branch), epi.bind_name);
+                9 -> case_tuple_guard_refs_any(branch, epi.bind_type);
+                _: int64 -> false
+            };
+            case refs of {
+                true -> true;
+                false -> case_tuple_guard_refs_loop(branch, p_inner, idx + 1, n)
+            }
+        }
+    }
+}
+
 fn case_record_guard_refs_any(branch: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, pat_str: string, scrutinee_type: string) -> boolean {
     inner: string <- type_checker_record_types@record_case_inner_body(pat_str);
     case_record_guard_refs_loop(branch, inner, scrutinee_type)
@@ -112,6 +136,10 @@ fn check_case_guard_invariant(branch: { nodes: List[{ kind: int64, value: string
     case type_checker_tuple_decompose_helpers@case_pattern_has_named_binding(pi, scrutinee_type) of {
         true -> case pi.pattern_kind of {
             6 -> case case_list_cons_guard_ok_expr(branch, pi) of {
+                true -> type_checker_core@type_check_ok();
+                false -> type_checker_core@type_check_err("E2014", type_checker_expressions_helpers@expr_loc(type_checker_expressions_helpers@expr_child_inner(branch)), "Guard does not depend on pattern bindings — move it before the case or restructure.", "sect3")
+            };
+            9 -> case case_tuple_guard_refs_any(branch, pi.bind_type) of {
                 true -> type_checker_core@type_check_ok();
                 false -> type_checker_core@type_check_err("E2014", type_checker_expressions_helpers@expr_loc(type_checker_expressions_helpers@expr_child_inner(branch)), "Guard does not depend on pattern bindings — move it before the case or restructure.", "sect3")
             };

@@ -30,15 +30,20 @@ SUB_TRIALS := \
 	ordered_collections \
 	heap_collections \
 	tree_collections \
+	search_tree_collections \
 	self_host_maps \
 	live_graphs \
+	graph_live_core \
+	graph_csr_core \
+	graph_dense_core \
+	graph_collections \
 	terminal_structures \
 	snapshot_graphs \
 	cross_representation
 
 STDLIB_SRC := $(abspath $(THIS_DIR)../../compiler/silica-compiler/stdlib/data_structures)
 SDS_STDLIB_CACHE := $(THIS_DIR).stdlib_cache
-SDS_STDLIB_MODULES := wbt_set wbt_map OrderedMap OrderedSet skew_ral_weights skew_ral_node skew_ral_tree_read skew_ral_tree_write skew_ral_forest skew_ral_index skew_ral_traverse skew_ral_build skew_ral_validate skew_ral_dispatch_access skew_ral_dispatch_bulk skew_ral brodal_okasaki_node brodal_okasaki_compare brodal_okasaki_link brodal_okasaki_forest brodal_okasaki_extract brodal_okasaki_boot brodal_okasaki_validate brodal_okasaki_dispatch_core brodal_okasaki_dispatch_bulk brodal_okasaki tree_binary BinaryTree brodal_okasaki_min brodal_okasaki_max brodal_okasaki_priority Heap PriorityQueue tree_rose Tree
+SDS_STDLIB_MODULES := wbt_set wbt_map OrderedMap OrderedSet skew_ral_weights skew_ral_node skew_ral_tree_read skew_ral_tree_write skew_ral_forest skew_ral_index skew_ral_traverse skew_ral_build skew_ral_validate skew_ral_dispatch_access skew_ral_dispatch_bulk skew_ral brodal_okasaki_node brodal_okasaki_compare brodal_okasaki_link brodal_okasaki_forest brodal_okasaki_extract brodal_okasaki_boot brodal_okasaki_validate brodal_okasaki_dispatch_core brodal_okasaki_dispatch_bulk brodal_okasaki tree_binary BinaryTree brodal_okasaki_min brodal_okasaki_max brodal_okasaki_priority Heap PriorityQueue tree_rose Tree SearchTree graph_wbt_core graph_wbt_directed graph_wbt_undirected graph_weighted graph_weighted_undirected graph_csr_core graph_csr_directed graph_csr_undirected graph_csr_weighted graph_csr_weighted_undirected graph_dense_core graph_dense_directed graph_dense_undirected graph_dense_weighted graph_dense_weighted_undirected DirectedGraph UndirectedGraph WeightedGraph
 
 ASSEMBLER := clang
 MACOS_MIN_VERSION ?= 26.0
@@ -132,6 +137,11 @@ gate-stdlib: stdlib-objs
 			brodal_okasaki*) golden="$(THIS_DIR)brodal_okasaki_core/lib/$$m$(ASCOMP_EXT)";; \
 			tree_binary|BinaryTree) golden="$(THIS_DIR)binary_tree_core/lib/$$m$(ASCOMP_EXT)";; \
 			tree_rose|Tree) golden="$(THIS_DIR)tree_collections/lib/$$m$(ASCOMP_EXT)";; \
+			SearchTree) golden="$(THIS_DIR)search_tree_collections/lib/$$m$(ASCOMP_EXT)";; \
+			graph_wbt_*|graph_weighted*) golden="$(THIS_DIR)graph_live_core/lib/$$m$(ASCOMP_EXT)";; \
+			graph_csr_*) golden="$(THIS_DIR)graph_csr_core/lib/$$m$(ASCOMP_EXT)";; \
+			graph_dense_*) golden="$(THIS_DIR)graph_dense_core/lib/$$m$(ASCOMP_EXT)";; \
+			DirectedGraph|UndirectedGraph|WeightedGraph) golden="$(THIS_DIR)graph_collections/lib/$$m$(ASCOMP_EXT)";; \
 			*) golden="$(THIS_DIR)wbt_core/lib/$$m$(ASCOMP_EXT)";; \
 		esac; \
 		if [ ! -f "$$sams" ]; then \

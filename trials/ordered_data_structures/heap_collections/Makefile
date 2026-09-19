@@ -21,4 +21,6 @@ POSITIVE_SILICA := \
 	pq_large_runs.silica \
 	pq_generic_payloads.silica \
 	pq_trait_dispatch.silica \
-	pq_validate.silica
+	pq_validate.silica \
+	pq_priority_type_composite_result.silica \
+	pq_item_type_is_value.silica

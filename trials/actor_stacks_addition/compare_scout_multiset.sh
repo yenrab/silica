@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+[ -n "$BASH_VERSION" ] || exec bash "$0" "$@"   # pipefail needs bash; /bin/sh is dash on Debian and Ubuntu
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then

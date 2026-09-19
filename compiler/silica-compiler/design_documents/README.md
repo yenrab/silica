@@ -9,6 +9,12 @@ Use the entries below for **quick navigation**. Each item links to a file in thi
 
 ---
 
+## [APPLICATION_IS_ONE_COMPILATION_UNIT.md](./APPLICATION_IS_ONE_COMPILATION_UNIT.md)
+
+**Read this before designing anything.** A Silica application, libraries included, is one compilation unit, with one atom table and whole-program checks. Today's one-unit-per-file build (`silica.config`, process-per-unit reclaim, `.iface` files) is a work-around for compiler memory; nothing may be designed around it.
+
+---
+
 ## [HIGH_PRIORITY_compiler_defects_and_diagnostic_gaps_2026-09-08.md](./HIGH_PRIORITY_compiler_defects_and_diagnostic_gaps_2026-09-08.md)
 
 **Open, high-priority defect list** found while generating the `train_*` trial pairs: silent miscompilations (second float parameter lost, returned closure loses its capture, record actor state faults, tuple-after-scalar parameter clobber, provided trait methods unresolved after the exit-75 restart) and the mistakes the compiler currently accepts without a diagnostic. Each item has a minimal reproduction and none is pinned by an installed trial.
@@ -90,6 +96,12 @@ Draft extension for **mode- and protocol-typed actor capabilities**: `actor_ref 
 ## [actor_spawn_core_affinity_os_semantics.md](./actor_spawn_core_affinity_os_semantics.md)
 
 **OS semantics** for **`spawn`** with a **single core id** (`uint64`): how macOS, Linux, FreeBSD, Solaris/illumos, and Windows interpret affinity vs. hints, carrier threads vs. actors, and pointers to topology and emitter plans.
+
+---
+
+## [actor_placement_and_balancing_design.md](./actor_placement_and_balancing_design.md)
+
+**Proposal (2026-09-19, not implemented)** for named actor **striping** and **moving** options on hosted and raw targets: five striping options (`:round_robin`, `:least_loaded`, `:with_spawner`, `:by_key`, `:fill_in_order`) and five moving options (`:never`, `:steal_when_idle`, `:balance_periodically`, `:compact_when_quiet`, `:follow_messages`), chosen explicitly with no defaults in the `init` of the application's one `Placement` implementation. That implementation runs as a supervisor-like placement actor registered under the claimed atom `:placement`, started once from `main`. Spawn is unchanged: actors are handed to it by `cast_placement` after they are spawned. Its behaviour comes from the hosted runtime (after chunk 12 carriers) or from a `PlacementProvider` library on raw targets. Revised 2026-09-19 after Lee's review. Includes a survey of BEAM, Go, Tokio, Seastar, Akka, Orleans, Pony, CAF and Linux scheduling, a per-option cost comparison with the BEAM, a benchmark plan, a trial plan and proposed specification changes.
 
 ---
 

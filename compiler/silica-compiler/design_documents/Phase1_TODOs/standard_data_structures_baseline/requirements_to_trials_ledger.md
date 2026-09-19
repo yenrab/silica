@@ -31,12 +31,12 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 | 1 | Adams WBT for all `OrderedSet` key types | T | `wbt_core/` → `wbt_set_insert_lookup` (planned) |
 | 2 | No integer-key Patricia / crit-bit specialization | O | "None — no Patricia / crit-bit trie" |
 | 3 | `OrderedMap` uses WBT map | T | `wbt_core/` → `wbt_map_insert_replace`, `wbt_map_insert_orders`, `wbt_map_canonical_key`, `wbt_map_value_pairing`, `wbt_map_compare_value_not_called`, `wbt_map_replace_persistence`, `wbt_map_insert_payload_shapes`, `wbt_map_insert_tuple_value`, `trial_collection_error_wbt_map_insert_invalid_comparator` (**§8A.6 pass**) |
-| 4 | `SearchTree` same as `OrderedSet` (WBT) | T | `terminal_structures/` → `search_tree_wbt_adapter` (planned) |
-| 5 | Graph vertex index is WBT keyed by `compare_node` | T | `live_graphs/` → `graph_outer_wbt_vertex` (planned) |
-| 6 | Unweighted neighbors: inner WBT **set** of targets | T | `live_graphs/` → `graph_unweighted_inner_set` (planned) |
-| 7 | Weighted neighbors: inner WBT map `to → edge data` | T | `live_graphs/` → `graph_weighted_inner_map` (planned) |
-| 8 | CSR = live WBT + optional O(V+E) freeze | T | `snapshot_graphs/` → `csr_freeze_from_live` (planned) |
-| 9 | Dense matrix = skew RAL cells (not bitset) | T | `snapshot_graphs/` → `dense_ral_cells` (planned) |
+| 4 | `SearchTree` same as `OrderedSet` (WBT) | T | `search_tree_collections/` → `st_ordered_set_agree`, `st_updates` (**§25 pass**) |
+| 5 | Graph vertex index is WBT keyed by `compare_node` | T | `graph_live_core/` → `gl_directed_vertices`, `gl_directed_folds_reachable`, `gl_large_oracle` (**graph pass 2026-09-18**) |
+| 6 | Unweighted neighbors: inner WBT **set** of targets | T | `graph_live_core/` → `gl_directed_add_edge`, `gl_unit_edges` (**graph pass 2026-09-18**) |
+| 7 | Weighted neighbors: inner WBT map `to → edge data` | T | `graph_live_core/` → `gl_weighted_directed`, `gl_weighted_undirected`, `gl_undirected_symmetry` (**graph pass 2026-09-18**) |
+| 8 | CSR = live WBT + optional O(V+E) freeze | T | `graph_csr_core/` → `gcsr_directed_freeze`, `gcsr_snapshot_isolation`, `gcsr_equivalence_large` (**graph pass 2026-09-18**) |
+| 9 | Dense matrix = skew RAL cells (not bitset) | T | `graph_dense_core/` → `gd_directed_updates`, `gd_weighted`, `gd_equivalence`; cells are `ref?` optionals over `skew_ral` (graph_dense_core header deviation 1) (**graph pass 2026-09-18**) |
 | 10 | Dense bitset graph not in scope | O | "Dense bitset graph — family removed" |
 | 11 | `Tree` children = skew binary RAL | T | `skew_ral_core/` → `ral_child_sequence` (planned) |
 | 12 | `Heap` = Brodal–Okasaki | T | `brodal_okasaki_core/` → `bo_push_pop_meld` (planned) |
@@ -66,7 +66,7 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 | 7.9 | Constructor runtime lowering; ordering bundles on merge | C | `compiler_substrate/` → `constructor_canonical_arena_lowering`, `constructor_record_field_order`, `constructor_record_resolution`, `constructor_stub_empty_run`, `constructor_ordering_bundle` (**§7.9 pass, integrate verified `60 0`**; goldens re-recorded 2026-07-02 after constructor-arg marshaling fix) |
 | 7.10 | BinaryTree family registration; empty-record lowering without ordering bundle | C | `compiler_substrate/` → `binary_tree_bracket_type_parse`, `binary_tree_empty_constructor_record`, `binary_tree_stub_run`; `error_enforcement/` → `trial_compile_fail_binary_tree_empty_unwitnessed`, `trial_compile_fail_binary_tree_constructor_extra_field` (planned) |
 | 10 | Trait vs generated-module separation | I | Design §10; stdlib module layout review |
-| 11 | Materialization policy; internal fold hooks | T | `live_graphs/` → `neighbors_fold_no_temp` (planned) |
+| 11 | Materialization policy; internal fold hooks | T | `graph_live_core/` → `gl_directed_folds_reachable` (graph folds, no temporary lists) (**graph pass 2026-09-18**); `live_graphs/` → `neighbors_fold_no_temp` (planned) |
 | 12 | `validate` result shape `{valid, error, logical_count}` | T | `wbt_core/` → `validate_malformed_fixture`; `binary_tree/` → `binary_tree_validate` (planned) |
 
 ---
@@ -168,17 +168,17 @@ Genericity: `ral_generic_payloads` (string and tuple items through build/head/lo
 
 | Sec | Summary | Kind | Artifact |
 |---|---|---|---|
-| 1 | Outer WBT map + inner set/map adjacency | T | `live_graphs/` → `graph_adjacency_shape` (planned) |
+| 1 | Outer WBT map + inner set/map adjacency | T | `graph_live_core/` → `gl_directed_add_edge`, `gl_undirected_symmetry`, `gl_weighted_directed` (**graph pass 2026-09-18**) |
 | 2 | Outer record fields | I | Design §2 layout |
-| 3 | Explicit vertices; auto-add on edge (directed) | T | `live_graphs/` → `graph_add_vertex_isolated` (planned) |
-| 4 | Directed insertion semantics | T | `live_graphs/` → `graph_directed_add_edge` (planned) |
-| 5 | Undirected symmetric insertion | T | `live_graphs/` → `graph_undirected_mirror` (planned) |
-| 6 | Removal without vertex delete | T | `live_graphs/` → `graph_remove_edge_only` (planned) |
-| 7 | Queries (`has_vertex`, `has_edge`, degree) | T | `live_graphs/` → `graph_query_has_edge` (planned) |
-| 8 | Ordering of neighbors | T | `live_graphs/` → `graph_neighbors_sorted` (planned) |
-| 9 | Count invariants (self-loop rules) | T | `live_graphs/` → `graph_self_loop_counts` (planned) |
-| 10 | Path copying persistence | T | `live_graphs/` → `graph_persistence_old_adj_valid` (planned) |
-| 11 | Validation complexity | T | `live_graphs/` → `graph_validate_pass_fail` (planned) |
+| 3 | Explicit vertices; auto-add on edge (directed) | T | `graph_live_core/` → `gl_directed_vertices`, `gl_directed_add_edge` (**graph pass 2026-09-18**) |
+| 4 | Directed insertion semantics | T | `graph_live_core/` → `gl_directed_add_edge`, `gl_directed_payloads`, `gl_large_oracle` (**graph pass 2026-09-18**) |
+| 5 | Undirected symmetric insertion | T | `graph_live_core/` → `gl_undirected_symmetry`, `gl_unit_edges`, `gl_weighted_undirected` (**graph pass 2026-09-18**) |
+| 6 | Removal without vertex delete | T | `graph_live_core/` → `gl_directed_remove_edge`, `gl_large_oracle` (**graph pass 2026-09-18**) |
+| 7 | Queries (`has_vertex`, `has_edge`, degree) | T | `graph_live_core/` → `gl_directed_folds_reachable`, `gl_undirected_symmetry` (**graph pass 2026-09-18**) |
+| 8 | Ordering of neighbors | T | `graph_live_core/` → `gl_directed_folds_reachable`, `gl_large_oracle` (**graph pass 2026-09-18**) |
+| 9 | Count invariants (self-loop rules) | T | `graph_live_core/` → `gl_undirected_symmetry`, `gl_validate`, `gl_large_oracle` (**graph pass 2026-09-18**) |
+| 10 | Path copying persistence | T | `graph_live_core/` → `gl_persistence_sharing` (**graph pass 2026-09-18**) |
+| 11 | Validation complexity | T | `graph_live_core/` → `gl_validate` (**graph pass 2026-09-18**) |
 | 12 | Complexity table | I | Design §12 bounds |
 
 ---
@@ -188,15 +188,15 @@ Genericity: `ral_generic_payloads` (string and tuple items through build/head/lo
 | Sec | Summary | Kind | Artifact |
 |---|---|---|---|
 | 1 | Snapshot-only semantic role | I | Design §1; no incremental CSR update |
-| 2 | Deterministic dense slot assignment | T | `snapshot_graphs/` → `csr_node_to_slot_sorted` (planned) |
+| 2 | Deterministic dense slot assignment | T | `graph_csr_core/` → `gcsr_directed_freeze`, `gcsr_generic_payloads` (**graph pass 2026-09-18**) |
 | 3 | Physical buffer shape | I | Design §3; see [§6.4](#64-closed-csrdense-representation-contract) |
-| 4 | Freeze algorithm O(V+A) | T | `snapshot_graphs/` → `csr_freeze_two_pass` (planned) |
-| 5 | Offset monotonicity invariant | T | `snapshot_graphs/` → `csr_validate_offsets` (planned) |
-| 6 | Query behavior via traits | T | `cross_representation/` → `csr_query_neighbors` (planned) |
-| 7 | Directed/undirected count equations | T | `snapshot_graphs/` → `csr_undirected_symmetry` (planned) |
+| 4 | Freeze algorithm O(V+A) | T | `graph_csr_core/` → `gcsr_directed_freeze`, `gcsr_equivalence_large` (**graph pass 2026-09-18**) |
+| 5 | Offset monotonicity invariant | T | `graph_csr_core/` → `gcsr_validate` (**graph pass 2026-09-18**) |
+| 6 | Query behavior via traits | T | `graph_collections/` → `gc_csr_directed_trait`, `gc_csr_undirected_trait`, `gc_csr_weighted_trait`, `gc_csr_weighted_undirected_trait`; `graph_csr_core/` → `gcsr_directed_freeze` (**graph pass 2026-09-18**) |
+| 7 | Directed/undirected count equations | T | `graph_csr_core/` → `gcsr_undirected`, `gcsr_equivalence_large` (**graph pass 2026-09-18**) |
 | 8 | Immutable trait conformance | I | Design §8; no runtime mutation API |
-| 9 | Freeze failure leaves live graph valid | T | `snapshot_graphs/` → `csr_freeze_overflow_fail` (planned) |
-| 10 | Validation checks | T | `snapshot_graphs/` → `csr_validate_malformed` (planned) |
+| 9 | Freeze failure leaves live graph valid | T | `graph_csr_core/` → `gcsr_snapshot_isolation` (freeze leaves the live graph unchanged); overflow failure path not reachable in a trial (planned `csr_freeze_overflow_fail`) (**graph pass 2026-09-18**) |
+| 10 | Validation checks | T | `graph_csr_core/` → `gcsr_validate` (**graph pass 2026-09-18**) |
 | 11 | Complexity | I | Design §11 table |
 
 ---
@@ -206,16 +206,16 @@ Genericity: `ral_generic_payloads` (string and tuple items through build/head/lo
 | Sec | Summary | Kind | Artifact |
 |---|---|---|---|
 | 1 | Fixed-vertex dense use case | I | Design §1 boundary |
-| 2 | `node_to_slot` WBT index | T | `snapshot_graphs/` → `dense_node_to_slot` (planned) |
+| 2 | `node_to_slot` WBT index | T | `graph_dense_core/` → `gd_universe`, `gd_generic_payloads` (**graph pass 2026-09-18**) |
 | 3 | Cell index `from * V + to` | I | Design §3 formula |
 | 4 | Physical RAL cell sequence | I | Design §4; see [§6.4](#64-closed-csrdense-representation-contract) |
-| 5 | Construction for fixed V | T | `snapshot_graphs/` → `dense_empty_for_nodes` (planned) |
-| 6 | Edge updates (no auto-add vertex) | T | `snapshot_graphs/` → `dense_set_clear_edge` (planned) |
-| 7 | Neighbor traversal scans row | T | `snapshot_graphs/` → `dense_neighbors_scan` (planned) |
+| 5 | Construction for fixed V | T | `graph_dense_core/` → `gd_universe`, `gd_directed_updates` (**graph pass 2026-09-18**) |
+| 6 | Edge updates (no auto-add vertex) | T | `graph_dense_core/` → `gd_directed_updates`, `gd_undirected`, `gd_weighted` (**graph pass 2026-09-18**) |
+| 7 | Neighbor traversal scans row | T | `graph_dense_core/` → `gd_directed_updates`, `gd_equivalence` (**graph pass 2026-09-18**) |
 | 8 | Query/update bounds | I | Design §8 |
-| 9 | Persistence via RAL path copy | T | `snapshot_graphs/` → `dense_persistence` (planned) |
-| 10 | Invariants | T | `snapshot_graphs/` → `dense_validate_invariants` (planned) |
-| 11 | Validation | T | `snapshot_graphs/` → `dense_validate_invariants` (planned) |
+| 9 | Persistence via RAL path copy | T | `graph_dense_core/` → `gd_directed_updates`, `gd_undirected` (**graph pass 2026-09-18**) |
+| 10 | Invariants | T | `graph_dense_core/` → `gd_validate`, `gd_undirected` (**graph pass 2026-09-18**) |
+| 11 | Validation | T | `graph_dense_core/` → `gd_validate` (**graph pass 2026-09-18**) |
 | 12 | Complexity | I | Design §12 table |
 | 13 | Representation choice rule | I | Design §13 vs live WBT |
 
@@ -266,10 +266,10 @@ Genericity: `ral_generic_payloads` (string and tuple items through build/head/lo
 | Sec | Summary | Kind | Artifact |
 |---|---|---|---|
 | 1 | Behavioral view over WBT set | I | Design §1 |
-| 2 | Same record as `OrderedSet` | T | `terminal_structures/` → `search_tree_same_record` (planned) |
-| 3 | `contains_key` + `compare_item` required | T | `terminal_structures/` → `search_tree_contains_key` (planned) |
-| 4 | Updates via `wbt_set` only | T | `terminal_structures/` → `search_tree_wbt_update` (planned) |
-| 5 | Comparator-class semantics | T | `terminal_structures/` → `search_tree_contains_key` (planned) |
+| 2 | Same record as `OrderedSet` | T | `stdlib/data_structures/SearchTree.silica`; `search_tree_collections/` → `st_ordered_set_agree` (both views of one value, both bracket families), `st_empty_and_singleton` (**§25 pass**); an updated tree passed to a `SearchTree`-typed parameter is rejected: open defect `compile_defects_search_tree_parameter_addition/defect_search_tree_parameter` |
+| 3 | `contains_key` + `compare_item` required | T | `search_tree_collections/` → `st_contains_key`, `st_compare_item`, `st_trait_dispatch`, `st_generic_payloads`, `st_composite_payloads` (**§25 pass**) |
+| 4 | Updates via `wbt_set` only | T | `search_tree_collections/` → `st_updates` (empty/singleton/insert/delete/from_list/from_sorted) (**§25 pass**) |
+| 5 | Comparator-class semantics | T | `search_tree_collections/` → `st_duplicates`, `st_compare_item`, `st_persistence`, `st_large_runs` (sorted-list oracle) (**§25 pass**) |
 | 6 | Distinct trait rationale | I | Design §6 documentation |
 | 7 | Invariants + complexity | I | Design §7 inherits OrderedSet |
 | 8 | Non-goals | O | "No range-search, predecessor/successor cursor, …" |
@@ -282,15 +282,15 @@ Genericity: `ral_generic_payloads` (string and tuple items through build/head/lo
 |---|---|---|---|
 | 1 | Directed graph abstract value | I | Design §1 |
 | 2 | Constructor `{compare_node, compare_edge, edge_target}` | C | `error_enforcement/` → `directed_graph_constructor_record` (planned) |
-| 3 | Trait contract | T | `live_graphs/` → `directed_graph_trait_dispatch` (planned) |
-| 4 | `graph_wbt_directed` module surface | T | `live_graphs/` → `directed_graph_add_edge` (planned) |
-| 5 | Vertex retain; auto-add endpoints on edge | T | `live_graphs/` → `directed_graph_auto_add_vertex` (planned) |
-| 6 | Query semantics (`reachable`, empty neighbors) | T | `live_graphs/` → `directed_graph_reachable` (planned) |
-| 7 | WBT / CSR / dense module families | T | `live_graphs/` + `snapshot_graphs/` (planned) |
+| 3 | Trait contract | T | `graph_collections/` → `gc_directed_trait`, `gc_csr_directed_trait`, `gc_dense_directed_trait`; `traits_addition/` → `emitter_defect_trait_param_single_impl`, `emitter_defect_bracket_receiver_impl_order` (open defects) (**graph pass 2026-09-18**) |
+| 4 | `graph_wbt_directed` module surface | T | `graph_live_core/` → `gl_directed_vertices`, `gl_directed_add_edge`, `gl_directed_payloads` (**graph pass 2026-09-18**) |
+| 5 | Vertex retain; auto-add endpoints on edge | T | `graph_live_core/` → `gl_directed_add_edge`, `gl_directed_remove_edge` (**graph pass 2026-09-18**) |
+| 6 | Query semantics (`reachable`, empty neighbors) | T | `graph_live_core/` → `gl_directed_folds_reachable`, `gl_directed_vertices`; `graph_collections/` → `gc_directed_trait` (**graph pass 2026-09-18**) |
+| 7 | WBT / CSR / dense module families | T | `graph_live_core/` → `gl_directed_add_edge`; `graph_csr_core/` → `gcsr_directed_freeze`; `graph_dense_core/` → `gd_directed_updates`; `graph_collections/` → `gc_csr_directed_trait`, `gc_dense_directed_trait` (**graph pass 2026-09-18**) |
 | 8 | Count definitions | I | Design §8 equations |
-| 9 | Invariants | T | `live_graphs/` → `directed_graph_validate` (planned) |
+| 9 | Invariants | T | `graph_live_core/` → `gl_validate`, `gl_directed_payloads` (**graph pass 2026-09-18**) |
 | 10 | Complexity | I | Design §10 table |
-| 11 | Example | T | `live_graphs/` → `directed_graph_example` (planned) |
+| 11 | Example | T | `graph_live_core/` → `gl_directed_add_edge` (**graph pass 2026-09-18**) |
 | 12 | Exclusions (no `remove_vertex` in Phase 1) | O | Design §12 exclusion list |
 
 ---
@@ -301,17 +301,17 @@ Genericity: `ral_generic_payloads` (string and tuple items through build/head/lo
 |---|---|---|---|
 | 1 | Undirected abstract graph | I | Design §1 |
 | 2 | `{to, data}` wrapper model | I | Design §2 |
-| 3 | Trait contract | T | `live_graphs/` → `undirected_graph_trait_dispatch` (planned) |
-| 4 | Live module surface (`add_edge/3` + `/4`) | T | `live_graphs/` → `undirected_graph_add_edge` (planned) |
-| 5 | Symmetric update semantics | T | `live_graphs/` → `undirected_graph_mirror_validate` (planned) |
-| 6 | Degree and neighbors | T | `live_graphs/` → `undirected_graph_degree` (planned) |
-| 7 | Edge fold | T | `live_graphs/` → `undirected_graph_fold_neighbors` (planned) |
-| 8 | `connected/3` | T | `live_graphs/` → `undirected_graph_connected` (planned) |
-| 9 | Counts (self-loop double count) | T | `live_graphs/` → `undirected_graph_self_loop_degree` (planned) |
-| 10 | CSR/dense query backends | T | `cross_representation/` (planned) |
-| 11 | Invariants | T | `live_graphs/` → `undirected_graph_validate` (planned) |
+| 3 | Trait contract | T | `graph_collections/` → `gc_undirected_trait`, `gc_undirected_trait_weighted`, `gc_csr_undirected_trait`, `gc_dense_undirected_trait` (**graph pass 2026-09-18**) |
+| 4 | Live module surface (`add_edge/3` + `/4`) | T | `graph_live_core/` → `gl_undirected_symmetry`, `gl_unit_edges` (**graph pass 2026-09-18**) |
+| 5 | Symmetric update semantics | T | `graph_live_core/` → `gl_undirected_symmetry`, `gl_weighted_undirected`; `graph_dense_core/` → `gd_undirected` (**graph pass 2026-09-18**) |
+| 6 | Degree and neighbors | T | `graph_live_core/` → `gl_undirected_symmetry`; `graph_collections/` → `gc_undirected_trait` (**graph pass 2026-09-18**) |
+| 7 | Edge fold | T | `graph_live_core/` → `gl_undirected_symmetry`, `gl_weighted_undirected` (**graph pass 2026-09-18**) |
+| 8 | `connected/3` | T | `graph_live_core/` → `gl_undirected_symmetry`; `graph_collections/` → `gc_undirected_trait` (**graph pass 2026-09-18**) |
+| 9 | Counts (self-loop double count) | T | `graph_live_core/` → `gl_undirected_symmetry`; `graph_collections/` → `gc_undirected_trait` (**graph pass 2026-09-18**) |
+| 10 | CSR/dense query backends | T | `graph_csr_core/` → `gcsr_undirected`; `graph_dense_core/` → `gd_undirected`; `graph_collections/` → `gc_csr_undirected_trait`, `gc_dense_undirected_trait`, `gc_csr_weighted_undirected_trait`, `gc_dense_weighted_undirected_trait` (**graph pass 2026-09-18**) |
+| 11 | Invariants | T | `graph_live_core/` → `gl_validate`, `gl_undirected_symmetry` (**graph pass 2026-09-18**) |
 | 12 | Complexity | I | Design §12 table |
-| 13 | Example | T | `live_graphs/` → `undirected_graph_example` (planned) |
+| 13 | Example | T | `graph_live_core/` → `gl_unit_edges` (**graph pass 2026-09-18**) |
 | 14 | Exclusions | O | Design §14 exclusion list |
 
 ---
@@ -323,16 +323,16 @@ Genericity: `ral_generic_payloads` (string and tuple items through build/head/lo
 | 1 | Orthogonal capability trait | I | Design §1 |
 | 2 | `WeightedGraph[EdgeData, Weight, mem]` | C | `error_enforcement/` → `weighted_graph_type_witness` (planned) |
 | 3 | Constructor record | C | `error_enforcement/` → `weighted_graph_constructor_record` (planned) |
-| 4 | Trait contract (`weight_of`, weighted neighbors) | T | `live_graphs/` → `weighted_graph_weight_of` (planned) |
+| 4 | Trait contract (`weight_of`, weighted neighbors) | T | `graph_collections/` → `gc_weighted_trait`, `gc_weighted_trait_undirected`, `gc_csr_weighted_trait`, `gc_dense_weighted_trait` (**graph pass 2026-09-18**) |
 | 5 | Edge identity separate from weight | I | Design §5 |
-| 6 | Directed update semantics | T | `live_graphs/` → `weighted_directed_add_edge` (planned) |
-| 7 | Undirected wrapper model | T | `live_graphs/` → `weighted_undirected_neighbors` (planned) |
-| 8 | Query semantics | T | `live_graphs/` → `weighted_graph_weighted_neighbors` (planned) |
-| 9 | CSR/dense forms | T | `cross_representation/` → `weighted_csr_conformance` (planned) |
+| 6 | Directed update semantics | T | `graph_live_core/` → `gl_weighted_directed` (**graph pass 2026-09-18**) |
+| 7 | Undirected wrapper model | T | `graph_live_core/` → `gl_weighted_undirected` (**graph pass 2026-09-18**) |
+| 8 | Query semantics | T | `graph_live_core/` → `gl_weighted_directed`, `gl_weighted_undirected`; `graph_collections/` → `gc_weighted_trait` (**graph pass 2026-09-18**) |
+| 9 | CSR/dense forms | T | `graph_csr_core/` → `gcsr_weighted`; `graph_dense_core/` → `gd_weighted`; `graph_collections/` → `gc_csr_weighted_trait`, `gc_csr_weighted_undirected_trait`, `gc_dense_weighted_trait`, `gc_dense_weighted_undirected_trait` (**graph pass 2026-09-18**) |
 | 10 | Weight validity in algorithms not graph | I | Design §10 |
-| 11 | Invariants | T | `live_graphs/` → `weighted_graph_validate` (planned) |
+| 11 | Invariants | T | `graph_live_core/` → `gl_weighted_directed`, `gl_weighted_undirected` (**graph pass 2026-09-18**) |
 | 12 | Complexity | I | Design §12 table |
-| 13 | Example | T | `live_graphs/` → `weighted_graph_example` (planned) |
+| 13 | Example | T | `graph_live_core/` → `gl_record_edge_data` (record edge data through the generic modules; formerly the open defect `defect_generic_payload_record_edge_data`, passes since the 2026-09-18 boxed record layout); int64 form in `gl_weighted_directed` (**graph pass 2026-09-18**) |
 | 14 | Exclusions | O | Design §14 exclusion list |
 
 ---
@@ -435,12 +435,12 @@ Source: implementation plan §6.4; designs `csr_graph_snapshot.md`, `dense_matri
 | ID | Requirement | Kind | Artifact |
 |---|---|---|---|
 | CSR-D1 | Compiler-version-private inline layouts (generated modules only) | I | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D1; compile-fail `error_enforcement/graph_layout_not_in_source` (planned) |
-| CSR-D2 | Public `NodeIdType` IDs ≠ internal `int64` dense-slot domain | T | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D2; `snapshot_graphs/csr_node_id_not_slot`, `dense_node_id_not_slot` (planned) |
-| CSR-D3 | Runtime-sized internal extents not in public graph type params | T | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D3; `snapshot_graphs/csr_runtime_extents`, `dense_v_squared_overflow` (planned) |
-| CSR-D4 | Parallel CSR neighbor + edge-data buffers (attributed/weighted) | T | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D4; `snapshot_graphs/csr_weighted_parallel_buffers` (planned) |
-| CSR-D5 | Dense unweighted: one boolean cell sequence | T | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D5; `snapshot_graphs/dense_unweighted_boolean_cells` (planned) |
-| CSR-D6 | Dense attributed/weighted: `:none \| (:some, EdgeDataType)` cells | T | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D6; `snapshot_graphs/dense_weighted_tagged_cells` (planned) |
-| CSR-D7 | Distinct WBT, CSR, dense concrete generated types (+ specializations) | T | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D7; `cross_representation/graph_distinct_concrete_types`, `wbt_csr_dense_trait_agree` (planned) |
+| CSR-D2 | Public `NodeIdType` IDs ≠ internal `int64` dense-slot domain | T | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D2; `graph_csr_core/` → `gcsr_directed_freeze`, `gcsr_generic_payloads`; `graph_dense_core/` → `gd_universe`, `gd_generic_payloads` (**graph pass 2026-09-18**) |
+| CSR-D3 | Runtime-sized internal extents not in public graph type params | T | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D3; `graph_csr_core/` → `gcsr_directed_freeze`; `graph_dense_core/` → `gd_universe` (**graph pass 2026-09-18**) |
+| CSR-D4 | Parallel CSR neighbor + edge-data buffers (attributed/weighted) | T | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D4; `graph_csr_core/` → `gcsr_weighted` (**graph pass 2026-09-18**) |
+| CSR-D5 | Dense unweighted: one boolean cell sequence | T | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D5; `graph_dense_core/` → `gd_directed_updates` (cells are `ref?` payload optionals, not booleans: graph_dense_core deviation 1) (**graph pass 2026-09-18**) |
+| CSR-D6 | Dense attributed/weighted: `:none \| (:some, EdgeDataType)` cells | T | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D6; `graph_dense_core/` → `gd_weighted` (`:none \| (:some, T)` does not parse, `ref?` cells used; `compile_defects_tagged_optional_type_addition/`) (**graph pass 2026-09-18**) |
+| CSR-D7 | Distinct WBT, CSR, dense concrete generated types (+ specializations) | T | [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md) §CSR-D7; `graph_csr_core/` → `gcsr_equivalence_large`, `gcsr_snapshot_isolation`; `graph_dense_core/` → `gd_equivalence`; `graph_collections/` → `gc_csr_*_trait`, `gc_dense_*_trait` (**graph pass 2026-09-18**) |
 
 ---
 
@@ -456,10 +456,15 @@ Source: implementation plan §6.4; designs `csr_graph_snapshot.md`, `dense_matri
 | `binary_tree/` | `binary_tree_trait.md` |
 | `ordered_collections/` | `ordered_set_trait`, `ordered_map_trait`, `heap_trait` |
 | `live_graphs/` | `live_wbt_graph`, `directed_graph_trait`, `undirected_graph_trait`, `weighted_graph_trait` |
+| `search_tree_collections/` | `search_tree_trait` |
 | `terminal_structures/` | `search_tree_trait`, `priority_queue_trait`, `tree_trait` |
 | `snapshot_graphs/` | `csr_graph_snapshot`, `dense_matrix_graph` |
 | `error_enforcement/` | Constructor/type/comparator compile failures (`C` rows) |
 | `cross_representation/` | CSR/dense vs WBT conformance through public traits |
+| `ordered_data_structures/graph_live_core/` | `live_wbt_graph`; live modules of `directed_graph_trait`, `undirected_graph_trait`, `weighted_graph_trait` (landed 2026-09-18) |
+| `ordered_data_structures/graph_csr_core/` | `csr_graph_snapshot`; §6.4 CSR rows (landed 2026-09-18) |
+| `ordered_data_structures/graph_dense_core/` | `dense_matrix_graph`; §6.4 dense rows (landed 2026-09-18) |
+| `ordered_data_structures/graph_collections/` | `DirectedGraph`, `UndirectedGraph`, `WeightedGraph` traits over live, CSR and dense (landed 2026-09-18) |
 
 ---
 

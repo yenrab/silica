@@ -106,8 +106,12 @@ Shifts by a register go through `cl` with `rcx` (`X3`) saved.
   registers used, `rsp` is 16-aligned at the `call` (the AArch64 16-byte push discipline guarantees
   it), and the result is moved from `rax` to `rdi`. `abort`, `free`, `malloc` and the foreign
   bindings of `ffi_foreign` go through it.
-- Aggregate returns to C (MEMORY class): the hidden pointer is `rdi`, shifting the integer arguments,
-  handled in `ffi_foreign` as before; internal aggregate returns keep `X8` = `rbx`.
+- Aggregate returns to C (MEMORY class, the 32-byte foreign result records): the hidden pointer is
+  `rdi`, shifting the integer arguments: `ffi_foreign@emit_sret_hidden_arg_shift` moves `X(n-1)` →
+  `Xn` … `X0` → `X1` and the arena buffer `X8` → `X0` right before the guarded call, and
+  `c_call_stack_args` counts the hidden argument (until 2026-09-19 the buffer went only in `X8`,
+  AArch64-style, and C wrote the record over the first argument); internal aggregate returns keep
+  `X8` = `rbx`.
 - Signal handlers, thread start routines and `pthread_key` destructors are C-called: `rdi rsi rdx`
   arguments, `rax` result, `rbx rbp r12`–`r15` preserved.
 

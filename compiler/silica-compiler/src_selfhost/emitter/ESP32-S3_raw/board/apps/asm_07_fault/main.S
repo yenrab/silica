@@ -15,10 +15,11 @@
 */
 
 // Bring-up app 07: fault reporting. Loads from address 0, which the ESP32-S3 does not map, so the
-// CPU raises LoadProhibited (EXCCAUSE 28). The runtime's vector must turn that into exit status
-// 139 with the cause, PC and address after the exit marker -- the path every emitted-code crash
-// will take, so it has to work before any compiled program runs.
-// Expected console: "about to load from 0x0", then the exit marker with status 139 and
+// CPU raises LoadProhibited (EXCCAUSE 28). The runtime's vector must turn that into the fatal fault
+// report of spec §15.4.5.5 -- the path every emitted-code crash will take, so it has to work before
+// any compiled program runs.
+// Expected console: "about to load from 0x0", then "[silica] fault at 0x4037....  addr=0x00000000"
+// (LoadProhibited sets EXCVADDR), then the exit marker with status 70 and, after it,
 // " fault: exccause=28 epc=0x4037.... excvaddr=0x00000000".
 
     .section .text.main, "ax"

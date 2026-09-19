@@ -25,9 +25,12 @@
 //     i.e. the top of its frame (CALL12: a4-a11 to [caller_sp-48, caller_sp-16)).
 // Locals therefore live at or below [sp + frame - 32] (frame - 48 when the function uses CALL12).
 //
-// Every other vector reports a fatal exception: EXCCAUSE, EPC1 and EXCVADDR go to the console after
-// the exit marker (so they never pollute captured program output) and the exit status is 139, the
-// status a SIGSEGV'd process reports on the host.
+// Every other vector reports a fatal fault the way every Silica target does (spec §15.4.5.5,
+// design_documents/runtime_failure_reporting.md): the line "[silica] fault at 0x<epc>[  addr=0x<excvaddr>]"
+// as program output, then the exit marker with status 70; EXCCAUSE, EPC1 and EXCVADDR follow the marker
+// (so they never pollute captured program output). The stack-guard data breakpoints enter the same path
+// through the debug vector. A runtime abort (silica_rt_abort_*, rt_console.S) resets the context the same
+// way, through silica_rt_abort_trampoline below, and reports status 71.
 
     .section .WindowVectors.text, "ax"
 
@@ -242,4 +245,35 @@ silica_rt_fatal_report_c0:
     mov     a12, a3
     mov     a14, a4
     call8   silica_rt_fatal_report
+1:  j       1b
+
+// Runtime abort: a2 = reason, a3 = address of the call, reached by CALL0 from silica_rt_abort_body
+// (rt_console.S) in the aborting routine's window. The same reset as the fatal trampoline (only the
+// current window stays live, interrupts off, the fault stack), so the report runs whatever state the
+// program's stacks are in; a2 and a3 are registers of the current window and survive it.
+    .align  4
+    .global silica_rt_abort_trampoline
+silica_rt_abort_trampoline:
+    movi    a0, 0
+    wsr     a0, intenable
+    rsr     a0, windowbase
+    movi    a1, 1
+    ssl     a0
+    sll     a1, a1
+    wsr     a1, windowstart
+    rsync
+    movi    a1, 0x40020           // PS: WOE=1, EXCM=0, UM=1, INTLEVEL=0, CALLINC=0
+    wsr     a1, ps
+    rsync
+    movi    a1, _silica_fault_stack_top
+    movi    a0, 0
+    call0   silica_rt_abort_report_c0
+1:  j       1b
+
+// call0 shim: a2 reason, a3 address, passed on as arguments 0 and 1.
+    .align  4
+silica_rt_abort_report_c0:
+    mov     a10, a2
+    mov     a12, a3
+    call8   silica_rt_abort_report
 1:  j       1b

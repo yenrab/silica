@@ -25,6 +25,174 @@
 
 export emit_ffi_fault_runtime_asm/0;
 
+// Runtime abort (spec §15.4.5.5; design_documents/runtime_failure_reporting.md). Every runtime check
+// that cannot continue calls one of the per-site entries below (or silica_rt_abort_with with its own
+// reason); the report is the line "[silica] abort: <reason> at 0x<pc>", followed by " in
+// <symbol>+0x<offset>" when dladdr names the address, on stderr, and the process exits with status 71.
+// The pc is the call instruction of the site. Nothing is allocated, and the report does not run on the
+// caller's stack: the first caller claims the report and moves onto a static 32 KB stack (the caller
+// may be an actor at the end of its reservation, or the signal handler on its alternate stack); any
+// later caller, on any thread, parks until the process has gone. The exit is C _exit (async-signal-safe,
+// no atexit handlers), which is what the C abort() it replaces also skipped.
+fn emit_abort_runtime_asm() -> string {
+    "	.section .rodata
+Lrta_pre:
+	.asciz	\"[silica] abort: \"
+Lrta_at:
+	.asciz	\" at 0x\"
+Lrta_r_region_overflow:
+	.asciz	\"region allocation failed\"
+Lrta_r_buf_invalid:
+	.asciz	\"invalid buffer size\"
+Lrta_r_buf_bounds:
+	.asciz	\"buffer index out of bounds\"
+Lrta_r_list_index:
+	.asciz	\"list index out of range\"
+Lrta_r_arena_key:
+	.asciz	\"canonical arena key is zero\"
+Lrta_r_arena_full:
+	.asciz	\"canonical arena table is full\"
+Lrta_r_arena_nomem:
+	.asciz	\"canonical arena allocation failed\"
+Lrta_r_guarded_ffi_state:
+	.asciz	\"guarded FFI state could not be allocated\"
+Lrta_r_ingress_full:
+	.asciz	\"supervision ingress queue is full\"
+Lrta_r_exit_queue_full:
+	.asciz	\"supervisor ingress queue is full (exit delivery)\"
+Lrta_r_stack_commit:
+	.asciz	\"cannot commit memory for a growing actor stack\"
+	.text
+	.globl	silica_rt_abort_with
+	.p2align	2
+silica_rt_abort_with:
+// X0 = NUL-terminated reason. The reported address is the BL that got here (X30 - 4). Never returns.
+	sub	x1, x30, #4
+	b	silica_rt_abort_with_pc
+	.globl	silica_rt_abort_with_pc
+	.p2align	2
+silica_rt_abort_with_pc:
+// X0 = reason, X1 = the address to report. Never returns.
+	mov	x19, x0
+	mov	x20, x1
+	adrp	x8, silica_rt_abort_claimed
+	add	x8, x8, :lo12:silica_rt_abort_claimed
+	mov	w9, #1
+Lrta_claim:
+	ldaxr	w10, [x8]
+	cbnz	w10, Lrta_park
+	stlxr	w11, w9, [x8]
+	cbnz	w11, Lrta_claim
+	adrp	x8, silica_rt_abort_stack_top
+	add	x8, x8, :lo12:silica_rt_abort_stack_top
+	mov	sp, x8
+	mov	x29, xzr
+	adrp	x0, Lrta_pre
+	add	x0, x0, :lo12:Lrta_pre
+	bl	silica_rt_fault_puts
+	mov	x0, x19
+	bl	silica_rt_fault_puts
+	adrp	x0, Lrta_at
+	add	x0, x0, :lo12:Lrta_at
+	bl	silica_rt_fault_puts
+	mov	x0, x20
+	bl	silica_rt_fault_puthex
+	mov	x0, x20
+	adrp	x1, silica_rt_fault_dlinfo
+	add	x1, x1, :lo12:silica_rt_fault_dlinfo
+	bl	dladdr
+	cbz	w0, Lrta_eol
+	adrp	x21, silica_rt_fault_dlinfo
+	add	x21, x21, :lo12:silica_rt_fault_dlinfo
+	ldr	x22, [x21, #16]
+	cbz	x22, Lrta_eol
+	adrp	x0, Lpfs_in
+	add	x0, x0, :lo12:Lpfs_in
+	bl	silica_rt_fault_puts
+	mov	x0, x22
+	bl	silica_rt_fault_puts
+	ldr	x1, [x21, #24]
+	cbz	x1, Lrta_eol
+	sub	x22, x20, x1
+	adrp	x0, Lpfs_plus
+	add	x0, x0, :lo12:Lpfs_plus
+	bl	silica_rt_fault_puts
+	mov	x0, x22
+	bl	silica_rt_fault_puthex
+Lrta_eol:
+	adrp	x0, Lpfs_eol
+	add	x0, x0, :lo12:Lpfs_eol
+	bl	silica_rt_fault_puts
+	mov	w0, #71
+	bl	_exit
+Lrta_park:
+	yield
+	b	Lrta_park
+// Per-site entries: the reason in X0, then on to silica_rt_abort_with with X30 untouched, so the
+// reported address is still the site's BL.
+	.globl	silica_rt_abort_region_overflow
+	.p2align	2
+silica_rt_abort_region_overflow:
+	adrp	x0, Lrta_r_region_overflow
+	add	x0, x0, :lo12:Lrta_r_region_overflow
+	b	silica_rt_abort_with
+	.globl	silica_rt_abort_buf_invalid
+	.p2align	2
+silica_rt_abort_buf_invalid:
+	adrp	x0, Lrta_r_buf_invalid
+	add	x0, x0, :lo12:Lrta_r_buf_invalid
+	b	silica_rt_abort_with
+	.globl	silica_rt_abort_buf_bounds
+	.p2align	2
+silica_rt_abort_buf_bounds:
+	adrp	x0, Lrta_r_buf_bounds
+	add	x0, x0, :lo12:Lrta_r_buf_bounds
+	b	silica_rt_abort_with
+	.globl	silica_rt_abort_list_index
+	.p2align	2
+silica_rt_abort_list_index:
+	adrp	x0, Lrta_r_list_index
+	add	x0, x0, :lo12:Lrta_r_list_index
+	b	silica_rt_abort_with
+	.globl	silica_rt_abort_arena_key
+	.p2align	2
+silica_rt_abort_arena_key:
+	adrp	x0, Lrta_r_arena_key
+	add	x0, x0, :lo12:Lrta_r_arena_key
+	b	silica_rt_abort_with
+	.globl	silica_rt_abort_arena_full
+	.p2align	2
+silica_rt_abort_arena_full:
+	adrp	x0, Lrta_r_arena_full
+	add	x0, x0, :lo12:Lrta_r_arena_full
+	b	silica_rt_abort_with
+	.globl	silica_rt_abort_arena_nomem
+	.p2align	2
+silica_rt_abort_arena_nomem:
+	adrp	x0, Lrta_r_arena_nomem
+	add	x0, x0, :lo12:Lrta_r_arena_nomem
+	b	silica_rt_abort_with
+	.globl	silica_rt_abort_guarded_ffi_state
+	.p2align	2
+silica_rt_abort_guarded_ffi_state:
+	adrp	x0, Lrta_r_guarded_ffi_state
+	add	x0, x0, :lo12:Lrta_r_guarded_ffi_state
+	b	silica_rt_abort_with
+	.globl	silica_rt_abort_ingress_full
+	.p2align	2
+silica_rt_abort_ingress_full:
+	adrp	x0, Lrta_r_ingress_full
+	add	x0, x0, :lo12:Lrta_r_ingress_full
+	b	silica_rt_abort_with
+	.globl	silica_rt_abort_exit_queue_full
+	.p2align	2
+silica_rt_abort_exit_queue_full:
+	adrp	x0, Lrta_r_exit_queue_full
+	add	x0, x0, :lo12:Lrta_r_exit_queue_full
+	b	silica_rt_abort_with
+"
+}
+
 fn emit_ffi_fault_runtime_asm() -> string {
     bss: string <- "	.bss
 	.p2align	3
@@ -52,6 +220,12 @@ silica_rt_own_image_base:
 	.zero	8
 silica_rt_ffi_altstack_active:
 	.zero	4
+silica_rt_abort_claimed:
+	.zero	4
+	.p2align	4
+silica_rt_abort_stack:
+	.zero	32768
+silica_rt_abort_stack_top:
 ";
     text: string <- "	.text
 	.globl	silica_rt_install_sync_fault_handlers
@@ -171,6 +345,33 @@ silica_rt_sync_fault_handler:
 	mov	x22, x0
 	mov	x23, x1
 	mov	x24, x2
+// Stack growth is established first (spec §15.1.2.2): a fault at an address inside the current
+// actor's reservation is growth, and only afterwards is a guarded foreign fault considered.
+// Linux siginfo_t: si_addr @16.
+	bl	silica_rt_tls_current_actor_get
+	mov	x20, x0
+	cbz	x20, Lsfh_not_stack
+	ldr	x21, [x20, #384]
+	cbz	x21, Lsfh_not_stack
+	ldr	x19, [x23, #16]
+	cmp	x19, x21
+	b.lo	Lsfh_not_stack
+	ldr	x9, [x20, #392]
+	add	x9, x21, x9
+	cmp	x19, x9
+	b.hs	Lsfh_not_stack
+	mov	x0, x20
+	mov	x1, x19
+	bl	silica_rt_stack_grow_to
+	cbz	x0, L_sfh_done
+	cmp	x0, #1
+	b.eq	L_sfh_exhausted
+	cmp	x0, #2
+	b.eq	L_sfh_unrecoverable
+Lsfh_not_stack:
+// The report fields are process-wide, so they are recorded only once the fault is known not to be
+// stack growth: an actor taking growth faults on another thread must not overwrite them while a fatal
+// fault is being reported (spec §15.4.5.5).
 	adrp	x8, silica_rt_fault_pc
 	add	x8, x8, :lo12:silica_rt_fault_pc
 	cbz	x24, Lsfh_pc_done
@@ -185,6 +386,12 @@ silica_rt_sync_fault_handler:
 	adrp	x8, silica_rt_fault_actor
 	add	x8, x8, :lo12:silica_rt_fault_actor
 	str	x0, [x8]
+	adrp	x8, silica_rt_fault_sbase
+	add	x8, x8, :lo12:silica_rt_fault_sbase
+	str	xzr, [x8]
+	adrp	x8, silica_rt_fault_ssize
+	add	x8, x8, :lo12:silica_rt_fault_ssize
+	str	xzr, [x8]
 	cbz	x0, Lsfh_no_actor
 	ldr	x9, [x0, #384]
 	adrp	x8, silica_rt_fault_sbase
@@ -210,30 +417,6 @@ Lsfh_no_actor:
 // reported as an actor failure, so printing the site first would add a line that the
 // caller never sees on a healthy recovery. The unrecoverable paths below still print it.
 Lsfh_pc_done:
-// Stack growth is established first (spec §15.1.2.2): a fault at an address inside the current
-// actor's reservation is growth, and only afterwards is a guarded foreign fault considered.
-// Linux siginfo_t: si_addr @16.
-	bl	silica_rt_tls_current_actor_get
-	mov	x20, x0
-	cbz	x20, Lsfh_not_stack
-	ldr	x21, [x20, #384]
-	cbz	x21, Lsfh_not_stack
-	ldr	x19, [x23, #16]
-	cmp	x19, x21
-	b.lo	Lsfh_not_stack
-	ldr	x9, [x20, #392]
-	add	x9, x21, x9
-	cmp	x19, x9
-	b.hs	Lsfh_not_stack
-	mov	x0, x20
-	mov	x1, x19
-	bl	silica_rt_stack_grow_to
-	cbz	x0, L_sfh_done
-	cmp	x0, #1
-	b.eq	L_sfh_exhausted
-	cmp	x0, #2
-	b.eq	L_sfh_unrecoverable
-Lsfh_not_stack:
 	mov	x0, x22
 	mov	x1, x23
 	bl	silica_rt_ffi_guarded_fault_handler_try
@@ -248,9 +431,15 @@ L_sfh_exhausted:
 	bl	silica_rt_actor_fail_current
 	b	L_sfh_crash
 L_sfh_unrecoverable:
-	bl	silica_rt_print_fault_site
-	mov	w0, #70
-	bl	exit
+// The host refused to commit memory for a growing actor stack. That is a runtime abort, not a
+// fault (spec §15.4.10.2, §15.4.5.5): status 71, reported at the instruction that touched the stack.
+	adrp	x0, Lrta_r_stack_commit
+	add	x0, x0, :lo12:Lrta_r_stack_commit
+	mov	x1, xzr
+	cbz	x24, Lsfh_unrec_pc
+	ldr	x1, [x24, #440]
+Lsfh_unrec_pc:
+	b	silica_rt_abort_with_pc
 L_sfh_crash:
 	bl	silica_rt_print_fault_site
 	mov	w0, #70
@@ -718,5 +907,5 @@ Lfss_out:
 	ldp	x29, x30, [sp], #64
 	ret
 ";
-    concat(bss, text)
+    concat(bss, concat(text, emit_abort_runtime_asm()))
 }

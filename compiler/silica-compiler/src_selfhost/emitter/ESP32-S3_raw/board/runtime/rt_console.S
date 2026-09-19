@@ -32,8 +32,16 @@
 //   silica_rt_print_hex32(v)           0x-prefixed, 8 digits
 //   silica_rt_flush()                  wait until the TX FIFO has drained
 //   silica_rt_exit(status)             exit marker with (status & 0xFF), then halt
-//   silica_rt_abort()                  exit status 134 (what abort() gives a host process)
-//   silica_rt_fatal_report(cause, epc, excvaddr)   exit status 139, then the fault details
+//   silica_rt_abort_with(reason)       runtime abort: "[silica] abort: <reason> at 0x<pc>" as program output,
+//                                      then exit status 71 (spec §15.4.5.5); pc is the CALL8 that got here
+//   silica_rt_abort_<site>()           the same with the site's reason (region_overflow, buf_invalid,
+//                                      buf_bounds, list_index, arena_key, arena_full, not_a_string,
+//                                      heap_exhausted); silica_rt_abort() is "runtime check failed", for
+//                                      code compiled before the per-site entries existed
+//   silica_rt_fatal_report(cause, epc, excvaddr)   fatal fault: "[silica] fault at 0x<epc>" (plus
+//                                      "  addr=0x<excvaddr>" for the causes that set EXCVADDR) as program
+//                                      output, exit status 70, then the board-only details after the marker
+// How these meet the contract on every target: design_documents/runtime_failure_reporting.md.
 //   silica_rt_badarith()               "badarith\n", exit status 1 (division by zero; the host prints
 //                                      this on stderr, which the trial harness merges into .sout)
 //   silica_rt_case_clause()            "case_clause\n", exit status 1 (no case arm matched)
@@ -48,6 +56,10 @@
 #define UART0_FIFO_REG    0x60000000
 #define UART0_STATUS_REG  0x6000001C
 #define UART_TXFIFO_MAX   120          // FIFO holds 128; leave slack
+
+// EXCCAUSE values for which the processor sets EXCVADDR (Xtensa ISA: instruction fetch error 2,
+// load/store error 3, alignment 9, PIF errors 12-15, TLB/privilege/prohibited 16-18, 20, 24-26, 28, 29).
+#define EXCVADDR_CAUSES   0x3717F20C
 
     .section .text.silica_rt_console, "ax"
     .literal_position
@@ -195,15 +207,76 @@ silica_rt_exit:
     retw
     .size   silica_rt_exit, . - silica_rt_exit
 
+// Runtime abort. Every entry is a windowed function reached with CALL8: it names its reason in a2 and
+// jumps to silica_rt_abort_body in the same window, where a0 still holds the return address into the
+// site. The body turns that into the address of the CALL8 (bits 31:30 of a0 hold the window increment,
+// not the address; the real top bits are those of this code) and hands reason and address to
+// silica_rt_abort_trampoline (rt_vectors.S), which abandons the context the way the fatal path does and
+// prints the report on the fault stack. Nothing is allocated, so a heap-exhausted abort is safe.
     .align  4
-    .global silica_rt_abort
-    .type   silica_rt_abort, @function
-silica_rt_abort:
+    .global silica_rt_abort_with
+    .type   silica_rt_abort_with, @function
+silica_rt_abort_with:
     entry   a1, 32
-    movi    a10, 134
+    j       silica_rt_abort_body       // a2 = the caller's reason
+    .size   silica_rt_abort_with, . - silica_rt_abort_with
+
+.macro ABORT_ENTRY name, reason
+    .align  4
+    .global \name
+    .type   \name, @function
+\name:
+    entry   a1, 32
+    movi    a2, \reason
+    j       silica_rt_abort_body
+    .size   \name, . - \name
+.endm
+
+    ABORT_ENTRY silica_rt_abort, silica_rt_reason_check
+    ABORT_ENTRY silica_rt_abort_region_overflow, silica_rt_reason_region_overflow
+    ABORT_ENTRY silica_rt_abort_buf_invalid, silica_rt_reason_buf_invalid
+    ABORT_ENTRY silica_rt_abort_buf_bounds, silica_rt_reason_buf_bounds
+    ABORT_ENTRY silica_rt_abort_list_index, silica_rt_reason_list_index
+    ABORT_ENTRY silica_rt_abort_arena_key, silica_rt_reason_arena_key
+    ABORT_ENTRY silica_rt_abort_arena_full, silica_rt_reason_arena_full
+    ABORT_ENTRY silica_rt_abort_not_a_string, silica_rt_reason_not_a_string
+    ABORT_ENTRY silica_rt_abort_heap_exhausted, silica_rt_reason_heap_exhausted
+
+// a2 = reason, a0 = return address of the CALL8 into the entry. Never returns.
+    .align  4
+silica_rt_abort_body:
+    movi    a8, 0x3fffffff
+    and     a3, a0, a8
+    movi    a9, silica_rt_abort_body
+    extui   a9, a9, 30, 2
+    slli    a9, a9, 30
+    or      a3, a3, a9
+    addi    a3, a3, -3                // CALL8 is three bytes
+    call0   silica_rt_abort_trampoline
+1:  j       1b
+
+// a2 reason, a4 address of the call (arguments 0 and 1). Runs on the fault stack in a fresh window.
+    .align  4
+    .global silica_rt_abort_report
+    .type   silica_rt_abort_report, @function
+silica_rt_abort_report:
+    entry   a1, 32
+    mov     a6, a2
+    mov     a7, a4
+    movi    a10, silica_rt_abort_pre
+    call8   silica_rt_puts
+    mov     a10, a6
+    call8   silica_rt_puts
+    movi    a10, silica_rt_abort_at
+    call8   silica_rt_puts
+    mov     a10, a7
+    call8   silica_rt_print_hex32
+    movi    a10, 10
+    call8   silica_rt_putc
+    movi    a10, 71
     call8   silica_rt_exit
     retw
-    .size   silica_rt_abort, . - silica_rt_abort
+    .size   silica_rt_abort_report, . - silica_rt_abort_report
 
     .align  4
     .global silica_rt_badarith
@@ -310,11 +383,16 @@ silica_rt_print_string_stderr:
     l32i    a12, a2, 16
     call8   silica_rt_write
     retw
-1:  call8   silica_rt_abort       // not a Silica string
+1:  call8   silica_rt_abort_not_a_string
     retw
     .size   silica_rt_print_string, . - silica_rt_print_string
 
 // a2 cause (EXCCAUSE, or 1001.. for a non-user vector), a4 EPC1, a6 EXCVADDR.
+// The fatal fault report (spec §15.4.5.5): "[silica] fault at 0x<epc>", then "  addr=0x<excvaddr>" only for
+// the causes that set EXCVADDR (the address is never invented: a stack-guard hit, cause 1006, is a data
+// breakpoint and has none), as program output; then the exit marker with status 70, and after the marker
+// the board-only details (cause, both registers, the stack-guard note), which run_on_board.py sends to
+// stderr. There is no symbol (no symbol table on the board) and no actor field (no actor runtime yet).
     .align  4
     .global silica_rt_fatal_report
     .type   silica_rt_fatal_report, @function
@@ -323,7 +401,23 @@ silica_rt_fatal_report:
     mov     a5, a6
     mov     a7, a4
     mov     a6, a2
-    movi    a10, 139
+    movi    a10, silica_rt_fault_pre
+    call8   silica_rt_puts
+    mov     a10, a7
+    call8   silica_rt_print_hex32
+    movi    a8, 32
+    bgeu    a6, a8, 2f                // vector codes 1001.. and causes 32+: no fault address
+    movi    a8, EXCVADDR_CAUSES
+    ssr     a6
+    srl     a8, a8
+    bbci    a8, 0, 2f
+    movi    a10, silica_rt_fault_addr
+    call8   silica_rt_puts
+    mov     a10, a5
+    call8   silica_rt_print_hex32
+2:  movi    a10, 10
+    call8   silica_rt_putc
+    movi    a10, 70
     call8   silica_rt_exit_marker
     movi    a10, silica_rt_fault_cause
     call8   silica_rt_puts
@@ -351,6 +445,32 @@ silica_rt_fatal_report:
 silica_rt_exit_prefix:
     .byte   0x02
     .asciz  "SILICA:EXIT:"
+silica_rt_fault_pre:
+    .asciz  "[silica] fault at "
+silica_rt_fault_addr:
+    .asciz  "  addr="
+silica_rt_abort_pre:
+    .asciz  "[silica] abort: "
+silica_rt_abort_at:
+    .asciz  " at "
+silica_rt_reason_check:
+    .asciz  "runtime check failed"
+silica_rt_reason_region_overflow:
+    .asciz  "region allocation failed"
+silica_rt_reason_buf_invalid:
+    .asciz  "invalid buffer size"
+silica_rt_reason_buf_bounds:
+    .asciz  "buffer index out of bounds"
+silica_rt_reason_list_index:
+    .asciz  "list index out of range"
+silica_rt_reason_arena_key:
+    .asciz  "canonical arena key is zero"
+silica_rt_reason_arena_full:
+    .asciz  "canonical arena table is full"
+silica_rt_reason_not_a_string:
+    .asciz  "not a Silica string"
+silica_rt_reason_heap_exhausted:
+    .asciz  "heap exhausted"
 silica_rt_fault_cause:
     .asciz  " fault: exccause="
 silica_rt_fault_epc:

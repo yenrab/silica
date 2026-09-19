@@ -816,12 +816,43 @@ fn emit_int64_abi_shadow_moves(param_types: string, reply_sret_second_uses_x21: 
 
 // True when the body contains a call-like or caller-saved-clobbering primitive.
 // These clobber X0-X18 so any live value in caller-saved regs must be spilled to callee-saved regs.
+// Boxed record layout: a record_make field whose value is a nested record or tuple literal, or
+// an aggregate VARIABLE, is heap-promoted while the record is being stored
+// (term_emit_kind_compound_part1@emit_flat_record_stores -> arg_aggregate_heap_promote), and
+// that promote branches to region_alloc, which clobbers X0-X18. It saves X0-X7 around the
+// call but not X11, the base an X0-bound first parameter is read through, so
+// `{ a: q.a, h: h, b: q.b }` in a body with no other call read q.b through a clobbered X11
+// (brodal_okasaki_priority@rebuild faulted; see
+// trials/generic_modules_addition/record_param_fields_around_nested_copy). Count the promote as the
+// call it is so the parameters get their callee-saved shadows. Mirrors
+// term_aggregate_helpers@record_field_nested_return_bytes and the inline_nested_rec test.
+fn record_make_link_promotes_field(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
+    mk_node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+    case mk_node.kind == 6 and mk_node.name == "record_make" and mk_node.inner >= 0 of {
+        false -> false;
+        true -> {
+            elem: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(sir_term_at(term, mk_node.inner));
+            keeps_inline: boolean <- prims_record@record_type_keeps_inline_layout(mk_node.type_name);
+            case elem.kind == 6 and (elem.name == "tuple_make" or elem.name == "record_make") of {
+                true -> elem.name == "tuple_make" or keeps_inline == false;
+                false -> case elem.kind == 1 and keeps_inline == false of {
+                    false -> false;
+                    true -> {
+                        fty: string <- prims_record@strip_spaces_rt(prims_record@find_field_type_in_record(mk_node.type_name, mk_node.value));
+                        reg_conventions@is_inline_struct_type(fty) or reg_conventions@is_tuple_type(fty)
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn body_has_bl_producing_prim(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     case term.root < 0 of {
         true -> false;
         false -> case sir_term_root_node(term).kind of {
             4 -> true;
-            6 -> case prims_actors@is_actor_prim(sir_term_root_node(term).name) or prims_memory@is_memory_prim(sir_term_root_node(term).name) or sir_term_root_node(term).name == "list_length" or sir_term_root_node(term).name == "list_cons" of {
+            6 -> case prims_actors@is_actor_prim(sir_term_root_node(term).name) or prims_memory@is_memory_prim(sir_term_root_node(term).name) or sir_term_root_node(term).name == "list_length" or sir_term_root_node(term).name == "list_cons" or record_make_link_promotes_field(term) of {
                 true -> true;
                 false -> case body_has_bl_producing_prim(sir_term_at(term, sir_term_root_node(term).inner)) of {
                     true -> true;
@@ -868,7 +899,12 @@ fn needs_int64_abi_entry_shadow(fn_val: { name: string, return_type: string, eff
                     true -> case c >= 2 of {
                         true -> true;
                         false -> case c == 1 of {
-                            true -> emitter_effects@has_device_io(fn_val.effects) or body_has_bl_producing_prim(fn_val.body);
+                            // A named let also evaluates its right-hand side into X0 (the let
+                            // dest) before the value moves to its callee-saved home, and a
+                            // record_make RHS calls region_alloc. Either one destroys a first
+                            // parameter left in X0: `q <- a / 10; a - q` read a as q.
+                            // See trials/functions_addition/let_param_literal_binop_keeps_param.
+                            true -> emitter_effects@has_device_io(fn_val.effects) or body_has_bl_producing_prim(fn_val.body) or count_spill_eligible_lets_in_term(fn_val.body) >= 1;
                             false -> false
                         }
                     }
@@ -1045,6 +1081,18 @@ fn tuple_return_tail_aggregate_make(body: { nodes: List[{ kind: int64, type_name
 // a bare prim body. See trials/codegen_regressions/prim_tuple_let.silica.
 fn tuple_return_tail_is_checked_int64_prim(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     term_aggregate_helpers@term_is_checked_int64_prim(sir_strip_lets_to_tail(body))
+}
+
+// A tuple-returning body whose tail (after its let spine) is a variable that no let in the spine
+// binds -- a parameter, as in `fn ident_pair(p: (int64, int64)) -> (int64, int64) { p }` -- pushes
+// nothing: the variable is already a pointer and the epilogue's heap promote copies it to the region.
+// The epilogue must still promote but must NOT pop a return slab: that ADD SP took 16 bytes off the
+// frame, the callee-saved LDPs then restored the caller's words and the function returned to a
+// garbage LR (graph_live_core/gl_tuple_node_ids looped or faulted in its comparator; see
+// trials/generic_modules_addition/tuple_param_returned_as_is). A let-bound tail variable is
+// tuple_return_id_ret_aggregate_var, which skips both steps.
+fn tuple_return_tail_is_variable(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
+    sir_term_root_node(sir_strip_lets_to_tail(body)).kind == 1
 }
 
 fn tuple_callee_skips_tuple_ret_dealloc(body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
@@ -1854,10 +1902,30 @@ fn full_shadow_pressure_bump(fn_val: { name: string, return_type: string, effect
 // is false for a tail-call body, so this stays 0 there and the tail BR's single LDP is unaffected.
 fn shadowed_param_reg_count(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> int64 {
     case first_param_x0_shadow_enabled(fn_val.param_types, sir_term_root_node(fn_val.body).kind) of {
-        false -> 0;
+        false -> int64_abi_shadow_reg_count(fn_val);
         true -> case second_param_shadow_enabled(fn_val.param_types, true) of {
             true -> 2;
             false -> 1
+        }
+    }
+}
+
+// How many callee-saved registers the int64 ABI entry shadow occupies (the same predicate
+// emit_int64_abi_shadow_moves prints by: X19 for one GPR64 parameter, X19/X20 or X19/X21 for
+// two or more, X19/X21 when the second parameter is held in X21 for BL survival). These
+// registers are taken before the body's first let gets one, so they must count toward the
+// frame's save-pair pressure like the string shadow does: a two-parameter function whose one
+// let took X21 saved only X19/X20 and destroyed its caller's X21 (the caller's third parameter).
+// See trials/functions_addition/param_after_record_lets_kept.
+fn int64_abi_shadow_reg_count(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> int64 {
+    case needs_int64_abi_entry_shadow(fn_val) of {
+        false -> 0;
+        true -> case count_gpr64_params(fn_val.param_types) >= 2 of {
+            true -> 2;
+            false -> case needs_second_param_x21_bl_survival(fn_val) of {
+                true -> 2;
+                false -> 1
+            }
         }
     }
 }
@@ -2361,7 +2429,7 @@ fn esf_tuple_ret_dealloc(fn_val: { name: string, return_type: string, effects: s
             false -> case reg_conventions@is_tuple_type(fn_val.return_type) of {
                 true -> case use_actor_reply_sret_buffer(fn_val) of {
                     true -> "";
-                    false -> case tuple_callee_skips_tuple_ret_dealloc(fn_val.body) of {
+                    false -> case tuple_callee_skips_tuple_ret_dealloc(fn_val.body) or tuple_return_tail_is_variable(fn_val.body) of {
                         true -> "";
                         false -> {
                             tc: int64 <- prims_tuple@count_type_elements(fn_val.return_type);

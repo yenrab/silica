@@ -3,6 +3,7 @@
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+ROOT_DIR="$(cd .. && pwd)"
 
 # Versioned compilers look like either:
 #   silica-<NNNNNN>-<kind>-<platform>   e.g. silica-999998-seed-macos-applesilicon
@@ -14,6 +15,11 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
 # Host platforms this script understands (must match detect_local_platform).
 CANONICAL_PLATFORMS=$'macos-applesilicon\nmacos-x86_64\nlinux-aarch64\nlinux-x86_64'
+# The one platform table wins when it is present.
+if [[ -f "$ROOT_DIR/project_makefiles/platform/platforms.mk" ]]; then
+    from_table="$(MAKEFLAGS= MAKELEVEL= make -s --no-print-directory -f "$ROOT_DIR/project_makefiles/platform/platforms.mk" platforms 2>/dev/null || true)"
+    [[ -z "$from_table" ]] || CANONICAL_PLATFORMS="$from_table"
+fi
 
 is_canonical_platform() {
     local needle="$1"
@@ -145,6 +151,13 @@ platform_known() {
 # Returns 0 and prints the id when known; returns 1 when unsupported/unknown.
 detect_local_platform() {
     local os arch distro id_like
+    # The one platform table decides when it is present (project_makefiles/platform/platforms.mk);
+    # the case statement below is the fallback for a checkout without it.
+    local table="$ROOT_DIR/project_makefiles/platform/platforms.mk" from_table
+    if [[ -f "$table" ]] && from_table="$(MAKEFLAGS= MAKELEVEL= make -s --no-print-directory -f "$table" host-platform 2>/dev/null)" && [[ -n "$from_table" ]]; then
+        echo "$from_table"
+        return 0
+    fi
     os="$(uname -s)"
     arch="$(uname -m)"
 

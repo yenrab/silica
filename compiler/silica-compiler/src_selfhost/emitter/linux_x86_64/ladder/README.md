@@ -3,7 +3,8 @@
 Fifteen small programs copied from the ESP32-S3 port's early apps
 (`emitter/ESP32-S3_raw/board/apps/silica_00_return42` … `silica_14_wbt_map`), each with the
 `expected.sout` the macOS compiler produced for the same source (`<stdout><exit status>\n`, the trial
-harness form). They are the **order of work for the debug phase**: each step adds one emitter piece,
+harness form, with a process-fatal report line folded to `[silica] fault at <PTR>` /
+`[silica] abort: <reason> at <PTR>` by `trials/normalize_fatal_reports.awk`). They are the **order of work for the debug phase**: each step adds one emitter piece,
 and a step is done when its program prints exactly its `expected.sout` on nix.
 
 | Step | App | Exercises |
@@ -13,7 +14,7 @@ and a step is done when its program prints exactly its `expected.sout` on nix.
 | 3 | `silica_03_case_bool` | compares (`cmp` + `setcc`/`jcc`), and/or short circuit (real pushes), nested case |
 | 4 | `silica_04_print`, `silica_05_int64_wide` | `L_pi_helper`/`L_ps_helper` (write syscall), 64-bit multiply/divide |
 | 5 | `silica_06_strings` | string runtime (mmap arena, concat, length, substring) |
-| 6 | `silica_07_recursion_depth`, `silica_08_stack_guard` | frame size under deep recursion on the platform stack; the fault path (`08` expects status 139) |
+| 6 | `silica_07_recursion_depth`, `silica_08_stack_guard` | frame size under deep recursion on the platform stack; the fault path (`08` expects the fatal fault report `[silica] fault at 0x...` and status 70) |
 | 7 | `silica_09_lists` … `silica_11_regions` | list cells, records/tuples (frame regions off `rbp - SVR_AREA`), regions/refs/bufs |
 | 8 | `silica_12_floats` | xmm arithmetic, F16C float16, ucomisd conditions, the digit-exact print helpers |
 | 9 | `silica_13_checked` | checked int64 (overflow flag), tuple returns |
@@ -42,11 +43,13 @@ cp "/Volumes/2T/silica/compiler/silica-compiler/src_selfhost/emitter/linux_x86_6
 rsync -a --include='*.sams' --exclude='*' ./ lee@nix.local:/tmp/ladder/$app/
 rsync -a /Volumes/2T/silica/compiler/silica-compiler/src_selfhost/runtime_asm/linux_x86_64/ lee@nix.local:/tmp/ladder/rt/
 rsync -a "/Volumes/2T/silica/compiler/silica-compiler/src_selfhost/emitter/linux_x86_64/ladder/$app/expected.sout" lee@nix.local:/tmp/ladder/$app/
+rsync -a /Volumes/2T/silica/trials/normalize_fatal_reports.awk lee@nix.local:/tmp/ladder/
 
 # nix: assemble (GNU as through cc), link without PIE (data tables hold absolute .quad addresses), run, diff
 ssh lee@nix.local "cd /tmp/ladder/$app && for f in *.sams; do cc -c -x assembler \$f -o \${f%.sams}.o || exit 1; done \
   && cc -no-pie -rdynamic -o prog *.o ../rt/silica_rt_shim.s ../rt/deviceio_link_thunks.s -lpthread \
-  && { ./prog > out.txt 2>&1; echo \$? >> out.txt; } ; diff out.txt expected.sout && echo PASS"
+  && { ./prog > out.txt 2>&1; echo \$? >> out.txt; } \
+  ; awk -f ../normalize_fatal_reports.awk out.txt > out.norm && awk -f ../normalize_fatal_reports.awk expected.sout | diff out.norm - && echo PASS"
 ```
 
 `__silica_runtime.sams` is emitted whenever a program defines `main` (the pid registry init runs at
@@ -57,5 +60,10 @@ the same source when a sequence looks wrong: the emitter logic is identical, onl
 expansion differs.
 
 `silica_08_stack_guard` recurses without bound on the platform stack (main is not an actor):
-the expected result is the SIGSEGV exit status 139, which the fault handler must not turn into a
-stack-growth attempt outside an actor reservation.
+the expected result is the fatal fault report of spec §15.4.5.5, `[silica] fault at 0x<pc> in
+<symbol>+0x<offset>  addr=...  actor=0x0...` on stderr and exit status 70, from the runtime's
+SIGSEGV handler on its alternate stack. The handler must not turn the fault into a stack-growth attempt
+outside an actor reservation, and a bare status 139 means the handler was not installed. The report's
+addresses differ by run, so the comparison above folds the line to `[silica] fault at <PTR>` (see
+[design_documents/runtime_failure_reporting.md](../../../../design_documents/runtime_failure_reporting.md)).
+A runtime abort prints `[silica] abort: <reason> at 0x<pc>...` and exits 71.

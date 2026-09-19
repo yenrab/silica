@@ -183,23 +183,25 @@ fn emit_tail_call_body(term: { nodes: List[{ kind: int64, type_name: string, val
     call_effects: string <- sir_term_root_node(term).value;
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    frame_rel: string <- control@function_tail_frame_release(fn_effects);
+    // The frame release goes inside the transfer: X17 is a frame slot on this target and is read
+    // before `leave` (x86_br_after_release).
     br_line: string <- case indirect_via_x9 of {
-        true -> x86_isa@x86_br("X17");
+        true -> x86_isa@x86_br_after_release("X17", frame_rel);
         false -> {
             callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, sir_term_root_node(term).name);
-            concat(x86_isa@x86_adr("X9", callee), x86_isa@x86_br("X9"))
+            concat(frame_rel, concat(x86_isa@x86_adr("X9", callee), x86_isa@x86_br("X9")))
         }
     };
-    frame_rel: string <- control@function_tail_frame_release(fn_effects);
     with_comment: string <- case length_bytes(eff_comment) > 0 of {
         true -> concat(eff_comment, "\n");
         false -> ""
     };
     with_pre: string <- case length_bytes(pre_barrier) > 0 of {
-        true -> concat(with_comment, concat(pre_barrier, concat("\n", frame_rel)));
-        false -> concat(with_comment, frame_rel)
+        true -> concat(with_comment, concat(pre_barrier, "\n"));
+        false -> with_comment
     };
-    concat(with_pre, concat("\n", br_line))
+    concat(with_pre, br_line)
 }
 
 // Emit call with explicit callee symbol (e.g. silica_print_float64 for print_float64).

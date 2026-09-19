@@ -73,6 +73,8 @@ executables: objects
 	done
 
 # integrate: compile .silica per silica.config, diff .sams vs .ascomp, run binaries, diff .sout vs .scout
+# (.sout vs .scout goes through compare_scout_normalized.sh: diff -Bw after folding the addresses in
+# the process-fatal report lines, spec §15.4.5.5, with ../normalize_fatal_reports.awk)
 integrate-run:
 	@$(MAKE) -f "$(THIS_DIR)Makefile" clean
 	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config
@@ -158,10 +160,10 @@ integrate-run:
 				ko=$$((ko + 1)); failed=1; continue; \
 			fi; \
 			if [ -f "$$base.scout" ]; then \
-				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
-					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
+				if ! bash "$(THIS_DIR)compare_scout_normalized.sh" "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
+					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout (normalized compare)"; \
 					$(INTEGRATE_DOT_FAIL); \
-					diff -Bw "$$base.sout" "$$base.scout" || true; \
+					bash "$(THIS_DIR)compare_scout_normalized.sh" "$$base.sout" "$$base.scout" || true; \
 					ko=$$((ko + 1)); failed=1; \
 				else \
 					echo "✅✅ $(MSG_PREFIX)$$base output matches .scout"; \

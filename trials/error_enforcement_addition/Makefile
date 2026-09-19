@@ -34,7 +34,8 @@ SUB_TARGETS := $(SUB_TRIALS:%=ee-sub-%)
 .PHONY: all integrate-run ee-units clean help silica.config $(SUB_TARGETS)
 
 silica.config:
-	@cd "$(THIS_DIR)" && printf '%s\n' $(SILICA_FILES) > silica.config
+	@# Listed by the shell, not expanded into the recipe: ~11k names exceed Linux's 128 KB limit on one argument.
+	@cd "$(THIS_DIR)" && find . -maxdepth 1 -name '*.silica' \( -type f -o -type l \) | sed 's|^\./||' | LC_ALL=C sort > silica.config
 
 # integrate (wrapper in silica_compiler.mk) -> integrate-run. Sequential sub-makes:
 # clean must finish before silica.config is written.
