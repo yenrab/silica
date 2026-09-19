@@ -1,0 +1,84 @@
+// Generic helper for the *_through_generic trials in this suite: every ItemType value it receives,
+// stores or returns is one word (a scalar, or a pointer to a record or tuple). Concrete callers
+// build and read the same values with their own record and list layouts, so each function here
+// checks that the two units agree.
+
+export value_of/2;
+export tag_of/2;
+export wrap_tagged/3;
+export count_items/2;
+export second_item/2;
+export push_item/3;
+export pair_items/3;
+
+// Reads the ItemType field of a record built in the caller's unit.
+fn value_of(
+    witness: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater },
+    box: { status: :not_found | :found, value: ItemType, tag: int64 }
+) -> ItemType {
+    box.value
+}
+
+// Reads the field AFTER the ItemType field of a record built in the caller's unit.
+fn tag_of(
+    witness: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater },
+    box: { status: :not_found | :found, value: ItemType, tag: int64 }
+) -> int64 {
+    box.tag
+}
+
+// Builds a record with fields on both sides of the ItemType field.
+fn wrap_tagged(
+    witness: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater },
+    x: ItemType,
+    tag: int64
+) -> { status: :not_found | :found, value: ItemType, tag: int64 } {
+    { status: :found, value: x, tag: tag }
+}
+
+fn count_items(
+    witness: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater },
+    xs: List[ItemType, mem(normal)]
+) -> int64 {
+    case xs of {
+        []: List[ItemType, mem(normal)] -> 0;
+        [h: ItemType, t: List[ItemType, mem(normal)]] -> 1 + count_items(witness, t)
+    }
+}
+
+// The caller guarantees at least two items.
+fn second_item(
+    witness: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater },
+    xs: List[ItemType, mem(normal)]
+) -> ItemType {
+    rest: List[ItemType, mem(normal)] <- xs.tail;
+    rest.head
+}
+
+// Adds one item in the generic unit to a list built in the caller's unit.
+fn push_item(
+    witness: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater },
+    x: ItemType,
+    xs: List[ItemType, mem(normal)]
+) -> List[ItemType, mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[ItemType, mem(normal)] <- prepend[ItemType, mem(normal)](x, xs)
+    produces
+        pure out
+    end
+}
+
+// Builds a two-item list entirely in the generic unit.
+fn pair_items(
+    witness: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater },
+    x: ItemType,
+    y: ItemType
+) -> List[ItemType, mem(normal)] {
+    sequence proc[mem(normal)]
+        e: List[ItemType, mem(normal)] <- empty[ItemType, mem(normal)]();
+        one: List[ItemType, mem(normal)] <- prepend[ItemType, mem(normal)](y, e);
+        two: List[ItemType, mem(normal)] <- prepend[ItemType, mem(normal)](x, one)
+    produces
+        pure two
+    end
+}

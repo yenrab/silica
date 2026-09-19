@@ -1,0 +1,42 @@
+// Documented open type-checker defect (book-verification 2026-09-19, repro ds_set). This is
+// the exact program shape in the design document's own worked example --
+// design_documents/Phase1_TODOs/data_structure_designs/ordered_set_trait.md §10 line 288:
+//     r1: {set: OrderedSet[string, mem(normal)], inserted: boolean} <- wbt_set@insert(names0, "Ada");
+// -- so it is valid by the authority that defines `wbt_set@insert`'s contract.
+//
+// `OrderedSet[string, mem(normal)]` alone, as a plain binding's type, is accepted (see the `s:`
+// binding below, and every ordered_data_structures trial that binds one). The defect is that the
+// SAME bracket type, nested as a FIELD inside a record type annotation, is not recognized as
+// the same representation: the checker compares `wbt_set@insert`'s literal concrete return record
+// (spelling out `root`, `compare_item`, `region`, `specialization_key`,
+// `compare_item_ordering_bundle`) against the field's `OrderedSet[string, mem(normal)]` spelling
+// and reports them as mismatched, instead of resolving the bracket type to its concrete
+// representation first.
+// Expected: `Ada` is inserted into an empty set, so `r.inserted` is true, exit 1.
+// Observed: E2003 "wbt_set@insert returns {set : {...concrete fields...}, inserted: boolean},
+// expected {set: OrderedSet[string, normal], inserted: boolean}".
+
+use wbt_set;
+use OrderedSet;
+
+fn compare_names(a: string, b: string) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        s: OrderedSet[string, mem(normal)] <- wbt_set@empty({ compare_item: compare_names });
+        r: { set: OrderedSet[string, mem(normal)], inserted: boolean } <- wbt_set@insert(s, "Ada")
+    produces
+        pure case r.inserted of {
+            true -> 1;
+            false -> 0
+        }
+    end
+}

@@ -1,0 +1,108 @@
+// search_tree_trait.md §5, §7 against a sorted oracle: every key of [0, 1000) is searched with
+// contains_key and compared with membership in an independently built ascending list.
+//   perm: 500 distinct keys (37 i) mod 1000, i < 500 (37 is coprime to 1000); then the 250 keys of
+//         even i are deleted (oracle: the keys of odd i).
+//   ascending / descending: all 1000 keys 0..999 inserted as i and as (999 i) mod 1000
+//         (0, 999, 998, ..., 1), the two degenerate insertion orders.
+//   lcg: 500 pseudo-random keys with duplicates (the heap suites' generator); the oracle drops
+//         repeats, so the tree's size must equal the oracle's length.
+// agree_* counts the probes on which tree and oracle agree (1000 means all), fold_* is 1 when the
+// OrderedSet fold of the same value visits exactly the oracle's keys in ascending order, and the
+// wbt_set validator accepts the searched value unchanged (implementation plan §25: validation is
+// the OrderedSet one).
+
+use OrderedSet;
+use wbt_set;
+use SearchTree;
+use st_trial_i64;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn show(label: string, value: int64) -> int64 {
+    sequence proc[device_io]
+        println(label);
+        print_int64(value);
+        println("")
+    produces
+        pure value
+    end
+}
+
+fn perm_run() -> int64 {
+    sequence
+        e: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@new_tree();
+        p: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@insert_perm(e, 37, 500, 0);
+        p_oracle: List[int64, mem(normal)] <- st_trial_i64@oracle_perm(37, 500);
+        q: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@delete_perm_step(p, 37, 500, 0, 2);
+        q_oracle: List[int64, mem(normal)] <- st_trial_i64@oracle_perm_step(37, 500, 1, 2);
+        p_fold: int64 <- st_trial_i64@fold_hash(p);
+        p_oracle_hash: int64 <- st_trial_i64@hash_list(p_oracle, 0);
+        p_check: { valid: boolean, error: atom, logical_count: int64 } <- wbt_set@validate(p);
+        _: int64 <- show("perm_size", OrderedSet@size(p));
+        _: int64 <- show("perm_count", st_trial_i64@count_present(p, 0, 1000));
+        _: int64 <- show("perm_agree", st_trial_i64@agree_oracle(p, p_oracle, 0, 1000));
+        _: int64 <- show("perm_contains_minus_1", st_trial_i64@b2i(SearchTree@contains_key(p, -1)));
+        _: int64 <- show("perm_contains_1000", st_trial_i64@b2i(SearchTree@contains_key(p, 1000)));
+        _: int64 <- show("perm_fold", st_trial_i64@b2i(p_fold == p_oracle_hash));
+        _: int64 <- show("perm_validate", st_trial_i64@b2i(p_check.valid));
+        _: int64 <- show("perm_validate_count", p_check.logical_count);
+        _: int64 <- show("thinned_size", OrderedSet@size(q));
+        _: int64 <- show("thinned_count", st_trial_i64@count_present(q, 0, 1000));
+        _: int64 <- show("thinned_agree", st_trial_i64@agree_oracle(q, q_oracle, 0, 1000))
+    produces
+        pure 0
+    end
+}
+
+fn ordered_runs() -> int64 {
+    sequence
+        e: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@new_tree();
+        a: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@insert_perm(e, 1, 1000, 0);
+        d: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@insert_perm(e, 999, 1000, 0);
+        _: int64 <- show("ascending_size", OrderedSet@size(a));
+        _: int64 <- show("ascending_count", st_trial_i64@count_present(a, 0, 1000));
+        _: int64 <- show("ascending_contains_1000", st_trial_i64@b2i(SearchTree@contains_key(a, 1000)));
+        _: int64 <- show("descending_size", OrderedSet@size(d));
+        _: int64 <- show("descending_count", st_trial_i64@count_present(d, 0, 1000));
+        _: int64 <- show("descending_contains_minus_1", st_trial_i64@b2i(SearchTree@contains_key(d, -1)))
+    produces
+        pure 0
+    end
+}
+
+fn lcg_run() -> int64 {
+    sequence
+        e: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@new_tree();
+        l: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@insert_lcg(e, 12345, 500, 0);
+        l_oracle: List[int64, mem(normal)] <- st_trial_i64@oracle_lcg(12345, 500);
+        l_size: int64 <- OrderedSet@size(l);
+        l_count: int64 <- st_trial_i64@count_present(l, 0, 1000);
+        l_len: int64 <- st_trial_i64@list_len(l_oracle);
+        l_fold: int64 <- st_trial_i64@fold_hash(l);
+        l_oracle_hash: int64 <- st_trial_i64@hash_list(l_oracle, 0);
+        _: int64 <- show("lcg_agree", st_trial_i64@agree_oracle(l, l_oracle, 0, 1000));
+        _: int64 <- show("lcg_size_is_oracle_length", st_trial_i64@b2i(l_size == l_len));
+        _: int64 <- show("lcg_count_is_oracle_length", st_trial_i64@b2i(l_count == l_len));
+        _: int64 <- show("lcg_fold", st_trial_i64@b2i(l_fold == l_oracle_hash))
+    produces
+        pure 0
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        _: int64 <- perm_run();
+        _: int64 <- ordered_runs();
+        _: int64 <- lcg_run()
+    produces
+        pure 0
+    end
+}

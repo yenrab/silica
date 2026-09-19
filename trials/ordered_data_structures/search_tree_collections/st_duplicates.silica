@@ -1,0 +1,95 @@
+// search_tree_trait.md §5: key identity is comparator equality and duplicate insertion through
+// wbt_set is a no-op (ordered_set_trait.md §5: the old canonical item stays). A second insert of 5
+// reports inserted = false and leaves one member; from_list drops repeated keys. Under cmp_mod10,
+// 13, 23 and 3 are one class: only the first insert changes the tree, the stored item stays 13 (the
+// OrderedSet fold of the same value sums the stored items), every key ending in 3 is found, and
+// deleting 93 removes the class.
+
+use OrderedSet;
+use wbt_set;
+use SearchTree;
+use st_trial_i64;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn show(label: string, value: int64) -> int64 {
+    sequence proc[device_io]
+        println(label);
+        print_int64(value);
+        println("")
+    produces
+        pure value
+    end
+}
+
+fn sum(acc: int64, x: int64) -> int64 {
+    acc + x
+}
+
+fn repeated() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        xs: List[int64, mem(normal)] <- [3, 1, 3, 2, 1, 3]
+    produces
+        pure xs
+    end
+}
+
+fn plain_duplicates() -> int64 {
+    sequence
+        e: SearchTree[int64, mem(normal)] <- wbt_set@empty({ compare_item: cmp_i64 });
+        r1: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(e, 5);
+        r2: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(r1.set, 5);
+        fl: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, valid: boolean, error: atom } <- wbt_set@from_list({ compare_item: cmp_i64 }, repeated());
+        _: int64 <- show("first_insert", st_trial_i64@b2i(r1.inserted));
+        _: int64 <- show("second_insert", st_trial_i64@b2i(r2.inserted));
+        _: int64 <- show("contains_5", st_trial_i64@b2i(SearchTree@contains_key(r2.set, 5)));
+        _: int64 <- show("size_after_duplicate", OrderedSet@size(r2.set));
+        _: int64 <- show("from_list_valid", st_trial_i64@b2i(fl.valid));
+        _: int64 <- show("from_list_size", OrderedSet@size(fl.set));
+        _: int64 <- show("from_list_count", st_trial_i64@count_present(fl.set, 0, 10))
+    produces
+        pure 0
+    end
+}
+
+fn class_duplicates() -> int64 {
+    sequence
+        m0: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@new_mod10();
+        c1: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(m0, 13);
+        c2: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(c1.set, 23);
+        c3: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(c2.set, 3);
+        c4: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(c3.set, 7);
+        del: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, removed: boolean } <- wbt_set@delete(c4.set, 93);
+        _: int64 <- show("class_insert_13", st_trial_i64@b2i(c1.inserted));
+        _: int64 <- show("class_insert_23", st_trial_i64@b2i(c2.inserted));
+        _: int64 <- show("class_insert_3", st_trial_i64@b2i(c3.inserted));
+        _: int64 <- show("class_contains_33", st_trial_i64@b2i(SearchTree@contains_key(c3.set, 33)));
+        _: int64 <- show("class_contains_4", st_trial_i64@b2i(SearchTree@contains_key(c3.set, 4)));
+        _: int64 <- show("class_size", OrderedSet@size(c3.set));
+        _: int64 <- show("class_stored_item", OrderedSet@fold(c3.set, 0, sum));
+        _: int64 <- show("class_insert_7", st_trial_i64@b2i(c4.inserted));
+        _: int64 <- show("class_count", st_trial_i64@count_present(c4.set, 0, 100));
+        _: int64 <- show("class_delete_93", st_trial_i64@b2i(del.removed));
+        _: int64 <- show("class_contains_13_after_delete", st_trial_i64@b2i(SearchTree@contains_key(del.set, 13)));
+        _: int64 <- show("class_count_after_delete", st_trial_i64@count_present(del.set, 0, 100))
+    produces
+        pure 0
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        _: int64 <- plain_duplicates();
+        _: int64 <- class_duplicates()
+    produces
+        pure 0
+    end
+}

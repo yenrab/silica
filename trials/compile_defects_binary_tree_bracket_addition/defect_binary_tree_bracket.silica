@@ -1,0 +1,48 @@
+// Documented open front-end defect (book-verification 2026-09-19, repro ds_bt). The bracket type
+// `BinaryTree[string, mem(normal)]` is rejected (E1040) wherever it appears -- here in a
+// function's return type -- while `Tree[...]` (rose tree), `OrderedSet[...]`, `OrderedMap[...]`,
+// and the graph bracket types all parse fine. Root cause (found by inspection, not just
+// observation): `type_checker/type_checker_collections.silica`'s `representation_id_from_module`
+// (and its sibling `required_constructor_fields_for_module`) lists a representation id for
+// "wbt_set", "wbt_map", "graph_wbt_directed", "graph_wbt_undirected", "graph_weighted",
+// "brodal_okasaki_min"/"_max"/"_priority", and "tree_rose" (plus each one's `Stub*` test-double
+// name) -- but never "tree_binary" or "BinaryTree". `BinaryTree` never becomes a registered
+// bracket type, so the parser/checker cannot resolve `BinaryTree[...]` at all.
+// References the real stdlib `tree_binary.silica`/`BinaryTree.silica` by relative path rather
+// than copying them.
+// Expected: a one-node tree; root item "root"; node_count 1.
+//   root
+//   1
+// Observed: E1040 "expected ';' after this statement before the next statement" at the bracket
+// type in the return-type position.
+
+use tree_binary;
+use BinaryTree;
+
+fn compare_names(a: string, b: string) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn make_tree() -> BinaryTree[string, mem(normal)] {
+    sequence proc[mem(normal)]
+        t: BinaryTree[string, mem(normal)] <- tree_binary@with_root({ compare_item: compare_names }, "root")
+    produces
+        pure t
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io, mem(normal)]
+        t: BinaryTree[string, mem(normal)] <- make_tree();
+        found: { status: :not_found | :found, value: string } <- BinaryTree@root_item(t, "");
+        println(found.value)
+    produces
+        pure BinaryTree@node_count(t)
+    end
+}

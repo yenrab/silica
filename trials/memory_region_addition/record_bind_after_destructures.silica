@@ -1,0 +1,137 @@
+// In a sequence that destructures six (region, ref?) pairs, binding a record whose fields include a
+// function value (`t <- record_of(r, big)`) AFTER the destructures must not disturb the destructured
+// refs. Found while writing binary_tree_core/bt_validate (count_cases); fixed 2026-09-18 by the same
+// frame change as functions_addition/param_after_record_lets_kept: a callee's int64 entry-shadow
+// registers now count toward its callee-saved save pairs, so it no longer destroys the caller's X21
+// (`zero` read back as outside its arena, 1011 was printed). `without_record` is the control.
+// Expected output: 1111 and 1111, then exit 0.
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn cell(
+    r: region(L, normal),
+    v: int64,
+    count: int64,
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> (region(L, normal), ref?(L, normal, rec)) {
+    sequence proc[mem(normal)]
+        c: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) <- alloc_rec(r, (v, count, left, right))
+    produces
+        pure (r, c)
+    end
+}
+
+fn inside_ref(
+    holder: { region: region(L, normal), key: int64 },
+    node_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> int64 {
+    sequence
+        ok: boolean <- ref_in_region(node_ref, holder.region)
+    produces
+        pure case ok of { true -> 1; false -> 0 }
+    end
+}
+
+fn inside(r: region(L, normal), node: ref?(L, normal, rec)) -> int64 {
+    holder: { region: region(L, normal), key: int64 } <- { region: r, key: 0 };
+    case node of {
+        :none -> 9;
+        node_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> inside_ref(holder, node_ref)
+    }
+}
+
+fn record_of(
+    r: region(L, normal),
+    root: ref?(L, normal, rec)
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64
+} {
+    out: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64
+    } <- { root: root, compare_item: cmp_i64, region: r, specialization_key: 0 };
+    out
+}
+
+fn with_record(r: region(L, normal)) -> int64 {
+    sequence
+        neg_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, -5, :none, :none);
+        (_: region(L, normal), neg: ref?(L, normal, rec)) <- neg_p;
+        zero_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, 0, :none, :none);
+        (_: region(L, normal), zero: ref?(L, normal, rec)) <- zero_p;
+        l1_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 2, 1, :none, :none);
+        (_: region(L, normal), l1: ref?(L, normal, rec)) <- l1_p;
+        l2_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 3, 1, :none, :none);
+        (_: region(L, normal), l2: ref?(L, normal, rec)) <- l2_p;
+        big_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, 7, l1, l2);
+        (_: region(L, normal), big: ref?(L, normal, rec)) <- big_p;
+        small_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, 2, l1, l2);
+        (_: region(L, normal), small: ref?(L, normal, rec)) <- small_p;
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64
+        } <- record_of(r, big);
+        a: int64 <- inside(r, neg);
+        b: int64 <- inside(r, zero);
+        c: int64 <- inside(r, big);
+        d: int64 <- inside(t.region, small)
+    produces
+        pure a * 1000 + b * 100 + c * 10 + d
+    end
+}
+
+fn without_record(r: region(L, normal)) -> int64 {
+    sequence
+        neg_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, -5, :none, :none);
+        (_: region(L, normal), neg: ref?(L, normal, rec)) <- neg_p;
+        zero_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, 0, :none, :none);
+        (_: region(L, normal), zero: ref?(L, normal, rec)) <- zero_p;
+        l1_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 2, 1, :none, :none);
+        (_: region(L, normal), l1: ref?(L, normal, rec)) <- l1_p;
+        l2_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 3, 1, :none, :none);
+        (_: region(L, normal), l2: ref?(L, normal, rec)) <- l2_p;
+        big_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, 7, l1, l2);
+        (_: region(L, normal), big: ref?(L, normal, rec)) <- big_p;
+        small_p: (region(L, normal), ref?(L, normal, rec)) <- cell(r, 1, 2, l1, l2);
+        (_: region(L, normal), small: ref?(L, normal, rec)) <- small_p;
+        a: int64 <- inside(r, neg);
+        b: int64 <- inside(r, zero);
+        c: int64 <- inside(r, big);
+        d: int64 <- inside(r, small)
+    produces
+        pure a * 1000 + b * 100 + c * 10 + d
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal), device_io]
+        L: lifetime <- fresh_lifetime();
+        r: region(L, normal) <- canonical_arena_lookup(9085);
+        w: int64 <- with_record(r);
+        wo: int64 <- without_record(r);
+        println("with_record (expected 1111)");
+        print_int64(w);
+        println("");
+        println("without_record (expected 1111)");
+        print_int64(wo);
+        println("")
+    produces
+        pure 0
+    end
+}

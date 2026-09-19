@@ -1,0 +1,123 @@
+// Documented open type-checker defect (book-verification 2026-09-19, repros r_pq2 / r_pq3).
+// A supervisor whose child state is a `PriorityQueue[int64, string, mem(normal)]` is rejected
+// with a bare E2003 "type mismatch: children" on the static `children` list literal, at the
+// `initial_state: empty_waiting_room()` field. Binding the queue to a name first
+// (`room: PriorityQueue[...] <- empty_waiting_room();`, r_pq3) does not help -- same error, same
+// column -- ruling out the double-cast-literal defect
+// (supervisors_addition/emitter_defect_cast_registered_double_*_literal.silica) as the cause.
+// Plain (non-supervisor) `spawn` with the same queue as actor state works today (r_pq4). So the
+// defect is specific to a bracket collection type used as a supervisor child spec's
+// `initial_state` (substituting the `Supervisor` trait's `ActorState` placeholder) -- a third
+// shape of the general "bracket type not recognized as its own concrete representation" family
+// documented in compile_defects_ordered_set_field_annotation_addition and siblings, this time at
+// a placeholder substitution site rather than a plain record field.
+// Expected: one animal is triaged; the queue holds it; peek reports it back.
+//   Next to see the vet: zebra with a cough
+//   done
+//   0
+// Observed: E2003 "type mismatch: children" at the child spec list literal.
+
+use Supervisor;
+use brodal_okasaki_priority;
+use PriorityQueue;
+
+impl PQSupervisor for Supervisor;
+
+fn compare_urgency(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn compare_names(a: string, b: string) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn empty_waiting_room() -> PriorityQueue[int64, string, mem(normal)] {
+    brodal_okasaki_priority@empty({ compare_priority: compare_urgency, compare_item: compare_names })
+}
+
+fn triage(msg: (int64, string), state: PriorityQueue[int64, string, mem(normal)]) -> (:no_reply, PriorityQueue[int64, string, mem(normal)]) {
+    sequence proc[device_io, mem(normal)]
+        (urgency: int64, animal: string) <- msg;
+        waiting: PriorityQueue[int64, string, mem(normal)] <- brodal_okasaki_priority@push_priority(state, urgency, animal);
+        next: { status: :not_found | :found, value: string } <- PriorityQueue@peek_value(waiting, 0, "");
+        println(concat("Next to see the vet: ", next.value));
+        println("done")
+    produces
+        pure (:no_reply, waiting)
+    end
+}
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: PriorityQueue[int64, string, mem(normal)],
+            behavior: fn(msg: (int64, string), state: PriorityQueue[int64, string, mem(normal)]) -> (:no_reply, PriorityQueue[int64, string, mem(normal)]),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: PriorityQueue[int64, string, mem(normal)],
+                behavior: fn(msg: (int64, string), state: PriorityQueue[int64, string, mem(normal)]) -> (:no_reply, PriorityQueue[int64, string, mem(normal)]),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :vet,
+                agent_type: :worker,
+                initial_state: empty_waiting_room(),
+                behavior: triage,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        _: supervisor_ref <- spawn_registered_supervisor(PQSupervisor, 0, :pq_supervisor, stack_policy(0, :keep_last_message));
+        first: (int64, string) <- (3, "zebra with a cough");
+        _: boolean <- cast_registered(:vet, first impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

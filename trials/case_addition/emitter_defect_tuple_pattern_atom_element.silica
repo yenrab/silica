@@ -1,0 +1,36 @@
+// Documented open emitter defect (2026-09-18), found while fixing the tuple-pattern named-binding
+// type-checker defect (supervisors_addition/emitter_defect_tuple_pattern_named_binding). No .ascomp
+// until fixed.
+//
+// A tuple case pattern whose elements are atom literals and named bindings, `(:ok, n: int64) -> ...`
+// (§3.5 tuple_pattern, §4.1.7 tagged tuples), never matches: emitter terms/term_case_patterns@
+// emit_tuple_case_elems_check compares only string-literal elements and skips `_`/`_: T`; every other
+// element (atom or integer literal, named binding) is emitted as an unconditional `B fail`, and a named
+// element is never loaded into its binding. The front end accepts the form and lowers the arm body with
+// `n` in scope (SIR branch kind "tuple", raw pattern text in .name).
+// Expected: 15, 2, 3, exit 0. Observed: 3, 3, 3, exit 0 (both tagged arms fall through to the
+// wildcard arm).
+
+fn classify(result: (atom, int64)) -> int64 {
+    case result of {
+        (:ok, n: int64) -> n + 10;
+        (:error, _: int64) -> 2;
+        _: (atom, int64) -> 3
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        a: int64 <- classify((:ok, 5));
+        b: int64 <- classify((:error, 0));
+        c: int64 <- classify((:other, 1));
+        _: atom <- print_int64(a);
+        _: atom <- println("");
+        _: atom <- print_int64(b);
+        _: atom <- println("");
+        _: atom <- print_int64(c);
+        println("")
+    produces
+        pure 0
+    end
+}

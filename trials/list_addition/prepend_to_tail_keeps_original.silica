@@ -1,0 +1,62 @@
+// Lists are persistent values: prepending to a list's tail must not change the list the tail came
+// from. When the slot in front of the tail's first element was free in its chunk, the list runtime
+// wrote the new head there in place -- that slot held the ORIGINAL list's head, so
+// `a <- [1, 2, 3, 4]; b <- 9 : a.tail` turned a into 9 2 3 4. The prepend now copies the tail's
+// part of the chunk into a fresh one when the slot in front is already taken (claim word and
+// copy-on-write in L_list_prepend_helper, emitter/*/terms/prims/prims_list.silica).
+// Expected output: "1 2 3 4", "9 2 3 4", "8 3 4", "7 8 3 4", "end", then exit 0.
+
+fn cons(x: int64, rest: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, rest)
+    produces
+        pure out
+    end
+}
+
+fn nil_list() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure out
+    end
+}
+
+fn show(xs: List[int64, mem(normal)]) -> atom {
+    sequence proc[device_io]
+        r: atom <- case xs.is_nil of {
+            true -> println("");
+            false -> show_one(xs.head, xs.tail)
+        }
+    produces
+        pure r
+    end
+}
+
+fn show_one(h: int64, rest: List[int64, mem(normal)]) -> atom {
+    sequence proc[device_io]
+        _: atom <- print_int64(h);
+        _: atom <- print_string(" ");
+        r: atom <- show(rest)
+    produces
+        pure r
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        a: List[int64, mem(normal)] <- cons(1, cons(2, cons(3, cons(4, nil_list()))));
+        t: List[int64, mem(normal)] <- a.tail;
+        b: List[int64, mem(normal)] <- cons(9, t);
+        t2: List[int64, mem(normal)] <- t.tail;
+        c: List[int64, mem(normal)] <- cons(8, t2);
+        d: List[int64, mem(normal)] <- cons(7, c);
+        _: atom <- show(a);
+        _: atom <- show(b);
+        _: atom <- show(c);
+        _: atom <- show(d);
+        println("end")
+    produces
+        pure 0
+    end
+}

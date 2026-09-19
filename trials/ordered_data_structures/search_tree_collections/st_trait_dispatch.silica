@@ -1,0 +1,88 @@
+// search_tree_trait.md §3, §6: SearchTree@contains_key and SearchTree@compare_item dispatch on every
+// receiver form a program can hold: a bracket-typed SearchTree[int64, mem(normal)] constructor
+// binding, the same binding passed through a function whose parameter is declared SearchTree (the
+// "algorithm that requires only SearchTree" of design §6), an updated tree bound with the generated
+// inline record, a tree returned by a helper unit, and a string instantiation of the same trait.
+// Passing an UPDATED tree to a SearchTree-typed parameter is rejected by today's type checker; that
+// case is compile_defects_search_tree_parameter_addition/defect_search_tree_parameter.
+
+use wbt_set;
+use SearchTree;
+use st_trial_i64;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn show(label: string, value: int64) -> int64 {
+    sequence proc[device_io]
+        println(label);
+        print_int64(value);
+        println("")
+    produces
+        pure value
+    end
+}
+
+fn cmp_str(a: string, b: string) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+// Needs only search: counts the keys of [lo, hi) the tree contains.
+fn search_count(tree: SearchTree[int64, mem(normal)], lo: int64, hi: int64) -> int64 {
+    case lo >= hi of {
+        true -> 0;
+        false -> case SearchTree@contains_key(tree, lo) of {
+            true -> 1 + search_count(tree, lo + 1, hi);
+            false -> search_count(tree, lo + 1, hi)
+        }
+    }
+}
+
+fn search_order(tree: SearchTree[int64, mem(normal)], a: int64, b: int64) -> int64 {
+    st_trial_i64@cmp_code(SearchTree@compare_item(tree, a, b))
+}
+
+fn helper_items() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        xs: List[int64, mem(normal)] <- [6, 2, 4]
+    produces
+        pure xs
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        b: SearchTree[int64, mem(normal)] <- wbt_set@empty({ compare_item: cmp_i64 });
+        u: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(b, 7);
+        h0: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@new_tree();
+        h: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@insert_list(h0, helper_items());
+        s: SearchTree[string, mem(normal)] <- wbt_set@empty({ compare_item: cmp_str });
+        su: { set: { root: ref?(L, normal, rec), compare_item: fn(string, string) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(s, "key");
+        _: int64 <- show("bracket_contains_7", st_trial_i64@b2i(SearchTree@contains_key(b, 7)));
+        _: int64 <- show("bracket_compare", st_trial_i64@cmp_code(SearchTree@compare_item(b, 8, 7)));
+        _: int64 <- show("parameter_count", search_count(b, 0, 10));
+        _: int64 <- show("parameter_compare", search_order(b, 1, 9));
+        _: int64 <- show("updated_contains_7", st_trial_i64@b2i(SearchTree@contains_key(u.set, 7)));
+        _: int64 <- show("updated_compare", st_trial_i64@cmp_code(SearchTree@compare_item(u.set, 7, 7)));
+        _: int64 <- show("helper_contains_4", st_trial_i64@b2i(SearchTree@contains_key(h, 4)));
+        _: int64 <- show("helper_contains_5", st_trial_i64@b2i(SearchTree@contains_key(h, 5)));
+        _: int64 <- show("string_contains_key", st_trial_i64@b2i(SearchTree@contains_key(su.set, "key")));
+        _: int64 <- show("string_contains_other", st_trial_i64@b2i(SearchTree@contains_key(su.set, "kez")));
+        _: int64 <- show("string_compare", st_trial_i64@cmp_code(SearchTree@compare_item(s, "b", "a")))
+    produces
+        pure 0
+    end
+}

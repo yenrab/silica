@@ -1,0 +1,88 @@
+// Documented open emitter defect (book-verification 2026-09-19, repro r_area_main): the record
+// form of emitter_defect_cast_registered_double_tuple_literal.silica -- two cast_registered
+// calls in a row, each with an inline record-literal message, deliver the SAME (second) literal
+// to both messages. Supervisor `impl`/`init` live in this unit, same reasoning as the tuple
+// trial (isolate this defect from the separate cross-unit-atom defect).
+//
+// Expected: the worker multiplies each rectangle's sides as sent -- 3*4=12, then 2*10=20.
+//   12
+//   done
+//   20
+//   done
+//   0
+// Observed: both messages carry the second literal's fields, printing 20 twice:
+//   20
+//   done
+//   20
+//   done
+//   0
+// A let-bound record (name the literal first, then pass the name) is unaffected; see
+// working_cast_registered_double_bound_literal.silica.
+
+use Supervisor;
+use calf_double_record;
+
+impl DoubleRecordSup for Supervisor;
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: { width: int64, height: int64 }, state: int64) -> (:no_reply, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: { width: int64, height: int64 }, state: int64) -> (:no_reply, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :area,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: calf_double_record@area_and_print,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        _: supervisor_ref <- spawn_registered_supervisor(DoubleRecordSup, 0, :double_record_supervisor, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_registered(:area, { width: 3, height: 4 } impl ActorMessage {});
+        _: boolean <- cast_registered(:area, { width: 2, height: 10 } impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

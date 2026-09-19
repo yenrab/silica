@@ -1,0 +1,20 @@
+// A supervisor whose `impl OtherUnitSup for Supervisor` and init/1 live in another unit
+// (traits/other_unit_sup.silica) is spawned from this one. The spawning unit used to emit its own
+// start trampoline calling `<this unit>_init`, which does not exist, and the program failed to link;
+// now only the unit holding the impl defines _silica_supervisor_start_OtherUnitSup and this unit
+// references it. The child adds the pair it is sent and prints the sum.
+// Expected output: 5, then done (the integrate runner sends `exit` after it), then exit 0.
+
+use Supervisor;
+use other_unit_sup;
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        name: atom <- other_unit_sup@registry_name();
+        _: supervisor_ref <- spawn_registered_supervisor(OtherUnitSup, 0, name, stack_policy(0, :keep_last_message));
+        _: boolean <- other_unit_sup@send_pair(2, 3);
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

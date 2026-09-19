@@ -1,0 +1,79 @@
+// search_tree_trait.md §5: prior versions remain valid after updates. A chain of versions
+// v0 (empty) -> v1 (+10) -> v2 (+20) -> v3 (-10) -> v4 (+10 again) is built first and every version
+// is searched afterwards. Then 200 perm keys ((37 i) mod 1000, i < 200, all distinct) form a base
+// that two branches update independently: one deletes the 100 keys of even i, the other adds the
+// 200 keys of 200 <= i < 400. The base still answers its own 200 keys after both branches exist.
+
+use wbt_set;
+use SearchTree;
+use st_trial_i64;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn show(label: string, value: int64) -> int64 {
+    sequence proc[device_io]
+        println(label);
+        print_int64(value);
+        println("")
+    produces
+        pure value
+    end
+}
+
+fn chain() -> int64 {
+    sequence
+        v0: SearchTree[int64, mem(normal)] <- wbt_set@empty({ compare_item: cmp_i64 });
+        r1: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(v0, 10);
+        r2: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(r1.set, 20);
+        r3: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, removed: boolean } <- wbt_set@delete(r2.set, 10);
+        r4: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(r3.set, 10);
+        _: int64 <- show("v0_10", st_trial_i64@b2i(SearchTree@contains_key(v0, 10)));
+        _: int64 <- show("v1_10", st_trial_i64@b2i(SearchTree@contains_key(r1.set, 10)));
+        _: int64 <- show("v1_20", st_trial_i64@b2i(SearchTree@contains_key(r1.set, 20)));
+        _: int64 <- show("v2_10", st_trial_i64@b2i(SearchTree@contains_key(r2.set, 10)));
+        _: int64 <- show("v2_20", st_trial_i64@b2i(SearchTree@contains_key(r2.set, 20)));
+        _: int64 <- show("v3_10", st_trial_i64@b2i(SearchTree@contains_key(r3.set, 10)));
+        _: int64 <- show("v3_20", st_trial_i64@b2i(SearchTree@contains_key(r3.set, 20)));
+        _: int64 <- show("v4_10", st_trial_i64@b2i(SearchTree@contains_key(r4.set, 10)));
+        _: int64 <- show("v4_20", st_trial_i64@b2i(SearchTree@contains_key(r4.set, 20)))
+    produces
+        pure 0
+    end
+}
+
+fn branches() -> int64 {
+    sequence
+        e: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@new_tree();
+        base: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@insert_perm(e, 37, 200, 0);
+        before: int64 <- st_trial_i64@count_present(base, 0, 1000);
+        thinned: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@delete_perm_step(base, 37, 200, 0, 2);
+        grown: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@insert_perm(base, 37, 400, 200);
+        _: int64 <- show("base_count_before", before);
+        _: int64 <- show("thinned_count", st_trial_i64@count_present(thinned, 0, 1000));
+        _: int64 <- show("grown_count", st_trial_i64@count_present(grown, 0, 1000));
+        _: int64 <- show("base_count_after", st_trial_i64@count_present(base, 0, 1000));
+        _: int64 <- show("base_contains_first_deleted", st_trial_i64@b2i(SearchTree@contains_key(base, 0)));
+        _: int64 <- show("thinned_contains_first_deleted", st_trial_i64@b2i(SearchTree@contains_key(thinned, 0)));
+        _: int64 <- show("base_contains_first_added", st_trial_i64@b2i(SearchTree@contains_key(base, 400)));
+        _: int64 <- show("grown_contains_first_added", st_trial_i64@b2i(SearchTree@contains_key(grown, 400)))
+    produces
+        pure 0
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        _: int64 <- chain();
+        _: int64 <- branches()
+    produces
+        pure 0
+    end
+}

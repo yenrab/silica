@@ -1,0 +1,63 @@
+// A record built from a record parameter's fields around a field that is copied to the region.
+// Under the uniform boxed layout (header of emitter/*/terms/prims/prims_record.silica) a nested
+// record or tuple variable, or a nested record literal, stored into a field is heap-promoted while
+// the outer record is stored, and that promote calls region_alloc. In a body with no other call the
+// first parameter stays in X0 and its fields are read through a scratch copy in X11, which the
+// promote clobbered: q.b and q.c were read through garbage (brodal_okasaki_priority@rebuild faulted,
+// failing every pq_* trial in ordered_data_structures/heap_collections). Fixed 2026-09-19: the
+// promote counts as a call (emitter_core@record_make_link_promotes_field), so the parameters get
+// their callee-saved shadows.
+// Expected output: 1 6 7 4 5, then 1 4 5 4 5, then 1 8 9 4, each on its own line; exit 0.
+
+fn rebuild(q: { a: int64, h: { x: int64, y: int64 }, b: int64, c: int64 }, h: { x: int64, y: int64 }) -> { a: int64, h: { x: int64, y: int64 }, b: int64, c: int64 } {
+    { a: q.a, h: h, b: q.b, c: q.c }
+}
+
+fn with_literal(q: { a: int64, h: { x: int64, y: int64 }, b: int64, c: int64 }) -> { a: int64, h: { x: int64, y: int64 }, b: int64, c: int64 } {
+    { a: q.a, h: { x: q.b, y: q.c }, b: q.b, c: q.c }
+}
+
+fn with_tuple(q: { a: int64, h: { x: int64, y: int64 }, b: int64, c: int64 }, t: (int64, int64)) -> { a: int64, t: (int64, int64), b: int64 } {
+    { a: q.a, t: t, b: q.b }
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        q: { a: int64, h: { x: int64, y: int64 }, b: int64, c: int64 } <- { a: 1, h: { x: 2, y: 3 }, b: 4, c: 5 };
+        r: { a: int64, h: { x: int64, y: int64 }, b: int64, c: int64 } <- rebuild(q, { x: 6, y: 7 });
+        print_int64(r.a);
+        println("");
+        print_int64(r.h.x);
+        println("");
+        print_int64(r.h.y);
+        println("");
+        print_int64(r.b);
+        println("");
+        print_int64(r.c);
+        println("");
+        l: { a: int64, h: { x: int64, y: int64 }, b: int64, c: int64 } <- with_literal(q);
+        print_int64(l.a);
+        println("");
+        print_int64(l.h.x);
+        println("");
+        print_int64(l.h.y);
+        println("");
+        print_int64(l.b);
+        println("");
+        print_int64(l.c);
+        println("");
+        w: { a: int64, t: (int64, int64), b: int64 } <- with_tuple(q, (8, 9));
+        wt: (int64, int64) <- w.t;
+        (t0: int64, t1: int64) <- wt;
+        print_int64(w.a);
+        println("");
+        print_int64(t0);
+        println("");
+        print_int64(t1);
+        println("");
+        print_int64(w.b);
+        println("")
+    produces
+        pure 0
+    end
+}

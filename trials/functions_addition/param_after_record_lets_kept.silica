@@ -1,0 +1,79 @@
+// The third int64 parameter must survive let-bound calls that return records. Found while writing
+// tree_collections/rt_validate (valid_count_of(r, root, n)); fixed 2026-09-18. With the int64 ABI
+// entry shadow the first parameters live in X19/X20 (or X19/X21) from entry, but the frame counted
+// only the body's own lets toward the callee-saved save pairs, so a two-parameter callee whose one
+// let took X21 saved only X19/X20 and destroyed its caller's X21 -- where the caller kept its third
+// parameter (a garbage n was printed). shadowed_param_reg_count now counts the int64 shadow registers
+// (emitter_core int64_abi_shadow_reg_count). The copied/second_param variants were intact before.
+// Expected output: 1, 1, 1, 1, 3, then exit 0.
+
+fn flag(b: boolean) -> int64 {
+    case b of { true -> 1; false -> 0 }
+}
+
+fn mk(r: int64, root: int64) -> { a: int64, b: int64, c: int64, d: int64, e: int64 } {
+    out: { a: int64, b: int64, c: int64, d: int64, e: int64 } <- { a: r, b: root, c: 0, d: 0, e: 0 };
+    out
+}
+
+fn second(t: { a: int64, b: int64, c: int64, d: int64, e: int64 }) -> { valid: boolean, error: atom, logical_count: int64 } {
+    out: { valid: boolean, error: atom, logical_count: int64 } <- { valid: true, error: :ok, logical_count: t.a + t.b };
+    out
+}
+
+// two record lets then the third parameter: (1, 2, 3) -> 1
+fn two_lets(r: int64, root: int64, n: int64) -> int64 {
+    t: { a: int64, b: int64, c: int64, d: int64, e: int64 } <- mk(r, root);
+    v: { valid: boolean, error: atom, logical_count: int64 } <- second(t);
+    flag(v.logical_count == n)
+}
+
+// one record let then the third parameter: (1, 2, 3) -> 1
+fn one_let(r: int64, root: int64, n: int64) -> int64 {
+    t: { a: int64, b: int64, c: int64, d: int64, e: int64 } <- mk(r, root);
+    flag(t.a + t.b == n)
+}
+
+// the third parameter copied before the record lets: (1, 2, 3) -> 1
+fn copied(r: int64, root: int64, n: int64) -> int64 {
+    m: int64 <- n;
+    t: { a: int64, b: int64, c: int64, d: int64, e: int64 } <- mk(r, root);
+    v: { valid: boolean, error: atom, logical_count: int64 } <- second(t);
+    flag(v.logical_count == m)
+}
+
+// the SECOND parameter after the same lets: (1, 3, 2) -> 1
+fn second_param(r: int64, n: int64, root: int64) -> int64 {
+    t: { a: int64, b: int64, c: int64, d: int64, e: int64 } <- mk(r, root);
+    v: { valid: boolean, error: atom, logical_count: int64 } <- second(t);
+    flag(v.logical_count == n)
+}
+
+// the third parameter's value itself: (1, 2, 3) -> 3
+fn returned(r: int64, root: int64, n: int64) -> int64 {
+    t: { a: int64, b: int64, c: int64, d: int64, e: int64 } <- mk(r, root);
+    v: { valid: boolean, error: atom, logical_count: int64 } <- second(t);
+    n + v.logical_count - 3
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        println("two_lets (expected 1)");
+        print_int64(two_lets(1, 2, 3));
+        println("");
+        println("one_let (expected 1)");
+        print_int64(one_let(1, 2, 3));
+        println("");
+        println("copied (expected 1)");
+        print_int64(copied(1, 2, 3));
+        println("");
+        println("second_param (expected 1)");
+        print_int64(second_param(1, 3, 2));
+        println("");
+        println("returned (expected 3)");
+        print_int64(returned(1, 2, 3));
+        println("")
+    produces
+        pure 0
+    end
+}

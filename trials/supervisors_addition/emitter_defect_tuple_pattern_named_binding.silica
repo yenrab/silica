@@ -1,0 +1,107 @@
+// Documented open emitter defect (2026-09-18, found while writing docs/learn-programming.md). The
+// front-end half is fixed: a named binding inside a tuple case pattern, `(:ok, n: int64) -> ...`
+// (§3.5 tuple_pattern, §4.1.7), used to be rejected with E2002 "undefined identifier: n"; the type
+// checker and SIR lowering now bind each named tuple element. The emitter still never matches a
+// tuple pattern whose elements are not string literals or wildcards (it emits `B fail` for the atom
+// and for the named element), so both messages fall through to the wildcard arm. Isolated in
+// case_addition/emitter_defect_tuple_pattern_atom_element. No .ascomp until the emitter is fixed.
+// (The wildcard arm and the "done" marker keep the trial terminating under the supervisors harness;
+// without them the case_clause failure left main in wait_for_exit until the 15-minute watchdog.)
+// Expected output: "cannot divide by zero", 20, done, exit 0. Observed (2026-09-18): "unmatched
+// tuple pattern" for the first message, then the process exits 70 while handling the second (the
+// (:ok, 20) path; same exit as the open defect_tuple_unpack_in_behaviour beside this file).
+use Supervisor;
+
+impl DivSup for Supervisor;
+
+fn safe_divide(x: int64, y: int64) -> (atom, int64) {
+    case y == 0 of {
+        true -> (:error, 0);
+        false -> (:ok, x / y)
+    }
+}
+
+fn careful_divider(msg: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        result: (atom, int64) <- safe_divide(100, msg);
+        _: atom <- case result of {
+            (:ok, n: int64) -> {
+                _: atom <- print_int64(n);
+                println("")
+            };
+            (:error, _: int64) -> println("cannot divide by zero");
+            _: (atom, int64) -> println("unmatched tuple pattern")
+        };
+        // The second message (5) is the last one: print the suite's "done" marker so the
+        // integrate harness sends "exit" to main's wait_for_exit.
+        _: atom <- case msg == 5 of {
+            true -> println("done");
+            false -> :ok
+        }
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: int64, state: int64) -> (:no_reply, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+        {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:no_reply, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :divider,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: careful_divider,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        _: supervisor_ref <- spawn_registered_supervisor(DivSup, 0, :divsup, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_registered(:divider, 0 impl ActorMessage {});
+        _: boolean <- cast_registered(:divider, 5 impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

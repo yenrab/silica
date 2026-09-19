@@ -1,0 +1,25 @@
+// §15.1.2.2, §15.4.5.5: `main` is not an actor. It runs on the platform's ordinary stack, which does not
+// grow, so recursion without bound in `main` exhausts it, and that is a fatal fault, not an actor
+// failure: there is no supervisor to notify. The process ends with the fatal fault report on stderr,
+//     [silica] fault at 0x<pc> in <symbol>+0x<offset>  addr=0x<guard>  actor=0x0  sbase=0x0  ssize=0x0
+// and exit status 70. Every field after "fault at" differs between runs and targets, so
+// compare_scout_normalized.sh folds the line to "[silica] fault at <PTR>". The output printed before the
+// fault ("before") is kept, and nothing after it runs.
+// A regression shows as status 139 with no report (the default SIGSEGV action, the handler not
+// installed or not on its alternate stack) or as a hang (the handler taking the fault for stack growth
+// outside any actor's reservation).
+
+fn down(n: int64) -> int64 {
+    1 + down(n + 1)
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        println("before");
+        r: int64 <- down(0);
+        print_int64(r);
+        println("after")
+    produces
+        pure 0
+    end
+}

@@ -1,0 +1,27 @@
+// SD-3 (new shape, book-verification 2026-09-19): atom tables are per compilation unit (see
+// sd3_cross_unit_atoms.silica for the primary repro of spec §4.1.7's "an atom has the same index
+// in every compilation unit"). That trial shows the defect through value equality and case
+// pattern-matching; this one shows a second, silent manifestation through the actor name
+// registry. sd3_registry_family.silica mints the child id `:adder` in its own unit's atom table;
+// this unit mints `:adder` again for cast_registered's `name` argument. Per spec §4.1.7 both
+// literals must be the SAME atom, so spawn_registered_supervisor's registration (keyed by the
+// family unit's `:adder`) and this unit's cast_registered lookup (keyed by this unit's `:adder`)
+// must hit the same actor. Reconstructed from the book-verification repro `c18_supmodule`.
+// Expected: the message is delivered, the worker prints the sum, exit 0.
+//   5
+//   0
+// Observed: no output at all (cast_registered's name lookup misses the differently-numbered
+// atom, so the cast is silently dropped) and the process still exits 0 -- no error is raised,
+// per spec's `cast_registered` returning an atom/boolean result rather than raising.
+use Supervisor;
+use sd3_registry_family;
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        _: supervisor_ref <- spawn_registered_supervisor(Sd3RegistrySupervisor, 0, :sd3_registry_supervisor, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_registered(:adder, (2, 3) impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

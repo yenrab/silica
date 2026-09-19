@@ -1,0 +1,35 @@
+// §15.4.5.5, and an OPEN DEFECT (2026-09-19): a buffer store at an index at or past the buffer's length
+// must be a failed runtime check, a runtime abort: the report "[silica] abort: buffer index out of
+// bounds at 0x<pc>" on stderr and exit status 71. The emitter has the target (L_buf_bounds) but never
+// branches to it: emit_buf_bounds_check only fires when the store's SIR node carries a "|bounds:"
+// marker, no trial golden contains a "B.GE L_buf_bounds", and buf_load has no check at all. Today the
+// second call below stores and loads one element past the end of a 4-element buffer, and the program
+// prints 5 twice and exits 0.
+// This trial fails until the bounds check is emitted; the golden is what the specification requires.
+// The index reaches write_buf through a parameter. compare_scout_normalized.sh folds everything after
+// " at " to <PTR>.
+
+fn store_at(index: int64) -> int64 {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        buf: buf(L1, normal, int64, 4) <- alloc_buf(r, 4);
+        _: atom <- write_buf(buf, index, 5);
+        value: int64 <- read_buf(buf, index)
+    produces
+        pure value
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        a: int64 <- store_at(3);
+        print_int64(a);
+        println("");
+        b: int64 <- store_at(4);
+        print_int64(b);
+        println("")
+    produces
+        pure 0
+    end
+}

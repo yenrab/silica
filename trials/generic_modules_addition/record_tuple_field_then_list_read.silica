@@ -1,0 +1,59 @@
+// A record { status, value: ItemType, path: List[int64] } built in a generic unit (gen_rec.silica,
+// one slot per field) and read in a concrete unit where ItemType is int64 and then a tuple
+// (int64, int64). Found while writing tree_collections/rt_generic_payloads (find_first's path with
+// tuple items); fixed 2026-09-18 by the uniform boxed record layout (header of
+// emitter/*/terms/prims/prims_record.silica): a tuple-typed field is one pointer slot in every unit.
+// Before, the concrete reader gave the pair a 16-byte shell, read `path` one word late, and
+// `path.is_nil` faulted (addr 0x1). tree_rose's find_first and child_at hit this for tuple payloads.
+// Expected output: "7 3", "7 70", "3", then exit 0.
+
+use gen_rec;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn first_of(p: (int64, int64)) -> int64 {
+    (x: int64, _: int64) <- p;
+    x
+}
+
+fn cmp_pair(a: (int64, int64), b: (int64, int64)) -> :less | :equal | :greater {
+    cmp_i64(first_of(a), first_of(b))
+}
+
+fn list_len(path: List[int64, mem(normal)], acc: int64) -> int64 {
+    case path.is_nil of {
+        true -> acc;
+        false -> list_len(path.tail, acc + 1)
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        ri: { status: :not_found | :found, value: int64, path: List[int64, mem(normal)] } <- gen_rec@make({ compare_item: cmp_i64 }, 7);
+        println("int64 item: value 7, path length 3");
+        print_int64(ri.value);
+        print_string(" ");
+        print_int64(list_len(ri.path, 0));
+        println("");
+        rp: { status: :not_found | :found, value: (int64, int64), path: List[int64, mem(normal)] } <- gen_rec@make({ compare_item: cmp_pair }, (7, 70));
+        (a: int64, b: int64) <- rp.value;
+        println("pair item: value 7 70");
+        print_int64(a);
+        print_string(" ");
+        print_int64(b);
+        println("");
+        println("pair item: path length 3");
+        print_int64(list_len(rp.path, 0));
+        println("")
+    produces
+        pure 0
+    end
+}

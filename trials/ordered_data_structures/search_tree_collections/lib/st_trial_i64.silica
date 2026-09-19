@@ -1,0 +1,320 @@
+// Trial-only int64 helpers for search_tree_collections: trees built through the public wbt_set
+// surface (the SearchTree trait has no mutation surface of its own, search_tree_trait.md §4),
+// insertion/deletion streams, a sorted-list oracle, and agreement counters that probe every key of a
+// range through SearchTree@contains_key.
+// cmp_i64 stays the first function: the emitter numbers its :less/:equal/:greater atoms in
+// first-use order and every comparator in the stdlib expects that order. cmp_i64_alt has the same
+// body as cmp_i64 but is a distinct function value; cmp_i64_desc orders descending; cmp_mod10
+// makes every key congruent modulo 10 one comparator class (key identity is comparator equality,
+// design §5).
+// Streams: perm keys are (i * mult) mod 1000 for i in [from, to), which are distinct whenever mult
+// is coprime to 1000; lcg keys repeat the heap suites' generator and do contain duplicates.
+
+use wbt_set;
+use OrderedSet;
+use SearchTree;
+
+export cmp_i64/2;
+export cmp_i64_alt/2;
+export cmp_i64_desc/2;
+export cmp_mod10/2;
+export b2i/1;
+export cmp_code/1;
+export new_tree/0;
+export new_tree_alt/0;
+export new_desc/0;
+export new_mod10/0;
+export insert_list/2;
+export delete_list/2;
+export insert_perm/4;
+export delete_perm_step/5;
+export insert_lcg/4;
+export count_present/3;
+export agree_oracle/4;
+export agree_views/3;
+export fold_hash/1;
+export hash_list/2;
+export oracle_perm/2;
+export oracle_perm_step/4;
+export oracle_lcg/2;
+export list_len/1;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn cmp_i64_alt(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn cmp_i64_desc(a: int64, b: int64) -> :less | :equal | :greater {
+    case a > b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn mod10(x: int64) -> int64 {
+    x - (x / 10) * 10
+}
+
+fn cmp_mod10(a: int64, b: int64) -> :less | :equal | :greater {
+    ma: int64 <- mod10(a);
+    mb: int64 <- mod10(b);
+    case ma < mb of {
+        true -> :less;
+        false -> case ma == mb of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn b2i(b: boolean) -> int64 {
+    case b of {
+        true -> 1;
+        false -> 0
+    }
+}
+
+// 1 for :less, 2 for :equal, 3 for :greater.
+fn cmp_code(c: :less | :equal | :greater) -> int64 {
+    case c of {
+        :less -> 1;
+        :equal -> 2;
+        :greater -> 3
+    }
+}
+
+fn new_tree() -> { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } {
+    wbt_set@empty({ compare_item: cmp_i64 })
+}
+
+fn new_tree_alt() -> { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } {
+    wbt_set@empty({ compare_item: cmp_i64_alt })
+}
+
+fn new_desc() -> { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } {
+    wbt_set@empty({ compare_item: cmp_i64_desc })
+}
+
+fn new_mod10() -> { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } {
+    wbt_set@empty({ compare_item: cmp_mod10 })
+}
+
+// Inserts every item of xs in list order.
+fn insert_list(set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, xs: List[int64, mem(normal)]) -> { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } {
+    case xs of {
+        []: List[int64, mem(normal)] -> set;
+        [h: int64, t: List[int64, mem(normal)]] -> {
+            r: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(set, h);
+            insert_list(r.set, t)
+        }
+    }
+}
+
+// Deletes every item of xs in list order.
+fn delete_list(set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, xs: List[int64, mem(normal)]) -> { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } {
+    case xs of {
+        []: List[int64, mem(normal)] -> set;
+        [h: int64, t: List[int64, mem(normal)]] -> {
+            r: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, removed: boolean } <- wbt_set@delete(set, h);
+            delete_list(r.set, t)
+        }
+    }
+}
+
+fn perm_key(i: int64, mult: int64) -> int64 {
+    (i * mult) - ((i * mult) / 1000) * 1000
+}
+
+// Inserts perm keys (i * mult) mod 1000 for i in [i, n).
+fn insert_perm(set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, mult: int64, n: int64, i: int64) -> { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } {
+    case i >= n of {
+        true -> set;
+        false -> {
+            r: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(set, perm_key(i, mult));
+            insert_perm(r.set, mult, n, i + 1)
+        }
+    }
+}
+
+// Deletes perm keys (i * mult) mod 1000 for i = i, i + step, ... below n.
+fn delete_perm_step(set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, mult: int64, n: int64, i: int64, step: int64) -> { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } {
+    case i >= n of {
+        true -> set;
+        false -> {
+            r: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, removed: boolean } <- wbt_set@delete(set, perm_key(i, mult));
+            delete_perm_step(r.set, mult, n, i + step, step)
+        }
+    }
+}
+
+fn lcg_next(x: int64) -> int64 {
+    ((x * 1103515245 + 12345) / 65536) - (((x * 1103515245 + 12345) / 65536) / 1000) * 1000
+}
+
+// Inserts n pseudo-random keys in [0, 1000) from seed (duplicates occur).
+fn insert_lcg(set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, seed: int64, n: int64, i: int64) -> { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } {
+    case i >= n of {
+        true -> set;
+        false -> {
+            r: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(set, lcg_next(seed));
+            insert_lcg(r.set, lcg_next(seed), n, i + 1)
+        }
+    }
+}
+
+// Number of keys k in [lo, hi) for which SearchTree@contains_key(set, k) is true.
+fn count_present(set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, lo: int64, hi: int64) -> int64 {
+    case lo >= hi of {
+        true -> 0;
+        false -> b2i(SearchTree@contains_key(set, lo)) + count_present(set, lo + 1, hi)
+    }
+}
+
+fn member(xs: List[int64, mem(normal)], k: int64) -> boolean {
+    case xs of {
+        []: List[int64, mem(normal)] -> false;
+        [h: int64, t: List[int64, mem(normal)]] -> case h == k of {
+            true -> true;
+            false -> case h > k of {
+                true -> false;
+                false -> member(t, k)
+            }
+        }
+    }
+}
+
+// Number of keys k in [lo, hi) on which SearchTree@contains_key agrees with membership in the
+// ascending oracle list.
+fn agree_oracle(set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, oracle: List[int64, mem(normal)], lo: int64, hi: int64) -> int64 {
+    case lo >= hi of {
+        true -> 0;
+        false -> {
+            got: boolean <- SearchTree@contains_key(set, lo);
+            want: boolean <- member(oracle, lo);
+            b2i(got == want) + agree_oracle(set, oracle, lo + 1, hi)
+        }
+    }
+}
+
+// Number of keys k in [lo, hi) on which the SearchTree and OrderedSet views of one value agree.
+fn agree_views(set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, lo: int64, hi: int64) -> int64 {
+    case lo >= hi of {
+        true -> 0;
+        false -> {
+            st: boolean <- SearchTree@contains_key(set, lo);
+            os: boolean <- OrderedSet@contains(set, lo);
+            b2i(st == os) + agree_views(set, lo + 1, hi)
+        }
+    }
+}
+
+fn hash_step(acc: int64, x: int64) -> int64 {
+    acc * 31 + x + 7
+}
+
+// Hash of the OrderedSet fold order (ascending comparator order).
+fn fold_hash(set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }) -> int64 {
+    OrderedSet@fold(set, 0, hash_step)
+}
+
+fn hash_list(xs: List[int64, mem(normal)], acc: int64) -> int64 {
+    case xs of {
+        []: List[int64, mem(normal)] -> acc;
+        [h: int64, t: List[int64, mem(normal)]] -> hash_list(t, hash_step(acc, h))
+    }
+}
+
+fn list_len(xs: List[int64, mem(normal)]) -> int64 {
+    case xs of {
+        []: List[int64, mem(normal)] -> 0;
+        [_: int64, t: List[int64, mem(normal)]] -> 1 + list_len(t)
+    }
+}
+
+fn empty_i64() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure out
+    end
+}
+
+// Ascending insertion of x into the ascending list xs; an x already present is dropped.
+fn insert_unique(xs: List[int64, mem(normal)], x: int64) -> List[int64, mem(normal)] {
+    case xs of {
+        []: List[int64, mem(normal)] -> {
+            sequence proc[mem(normal)]
+                out: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+            produces
+                pure out
+            end
+        };
+        [h: int64, t: List[int64, mem(normal)]] -> case x == h of {
+            true -> xs;
+            false -> case x < h of {
+                true -> {
+                    sequence proc[mem(normal)]
+                        out: List[int64, mem(normal)] <- prepend[int64, mem(normal)](x, xs)
+                    produces
+                        pure out
+                    end
+                };
+                false -> {
+                    sequence proc[mem(normal)]
+                        inner: List[int64, mem(normal)] <- insert_unique(t, x);
+                        out: List[int64, mem(normal)] <- prepend[int64, mem(normal)](h, inner)
+                    produces
+                        pure out
+                    end
+                }
+            }
+        }
+    }
+}
+
+fn oracle_perm_go(xs: List[int64, mem(normal)], mult: int64, n: int64, i: int64, step: int64) -> List[int64, mem(normal)] {
+    case i >= n of {
+        true -> xs;
+        false -> oracle_perm_go(insert_unique(xs, perm_key(i, mult)), mult, n, i + step, step)
+    }
+}
+
+// Sorted distinct perm keys for i in [0, n).
+fn oracle_perm(mult: int64, n: int64) -> List[int64, mem(normal)] {
+    oracle_perm_go(empty_i64(), mult, n, 0, 1)
+}
+
+// Sorted distinct perm keys for i = from, from + step, ... below n.
+fn oracle_perm_step(mult: int64, n: int64, from: int64, step: int64) -> List[int64, mem(normal)] {
+    oracle_perm_go(empty_i64(), mult, n, from, step)
+}
+
+fn oracle_lcg_go(xs: List[int64, mem(normal)], seed: int64, n: int64, i: int64) -> List[int64, mem(normal)] {
+    case i >= n of {
+        true -> xs;
+        false -> oracle_lcg_go(insert_unique(xs, lcg_next(seed)), lcg_next(seed), n, i + 1)
+    }
+}
+
+// Sorted distinct lcg keys (the same n values insert_lcg inserts from seed).
+fn oracle_lcg(seed: int64, n: int64) -> List[int64, mem(normal)] {
+    oracle_lcg_go(empty_i64(), seed, n, 0)
+}

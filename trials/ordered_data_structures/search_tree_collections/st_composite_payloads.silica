@@ -1,0 +1,124 @@
+// search_tree_trait.md §2 and the common contract's overriding genericity rule for composite
+// payloads: ItemType is a record { id, name } and, separately, a tuple (int64, string). Both
+// comparators order by the int64 part only, so an item with the same id and a different name is the
+// same comparator class (design §5: key identity is comparator equality). contains_key and
+// compare_item are asked about probes built independently of the stored items, and the OrderedSet
+// fold of the same value reads each stored item back (ids and names, so the whole item layout is
+// read): ascending ids 1, 3 and names "a" then "c".
+
+use wbt_set;
+use OrderedSet;
+use SearchTree;
+use st_trial_i64;
+
+fn cmp_rec(a: { id: int64, name: string }, b: { id: int64, name: string }) -> :less | :equal | :greater {
+    case a.id < b.id of {
+        true -> :less;
+        false -> case a.id == b.id of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn cmp_tup(a: (int64, string), b: (int64, string)) -> :less | :equal | :greater {
+    (x: int64, _: string) <- a;
+    (y: int64, _: string) <- b;
+    case x < y of {
+        true -> :less;
+        false -> case x == y of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn show(label: string, value: int64) -> int64 {
+    sequence proc[device_io]
+        println(label);
+        print_int64(value);
+        println("")
+    produces
+        pure value
+    end
+}
+
+fn show_text(label: string, value: string) -> int64 {
+    sequence proc[device_io]
+        println(label);
+        println(value)
+    produces
+        pure 0
+    end
+}
+
+fn rec_ids(acc: int64, item: { id: int64, name: string }) -> int64 {
+    acc * 10 + item.id
+}
+
+fn rec_names(acc: string, item: { id: int64, name: string }) -> string {
+    concat(acc, item.name)
+}
+
+fn tup_ids(acc: int64, item: (int64, string)) -> int64 {
+    (x: int64, _: string) <- item;
+    acc * 10 + x
+}
+
+fn tup_names(acc: string, item: (int64, string)) -> string {
+    (_: int64, name: string) <- item;
+    concat(acc, name)
+}
+
+fn records() -> int64 {
+    sequence
+        e: SearchTree[{ id: int64, name: string }, mem(normal)] <- wbt_set@empty({ compare_item: cmp_rec });
+        c: { id: int64, name: string } <- { id: 3, name: "c" };
+        a: { id: int64, name: string } <- { id: 1, name: "a" };
+        same_id: { id: int64, name: string } <- { id: 1, name: "zzz" };
+        absent: { id: int64, name: string } <- { id: 2, name: "a" };
+        r1: { set: { root: ref?(L, normal, rec), compare_item: fn({ id: int64, name: string }, { id: int64, name: string }) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(e, c);
+        r2: { set: { root: ref?(L, normal, rec), compare_item: fn({ id: int64, name: string }, { id: int64, name: string }) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(r1.set, a);
+        r3: { set: { root: ref?(L, normal, rec), compare_item: fn({ id: int64, name: string }, { id: int64, name: string }) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(r2.set, same_id);
+        _: int64 <- show("record_contains_same_id", st_trial_i64@b2i(SearchTree@contains_key(r3.set, same_id)));
+        _: int64 <- show("record_contains_absent_id", st_trial_i64@b2i(SearchTree@contains_key(r3.set, absent)));
+        _: int64 <- show("record_repeat_class_inserted", st_trial_i64@b2i(r3.inserted));
+        _: int64 <- show("record_compare_c_a", st_trial_i64@cmp_code(SearchTree@compare_item(r3.set, c, a)));
+        _: int64 <- show("record_compare_same_class", st_trial_i64@cmp_code(SearchTree@compare_item(r3.set, a, same_id)));
+        _: int64 <- show("record_fold_ids", OrderedSet@fold(r3.set, 0, rec_ids));
+        _: int64 <- show_text("record_fold_names", OrderedSet@fold(r3.set, "", rec_names))
+    produces
+        pure 0
+    end
+}
+
+fn tuples() -> int64 {
+    sequence
+        e: SearchTree[(int64, string), mem(normal)] <- wbt_set@empty({ compare_item: cmp_tup });
+        c: (int64, string) <- (3, "c");
+        a: (int64, string) <- (1, "a");
+        same_id: (int64, string) <- (1, "zzz");
+        absent: (int64, string) <- (2, "a");
+        r1: { set: { root: ref?(L, normal, rec), compare_item: fn((int64, string), (int64, string)) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(e, c);
+        r2: { set: { root: ref?(L, normal, rec), compare_item: fn((int64, string), (int64, string)) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(r1.set, a);
+        r3: { set: { root: ref?(L, normal, rec), compare_item: fn((int64, string), (int64, string)) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(r2.set, same_id);
+        _: int64 <- show("tuple_contains_same_id", st_trial_i64@b2i(SearchTree@contains_key(r3.set, same_id)));
+        _: int64 <- show("tuple_contains_absent_id", st_trial_i64@b2i(SearchTree@contains_key(r3.set, absent)));
+        _: int64 <- show("tuple_repeat_class_inserted", st_trial_i64@b2i(r3.inserted));
+        _: int64 <- show("tuple_compare_c_a", st_trial_i64@cmp_code(SearchTree@compare_item(r3.set, c, a)));
+        _: int64 <- show("tuple_compare_same_class", st_trial_i64@cmp_code(SearchTree@compare_item(r3.set, a, same_id)));
+        _: int64 <- show("tuple_fold_ids", OrderedSet@fold(r3.set, 0, tup_ids));
+        _: int64 <- show_text("tuple_fold_names", OrderedSet@fold(r3.set, "", tup_names))
+    produces
+        pure 0
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        _: int64 <- records();
+        _: int64 <- tuples()
+    produces
+        pure 0
+    end
+}

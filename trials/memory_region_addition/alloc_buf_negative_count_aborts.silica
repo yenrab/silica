@@ -1,0 +1,32 @@
+// §15.4.5.5: alloc_buf with a negative element count (or one whose byte size overflows) is a failed
+// runtime check, which is a runtime abort: the report "[silica] abort: invalid buffer size at 0x<pc>"
+// (plus " in <symbol>+0x<offset>" where the target can name the address) on stderr, and exit status 71.
+// Until 2026-09-19 this path (L_buf_invalid) called C abort(): status 134 and no report.
+// The count reaches alloc_buf through a parameter. The first call allocates one element, stores 5 and
+// reads it back; the second asks for -1 elements, and nothing after it runs.
+// compare_scout_normalized.sh folds everything after " at " to <PTR>.
+
+fn fill(count: int64) -> int64 {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        buf: buf(L1, normal, int64, count) <- alloc_buf(r, count);
+        _: atom <- write_buf(buf, 0, 5);
+        value: int64 <- read_buf(buf, 0)
+    produces
+        pure value
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        a: int64 <- fill(1);
+        print_int64(a);
+        println("");
+        b: int64 <- fill(0 - 1);
+        print_int64(b);
+        println("")
+    produces
+        pure 0
+    end
+}

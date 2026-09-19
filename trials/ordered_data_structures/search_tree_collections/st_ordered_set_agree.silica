@@ -1,0 +1,106 @@
+// search_tree_trait.md §2, §3: SearchTree is a view over the SAME wbt_set value that implements
+// OrderedSet, so the two views of one value must agree:
+//   SearchTree@contains_key(v, k) == OrderedSet@contains(v, k) for every probe k,
+//   SearchTree@compare_item == OrderedSet@compare_item (both use the one captured comparator),
+//   and the keys contains_key accepts are exactly the keys OrderedSet@fold visits.
+// Checked on 300 perm keys ((37 i) mod 1000, i < 300) over the probes [-10, 1010), on the modulo-10
+// and descending trees, and on bracket bindings of either family: a value declared SearchTree answers
+// OrderedSet calls and a value declared OrderedSet answers SearchTree calls.
+
+use OrderedSet;
+use wbt_set;
+use SearchTree;
+use st_trial_i64;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn show(label: string, value: int64) -> int64 {
+    sequence proc[device_io]
+        println(label);
+        print_int64(value);
+        println("")
+    produces
+        pure value
+    end
+}
+
+fn three() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        xs: List[int64, mem(normal)] <- [5, 15, 8]
+    produces
+        pure xs
+    end
+}
+
+fn same_compare(v: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, a: int64, b: int64) -> int64 {
+    st_code: int64 <- st_trial_i64@cmp_code(SearchTree@compare_item(v, a, b));
+    os_code: int64 <- st_trial_i64@cmp_code(OrderedSet@compare_item(v, a, b));
+    st_trial_i64@b2i(st_code == os_code)
+}
+
+fn perm_value() -> int64 {
+    sequence
+        e: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@new_tree();
+        p: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@insert_perm(e, 37, 300, 0);
+        oracle: List[int64, mem(normal)] <- st_trial_i64@oracle_perm(37, 300);
+        fold_hash: int64 <- st_trial_i64@fold_hash(p);
+        oracle_hash: int64 <- st_trial_i64@hash_list(oracle, 0);
+        _: int64 <- show("views_agree", st_trial_i64@agree_views(p, -10, 1010));
+        _: int64 <- show("search_count", st_trial_i64@count_present(p, -10, 1010));
+        _: int64 <- show("ordered_set_size", OrderedSet@size(p));
+        _: int64 <- show("fold_visits_searched_keys", st_trial_i64@agree_oracle(p, oracle, -10, 1010));
+        _: int64 <- show("fold_order_matches", st_trial_i64@b2i(fold_hash == oracle_hash));
+        _: int64 <- show("compare_agree_less", same_compare(p, 1, 2));
+        _: int64 <- show("compare_agree_equal", same_compare(p, 3, 3));
+        _: int64 <- show("compare_agree_greater", same_compare(p, 4, 3))
+    produces
+        pure 0
+    end
+}
+
+fn other_comparators() -> int64 {
+    sequence
+        m0: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@new_mod10();
+        m: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@insert_list(m0, three());
+        d0: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@new_desc();
+        d: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 } <- st_trial_i64@insert_list(d0, three());
+        _: int64 <- show("mod10_views_agree", st_trial_i64@agree_views(m, 0, 100));
+        _: int64 <- show("mod10_size", OrderedSet@size(m));
+        _: int64 <- show("mod10_compare_agree", same_compare(m, 5, 25));
+        _: int64 <- show("descending_views_agree", st_trial_i64@agree_views(d, 0, 100));
+        _: int64 <- show("descending_compare_agree", same_compare(d, 1, 2))
+    produces
+        pure 0
+    end
+}
+
+fn bracket_families() -> int64 {
+    sequence
+        t: SearchTree[int64, mem(normal)] <- wbt_set@empty({ compare_item: cmp_i64 });
+        o: OrderedSet[int64, mem(normal)] <- wbt_set@empty({ compare_item: cmp_i64 });
+        _: int64 <- show("search_tree_binding_as_ordered_set", st_trial_i64@b2i(OrderedSet@contains(t, 1)));
+        _: int64 <- show("search_tree_binding_size", OrderedSet@size(t));
+        _: int64 <- show("ordered_set_binding_as_search_tree", st_trial_i64@b2i(SearchTree@contains_key(o, 1)));
+        _: int64 <- show("ordered_set_binding_compare", st_trial_i64@cmp_code(SearchTree@compare_item(o, 2, 1)))
+    produces
+        pure 0
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        _: int64 <- perm_value();
+        _: int64 <- other_comparators();
+        _: int64 <- bracket_families()
+    produces
+        pure 0
+    end
+}

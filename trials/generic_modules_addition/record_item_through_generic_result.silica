@@ -1,0 +1,35 @@
+// A generic module stores an ItemType field as one pointer word (gbox@wrap here, the brodal_okasaki
+// core's peek/pop results in the stdlib); a caller that knows the field is a record reads it back.
+// Found while building the PriorityQueue over brodal_okasaki entries; fixed 2026-09-18 by the uniform
+// boxed record layout (header of emitter/*/terms/prims/prims_record.silica): a record-typed field is
+// one pointer slot in every unit. Before, the concrete reader used the inline nested-record layout,
+// so `f <- r.value` yielded the slot's address, f.a read the stored pointer and f.b read past it.
+// Expected output: 7 and 8, then exit 0.
+
+use gbox;
+
+fn cmp_pair(a: { a: int64, b: int64 }, b: { a: int64, b: int64 }) -> :less | :equal | :greater {
+    case a.a < b.a of {
+        true -> :less;
+        false -> case a.a == b.a of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        item: { a: int64, b: int64 } <- { a: 7, b: 8 };
+        r: { status: :not_found | :found, value: { a: int64, b: int64 } } <- gbox@wrap({ compare_item: cmp_pair }, item);
+        f: { a: int64, b: int64 } <- r.value;
+        fa: int64 <- f.a;
+        fb: int64 <- f.b;
+        print_int64(fa);
+        println("");
+        print_int64(fb);
+        println("")
+    produces
+        pure 0
+    end
+}

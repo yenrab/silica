@@ -1,0 +1,49 @@
+// Record edge data through the UndirectedGraph trait (genericity rule, common_contract.md §1).
+// EdgeDataType = {label, cost}; the trait's generated {to, data} views must carry the record.
+// Formerly the open generic-payload layout defect defect_generic_payload_trait_record_data; passes
+// since the uniform boxed record layout of 2026-09-18.
+// Expected (derived from the designs): label 3, cost 9, back_cost 9, fold_cost 9.
+
+use graph_wbt_undirected;
+use UndirectedGraph;
+use live_trial_i64;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn compare_cost(a: { label: int64, cost: int64 }, b: { label: int64, cost: int64 }) -> :less | :equal | :greater {
+    cmp_i64(a.cost, b.cost)
+}
+
+fn cost_step(acc: int64, w: { to: int64, data: { label: int64, cost: int64 } }) -> int64 {
+    d: { label: int64, cost: int64 } <- w.data;
+    acc + d.cost
+}
+
+fn main() -> int64 {
+    sequence
+        u0: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn({ label: int64, cost: int64 }, { label: int64, cost: int64 }) -> :less | :equal | :greater, compare_value: fn({ label: int64, cost: int64 }, { label: int64, cost: int64 }) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64 } <- graph_wbt_undirected@empty({ compare_node: cmp_i64, compare_edge_data: compare_cost });
+        c: { label: int64, cost: int64 } <- { label: 3, cost: 9 };
+        u1: { graph: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn({ label: int64, cost: int64 }, { label: int64, cost: int64 }) -> :less | :equal | :greater, compare_value: fn({ label: int64, cost: int64 }, { label: int64, cost: int64 }) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64 }, inserted: boolean, replaced: boolean } <- graph_wbt_undirected@add_edge(u0, 1, 2, c);
+        us: List[{ to: int64, data: { label: int64, cost: int64 } }, mem(normal)] <- UndirectedGraph@neighbors(u1.graph, 2);
+        u: { to: int64, data: { label: int64, cost: int64 } } <- us.head;
+        ud: { label: int64, cost: int64 } <- u.data;
+        _: int64 <- live_trial_i64@put("label", ud.label);
+        _: int64 <- live_trial_i64@put("cost", ud.cost);
+        bs: List[{ to: int64, data: { label: int64, cost: int64 } }, mem(normal)] <- UndirectedGraph@neighbors(u1.graph, 1);
+        b: { to: int64, data: { label: int64, cost: int64 } } <- bs.head;
+        bd: { label: int64, cost: int64 } <- b.data;
+        _: int64 <- live_trial_i64@put("back_cost", bd.cost);
+        f: int64 <- UndirectedGraph@fold_neighbors(u1.graph, 1, 0, cost_step);
+        _: int64 <- live_trial_i64@put("fold_cost", f)
+    produces
+        pure 0
+    end
+}

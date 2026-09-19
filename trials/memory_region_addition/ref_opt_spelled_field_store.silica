@@ -1,0 +1,41 @@
+// Recursive tuples (§4.2.2): a ref(L, normal, T) is stored into a record field and a parameter typed
+// with the spelled optional reference ref?(L, normal, T), T = (atom, int64, ref?(L, normal, rec)), and
+// the spelled field is read back through a ref?(L, normal, rec) parameter. Formerly the second half
+// of project-bees SD-4 (E2003 "type mismatch" when a ref met the spelled ref? type).
+// Expected: exit 9 (4 + 5).
+
+fn push(r: region(L, normal), top: ref?(L, normal, (atom, int64, ref?(L, normal, rec))), v: int64) -> { r: region(L, normal), root: ref?(L, normal, (atom, int64, ref?(L, normal, rec))) } {
+    sequence proc[mem(normal)]
+        cell: ref(L, normal, (atom, int64, ref?(L, normal, rec))) <- alloc_rec(r, (:ok, v, top))
+    produces pure { r: r, root: cell } end
+}
+
+fn node_value(c: ref(L, normal, (atom, int64, ref?(L, normal, rec)))) -> int64 {
+    sequence proc[mem(normal)]
+        node: (atom, int64, ref?(L, normal, rec)) <- read_ref(c);
+        (_: atom, v: int64, _: ref?(L, normal, rec)) <- node
+    produces pure v end
+}
+
+fn node_next(c: ref(L, normal, (atom, int64, ref?(L, normal, rec)))) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        node: (atom, int64, ref?(L, normal, rec)) <- read_ref(c);
+        (_: atom, _: int64, n: ref?(L, normal, rec)) <- node
+    produces pure n end
+}
+
+fn sum(top: ref?(L, normal, rec), acc: int64) -> int64 {
+    case top of {
+        :none -> acc;
+        c: ref(L, normal, (atom, int64, ref?(L, normal, rec))) -> sum(node_next(c), acc + node_value(c))
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        r: region(L, normal) <- alloc_region(normal);
+        s1: { r: region(L, normal), root: ref?(L, normal, (atom, int64, ref?(L, normal, rec))) } <- push(r, :none, 4);
+        s2: { r: region(L, normal), root: ref?(L, normal, (atom, int64, ref?(L, normal, rec))) } <- push(r, s1.root, 5)
+    produces pure sum(s2.root, 0) end
+}

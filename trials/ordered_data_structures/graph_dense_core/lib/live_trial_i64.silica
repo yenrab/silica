@@ -1,0 +1,217 @@
+// Trial-only int64 helpers for the graph suites (graph_live_core, graph_collections, graph_csr_core,
+// graph_dense_core; one identical copy per suite):
+// comparators and extractors, constructors through the public live-graph modules, update streams,
+// list/view codes and a printing helper.
+// cmp_i64 stays the first function: the emitter numbers :less/:equal/:greater in first-use order.
+// Codes: list_code packs a list of values below 100 as base-100 digits after a leading 1, so
+// [5, 20] reads 10520 and the empty list reads 1; view_code packs {to, data} views as to*100+data
+// base-10000 digits after a leading 1, so [{to: 3, data: 7}] reads 10307.
+
+use graph_wbt_directed;
+use graph_wbt_undirected;
+use graph_weighted;
+use graph_weighted_undirected;
+
+export cmp_i64/2;
+export cmp_unit/2;
+export ident/1;
+export hundreds/1;
+export twice/1;
+export b2i/1;
+export cmp_code/1;
+export put/2;
+export list_code/1;
+export list_code3/1;
+export view_code/1;
+export new_d/0;
+export new_u/0;
+export new_wd/0;
+export new_wu/0;
+export new_unit/0;
+export add_d/3;
+export add_u/4;
+export add_wd/4;
+export add_wu/4;
+export add_d_pairs/2;
+export add_u_triples/2;
+export flags/2;
+export d_valid/1;
+export u_valid/1;
+export lcg/1;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn cmp_unit(a: unit, b: unit) -> :less | :equal | :greater {
+    :equal
+}
+
+fn ident(x: int64) -> int64 {
+    x
+}
+
+// Custom payload extractor: payload t*100 + label targets t.
+fn hundreds(x: int64) -> int64 {
+    x / 100
+}
+
+fn twice(x: int64) -> int64 {
+    x * 2
+}
+
+fn b2i(b: boolean) -> int64 {
+    case b of {
+        true -> 1;
+        false -> 0
+    }
+}
+
+fn cmp_code(c: :less | :equal | :greater) -> int64 {
+    case c of {
+        :less -> 1;
+        :equal -> 2;
+        :greater -> 3
+    }
+}
+
+// Prints "label value" on one line.
+fn put(label: string, v: int64) -> int64 {
+    sequence proc[device_io]
+        print_string(label);
+        print_string(" ");
+        print_int64(v);
+        println("")
+    produces
+        pure 0
+    end
+}
+
+fn list_code_go(xs: List[int64, mem(normal)], acc: int64) -> int64 {
+    case xs.is_nil of {
+        true -> acc;
+        false -> list_code_go(xs.tail, acc * 100 + xs.head)
+    }
+}
+
+fn list_code(xs: List[int64, mem(normal)]) -> int64 {
+    list_code_go(xs, 1)
+}
+
+fn list_code3_go(xs: List[int64, mem(normal)], acc: int64) -> int64 {
+    case xs.is_nil of {
+        true -> acc;
+        false -> list_code3_go(xs.tail, acc * 1000 + xs.head)
+    }
+}
+
+// Base-1000 digits after a leading 1, for values below 1000: [207, 309] reads 1207309.
+fn list_code3(xs: List[int64, mem(normal)]) -> int64 {
+    list_code3_go(xs, 1)
+}
+
+fn view_code_go(xs: List[{ to: int64, data: int64 }, mem(normal)], acc: int64) -> int64 {
+    case xs.is_nil of {
+        true -> acc;
+        false -> {
+            w: { to: int64, data: int64 } <- xs.head;
+            view_code_go(xs.tail, acc * 10000 + w.to * 100 + w.data)
+        }
+    }
+}
+
+fn view_code(xs: List[{ to: int64, data: int64 }, mem(normal)]) -> int64 {
+    view_code_go(xs, 1)
+}
+
+fn new_d() -> { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge: fn(int64, int64) -> :less | :equal | :greater, edge_target: fn(int64) -> int64, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, compare_node_ordering_bundle: int64, compare_edge_ordering_bundle: int64, edge_target_ordering_bundle: int64 } {
+    graph_wbt_directed@empty({ compare_node: cmp_i64, compare_edge: cmp_i64, edge_target: ident })
+}
+
+fn new_u() -> { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64 } {
+    graph_wbt_undirected@empty({ compare_node: cmp_i64, compare_edge_data: cmp_i64 })
+}
+
+fn new_wd() -> { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, edge_weight: fn(int64) -> int64, compare_weight: fn(int64, int64) -> :less | :equal | :greater, compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64, edge_weight_ordering_bundle: int64, compare_weight_ordering_bundle: int64 } {
+    graph_weighted@empty({ compare_node: cmp_i64, compare_edge_data: cmp_i64, edge_weight: twice, compare_weight: cmp_i64 })
+}
+
+fn new_wu() -> { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, edge_weight: fn(int64) -> int64, compare_weight: fn(int64, int64) -> :less | :equal | :greater, compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_token: int64, compare_edge_data_ordering_token: int64, edge_weight_ordering_token: int64, compare_weight_ordering_token: int64 } {
+    graph_weighted_undirected@empty({ compare_node: cmp_i64, compare_edge_data: cmp_i64, edge_weight: twice, compare_weight: cmp_i64 })
+}
+
+fn new_unit() -> { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(unit, unit) -> :less | :equal | :greater, compare_value: fn(unit, unit) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64 } {
+    graph_wbt_undirected@empty({ compare_node: cmp_i64, compare_edge_data: cmp_unit })
+}
+
+fn add_d(g: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge: fn(int64, int64) -> :less | :equal | :greater, edge_target: fn(int64) -> int64, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, compare_node_ordering_bundle: int64, compare_edge_ordering_bundle: int64, edge_target_ordering_bundle: int64 }, from: int64, edge: int64) -> { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge: fn(int64, int64) -> :less | :equal | :greater, edge_target: fn(int64) -> int64, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, compare_node_ordering_bundle: int64, compare_edge_ordering_bundle: int64, edge_target_ordering_bundle: int64 } {
+    r: { graph: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge: fn(int64, int64) -> :less | :equal | :greater, edge_target: fn(int64) -> int64, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, compare_node_ordering_bundle: int64, compare_edge_ordering_bundle: int64, edge_target_ordering_bundle: int64 }, inserted: boolean, replaced: boolean } <- graph_wbt_directed@add_edge(g, from, edge);
+    r.graph
+}
+
+fn add_u(g: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64 }, a: int64, b: int64, data: int64) -> { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64 } {
+    r: { graph: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64 }, inserted: boolean, replaced: boolean } <- graph_wbt_undirected@add_edge(g, a, b, data);
+    r.graph
+}
+
+fn add_wd(g: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, edge_weight: fn(int64) -> int64, compare_weight: fn(int64, int64) -> :less | :equal | :greater, compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64, edge_weight_ordering_bundle: int64, compare_weight_ordering_bundle: int64 }, a: int64, b: int64, data: int64) -> { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, edge_weight: fn(int64) -> int64, compare_weight: fn(int64, int64) -> :less | :equal | :greater, compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64, edge_weight_ordering_bundle: int64, compare_weight_ordering_bundle: int64 } {
+    r: { graph: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, edge_weight: fn(int64) -> int64, compare_weight: fn(int64, int64) -> :less | :equal | :greater, compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64, edge_weight_ordering_bundle: int64, compare_weight_ordering_bundle: int64 }, inserted: boolean, replaced: boolean } <- graph_weighted@add_edge(g, a, b, data);
+    r.graph
+}
+
+fn add_wu(g: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, edge_weight: fn(int64) -> int64, compare_weight: fn(int64, int64) -> :less | :equal | :greater, compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_token: int64, compare_edge_data_ordering_token: int64, edge_weight_ordering_token: int64, compare_weight_ordering_token: int64 }, a: int64, b: int64, data: int64) -> { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, edge_weight: fn(int64) -> int64, compare_weight: fn(int64, int64) -> :less | :equal | :greater, compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_token: int64, compare_edge_data_ordering_token: int64, edge_weight_ordering_token: int64, compare_weight_ordering_token: int64 } {
+    r: { graph: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, edge_weight: fn(int64) -> int64, compare_weight: fn(int64, int64) -> :less | :equal | :greater, compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_token: int64, compare_edge_data_ordering_token: int64, edge_weight_ordering_token: int64, compare_weight_ordering_token: int64 }, inserted: boolean, replaced: boolean } <- graph_weighted_undirected@add_edge(g, a, b, data);
+    r.graph
+}
+
+// Adds edges from a flat list [from1, edge1, from2, edge2, ...].
+fn add_d_pairs(g: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge: fn(int64, int64) -> :less | :equal | :greater, edge_target: fn(int64) -> int64, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, compare_node_ordering_bundle: int64, compare_edge_ordering_bundle: int64, edge_target_ordering_bundle: int64 }, xs: List[int64, mem(normal)]) -> { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge: fn(int64, int64) -> :less | :equal | :greater, edge_target: fn(int64) -> int64, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, compare_node_ordering_bundle: int64, compare_edge_ordering_bundle: int64, edge_target_ordering_bundle: int64 } {
+    case xs.is_nil of {
+        true -> g;
+        false -> {
+            rest: List[int64, mem(normal)] <- xs.tail;
+            g1: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge: fn(int64, int64) -> :less | :equal | :greater, edge_target: fn(int64) -> int64, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, compare_node_ordering_bundle: int64, compare_edge_ordering_bundle: int64, edge_target_ordering_bundle: int64 } <- add_d(g, xs.head, rest.head);
+            add_d_pairs(g1, rest.tail)
+        }
+    }
+}
+
+// Adds undirected edges from a flat list [a1, b1, data1, a2, b2, data2, ...].
+fn add_u_triples(g: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64 }, xs: List[int64, mem(normal)]) -> { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64 } {
+    case xs.is_nil of {
+        true -> g;
+        false -> {
+            r1: List[int64, mem(normal)] <- xs.tail;
+            r2: List[int64, mem(normal)] <- r1.tail;
+            g1: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64 } <- add_u(g, xs.head, r1.head, r2.head);
+            add_u_triples(g1, r2.tail)
+        }
+    }
+}
+
+// 10 * inserted + replaced.
+fn flags(inserted: boolean, replaced: boolean) -> int64 {
+    10 * b2i(inserted) + b2i(replaced)
+}
+
+// Validation code * 1000 + logical_count.
+fn d_valid(g: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge: fn(int64, int64) -> :less | :equal | :greater, edge_target: fn(int64) -> int64, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, compare_node_ordering_bundle: int64, compare_edge_ordering_bundle: int64, edge_target_ordering_bundle: int64 }) -> int64 {
+    v: { valid: boolean, error: atom, logical_count: int64 } <- graph_wbt_directed@validate(g);
+    graph_wbt_directed@validate_error_code(v.error) * 1000 + v.logical_count
+}
+
+fn u_valid(g: { root: ref?(L, normal, rec), compare_node: fn(int64, int64) -> :less | :equal | :greater, compare_edge_data: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, node_count: int64, edge_count: int64, adjacency_entry_count: int64, compare_node_ordering_bundle: int64, compare_edge_data_ordering_bundle: int64 }) -> int64 {
+    v: { valid: boolean, error: atom, logical_count: int64 } <- graph_wbt_undirected@validate(g);
+    graph_wbt_undirected@validate_error_code(v.error) * 1000 + v.logical_count
+}
+
+// Park–Miller style LCG step for deterministic streams.
+fn lcg(x: int64) -> int64 {
+    (x * 1103515245 + 12345) % 2147483648
+}

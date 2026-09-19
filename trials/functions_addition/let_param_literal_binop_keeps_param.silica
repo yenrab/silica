@@ -1,0 +1,74 @@
+// A let whose right-hand side is `<parameter> <op> <literal>` must leave the parameter intact:
+// `q <- a / 10; a - q` with a = 22 is 20, `q <- a + 1; a + q` is 45. Found while writing
+// tree_collections (a mod-10 comparator written with lets); fixed 2026-09-18. The let's value is
+// computed into X0 (the let destination) before it moves to its callee-saved home, and a
+// single-int64-parameter function kept that parameter in X0 unless the body made a BL, so the let
+// overwrote it (-18 and 46 were printed). A body with a spill-eligible let now takes the int64 ABI
+// entry shadow (the parameter moves to X19 at entry; emitter_core needs_int64_abi_entry_shadow).
+// The parameter was already intact through a call, with two parameters, and without a let.
+// Expected output: 2, 45, 20, -3, 0, 2, then exit 0.
+
+fn id(x: int64) -> int64 {
+    x
+}
+
+// 22 -> 2
+fn sub_after_div_let(a: int64) -> int64 {
+    q: int64 <- a / 10;
+    m: int64 <- q * 10;
+    a - m
+}
+
+// 22 -> 45
+fn add_after_add_let(a: int64) -> int64 {
+    q: int64 <- a + 1;
+    a + q
+}
+
+// 22 -> 20
+fn sub_let_directly(a: int64) -> int64 {
+    q: int64 <- a / 10;
+    a - q
+}
+
+// 22, 3 -> -3 (two parameters: intact)
+fn two_params(a: int64, b: int64) -> int64 {
+    q: int64 <- a + b;
+    a - q
+}
+
+// 22 -> 0 (through a call: intact)
+fn via_call(a: int64) -> int64 {
+    q: int64 <- id(a);
+    a - q
+}
+
+// 22 -> 2 (no let: intact)
+fn no_let(a: int64) -> int64 {
+    a - (a / 10) * 10
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        println("sub_after_div_let (expected 2)");
+        print_int64(sub_after_div_let(22));
+        println("");
+        println("add_after_add_let (expected 45)");
+        print_int64(add_after_add_let(22));
+        println("");
+        println("sub_let_directly (expected 20)");
+        print_int64(sub_let_directly(22));
+        println("");
+        println("two_params (expected -3)");
+        print_int64(two_params(22, 3));
+        println("");
+        println("via_call (expected 0)");
+        print_int64(via_call(22));
+        println("");
+        println("no_let (expected 2)");
+        print_int64(no_let(22));
+        println("")
+    produces
+        pure 0
+    end
+}

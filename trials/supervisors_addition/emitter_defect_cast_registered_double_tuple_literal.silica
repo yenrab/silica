@@ -1,0 +1,94 @@
+// Documented open emitter defect (book-verification 2026-09-19, repro r_tuple2): two
+// cast_registered calls in a row, each with an inline tuple-literal message, deliver the SAME
+// (second) literal to both messages. The supervisor `impl`/`init` live in this unit (with the
+// child id `:adder` minted here too) specifically to keep this trial's atom identical across
+// both cast_registered calls and rule out the separate cross-unit-atom defect (see
+// modules_addition/sd3_cross_unit_atoms*): only ONE thing is under test here.
+//
+// Expected: the worker multiplies each pair as sent -- 3*4=12, then 2*10=20.
+//   12
+//   done
+//   20
+//   done
+//   0
+// Observed: both messages carry the second literal's values (3, 4) is overwritten by (2, 10)
+// before the first cast is read), printing 20 twice:
+//   20
+//   done
+//   20
+//   done
+//   0
+// Suspected cause: an inline aggregate-literal argument to a call is materialized into a
+// reused buffer rather than copied at the call site, so a second call's literal clobbers the
+// first message before the actor mailbox reads it (compare the "Aggregate args are moved" /
+// "Aggregate var arg not promoted" family of known defects -- this is the inverse shape: the
+// INLINE literal is the one that is not promoted; a let-bound literal works, see
+// working_cast_registered_double_bound_literal.silica).
+
+use Supervisor;
+use calf_double_tuple;
+
+impl DoubleTupleSup for Supervisor;
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: (int64, int64), state: int64) -> (:no_reply, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: (int64, int64), state: int64) -> (:no_reply, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :adder,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: calf_double_tuple@multiply_and_print,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        _: supervisor_ref <- spawn_registered_supervisor(DoubleTupleSup, 0, :double_tuple_supervisor, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_registered(:adder, (3, 4) impl ActorMessage {});
+        _: boolean <- cast_registered(:adder, (2, 10) impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

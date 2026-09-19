@@ -1,0 +1,32 @@
+// Documented open type-checker defect (book-verification 2026-09-19). Spec §12.1.4 is explicit
+// that a lifetime named in a function signature is a polymorphic parameter, not a fixed name to
+// match literally: "Lifetime identifiers are obtained via `fresh_lifetime()`; functions may take
+// `L: lifetime` as a parameter for polymorphism." Confirmed before filing this trial.
+//
+// A function written with `ref(L, normal, int64)` (or `ref?(L, ...)`) should accept an argument
+// whose region was created under ANY lifetime name -- `L` is a bound parameter name local to the
+// callee's signature, exactly like an ordinary value parameter name never needing to match the
+// caller's variable name. Here the caller's lifetime happens to be named `L1`; renaming it to
+// `L` (matching the callee's spelling) makes this exact program compile and run today, which is
+// the defect: the checker is comparing the lifetime identifier's SOURCE SPELLING instead of
+// treating it as a polymorphic binder matched structurally by position.
+// Expected: reads back 42, exit 42.
+// Observed: E2003 "type mismatch: x" at the call site.
+
+fn leg_length(leg: ref(L, normal, int64)) -> int64 {
+    sequence proc[mem(normal)]
+        v: int64 <- read_ref(leg)
+    produces
+        pure v
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        x: ref(L1, normal, int64) <- alloc_ref(r, 42)
+    produces
+        pure leg_length(x)
+    end
+}

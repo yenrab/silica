@@ -1,0 +1,8450 @@
+.bss
+.balign 8
+.lcomm _silica_frame_depth, 8
+.lcomm _silica_frame_max, 8
+.lcomm _silica_fuel, 8
+.lcomm _silica_saved_pc, 8
+
+.text
+    ; use wbt_map, wbt_set, graph_wbt_core
+.global graph_csr_core_arena_key
+.global graph_csr_core_freeze
+.global graph_csr_core_slot_of
+.global graph_csr_core_has_vertex
+.global graph_csr_core_node_at
+.global graph_csr_core_has_entry
+.global graph_csr_core_entry_value
+.global graph_csr_core_lookup
+.global graph_csr_core_degree
+.global graph_csr_core_self_loop_count
+.global graph_csr_core_values
+.global graph_csr_core_wrappers
+.global graph_csr_core_vertices
+.global graph_csr_core_fold_values
+.global graph_csr_core_fold_wrappers
+.global graph_csr_core_fold_vertices
+.global graph_csr_core_fold_entries
+.global graph_csr_core_fold_entries_wrapped
+.global graph_csr_core_fold_entries_canonical
+.global graph_csr_core_entry_list
+.global graph_csr_core_reachable
+.global graph_csr_core_validate_directed
+.global graph_csr_core_validate_keyed
+.global graph_csr_core_validate_undirected
+.global graph_csr_core_asymmetry_error
+.global graph_csr_core_validate_error_code
+.extern _silica_rt_ffi_guarded_enter
+.extern _silica_rt_ffi_guarded_exit
+.extern _silica_rt_ffi_guarded_setjmp
+.extern _silica_rt_ffi_guarded_fault_finish
+.extern _silica_rt_ffi_arena_bump
+
+    ; --- recursion phases (recursion_implementation.jsonld) ---
+    ; p1: explicit frame fields; p2: push/dispatch/pop; p3: fuel on back-edges
+    ; p4: PC/source map hooks; p5: tail BR (see emit_tail_call_body); p6: trampoline fallback
+
+    ; p4 observability: frame -> (fn id, source id) map; filter trampoline frames
+
+    ; p6 trampoline fallback (optional):
+    ; _silica_trampoline_dispatch: load target from frame / BR X8
+    ; never rely on unbounded native recursion for general calls
+
+
+
+graph_csr_core_compare_raw:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X17, X19
+    STR X17, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    LDR X17, [SP, #0]
+    ; effects []|sir_rec:o2950|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    BLR X17
+    MOV X1, X0
+    ADD SP, SP, #16
+    MOV X0, X1
+    CMP X0, #23
+    B.EQ 1f
+    CMP X0, #24
+    B.EQ 1f
+    CMP X0, #25
+    B.EQ 1f
+    MOV X0, #26
+1:
+
+    MOV X22, X0
+    MOV X0, X22
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_compare_value_raw:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X17, X19
+    STR X17, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    LDR X17, [SP, #0]
+    ; effects []|sir_rec:o3189|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    BLR X17
+    MOV X1, X0
+    ADD SP, SP, #16
+    MOV X0, X1
+    CMP X0, #23
+    B.EQ 1f
+    CMP X0, #24
+    B.EQ 1f
+    CMP X0, #25
+    B.EQ 1f
+    MOV X0, #26
+1:
+
+    MOV X22, X0
+    MOV X0, X22
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_invalid_halt:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X9, #1
+    MOV X10, #0
+
+
+    CMP X10, #0
+    B.NE 1f
+    BL _silica_rt_badarith
+1:
+    SDIV X0, X9, X10
+    MOV X0, #24
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_freeze_halt:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X9, #1
+    MOV X10, #0
+
+
+    CMP X10, #0
+    B.NE 1f
+    BL _silica_rt_badarith
+1:
+    SDIV X0, X9, X10
+
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_value_halt:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X9, #1
+    MOV X10, #0
+
+
+    CMP X10, #0
+    B.NE 1f
+    BL _silica_rt_badarith
+1:
+    SDIV X0, X9, X10
+    MOV X9, X19
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o3731|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_value_halt@PAGE
+    ADD X9, X9, graph_csr_core_value_halt@PAGEOFF
+    BLR X9
+
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_b2i:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X3, X19
+L_case_o3794_br_0:
+    CMP W3, #1
+    B.NE L_case_o3794_br_1
+    MOV X0, #1
+    B L_case_o3794_done
+L_case_o3794_br_1:
+    CMP W3, #0
+    B.NE L_case_o3794_fb
+    MOV X0, #0
+    B L_case_o3794_done
+L_case_o3794_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o3794_done
+L_case_o3794_done:
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_cmp_slot:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X9, X19
+    MOV X10, X20
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o3985_br_0:
+    CMP W3, #1
+    B.NE L_case_o3985_br_1
+    MOV X0, #23
+    B L_case_o3985_done
+L_case_o3985_br_1:
+    CMP W3, #0
+    B.NE L_case_o3985_fb
+    MOV X9, X19
+    MOV X10, X20
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o4041_br_0:
+    CMP W3, #1
+    B.NE L_case_o4041_br_1
+    MOV X0, #24
+    B L_case_o4041_done
+L_case_o4041_br_1:
+    CMP W3, #0
+    B.NE L_case_o4041_fb
+    MOV X0, #25
+    B L_case_o4041_done
+L_case_o4041_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o4041_done
+L_case_o4041_done:
+
+    B L_case_o3985_done
+L_case_o3985_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o3985_done
+L_case_o3985_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_arena_key:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #91
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_compare_nodes:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #16
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    LDR X16, [X19, #40]
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o4701|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_compare_raw@PAGE
+    ADD X9, X9, graph_csr_core_compare_raw@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X3, X22
+L_case_o4761_br_0:
+    MOV X4, #23
+    CMP X3, X4
+    B.NE L_case_o4761_br_1
+    MOV X0, #23
+    B L_case_o4761_done
+L_case_o4761_br_1:
+    MOV X4, #24
+    CMP X3, X4
+    B.NE L_case_o4761_br_2
+    MOV X0, #24
+    B L_case_o4761_done
+L_case_o4761_br_2:
+    MOV X4, #25
+    CMP X3, X4
+    B.NE L_case_o4761_br_3
+    MOV X0, #25
+    B L_case_o4761_done
+L_case_o4761_br_3:
+    STR X3, [X29, #-16]
+
+    LDR X16, [X29, #-16]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4895|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_invalid_halt@PAGE
+    ADD X9, X9, graph_csr_core_invalid_halt@PAGEOFF
+    BLR X9
+
+    B L_case_o4761_done
+L_case_o4761_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o4761_done
+L_case_o4761_done:
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_compare_values:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #16
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    LDR X16, [X19, #48]
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o5469|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_compare_value_raw@PAGE
+    ADD X9, X9, graph_csr_core_compare_value_raw@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X3, X22
+L_case_o5537_br_0:
+    MOV X4, #23
+    CMP X3, X4
+    B.NE L_case_o5537_br_1
+    MOV X0, #23
+    B L_case_o5537_done
+L_case_o5537_br_1:
+    MOV X4, #24
+    CMP X3, X4
+    B.NE L_case_o5537_br_2
+    MOV X0, #24
+    B L_case_o5537_done
+L_case_o5537_br_2:
+    MOV X4, #25
+    CMP X3, X4
+    B.NE L_case_o5537_br_3
+    MOV X0, #25
+    B L_case_o5537_done
+L_case_o5537_br_3:
+    STR X3, [X29, #-16]
+
+    LDR X16, [X29, #-16]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o5671|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_invalid_halt@PAGE
+    ADD X9, X9, graph_csr_core_invalid_halt@PAGEOFF
+    BLR X9
+
+    B L_case_o5537_done
+L_case_o5537_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o5537_done
+L_case_o5537_done:
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_nodes_equal:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o6219|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_compare_nodes@PAGE
+    ADD X9, X9, graph_csr_core_compare_nodes@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X3, X22
+L_case_o6248_br_0:
+    MOV X4, #24
+    CMP X3, X4
+    B.NE L_case_o6248_br_1
+    MOV X0, #1
+    B L_case_o6248_done
+L_case_o6248_br_1:
+    MOV X0, #0
+    B L_case_o6248_done
+L_case_o6248_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o6248_done
+L_case_o6248_done:
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_off:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    LDR X1, [X19, #8]
+    MOV X2, X20
+
+    LDR X0, [X1, X2, LSL #3]
+    MOV X21, X0
+    MOV X0, X21
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_node_at:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    LDR X1, [X19, #0]
+    MOV X2, X20
+
+    LDR X0, [X1, X2, LSL #3]
+    MOV X21, X0
+    MOV X0, X21
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_target_at:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    LDR X1, [X19, #16]
+    MOV X2, X20
+
+    LDR X0, [X1, X2, LSL #3]
+    MOV X21, X0
+    MOV X0, X21
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_value_at:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    LDR X1, [X19, #24]
+    MOV X2, X20
+
+    LDR X0, [X1, X2, LSL #3]
+    MOV X21, X0
+    MOV X0, X21
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_slot_map:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #448
+    STP X19, X20, [SP, #-16]!
+    MOV X11, X0
+
+    LDR X9, [X11, #32]
+    STR X9, [X29, #-64]
+    LDR X9, [X11, #40]
+    STR X9, [X29, #-56]
+    ADRP X9, graph_csr_core_cmp_slot@PAGE
+    ADD X9, X9, graph_csr_core_cmp_slot@PAGEOFF
+
+    STR X9, [X29, #-48]
+    LDR X9, [X11, #56]
+    STR X9, [X29, #-40]
+    LDR X9, [X11, #64]
+    STR X9, [X29, #-32]
+    MOV X9, #0
+    STR X9, [X29, #-24]
+    MOV X9, #0
+    STR X9, [X29, #-16]
+    SUB X0, X29, #64
+    MOV X19, X0
+    MOV X0, X19
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #64
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #448
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_slot_of:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o10982|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_map@PAGE
+    ADD X9, X9, graph_csr_core_slot_map@PAGEOFF
+    BLR X9
+
+    MOV X21, X0
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, #-1
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o11054|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_map_get@PAGE
+    ADD X9, X9, wbt_map_get@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    LDR X0, [X22, #8]
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_has_vertex:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X10, #0
+
+
+    STR X10, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o11560|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_of@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X0, GE
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_row_find:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X9, X20
+    MOV X10, X21
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o12357_br_0:
+    CMP W3, #1
+    B.NE L_case_o12357_br_1
+    MOV X0, #-1
+    B L_case_o12357_done
+L_case_o12357_br_1:
+    CMP W3, #0
+    B.NE L_case_o12357_fb
+    MOV X9, X20
+    STR X9, [SP, #-16]!
+    MOV X10, #2
+    STR X10, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, X20
+
+
+    SUB X9, X9, X10
+    LDR X10, [SP], #16
+
+
+    CMP X10, #0
+    B.NE 1f
+    BL _silica_rt_badarith
+1:
+    SDIV X10, X9, X10
+    LDR X9, [SP], #16
+
+
+    ADD X0, X9, X10
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o12487|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_target_at@PAGE
+    ADD X9, X9, graph_csr_core_target_at@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o12551|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_compare_nodes@PAGE
+    ADD X9, X9, graph_csr_core_compare_nodes@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X3, X25
+L_case_o12589_br_0:
+    MOV X4, #23
+    CMP X3, X4
+    B.NE L_case_o12589_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o12626|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_row_find@PAGE
+    ADD X9, X9, graph_csr_core_row_find@PAGEOFF
+    BLR X9
+
+    B L_case_o12589_done
+L_case_o12589_br_1:
+    MOV X4, #24
+    CMP X3, X4
+    B.NE L_case_o12589_br_2
+    MOV X0, X23
+    B L_case_o12589_done
+L_case_o12589_br_2:
+    MOV X4, #25
+    CMP X3, X4
+    B.NE L_case_o12589_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X23
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o12712|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_row_find@PAGE
+    ADD X9, X9, graph_csr_core_row_find@PAGEOFF
+    BLR X9
+
+    B L_case_o12589_done
+L_case_o12589_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o12589_done
+L_case_o12589_done:
+
+
+
+
+    B L_case_o12357_done
+L_case_o12357_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o12357_done
+L_case_o12357_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_find_entry:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o13309|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_of@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X9, X22
+    MOV X10, #0
+
+
+
+    CMP X9, X10
+    CSET X3, LT
+
+L_case_o13332_br_0:
+    CMP W3, #1
+    B.NE L_case_o13332_br_1
+    MOV X0, #-1
+    B L_case_o13332_done
+L_case_o13332_br_1:
+    CMP W3, #0
+    B.NE L_case_o13332_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o13412|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X22
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o13449|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o13477|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_row_find@PAGE
+    ADD X9, X9, graph_csr_core_row_find@PAGEOFF
+    BLR X9
+
+
+
+    B L_case_o13332_done
+L_case_o13332_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o13332_done
+L_case_o13332_done:
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_has_entry:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X10, #0
+
+
+    STR X10, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o14000|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_find_entry@PAGE
+    ADD X9, X9, graph_csr_core_find_entry@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X0, GE
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_entry_value:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o14616|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_find_entry@PAGE
+    ADD X9, X9, graph_csr_core_find_entry@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X9, X22
+    MOV X10, #0
+
+
+
+    CMP X9, X10
+    CSET X3, LT
+
+L_case_o14646_br_0:
+    CMP W3, #1
+    B.NE L_case_o14646_br_1
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o14678|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_value_halt@PAGE
+    ADD X9, X9, graph_csr_core_value_halt@PAGEOFF
+    BLR X9
+
+    B L_case_o14646_done
+L_case_o14646_br_1:
+    CMP W3, #0
+    B.NE L_case_o14646_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o14710|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_value_at@PAGE
+    ADD X9, X9, graph_csr_core_value_at@PAGEOFF
+    BLR X9
+
+    B L_case_o14646_done
+L_case_o14646_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o14646_done
+L_case_o14646_done:
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_lookup:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #32
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o15289|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_find_entry@PAGE
+    ADD X9, X9, graph_csr_core_find_entry@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X9, X23
+    MOV X10, #0
+
+
+
+    CMP X9, X10
+    CSET X3, LT
+
+L_case_o15319_br_0:
+    CMP W3, #1
+    B.NE L_case_o15319_br_1
+    MOV X9, #19
+    STR X9, [X29, #-16]
+    MOV X9, X22
+    STR X9, [X29, #-8]
+    SUB X0, X29, #16
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    B L_case_o15319_done
+L_case_o15319_br_1:
+    CMP W3, #0
+    B.NE L_case_o15319_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o15442|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_value_at@PAGE
+    ADD X9, X9, graph_csr_core_value_at@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X9, #18
+    STR X9, [X29, #-16]
+    MOV X9, X24
+    STR X9, [X29, #-8]
+    SUB X0, X29, #16
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    B L_case_o15319_done
+L_case_o15319_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o15319_done
+L_case_o15319_done:
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #32
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_degree:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o16073|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_of@PAGEOFF
+    BLR X9
+
+    MOV X21, X0
+    MOV X9, X21
+    MOV X10, #0
+
+
+
+    CMP X9, X10
+    CSET X3, LT
+
+L_case_o16094_br_0:
+    CMP W3, #1
+    B.NE L_case_o16094_br_1
+    MOV X0, #0
+    B L_case_o16094_done
+L_case_o16094_br_1:
+    CMP W3, #0
+    B.NE L_case_o16094_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o16146|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o16163|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X9, [SP], #16
+
+
+    SUB X0, X9, X10
+    B L_case_o16094_done
+L_case_o16094_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o16094_done
+L_case_o16094_done:
+
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_self_loop_count:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o16655|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_has_entry@PAGE
+    ADD X9, X9, graph_csr_core_has_entry@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ADRP X9, graph_csr_core_b2i@PAGE
+    ADD X9, X9, graph_csr_core_b2i@PAGEOFF
+    BLR X9
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_values_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X9, X21
+    MOV X10, X20
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o17602_br_0:
+    CMP W3, #1
+    B.NE L_case_o17602_br_1
+    MOV X0, X22
+    B L_case_o17602_done
+L_case_o17602_br_1:
+    CMP W3, #0
+    B.NE L_case_o17602_fb
+    LDR X1, [X19, #24]
+    MOV X2, X21
+
+    LDR X0, [X1, X2, LSL #3]
+    MOV X23, X0
+    MOV X2, X22
+    STR X2, [SP, #-16]!
+    MOV X1, X23
+    LDR X2, [SP], #16
+    MOV X3, #8
+    MOV X4, #16
+    MOV X5, #0
+    BL L_list_prepend_helper
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    SUB X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o17890|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_values_go@PAGE
+    ADD X9, X9, graph_csr_core_values_go@PAGEOFF
+    BLR X9
+
+
+
+    B L_case_o17602_done
+L_case_o17602_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o17602_done
+L_case_o17602_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_wrappers_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #32
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X9, X21
+    MOV X10, X20
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o18532_br_0:
+    CMP W3, #1
+    B.NE L_case_o18532_br_1
+    MOV X0, X22
+    B L_case_o18532_done
+L_case_o18532_br_1:
+    CMP W3, #0
+    B.NE L_case_o18532_fb
+    LDR X1, [X19, #16]
+    MOV X2, X21
+
+    LDR X0, [X1, X2, LSL #3]
+    MOV X23, X0
+    LDR X1, [X19, #24]
+    MOV X2, X21
+
+    LDR X0, [X1, X2, LSL #3]
+    MOV X24, X0
+    MOV X9, X23
+    STR X9, [X29, #-16]
+    MOV X9, X24
+    STR X9, [X29, #-8]
+    SUB X0, X29, #16
+    MOV X25, X0
+    MOV X2, X22
+    STR X2, [SP, #-16]!
+    MOV X1, X25
+    LDR X2, [SP], #16
+    STP X1, X2, [SP, #-16]!
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    LDP X1, X2, [SP], #16
+    LDR X3, [X1, #0]
+    STR X3, [X0, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X0, #8]
+    MOV X1, X0
+    MOV X3, #8
+    MOV X4, #16
+    MOV X5, #0
+    BL L_list_prepend_helper
+
+    MOV X26, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    SUB X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o18996|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_wrappers_go@PAGE
+    ADD X9, X9, graph_csr_core_wrappers_go@PAGEOFF
+    BLR X9
+
+
+
+
+
+    B L_case_o18532_done
+L_case_o18532_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o18532_done
+L_case_o18532_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #32
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_keys_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X9, X20
+    MOV X10, #0
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o19575_br_0:
+    CMP W3, #1
+    B.NE L_case_o19575_br_1
+    MOV X0, X21
+    B L_case_o19575_done
+L_case_o19575_br_1:
+    CMP W3, #0
+    B.NE L_case_o19575_fb
+    LDR X1, [X19, #0]
+    MOV X2, X20
+
+    LDR X0, [X1, X2, LSL #3]
+    MOV X22, X0
+    MOV X2, X21
+    STR X2, [SP, #-16]!
+    MOV X1, X22
+    LDR X2, [SP], #16
+    MOV X3, #8
+    MOV X4, #16
+    MOV X5, #0
+    BL L_list_prepend_helper
+
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    SUB X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o19858|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_keys_go@PAGE
+    ADD X9, X9, graph_csr_core_keys_go@PAGEOFF
+    BLR X9
+
+
+
+    B L_case_o19575_done
+L_case_o19575_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o19575_done
+L_case_o19575_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_empty_values:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #0
+
+    MOV X19, X0
+    MOV X0, X19
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_empty_wrappers:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #0
+
+    MOV X19, X0
+    MOV X0, X19
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_empty_keys:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #0
+
+    MOV X19, X0
+    MOV X0, X19
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_values:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o21066|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_of@PAGEOFF
+    BLR X9
+
+    MOV X21, X0
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o21122|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_empty_values@PAGE
+    ADD X9, X9, graph_csr_core_empty_values@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X9, X21
+    MOV X10, #0
+
+
+
+    CMP X9, X10
+    CSET X3, LT
+
+L_case_o21142_br_0:
+    CMP W3, #1
+    B.NE L_case_o21142_br_1
+    MOV X0, X22
+    B L_case_o21142_done
+L_case_o21142_br_1:
+    CMP W3, #0
+    B.NE L_case_o21142_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o21221|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o21258|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X9, X24
+    MOV X10, #1
+
+
+    SUB X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o21286|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_values_go@PAGE
+    ADD X9, X9, graph_csr_core_values_go@PAGEOFF
+    BLR X9
+
+
+
+    B L_case_o21142_done
+L_case_o21142_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o21142_done
+L_case_o21142_done:
+
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_wrappers:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o21853|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_of@PAGEOFF
+    BLR X9
+
+    MOV X21, X0
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o21932|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_empty_wrappers@PAGE
+    ADD X9, X9, graph_csr_core_empty_wrappers@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X9, X21
+    MOV X10, #0
+
+
+
+    CMP X9, X10
+    CSET X3, LT
+
+L_case_o21954_br_0:
+    CMP W3, #1
+    B.NE L_case_o21954_br_1
+    MOV X0, X22
+    B L_case_o21954_done
+L_case_o21954_br_1:
+    CMP W3, #0
+    B.NE L_case_o21954_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o22033|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o22070|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X9, X24
+    MOV X10, #1
+
+
+    SUB X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o22098|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_wrappers_go@PAGE
+    ADD X9, X9, graph_csr_core_wrappers_go@PAGEOFF
+    BLR X9
+
+
+
+    B L_case_o21954_done
+L_case_o21954_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o21954_done
+L_case_o21954_done:
+
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_vertices:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o22650|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_empty_keys@PAGE
+    ADD X9, X9, graph_csr_core_empty_keys@PAGEOFF
+    BLR X9
+
+    MOV X20, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X9, [X19, #72]
+
+    MOV X10, #1
+
+
+
+    SUB X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o22668|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_keys_go@PAGE
+    ADD X9, X9, graph_csr_core_keys_go@PAGEOFF
+    BLR X9
+
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fold_values_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+
+    MOV X9, X20
+    MOV X10, X21
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o23237_br_0:
+    CMP W3, #1
+    B.NE L_case_o23237_br_1
+    MOV X0, X22
+    B L_case_o23237_done
+L_case_o23237_br_1:
+    CMP W3, #0
+    B.NE L_case_o23237_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o23323|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_value_at@PAGE
+    ADD X9, X9, graph_csr_core_value_at@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X17, X23
+    STR X17, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    LDR X17, [SP, #0]
+    ; effects []|sir_rec:o23382|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    BLR X17
+    MOV X16, X0
+    ADD SP, SP, #16
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o23352|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_values_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_values_go@PAGEOFF
+    BLR X9
+
+
+    B L_case_o23237_done
+L_case_o23237_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o23237_done
+L_case_o23237_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fold_wrappers_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #32
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+
+    MOV X9, X20
+    MOV X10, X21
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o23978_br_0:
+    CMP W3, #1
+    B.NE L_case_o23978_br_1
+    MOV X0, X22
+    B L_case_o23978_done
+L_case_o23978_br_1:
+    CMP W3, #0
+    B.NE L_case_o23978_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o24062|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_target_at@PAGE
+    ADD X9, X9, graph_csr_core_target_at@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o24108|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_value_at@PAGE
+    ADD X9, X9, graph_csr_core_value_at@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X9, X24
+    STR X9, [X29, #-16]
+    MOV X9, X25
+    STR X9, [X29, #-8]
+    SUB X0, X29, #16
+    MOV X26, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X17, X23
+    STR X17, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    LDR X17, [SP, #0]
+    ; effects []|sir_rec:o24240|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    BLR X17
+    MOV X16, X0
+    ADD SP, SP, #16
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o24208|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_wrappers_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_wrappers_go@PAGEOFF
+    BLR X9
+
+
+
+
+    B L_case_o23978_done
+L_case_o23978_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o23978_done
+L_case_o23978_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #32
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fold_values:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o24813|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_of@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X9, X23
+    MOV X10, #0
+
+
+
+    CMP X9, X10
+    CSET X3, LT
+
+L_case_o24834_br_0:
+    CMP W3, #1
+    B.NE L_case_o24834_br_1
+    MOV X0, X20
+    B L_case_o24834_done
+L_case_o24834_br_1:
+    CMP W3, #0
+    B.NE L_case_o24834_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o24916|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X23
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o24953|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o24981|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_values_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_values_go@PAGEOFF
+    BLR X9
+
+
+
+    B L_case_o24834_done
+L_case_o24834_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o24834_done
+L_case_o24834_done:
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fold_wrappers:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o25598|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_of@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X9, X23
+    MOV X10, #0
+
+
+
+    CMP X9, X10
+    CSET X3, LT
+
+L_case_o25619_br_0:
+    CMP W3, #1
+    B.NE L_case_o25619_br_1
+    MOV X0, X20
+    B L_case_o25619_done
+L_case_o25619_br_1:
+    CMP W3, #0
+    B.NE L_case_o25619_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o25701|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X23
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o25738|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o25766|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_wrappers_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_wrappers_go@PAGEOFF
+    BLR X9
+
+
+
+    B L_case_o25619_done
+L_case_o25619_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o25619_done
+L_case_o25619_done:
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fold_vertices_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X9, X20
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #72]
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o26347_br_0:
+    CMP W3, #1
+    B.NE L_case_o26347_br_1
+    MOV X0, X21
+    B L_case_o26347_done
+L_case_o26347_br_1:
+    CMP W3, #0
+    B.NE L_case_o26347_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o26442|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_node_at@PAGE
+    ADD X9, X9, graph_csr_core_node_at@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X17, X22
+    STR X17, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    LDR X17, [SP, #0]
+    ; effects []|sir_rec:o26498|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    BLR X17
+    MOV X16, X0
+    ADD SP, SP, #16
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o26470|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_vertices_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_vertices_go@PAGEOFF
+    BLR X9
+
+
+    B L_case_o26347_done
+L_case_o26347_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o26347_done
+L_case_o26347_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fold_vertices:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    MOV X11, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X16, X11
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    MOV X16, X2
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o27106|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, graph_csr_core_fold_vertices_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_vertices_go@PAGEOFF
+    BR X9
+
+
+graph_csr_core_fold_row_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+
+    MOV X9, X21
+    MOV X10, X22
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o27698_br_0:
+    CMP W3, #1
+    B.NE L_case_o27698_br_1
+    MOV X0, X23
+    B L_case_o27698_done
+L_case_o27698_br_1:
+    CMP W3, #0
+    B.NE L_case_o27698_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o27784|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_value_at@PAGE
+    ADD X9, X9, graph_csr_core_value_at@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X17, X24
+    STR X17, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    LDR X17, [SP, #0]
+    ; effects []|sir_rec:o27846|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    BLR X17
+    MOV X16, X0
+    ADD SP, SP, #16
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o27813|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_row_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_row_go@PAGEOFF
+    BLR X9
+
+
+    B L_case_o27698_done
+L_case_o27698_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o27698_done
+L_case_o27698_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fold_entries_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X9, X20
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #72]
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o28422_br_0:
+    CMP W3, #1
+    B.NE L_case_o28422_br_1
+    MOV X0, X21
+    B L_case_o28422_done
+L_case_o28422_br_1:
+    CMP W3, #0
+    B.NE L_case_o28422_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o28520|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_node_at@PAGE
+    ADD X9, X9, graph_csr_core_node_at@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o28561|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o28598|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o28641|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_row_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_row_go@PAGEOFF
+    BLR X9
+
+    MOV X26, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o28695|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_entries_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_entries_go@PAGEOFF
+    BLR X9
+
+
+
+
+
+    B L_case_o28422_done
+L_case_o28422_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o28422_done
+L_case_o28422_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fold_entries:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    MOV X11, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X16, X11
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    MOV X16, X2
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o29361|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, graph_csr_core_fold_entries_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_entries_go@PAGEOFF
+    BR X9
+
+
+graph_csr_core_fold_wrow_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #32
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+
+    MOV X9, X21
+    MOV X10, X22
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o29976_br_0:
+    CMP W3, #1
+    B.NE L_case_o29976_br_1
+    MOV X0, X23
+    B L_case_o29976_done
+L_case_o29976_br_1:
+    CMP W3, #0
+    B.NE L_case_o29976_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o30060|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_target_at@PAGE
+    ADD X9, X9, graph_csr_core_target_at@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o30106|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_value_at@PAGE
+    ADD X9, X9, graph_csr_core_value_at@PAGEOFF
+    BLR X9
+
+    MOV X26, X0
+    MOV X9, X25
+    STR X9, [X29, #-16]
+    MOV X9, X26
+    STR X9, [X29, #-8]
+    SUB X0, X29, #16
+    MOV X27, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X17, X24
+    STR X17, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X27
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    LDR X17, [SP, #0]
+    ; effects []|sir_rec:o30240|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    BLR X17
+    MOV X16, X0
+    ADD SP, SP, #16
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o30206|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_wrow_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_wrow_go@PAGEOFF
+    BLR X9
+
+
+
+
+    B L_case_o29976_done
+L_case_o29976_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o29976_done
+L_case_o29976_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #32
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fold_wentries_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X9, X20
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #72]
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o30840_br_0:
+    CMP W3, #1
+    B.NE L_case_o30840_br_1
+    MOV X0, X21
+    B L_case_o30840_done
+L_case_o30840_br_1:
+    CMP W3, #0
+    B.NE L_case_o30840_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o30938|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_node_at@PAGE
+    ADD X9, X9, graph_csr_core_node_at@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o30979|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o31016|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o31059|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_wrow_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_wrow_go@PAGEOFF
+    BLR X9
+
+    MOV X26, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o31114|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_wentries_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_wentries_go@PAGEOFF
+    BLR X9
+
+
+
+
+
+    B L_case_o30840_done
+L_case_o30840_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o30840_done
+L_case_o30840_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fold_entries_wrapped:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    MOV X11, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X16, X11
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    MOV X16, X2
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o31805|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, graph_csr_core_fold_wentries_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_wentries_go@PAGEOFF
+    BR X9
+
+
+graph_csr_core_fold_crow_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+
+    MOV X9, X21
+    MOV X10, X22
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o32407_br_0:
+    CMP W3, #1
+    B.NE L_case_o32407_br_1
+    MOV X0, X23
+    B L_case_o32407_done
+L_case_o32407_br_1:
+    CMP W3, #0
+    B.NE L_case_o32407_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o32491|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_target_at@PAGE
+    ADD X9, X9, graph_csr_core_target_at@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o32537|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_value_at@PAGE
+    ADD X9, X9, graph_csr_core_value_at@PAGEOFF
+    BLR X9
+
+    MOV X26, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o32598|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_compare_nodes@PAGE
+    ADD X9, X9, graph_csr_core_compare_nodes@PAGEOFF
+    BLR X9
+
+    MOV X27, X0
+    MOV X3, X27
+L_case_o32653_br_0:
+    MOV X4, #25
+    CMP X3, X4
+    B.NE L_case_o32653_br_1
+    MOV X0, X23
+    B L_case_o32653_done
+L_case_o32653_br_1:
+    MOV X17, X24
+    STR X17, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    LDR X17, [SP, #0]
+    ; effects []|sir_rec:o32725|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    BLR X17
+    ADD SP, SP, #16
+    B L_case_o32653_done
+L_case_o32653_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o32653_done
+L_case_o32653_done:
+
+    MOV X28, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X28
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o32774|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_crow_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_crow_go@PAGEOFF
+    BLR X9
+
+
+
+
+
+    B L_case_o32407_done
+L_case_o32407_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o32407_done
+L_case_o32407_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fold_centries_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X9, X20
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #72]
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o33378_br_0:
+    CMP W3, #1
+    B.NE L_case_o33378_br_1
+    MOV X0, X21
+    B L_case_o33378_done
+L_case_o33378_br_1:
+    CMP W3, #0
+    B.NE L_case_o33378_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o33476|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_node_at@PAGE
+    ADD X9, X9, graph_csr_core_node_at@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o33517|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o33554|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o33597|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_crow_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_crow_go@PAGEOFF
+    BLR X9
+
+    MOV X26, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o33652|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fold_centries_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_centries_go@PAGEOFF
+    BLR X9
+
+
+
+
+
+    B L_case_o33378_done
+L_case_o33378_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o33378_done
+L_case_o33378_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fold_entries_canonical:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    MOV X11, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X16, X11
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    MOV X16, X2
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o34340|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, graph_csr_core_fold_centries_go@PAGE
+    ADD X9, X9, graph_csr_core_fold_centries_go@PAGEOFF
+    BR X9
+
+
+graph_csr_core_entry_row_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #96
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+
+    MOV X9, X22
+    MOV X10, X21
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o35001_br_0:
+    CMP W3, #1
+    B.NE L_case_o35001_br_1
+    MOV X0, X23
+    B L_case_o35001_done
+L_case_o35001_br_1:
+    CMP W3, #0
+    B.NE L_case_o35001_fb
+    LDR X1, [X19, #16]
+    MOV X2, X22
+
+    LDR X0, [X1, X2, LSL #3]
+    MOV X24, X0
+    LDR X1, [X19, #24]
+    MOV X2, X22
+
+    LDR X0, [X1, X2, LSL #3]
+    MOV X25, X0
+    MOV X9, X20
+    STR X9, [X29, #-32]
+    MOV X9, X24
+    STR X9, [X29, #-24]
+    MOV X9, X25
+    STR X9, [X29, #-16]
+    SUB X0, X29, #32
+    MOV X26, X0
+    MOV X2, X23
+    STR X2, [SP, #-16]!
+    MOV X1, X26
+    LDR X2, [SP], #16
+    STP X1, X2, [SP, #-16]!
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDP X1, X2, [SP], #16
+    LDR X3, [X1, #0]
+    STR X3, [X0, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X0, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X0, #16]
+    MOV X1, X0
+    MOV X3, #8
+    MOV X4, #16
+    MOV X5, #0
+    BL L_list_prepend_helper
+
+    MOV X27, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X9, X22
+    MOV X10, #1
+
+
+    SUB X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X27
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o35522|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_entry_row_go@PAGE
+    ADD X9, X9, graph_csr_core_entry_row_go@PAGEOFF
+    BLR X9
+
+
+
+
+
+    B L_case_o35001_done
+L_case_o35001_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o35001_done
+L_case_o35001_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #96
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_entry_list_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X9, X20
+    MOV X10, #0
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o36194_br_0:
+    CMP W3, #1
+    B.NE L_case_o36194_br_1
+    MOV X0, X21
+    B L_case_o36194_done
+L_case_o36194_br_1:
+    CMP W3, #0
+    B.NE L_case_o36194_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o36279|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_node_at@PAGE
+    ADD X9, X9, graph_csr_core_node_at@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o36320|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o36357|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X9, X24
+    MOV X10, #1
+
+
+    SUB X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o36461|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_entry_row_go@PAGE
+    ADD X9, X9, graph_csr_core_entry_row_go@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    SUB X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o36514|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_entry_list_go@PAGE
+    ADD X9, X9, graph_csr_core_entry_list_go@PAGEOFF
+    BLR X9
+
+
+
+
+
+    B L_case_o36194_done
+L_case_o36194_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o36194_done
+L_case_o36194_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_entry_list:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X0, #0
+
+    MOV X20, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X9, [X19, #72]
+
+    MOV X10, #1
+
+
+
+    SUB X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o37335|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_entry_list_go@PAGE
+    ADD X9, X9, graph_csr_core_entry_list_go@PAGEOFF
+    BLR X9
+
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_prepend_slot:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X2, X20
+    STR X2, [SP, #-16]!
+    MOV X1, X19
+    LDR X2, [SP], #16
+    MOV X3, #8
+    MOV X4, #16
+    MOV X5, #0
+    BL L_list_prepend_helper
+
+    MOV X21, X0
+    MOV X0, X21
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_push_row:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X9, X20
+    MOV X10, X21
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o38439_br_0:
+    CMP W3, #1
+    B.NE L_case_o38439_br_1
+    MOV X0, X22
+    B L_case_o38439_done
+L_case_o38439_br_1:
+    CMP W3, #0
+    B.NE L_case_o38439_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o38525|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_target_at@PAGE
+    ADD X9, X9, graph_csr_core_target_at@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o38567|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_of@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o38629|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_prepend_slot@PAGE
+    ADD X9, X9, graph_csr_core_prepend_slot@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o38665|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_push_row@PAGE
+    ADD X9, X9, graph_csr_core_push_row@PAGEOFF
+    BLR X9
+
+
+
+
+    B L_case_o38439_done
+L_case_o38439_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o38439_done
+L_case_o38439_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_search_go:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #32
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X21
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o39404_br_0:
+    CMP W3, #1
+    B.NE L_case_o39404_br_1
+    MOV X0, #0
+    B L_case_o39404_done
+L_case_o39404_br_1:
+    CMP W3, #0
+    B.NE L_case_o39404_fb
+    MOV X9, X21
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    LDR X0, [X10]
+
+    MOV X23, X0
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o39534|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_contains@PAGE
+    ADD X9, X9, wbt_set_contains@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X3, X24
+L_case_o39576_br_0:
+    CMP W3, #1
+    B.NE L_case_o39576_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X0, X9
+    MOV X1, #8
+    MOV X2, #16
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o39615|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_search_go@PAGE
+    ADD X9, X9, graph_csr_core_search_go@PAGEOFF
+    BLR X9
+
+    B L_case_o39576_done
+L_case_o39576_br_1:
+    CMP W3, #0
+    B.NE L_case_o39576_fb
+    MOV X9, X23
+    MOV X10, X22
+
+
+
+    CMP X9, X10
+    CSET X3, EQ
+
+L_case_o39682_br_0:
+    CMP W3, #1
+    B.NE L_case_o39682_br_1
+    MOV X0, #1
+    B L_case_o39682_done
+L_case_o39682_br_1:
+    CMP W3, #0
+    B.NE L_case_o39682_fb
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o40010|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert@PAGE
+    ADD X9, X9, wbt_set_insert@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o40075|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X26, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X23
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o40124|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X27, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    MOV X16, X27
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X0, X9
+    MOV X1, #8
+    MOV X2, #16
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o40198|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_push_row@PAGE
+    ADD X9, X9, graph_csr_core_push_row@PAGEOFF
+    BLR X9
+
+    MOV X28, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X16, [X25, #0]
+    STR X16, [SP, #-16]!
+    MOV X16, X28
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o40256|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_search_go@PAGE
+    ADD X9, X9, graph_csr_core_search_go@PAGEOFF
+    BLR X9
+
+
+
+
+
+    B L_case_o39682_done
+L_case_o39682_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o39682_done
+L_case_o39682_done:
+
+    B L_case_o39576_done
+L_case_o39576_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o39576_done
+L_case_o39576_done:
+
+
+
+    B L_case_o39404_done
+L_case_o39404_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o39404_done
+L_case_o39404_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #32
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_empty_slots:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #0
+
+    MOV X19, X0
+    MOV X0, X19
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_reachable:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #528
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o41181|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_of@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o41216|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_of@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    SUB X16, X29, #304
+    STR X3, [X16, #0]
+    MOV X9, X22
+    MOV X10, #0
+
+
+
+    CMP X9, X10
+    CSET X3, LT
+
+    CBNZ X3, L_sc_o41248_done
+    SUB X16, X29, #304
+    LDR X3, [X16, #0]
+    MOV X9, X23
+    MOV X10, #0
+
+
+
+    CMP X9, X10
+    CSET X3, LT
+
+L_sc_o41248_done:
+
+L_case_o41237_br_0:
+    CMP W3, #1
+    B.NE L_case_o41237_br_1
+    MOV X0, #0
+    B L_case_o41237_done
+L_case_o41237_br_1:
+    CMP W3, #0
+    B.NE L_case_o41237_fb
+    MOV X9, X22
+    MOV X10, X23
+
+
+
+    CMP X9, X10
+    CSET X3, EQ
+
+L_case_o41302_br_0:
+    CMP W3, #1
+    B.NE L_case_o41302_br_1
+    MOV X0, #1
+    B L_case_o41302_done
+L_case_o41302_br_1:
+    CMP W3, #0
+    B.NE L_case_o41302_fb
+    ADRP X1, L_i64_0@PAGE
+    LDR X1, [X1, L_i64_0@PAGEOFF]
+    MOV X24, X1
+    MOV X1, X24
+    MOV X0, X1
+    BL _silica_rt_canonical_arena_lookup
+    MOV X0, X0
+    MOV X25, X0
+    STP X0, X1, [SP, #-16]!
+    STP X2, X3, [SP, #-16]!
+    STP X4, X5, [SP, #-16]!
+    STP X6, X7, [SP, #-16]!
+    ADRP X9, graph_csr_core_cmp_slot@PAGE
+    ADD X9, X9, graph_csr_core_cmp_slot@PAGEOFF
+
+    STR X9, [X29, #-16]
+    SUB X16, X29, #16
+    MOV X0, X16
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    MOV X16, X0
+    LDP X6, X7, [SP], #16
+    LDP X4, X5, [SP], #16
+    LDP X2, X3, [SP], #16
+    LDP X0, X1, [SP], #16
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o41579|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_empty@PAGE
+    ADD X9, X9, wbt_set_empty@PAGEOFF
+    BLR X9
+
+    MOV X26, X0
+    MOV X0, X26
+    MOV X27, X0
+    MOV X0, X24
+    MOV X28, X0
+    LDR X0, [X27, #8]
+    SUB X16, X29, #304
+    STR X0, [X16]
+    SUB X16, X29, #304
+    LDR X1, [X16]
+    MOV X2, #0
+
+    MOV X0, X1
+    MOV X1, X2
+    BL _silica_rt_ordering_identity_make
+    MOV X1, X0
+    MOV X2, #27
+
+    MOV X0, X1
+    MOV X1, X2
+    BL _silica_rt_ordering_bundle_make
+    MOV X0, X0
+    SUB X16, X29, #320
+    STR X0, [X16]
+    LDR X9, [X27, #32]
+    STR X9, [X29, #-16]
+    MOV X9, X28
+    STR X9, [X29, #-24]
+    MOV X9, X25
+    STR X9, [X29, #-32]
+    LDR X9, [X27, #8]
+    STR X9, [X29, #-40]
+    LDR X9, [X27, #0]
+    STR X9, [X29, #-48]
+    SUB X16, X29, #320
+    LDR X9, [X16]
+    STR X9, [X29, #-16]
+    SUB X0, X29, #48
+    SUB X16, X29, #336
+    STR X0, [X16]
+    ; unsupported term kind (dummy k)?
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o41669|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_empty_slots@PAGE
+    ADD X9, X9, graph_csr_core_empty_slots@PAGEOFF
+    BLR X9
+
+    SUB X16, X29, #352
+    STR X0, [X16]
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    SUB X16, X29, #352
+    LDR X16, [X16]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o41735|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_prepend_slot@PAGE
+    ADD X9, X9, graph_csr_core_prepend_slot@PAGEOFF
+    BLR X9
+
+    SUB X16, X29, #368
+    STR X0, [X16]
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    SUB X16, X29, #336
+    LDR X16, [X16]
+    STR X16, [SP, #-16]!
+    SUB X16, X29, #368
+    LDR X16, [X16]
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o41771|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_search_go@PAGE
+    ADD X9, X9, graph_csr_core_search_go@PAGEOFF
+    BLR X9
+
+
+
+
+
+
+
+
+
+
+
+    B L_case_o41302_done
+L_case_o41302_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o41302_done
+L_case_o41302_done:
+
+    B L_case_o41237_done
+L_case_o41237_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o41237_done
+L_case_o41237_done:
+
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #528
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fill_node_ids:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #16
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X22
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o42488_br_0:
+    CMP W3, #1
+    B.NE L_case_o42488_br_1
+    MOV X0, X21
+    B L_case_o42488_done
+L_case_o42488_br_1:
+    CMP W3, #0
+    B.NE L_case_o42488_fb
+    MOV X9, X21
+    MOV X10, X20
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o42544_br_0:
+    CMP W3, #0
+    B.NE L_case_o42544_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X9, X22
+    MOV X0, X9
+    MOV X1, #8
+    MOV X2, #16
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o42583|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fill_node_ids@PAGE
+    ADD X9, X9, graph_csr_core_fill_node_ids@PAGEOFF
+    BLR X9
+
+    B L_case_o42544_done
+L_case_o42544_br_1:
+    CMP W3, #1
+    B.NE L_case_o42544_fb
+    MOV X1, X19
+    MOV X9, X21
+    STR X9, [X29, #-16]
+    MOV X9, X22
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    LDR X9, [X10]
+
+    STR X9, [X29, #-8]
+    SUB X2, X29, #16
+
+    LDR X3, [X2, #8]
+    LDR X2, [X2]
+    STR X3, [X1, X2, LSL #3]
+    ADD SP, SP, #0
+
+    MOV X2, X1
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X9, X22
+    MOV X0, X9
+    MOV X1, #8
+    MOV X2, #16
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o42793|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fill_node_ids@PAGE
+    ADD X9, X9, graph_csr_core_fill_node_ids@PAGEOFF
+    BLR X9
+
+
+    B L_case_o42544_done
+L_case_o42544_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o42544_done
+L_case_o42544_done:
+
+    B L_case_o42488_done
+L_case_o42488_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o42488_done
+L_case_o42488_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fill_offsets:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #16
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+
+    MOV X9, X21
+    MOV X10, X20
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o43175_br_0:
+    CMP W3, #1
+    B.NE L_case_o43175_br_1
+    MOV X0, #-1
+    B L_case_o43175_done
+L_case_o43175_br_1:
+    CMP W3, #0
+    B.NE L_case_o43175_fb
+    MOV X1, X19
+    MOV X9, X21
+    STR X9, [X29, #-16]
+    MOV X9, X22
+    STR X9, [X29, #-8]
+    SUB X2, X29, #16
+
+    LDR X3, [X2, #8]
+    LDR X2, [X2]
+    STR X3, [X1, X2, LSL #3]
+    ADD SP, SP, #0
+
+    MOV X2, X1
+
+    MOV X9, X23
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    MOV X10, #0
+
+
+
+
+    CMP X9, X10
+    CSET X3, EQ
+
+L_case_o43366_br_0:
+    CMP W3, #1
+    B.NE L_case_o43366_br_1
+    MOV X0, X22
+    B L_case_o43366_done
+L_case_o43366_br_1:
+    CMP W3, #0
+    B.NE L_case_o43366_fb
+    MOV X9, X23
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    LDR X9, [X10]
+
+    STR X9, [SP, #-16]!
+    ADRP X9, L_i64_1@PAGE
+    LDR X9, [X9, L_i64_1@PAGEOFF]
+    MOV X10, X22
+
+
+    SUB X10, X9, X10
+    LDR X9, [SP], #16
+
+
+
+    CMP X9, X10
+    CSET X3, GT
+
+L_case_o43455_br_0:
+    CMP W3, #1
+    B.NE L_case_o43455_br_1
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o43540|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_freeze_halt@PAGE
+    ADD X9, X9, graph_csr_core_freeze_halt@PAGEOFF
+    BLR X9
+
+    B L_case_o43455_done
+L_case_o43455_br_1:
+    CMP W3, #0
+    B.NE L_case_o43455_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X9, X22
+    STR X9, [SP, #-16]!
+    MOV X9, X23
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    LDR X10, [X10]
+
+    LDR X9, [SP], #16
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X9, X23
+    MOV X0, X9
+    MOV X1, #8
+    MOV X2, #16
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o43595|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fill_offsets@PAGE
+    ADD X9, X9, graph_csr_core_fill_offsets@PAGEOFF
+    BLR X9
+
+    B L_case_o43455_done
+L_case_o43455_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o43455_done
+L_case_o43455_done:
+
+    B L_case_o43366_done
+L_case_o43366_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o43366_done
+L_case_o43366_done:
+
+
+    B L_case_o43175_done
+L_case_o43175_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o43175_done
+L_case_o43175_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fill_entries:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #16
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X23
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o43923_br_0:
+    CMP W3, #1
+    B.NE L_case_o43923_br_1
+    MOV X0, X22
+    B L_case_o43923_done
+L_case_o43923_br_1:
+    CMP W3, #0
+    B.NE L_case_o43923_fb
+    MOV X9, X22
+    MOV X10, X21
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_case_o43979_br_0:
+    CMP W3, #0
+    B.NE L_case_o43979_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X9, X22
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X9, X23
+    MOV X0, X9
+    MOV X1, #8
+    MOV X2, #16
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o44018|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fill_entries@PAGE
+    ADD X9, X9, graph_csr_core_fill_entries@PAGEOFF
+    BLR X9
+
+    B L_case_o43979_done
+L_case_o43979_br_1:
+    CMP W3, #1
+    B.NE L_case_o43979_fb
+    MOV X9, X23
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    LDR X0, [X10]
+
+    MOV X24, X0
+    MOV X1, X19
+    MOV X9, X22
+    STR X9, [X29, #-16]
+    LDR X9, [X24, #8]
+    STR X9, [X29, #-8]
+    SUB X2, X29, #16
+
+    LDR X3, [X2, #8]
+    LDR X2, [X2]
+    STR X3, [X1, X2, LSL #3]
+    ADD SP, SP, #0
+
+    MOV X2, X1
+
+    MOV X1, X20
+    MOV X9, X22
+    STR X9, [X29, #-16]
+    LDR X9, [X24, #16]
+    STR X9, [X29, #-8]
+    SUB X2, X29, #16
+
+    LDR X3, [X2, #8]
+    LDR X2, [X2]
+    STR X3, [X1, X2, LSL #3]
+    ADD SP, SP, #0
+
+    MOV X2, X1
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X9, X22
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X9, X23
+    MOV X0, X9
+    MOV X1, #8
+    MOV X2, #16
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o44366|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fill_entries@PAGE
+    ADD X9, X9, graph_csr_core_fill_entries@PAGEOFF
+    BLR X9
+
+
+
+
+    B L_case_o43979_done
+L_case_o43979_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o43979_done
+L_case_o43979_done:
+
+    B L_case_o43923_done
+L_case_o43923_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o43923_done
+L_case_o43923_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_slot_pairs:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #16
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X9, X19
+    MOV X0, X9
+    BL L_list_length_helper
+    MOV X9, X0
+
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o44560_br_0:
+    CMP W3, #1
+    B.NE L_case_o44560_br_1
+    MOV X0, #0
+
+    MOV X21, X0
+    MOV X0, X21
+
+    B L_case_o44560_done
+L_case_o44560_br_1:
+    CMP W3, #0
+    B.NE L_case_o44560_fb
+    MOV X9, X19
+    MOV X0, X9
+    MOV X1, #8
+    MOV X2, #16
+    BL L_list_tail_helper
+    MOV X16, X0
+
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o44924|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_pairs@PAGE
+    ADD X9, X9, graph_csr_core_slot_pairs@PAGEOFF
+    BLR X9
+
+    MOV X21, X0
+    MOV X9, X19
+    LDR X10, [X9, #8]
+    LDR X11, [X9, #16]
+    ADD X10, X10, X11
+    LDR X9, [X10]
+
+    STR X9, [X29, #-16]
+    MOV X9, X20
+    STR X9, [X29, #-8]
+    SUB X0, X29, #16
+    MOV X22, X0
+    MOV X2, X21
+    STR X2, [SP, #-16]!
+    MOV X1, X22
+    LDR X2, [SP], #16
+    STP X1, X2, [SP, #-16]!
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    LDP X1, X2, [SP], #16
+    LDR X3, [X1, #0]
+    STR X3, [X0, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X0, #8]
+    MOV X1, X0
+    MOV X3, #8
+    MOV X4, #16
+    MOV X5, #0
+    BL L_list_prepend_helper
+
+    MOV X23, X0
+    MOV X0, X23
+
+
+
+    B L_case_o44560_done
+L_case_o44560_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o44560_done
+L_case_o44560_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_slot_root_of:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #448
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o45716|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_wbt_core_vertices@PAGE
+    ADD X9, X9, graph_wbt_core_vertices@PAGEOFF
+    BLR X9
+
+    MOV X21, X0
+    MOV X9, #0
+    STR X9, [X29, #-64]
+    LDR X9, [X19, #8]
+    STR X9, [X29, #-56]
+    ADRP X9, graph_csr_core_cmp_slot@PAGE
+    ADD X9, X9, graph_csr_core_cmp_slot@PAGEOFF
+
+    STR X9, [X29, #-48]
+    MOV X9, X20
+    STR X9, [X29, #-40]
+    LDR X9, [X19, #32]
+    STR X9, [X29, #-32]
+    MOV X9, #0
+    STR X9, [X29, #-24]
+    MOV X9, #0
+    STR X9, [X29, #-16]
+    SUB X0, X29, #64
+    MOV X22, X0
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o46389|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_pairs@PAGE
+    ADD X9, X9, graph_csr_core_slot_pairs@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o46747|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_map_from_sorted@PAGE
+    ADD X9, X9, wbt_map_from_sorted@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    LDR X12, [X24, #0]
+    LDR X0, [X12, #0]
+
+
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #448
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_consistent:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X9, X19
+    MOV X10, X20
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_case_o46889_br_0:
+    CMP W3, #1
+    B.NE L_case_o46889_br_1
+    MOV X0, #0
+    B L_case_o46889_done
+L_case_o46889_br_1:
+    CMP W3, #0
+    B.NE L_case_o46889_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o46955|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_freeze_halt@PAGE
+    ADD X9, X9, graph_csr_core_freeze_halt@PAGEOFF
+    BLR X9
+
+    B L_case_o46889_done
+L_case_o46889_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o46889_done
+L_case_o46889_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_offsets_extent:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #32
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    STR X3, [X29, #-16]
+    STR X3, [X29, #-32]
+    MOV X9, X19
+    MOV X10, #0
+
+
+    CMP X9, X10
+    CSET X3, LT
+    CBNZ X3, L_sc_o47171_done
+    LDR X3, [X29, #-32]
+    MOV X9, X20
+    MOV X10, #0
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_sc_o47171_done:
+
+    CBNZ X3, L_sc_o47190_done
+    LDR X3, [X29, #-16]
+    MOV X9, X19
+    ADRP X10, L_i64_1@PAGE
+    LDR X10, [X10, L_i64_1@PAGEOFF]
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_sc_o47190_done:
+
+L_case_o47151_br_0:
+    CMP W3, #1
+    B.NE L_case_o47151_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o47248|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_freeze_halt@PAGE
+    ADD X9, X9, graph_csr_core_freeze_halt@PAGEOFF
+    BLR X9
+
+    B L_case_o47151_done
+L_case_o47151_br_1:
+    CMP W3, #0
+    B.NE L_case_o47151_fb
+    MOV X9, X19
+    MOV X10, #1
+
+
+    ADD X0, X9, X10
+    B L_case_o47151_done
+L_case_o47151_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o47151_done
+L_case_o47151_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #32
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_freeze:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #1280
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X0, SP
+    MOV X1, #91
+    MOV X0, X1
+    BL _silica_rt_canonical_arena_lookup
+    MOV X1, X0
+    MOV X22, X1
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o48432|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_offsets_extent@PAGE
+    ADD X9, X9, graph_csr_core_offsets_extent@PAGEOFF
+    BLR X9
+
+    MOV X1, X0
+    MOV X23, X1
+    MOV X1, X20
+    MOV X24, X1
+    MOV X1, X21
+    MOV X25, X1
+    MOV X1, X22
+    MOV X2, X24
+
+    CMP X2, #0
+    B.LT L_buf_invalid
+    MOV X8, #8
+    MUL X7, X2, X8
+    SDIV X9, X7, X8
+    CMP X9, X2
+    B.NE L_buf_invalid
+    LDR X3, [X1]
+    LDR X4, [X1, #8]
+    ADD X5, X3, X7
+    CMP X5, X4
+    B.LS 1f
+    BL L_region_grow
+    LDR X3, [X1]
+    LDR X4, [X1, #8]
+    ADD X5, X3, X7
+1:
+    MOV X4, X3
+    ADD X3, X3, X2, LSL #3
+    STR X3, [X1]
+    MOV X1, X4
+    MOV X26, X1
+    MOV X1, X22
+    MOV X2, X23
+
+    CMP X2, #0
+    B.LT L_buf_invalid
+    MOV X8, #8
+    MUL X7, X2, X8
+    SDIV X9, X7, X8
+    CMP X9, X2
+    B.NE L_buf_invalid
+    LDR X3, [X1]
+    LDR X4, [X1, #8]
+    ADD X5, X3, X7
+    CMP X5, X4
+    B.LS 1f
+    BL L_region_grow
+    LDR X3, [X1]
+    LDR X4, [X1, #8]
+    ADD X5, X3, X7
+1:
+    MOV X4, X3
+    ADD X3, X3, X2, LSL #3
+    STR X3, [X1]
+    MOV X1, X4
+    MOV X27, X1
+    MOV X1, X22
+    MOV X2, X25
+
+    CMP X2, #0
+    B.LT L_buf_invalid
+    MOV X8, #8
+    MUL X7, X2, X8
+    SDIV X9, X7, X8
+    CMP X9, X2
+    B.NE L_buf_invalid
+    LDR X3, [X1]
+    LDR X4, [X1, #8]
+    ADD X5, X3, X7
+    CMP X5, X4
+    B.LS 1f
+    BL L_region_grow
+    LDR X3, [X1]
+    LDR X4, [X1, #8]
+    ADD X5, X3, X7
+1:
+    MOV X4, X3
+    ADD X3, X3, X2, LSL #3
+    STR X3, [X1]
+    MOV X1, X4
+    MOV X28, X1
+    MOV X1, X22
+    MOV X2, X25
+
+    CMP X2, #0
+    B.LT L_buf_invalid
+    MOV X8, #8
+    MUL X7, X2, X8
+    SDIV X9, X7, X8
+    CMP X9, X2
+    B.NE L_buf_invalid
+    LDR X3, [X1]
+    LDR X4, [X1, #8]
+    ADD X5, X3, X7
+    CMP X5, X4
+    B.LS 1f
+    BL L_region_grow
+    LDR X3, [X1]
+    LDR X4, [X1, #8]
+    ADD X5, X3, X7
+1:
+    MOV X4, X3
+    ADD X3, X3, X2, LSL #3
+    STR X3, [X1]
+    MOV X1, X4
+    MOV X20, X1
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o48885|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_wbt_core_vertices@PAGE
+    ADD X9, X9, graph_wbt_core_vertices@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o48854|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fill_node_ids@PAGE
+    ADD X9, X9, graph_csr_core_fill_node_ids@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o48843|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_consistent@PAGE
+    ADD X9, X9, graph_csr_core_consistent@PAGEOFF
+    BLR X9
+
+    MOV X1, X0
+    MOV X21, X1
+    MOV X16, X27
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o48986|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_wbt_core_degree_list@PAGE
+    ADD X9, X9, graph_wbt_core_degree_list@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o48953|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fill_offsets@PAGE
+    ADD X9, X9, graph_csr_core_fill_offsets@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o48942|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_consistent@PAGE
+    ADD X9, X9, graph_csr_core_consistent@PAGEOFF
+    BLR X9
+
+    MOV X1, X0
+    MOV X23, X1
+    MOV X16, X28
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o49094|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_wbt_core_entry_list@PAGE
+    ADD X9, X9, graph_wbt_core_entry_list@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o49057|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fill_entries@PAGE
+    ADD X9, X9, graph_csr_core_fill_entries@PAGEOFF
+    BLR X9
+
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o49046|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_consistent@PAGE
+    ADD X9, X9, graph_csr_core_consistent@PAGEOFF
+    BLR X9
+
+    MOV X1, X0
+    SUB X16, X29, #1072
+    STR X1, [X16]
+    MOV X9, X26
+    STR X9, [X29, #-96]
+    MOV X9, X27
+    STR X9, [X29, #-88]
+    MOV X9, X28
+    STR X9, [X29, #-80]
+    MOV X9, X20
+    STR X9, [X29, #-72]
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o49302|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_root_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_root_of@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [X29, #-64]
+    LDR X9, [X19, #8]
+    STR X9, [X29, #-56]
+    LDR X9, [X19, #16]
+    STR X9, [X29, #-48]
+    MOV X9, X22
+    STR X9, [X29, #-40]
+    LDR X9, [X19, #32]
+    STR X9, [X29, #-32]
+    MOV X9, X24
+    MOV X10, X21
+
+
+    ADD X9, X9, X10
+    MOV X10, X23
+
+
+    ADD X9, X9, X10
+    SUB X16, X29, #1072
+    LDR X10, [X16]
+
+
+    ADD X9, X9, X10
+    STR X9, [X29, #-24]
+    MOV X9, X25
+    STR X9, [X29, #-16]
+    SUB X0, X29, #96
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #96
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    LDR X3, [X1, #64]
+    STR X3, [X4, #64]
+    LDR X3, [X1, #72]
+    STR X3, [X4, #72]
+    LDR X3, [X1, #80]
+    STR X3, [X4, #80]
+    LDR X3, [X1, #88]
+    STR X3, [X4, #88]
+    MOV X0, X4
+    ADD SP, SP, #16
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #1280
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_ok_result:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #96
+    STP X19, X20, [SP, #-16]!
+
+    MOV X9, #1
+    STR X9, [X29, #-32]
+    MOV X9, #2
+    STR X9, [X29, #-24]
+    MOV X9, X0
+    STR X9, [X29, #-16]
+    SUB X0, X29, #32
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #32
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #0
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #96
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_fail_result:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #96
+    STP X19, X20, [SP, #-16]!
+
+    MOV X9, #0
+    STR X9, [X29, #-32]
+    MOV X9, X0
+    STR X9, [X29, #-24]
+    MOV X9, #0
+    STR X9, [X29, #-16]
+    SUB X0, X29, #32
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #32
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #0
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #96
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_asymmetry_error:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+
+    MOV X0, #28
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_offsets_ok:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X9, X20
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #72]
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o50865_br_0:
+    CMP W3, #1
+    B.NE L_case_o50865_br_1
+    MOV X0, #1
+    B L_case_o50865_done
+L_case_o50865_br_1:
+    CMP W3, #0
+    B.NE L_case_o50865_fb
+    STR X0, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o50952|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X10, X0
+    LDR X0, [SP], #16
+
+    STR X10, [SP, #-16]!
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o50938|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, LE
+L_case_o50933_br_0:
+    CMP W3, #0
+    B.NE L_case_o50933_br_1
+    MOV X0, #0
+    B L_case_o50933_done
+L_case_o50933_br_1:
+    CMP W3, #1
+    B.NE L_case_o50933_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o51020|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_offsets_ok@PAGE
+    ADD X9, X9, graph_csr_core_offsets_ok@PAGEOFF
+    BLR X9
+
+    B L_case_o50933_done
+L_case_o50933_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o50933_done
+L_case_o50933_done:
+
+    B L_case_o50865_done
+L_case_o50865_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o50865_done
+L_case_o50865_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_check_offsets:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #16
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+
+    STR X3, [X29, #-16]
+    MOV X10, #0
+
+
+    STR X10, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o51518|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+    CBZ X3, L_sc_o51534_done
+    LDR X3, [X29, #-16]
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X16, [X19, #72]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o51538|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #80]
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, EQ
+L_sc_o51534_done:
+
+L_case_o51513_br_0:
+    CMP W3, #0
+    B.NE L_case_o51513_br_1
+    MOV X0, #29
+    B L_case_o51513_done
+L_case_o51513_br_1:
+    CMP W3, #1
+    B.NE L_case_o51513_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o51645|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_offsets_ok@PAGE
+    ADD X9, X9, graph_csr_core_offsets_ok@PAGEOFF
+    BLR X9
+
+    MOV X3, X0
+L_case_o51640_br_0:
+    CMP W3, #1
+    B.NE L_case_o51640_br_1
+    MOV X0, #2
+    B L_case_o51640_done
+L_case_o51640_br_1:
+    CMP W3, #0
+    B.NE L_case_o51640_fb
+    MOV X0, #29
+    B L_case_o51640_done
+L_case_o51640_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o51640_done
+L_case_o51640_done:
+
+    B L_case_o51513_done
+L_case_o51513_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o51513_done
+L_case_o51513_done:
+
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_nodes_ascending:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X9, X9, X10
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #72]
+    LDR X9, [SP], #16
+    CMP X9, X10
+    CSET X3, GE
+L_case_o52222_br_0:
+    CMP W3, #1
+    B.NE L_case_o52222_br_1
+    MOV X0, #1
+    B L_case_o52222_done
+L_case_o52222_br_1:
+    CMP W3, #0
+    B.NE L_case_o52222_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o52322|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_node_at@PAGE
+    ADD X9, X9, graph_csr_core_node_at@PAGEOFF
+    BLR X9
+
+    MOV X21, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o52364|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_node_at@PAGE
+    ADD X9, X9, graph_csr_core_node_at@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o52428|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_compare_nodes@PAGE
+    ADD X9, X9, graph_csr_core_compare_nodes@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X3, X23
+L_case_o52465_br_0:
+    MOV X4, #23
+    CMP X3, X4
+    B.NE L_case_o52465_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o52502|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_nodes_ascending@PAGE
+    ADD X9, X9, graph_csr_core_nodes_ascending@PAGEOFF
+    BLR X9
+
+    B L_case_o52465_done
+L_case_o52465_br_1:
+    MOV X0, #0
+    B L_case_o52465_done
+L_case_o52465_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o52465_done
+L_case_o52465_done:
+
+
+
+
+    B L_case_o52222_done
+L_case_o52222_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o52222_done
+L_case_o52222_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_slots_match:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X9, X20
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #72]
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o53059_br_0:
+    CMP W3, #1
+    B.NE L_case_o53059_br_1
+    MOV X0, #1
+    B L_case_o53059_done
+L_case_o53059_br_1:
+    CMP W3, #0
+    B.NE L_case_o53059_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o53155|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_node_at@PAGE
+    ADD X9, X9, graph_csr_core_node_at@PAGEOFF
+    BLR X9
+
+    MOV X21, X0
+    MOV X10, X20
+    STR X10, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o53188|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_of@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [SP], #16
+
+
+
+    CMP X9, X10
+    CSET X3, EQ
+
+L_case_o53183_br_0:
+    CMP W3, #0
+    B.NE L_case_o53183_br_1
+    MOV X0, #0
+    B L_case_o53183_done
+L_case_o53183_br_1:
+    CMP W3, #1
+    B.NE L_case_o53183_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o53269|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slots_match@PAGE
+    ADD X9, X9, graph_csr_core_slots_match@PAGEOFF
+    BLR X9
+
+    B L_case_o53183_done
+L_case_o53183_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o53183_done
+L_case_o53183_done:
+
+
+    B L_case_o53059_done
+L_case_o53059_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o53059_done
+L_case_o53059_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_check_slots:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #16
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o54066|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_map@PAGE
+    ADD X9, X9, graph_csr_core_slot_map@PAGEOFF
+    BLR X9
+
+    MOV X20, X0
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o54144|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_map_validate@PAGE
+    ADD X9, X9, wbt_map_validate@PAGEOFF
+    BLR X9
+
+    MOV X21, X0
+    STR X3, [X29, #-16]
+    LDR X3, [X21, #0]
+    CBZ X3, L_sc_o54182_done
+    LDR X3, [X29, #-16]
+    LDR X9, [X21, #16]
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #72]
+    LDR X9, [SP], #16
+
+
+
+    CMP X9, X10
+    CSET X3, EQ
+
+L_sc_o54182_done:
+
+L_case_o54169_br_0:
+    CMP W3, #0
+    B.NE L_case_o54169_br_1
+    MOV X0, #30
+    B L_case_o54169_done
+L_case_o54169_br_1:
+    CMP W3, #1
+    B.NE L_case_o54169_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o54278|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slots_match@PAGE
+    ADD X9, X9, graph_csr_core_slots_match@PAGEOFF
+    BLR X9
+
+    MOV X3, X0
+L_case_o54273_br_0:
+    CMP W3, #1
+    B.NE L_case_o54273_br_1
+    MOV X0, #2
+    B L_case_o54273_done
+L_case_o54273_br_1:
+    CMP W3, #0
+    B.NE L_case_o54273_fb
+    MOV X0, #30
+    B L_case_o54273_done
+L_case_o54273_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o54273_done
+L_case_o54273_done:
+
+    B L_case_o54169_done
+L_case_o54169_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o54169_done
+L_case_o54169_done:
+
+
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_row_ok:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X9, X21
+    MOV X10, X22
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o54859_br_0:
+    CMP W3, #1
+    B.NE L_case_o54859_br_1
+    MOV X0, #2
+    B L_case_o54859_done
+L_case_o54859_br_1:
+    CMP W3, #0
+    B.NE L_case_o54859_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o54943|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_target_at@PAGE
+    ADD X9, X9, graph_csr_core_target_at@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o54978|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_slot_of@PAGE
+    ADD X9, X9, graph_csr_core_slot_of@PAGEOFF
+    BLR X9
+
+    MOV X9, X0
+    LDR X10, [SP], #16
+
+
+
+    CMP X9, X10
+    CSET X3, LT
+
+L_case_o54973_br_0:
+    CMP W3, #1
+    B.NE L_case_o54973_br_1
+    MOV X0, #31
+    B L_case_o54973_done
+L_case_o54973_br_1:
+    CMP W3, #0
+    B.NE L_case_o54973_fb
+    MOV X9, X21
+    MOV X10, X20
+
+
+
+    CMP X9, X10
+    CSET X3, GT
+
+L_case_o55070_br_0:
+    CMP W3, #0
+    B.NE L_case_o55070_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o55116|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_row_ok@PAGE
+    ADD X9, X9, graph_csr_core_row_ok@PAGEOFF
+    BLR X9
+
+    B L_case_o55070_done
+L_case_o55070_br_1:
+    CMP W3, #1
+    B.NE L_case_o55070_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    SUB X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o55214|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_target_at@PAGE
+    ADD X9, X9, graph_csr_core_target_at@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o55292|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_compare_nodes@PAGE
+    ADD X9, X9, graph_csr_core_compare_nodes@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X3, X25
+L_case_o55344_br_0:
+    MOV X4, #23
+    CMP X3, X4
+    B.NE L_case_o55344_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o55393|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_row_ok@PAGE
+    ADD X9, X9, graph_csr_core_row_ok@PAGEOFF
+    BLR X9
+
+    B L_case_o55344_done
+L_case_o55344_br_1:
+    MOV X0, #32
+    B L_case_o55344_done
+L_case_o55344_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o55344_done
+L_case_o55344_done:
+
+
+
+    B L_case_o55070_done
+L_case_o55070_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o55070_done
+L_case_o55070_done:
+
+    B L_case_o54973_done
+L_case_o54973_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o54973_done
+L_case_o54973_done:
+
+
+    B L_case_o54859_done
+L_case_o54859_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o54859_done
+L_case_o54859_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_rows_ok:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X9, X20
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #72]
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o56031_br_0:
+    CMP W3, #1
+    B.NE L_case_o56031_br_1
+    MOV X0, #2
+    B L_case_o56031_done
+L_case_o56031_br_1:
+    CMP W3, #0
+    B.NE L_case_o56031_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o56125|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X21, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o56162|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o56201|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_row_ok@PAGE
+    ADD X9, X9, graph_csr_core_row_ok@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X3, X23
+L_case_o56237_br_0:
+    MOV X4, #2
+    CMP X3, X4
+    B.NE L_case_o56237_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o56272|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_rows_ok@PAGE
+    ADD X9, X9, graph_csr_core_rows_ok@PAGEOFF
+    BLR X9
+
+    B L_case_o56237_done
+L_case_o56237_br_1:
+    MOV X0, X23
+    B L_case_o56237_done
+L_case_o56237_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o56237_done
+L_case_o56237_done:
+
+
+
+
+    B L_case_o56031_done
+L_case_o56031_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o56031_done
+L_case_o56031_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_check_common:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #16
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+
+    STR X3, [X29, #-16]
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    LDR X9, [X19, #72]
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, LT
+    CBNZ X3, L_sc_o56890_done
+    LDR X3, [X29, #-16]
+    MOV X10, #0
+    STR X10, [SP, #-16]!
+    LDR X9, [X19, #80]
+    LDR X10, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, LT
+L_sc_o56890_done:
+
+L_case_o56867_br_0:
+    CMP W3, #1
+    B.NE L_case_o56867_br_1
+    MOV X0, #33
+    B L_case_o56867_done
+L_case_o56867_br_1:
+    CMP W3, #0
+    B.NE L_case_o56867_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o56992|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_check_offsets@PAGE
+    ADD X9, X9, graph_csr_core_check_offsets@PAGEOFF
+    BLR X9
+
+    MOV X20, X0
+    MOV X3, X20
+L_case_o57023_br_0:
+    MOV X4, #2
+    CMP X3, X4
+    B.NE L_case_o57023_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o57063|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_nodes_ascending@PAGE
+    ADD X9, X9, graph_csr_core_nodes_ascending@PAGEOFF
+    BLR X9
+
+    MOV X3, X0
+L_case_o57058_br_0:
+    CMP W3, #0
+    B.NE L_case_o57058_br_1
+    MOV X0, #32
+    B L_case_o57058_done
+L_case_o57058_br_1:
+    CMP W3, #1
+    B.NE L_case_o57058_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o57204|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_check_slots@PAGE
+    ADD X9, X9, graph_csr_core_check_slots@PAGEOFF
+    BLR X9
+
+    MOV X21, X0
+    MOV X3, X21
+L_case_o57245_br_0:
+    MOV X4, #2
+    CMP X3, X4
+    B.NE L_case_o57245_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o57293|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_rows_ok@PAGE
+    ADD X9, X9, graph_csr_core_rows_ok@PAGEOFF
+    BLR X9
+
+    B L_case_o57245_done
+L_case_o57245_br_1:
+    MOV X0, X21
+    B L_case_o57245_done
+L_case_o57245_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o57245_done
+L_case_o57245_done:
+
+
+    B L_case_o57058_done
+L_case_o57058_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o57058_done
+L_case_o57058_done:
+
+    B L_case_o57023_done
+L_case_o57023_br_1:
+    MOV X0, X20
+    B L_case_o57023_done
+L_case_o57023_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o57023_done
+L_case_o57023_done:
+
+
+    B L_case_o56867_done
+L_case_o56867_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o56867_done
+L_case_o56867_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_apply_target:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X17, X0
+    STR X17, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    LDR X17, [SP, #0]
+
+    ADD SP, SP, #16    ; effects []|sir_rec:o57556|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    BR X17
+
+
+graph_csr_core_targets_match:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X9, X21
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #80]
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o58066_br_0:
+    CMP W3, #1
+    B.NE L_case_o58066_br_1
+    MOV X0, #1
+    B L_case_o58066_done
+L_case_o58066_br_1:
+    CMP W3, #0
+    B.NE L_case_o58066_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o58165|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_value_at@PAGE
+    ADD X9, X9, graph_csr_core_value_at@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o58208|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_target_at@PAGE
+    ADD X9, X9, graph_csr_core_target_at@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o58252|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_apply_target@PAGE
+    ADD X9, X9, graph_csr_core_apply_target@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o58297|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_nodes_equal@PAGE
+    ADD X9, X9, graph_csr_core_nodes_equal@PAGEOFF
+    BLR X9
+
+    MOV X3, X0
+L_case_o58292_br_0:
+    CMP W3, #0
+    B.NE L_case_o58292_br_1
+    MOV X0, #0
+    B L_case_o58292_done
+L_case_o58292_br_1:
+    CMP W3, #1
+    B.NE L_case_o58292_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o58380|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_targets_match@PAGE
+    ADD X9, X9, graph_csr_core_targets_match@PAGEOFF
+    BLR X9
+
+    B L_case_o58292_done
+L_case_o58292_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o58292_done
+L_case_o58292_done:
+
+
+
+
+    B L_case_o58066_done
+L_case_o58066_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o58066_done
+L_case_o58066_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_validate_directed:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o59118|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_check_common@PAGE
+    ADD X9, X9, graph_csr_core_check_common@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X3, X22
+L_case_o59140_br_0:
+    MOV X4, #2
+    CMP X3, X4
+    B.NE L_case_o59140_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o59172|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_targets_match@PAGE
+    ADD X9, X9, graph_csr_core_targets_match@PAGEOFF
+    BLR X9
+
+    MOV X3, X0
+L_case_o59167_br_0:
+    CMP W3, #0
+    B.NE L_case_o59167_br_1
+    MOV X16, #34
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o59230|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fail_result@PAGE
+    ADD X9, X9, graph_csr_core_fail_result@PAGEOFF
+    BLR X9
+
+    B L_case_o59167_done
+L_case_o59167_br_1:
+    CMP W3, #1
+    B.NE L_case_o59167_fb
+    MOV X9, X21
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #80]
+    LDR X9, [SP], #16
+
+
+
+    CMP X9, X10
+    CSET X3, EQ
+
+L_case_o59281_br_0:
+    CMP W3, #1
+    B.NE L_case_o59281_br_1
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o59344|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_ok_result@PAGE
+    ADD X9, X9, graph_csr_core_ok_result@PAGEOFF
+    BLR X9
+
+    B L_case_o59281_done
+L_case_o59281_br_1:
+    CMP W3, #0
+    B.NE L_case_o59281_fb
+    MOV X16, #35
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o59392|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fail_result@PAGE
+    ADD X9, X9, graph_csr_core_fail_result@PAGEOFF
+    BLR X9
+
+    B L_case_o59281_done
+L_case_o59281_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o59281_done
+L_case_o59281_done:
+
+    B L_case_o59167_done
+L_case_o59167_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o59167_done
+L_case_o59167_done:
+
+    B L_case_o59140_done
+L_case_o59140_br_1:
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o59470|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fail_result@PAGE
+    ADD X9, X9, graph_csr_core_fail_result@PAGEOFF
+    BLR X9
+
+    B L_case_o59140_done
+L_case_o59140_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o59140_done
+L_case_o59140_done:
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_validate_keyed:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o60098|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_check_common@PAGE
+    ADD X9, X9, graph_csr_core_check_common@PAGEOFF
+    BLR X9
+
+    MOV X21, X0
+    MOV X3, X21
+L_case_o60120_br_0:
+    MOV X4, #2
+    CMP X3, X4
+    B.NE L_case_o60120_br_1
+    MOV X9, X20
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #80]
+    LDR X9, [SP], #16
+
+
+
+    CMP X9, X10
+    CSET X3, EQ
+
+L_case_o60147_br_0:
+    CMP W3, #1
+    B.NE L_case_o60147_br_1
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o60206|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_ok_result@PAGE
+    ADD X9, X9, graph_csr_core_ok_result@PAGEOFF
+    BLR X9
+
+    B L_case_o60147_done
+L_case_o60147_br_1:
+    CMP W3, #0
+    B.NE L_case_o60147_fb
+    MOV X16, #35
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o60250|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fail_result@PAGE
+    ADD X9, X9, graph_csr_core_fail_result@PAGEOFF
+    BLR X9
+
+    B L_case_o60147_done
+L_case_o60147_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o60147_done
+L_case_o60147_done:
+
+    B L_case_o60120_done
+L_case_o60120_br_1:
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o60314|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fail_result@PAGE
+    ADD X9, X9, graph_csr_core_fail_result@PAGEOFF
+    BLR X9
+
+    B L_case_o60120_done
+L_case_o60120_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o60120_done
+L_case_o60120_done:
+
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_sym_row:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #32
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+
+    MOV X9, X21
+    MOV X10, X22
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o60859_br_0:
+    CMP W3, #1
+    B.NE L_case_o60859_br_1
+    MOV X9, #2
+    STR X9, [X29, #-16]
+    MOV X9, X23
+    STR X9, [X29, #-8]
+    SUB X0, X29, #16
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    B L_case_o60859_done
+L_case_o60859_br_1:
+    CMP W3, #0
+    B.NE L_case_o60859_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o60968|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_target_at@PAGE
+    ADD X9, X9, graph_csr_core_target_at@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o61003|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_nodes_equal@PAGE
+    ADD X9, X9, graph_csr_core_nodes_equal@PAGEOFF
+    BLR X9
+
+    MOV X3, X0
+L_case_o60998_br_0:
+    CMP W3, #1
+    B.NE L_case_o60998_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X9, X23
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o61057|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_sym_row@PAGE
+    ADD X9, X9, graph_csr_core_sym_row@PAGEOFF
+    BLR X9
+
+    B L_case_o60998_done
+L_case_o60998_br_1:
+    CMP W3, #0
+    B.NE L_case_o60998_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o61157|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_find_entry@PAGE
+    ADD X9, X9, graph_csr_core_find_entry@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    MOV X9, X25
+    MOV X10, #0
+
+
+
+    CMP X9, X10
+    CSET X3, LT
+
+L_case_o61202_br_0:
+    CMP W3, #1
+    B.NE L_case_o61202_br_1
+    MOV X9, #28
+    STR X9, [X29, #-16]
+    MOV X9, X23
+    STR X9, [X29, #-8]
+    SUB X0, X29, #16
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    B L_case_o61202_done
+L_case_o61202_br_1:
+    CMP W3, #0
+    B.NE L_case_o61202_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o61377|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_value_at@PAGE
+    ADD X9, X9, graph_csr_core_value_at@PAGEOFF
+    BLR X9
+
+    MOV X26, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o61438|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_value_at@PAGE
+    ADD X9, X9, graph_csr_core_value_at@PAGEOFF
+    BLR X9
+
+    MOV X27, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    MOV X16, X27
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o61515|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_compare_values@PAGE
+    ADD X9, X9, graph_csr_core_compare_values@PAGEOFF
+    BLR X9
+
+    MOV X28, X0
+    MOV X3, X28
+L_case_o61569_br_0:
+    MOV X4, #24
+    CMP X3, X4
+    B.NE L_case_o61569_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X9, X21
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o61623|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_sym_row@PAGE
+    ADD X9, X9, graph_csr_core_sym_row@PAGEOFF
+    BLR X9
+
+    B L_case_o61569_done
+L_case_o61569_br_1:
+    MOV X9, #28
+    STR X9, [X29, #-16]
+    MOV X9, X23
+    STR X9, [X29, #-8]
+    SUB X0, X29, #16
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    B L_case_o61569_done
+L_case_o61569_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o61569_done
+L_case_o61569_done:
+
+
+
+
+    B L_case_o61202_done
+L_case_o61202_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o61202_done
+L_case_o61202_done:
+
+
+    B L_case_o60998_done
+L_case_o60998_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o60998_done
+L_case_o60998_done:
+
+
+    B L_case_o60859_done
+L_case_o60859_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o60859_done
+L_case_o60859_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #32
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_sym_rows:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #32
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X9, X20
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #72]
+    LDR X9, [SP], #16
+
+
+    CMP X9, X10
+    CSET X3, GE
+L_case_o62375_br_0:
+    CMP W3, #1
+    B.NE L_case_o62375_br_1
+    MOV X9, #2
+    STR X9, [X29, #-16]
+    MOV X9, X21
+    STR X9, [X29, #-8]
+    SUB X0, X29, #16
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    B L_case_o62375_done
+L_case_o62375_br_1:
+    CMP W3, #0
+    B.NE L_case_o62375_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o62498|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_node_at@PAGE
+    ADD X9, X9, graph_csr_core_node_at@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o62539|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o62576|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_off@PAGE
+    ADD X9, X9, graph_csr_core_off@PAGEOFF
+    BLR X9
+
+    MOV X24, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o62640|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_sym_row@PAGE
+    ADD X9, X9, graph_csr_core_sym_row@PAGEOFF
+    BLR X9
+
+    MOV X25, X0
+    LDR X3, [X25, #0]
+L_case_o62686_br_0:
+    MOV X4, #2
+    CMP X3, X4
+    B.NE L_case_o62686_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X9, X20
+    MOV X10, #1
+
+
+    ADD X16, X9, X10
+    STR X16, [SP, #-16]!
+    LDR X16, [X25, #8]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o62727|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_sym_rows@PAGE
+    ADD X9, X9, graph_csr_core_sym_rows@PAGEOFF
+    BLR X9
+
+    B L_case_o62686_done
+L_case_o62686_br_1:
+    MOV X0, X25
+    B L_case_o62686_done
+L_case_o62686_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o62686_done
+L_case_o62686_done:
+
+
+
+
+
+    B L_case_o62375_done
+L_case_o62375_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o62375_done
+L_case_o62375_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #32
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_validate_undirected:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    SUB SP, SP, #16
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o63564|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_check_common@PAGE
+    ADD X9, X9, graph_csr_core_check_common@PAGEOFF
+    BLR X9
+
+    MOV X22, X0
+    MOV X3, X22
+L_case_o63586_br_0:
+    MOV X4, #2
+    CMP X3, X4
+    B.NE L_case_o63586_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o63663|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_sym_rows@PAGE
+    ADD X9, X9, graph_csr_core_sym_rows@PAGEOFF
+    BLR X9
+
+    MOV X23, X0
+    LDR X3, [X23, #0]
+L_case_o63695_br_0:
+    MOV X4, #2
+    CMP X3, X4
+    B.NE L_case_o63695_br_1
+    STR X3, [X29, #-16]
+    MOV X9, X21
+    STR X9, [SP, #-16]!
+    LDR X10, [X19, #80]
+    LDR X9, [SP], #16
+
+
+
+    CMP X9, X10
+    CSET X3, EQ
+
+    CBZ X3, L_sc_o63781_done
+    LDR X3, [X29, #-16]
+    MOV X9, X20
+    STR X9, [SP, #-16]!
+    LDR X9, [X23, #8]
+    STR X9, [SP, #-16]!
+    LDR X9, [X19, #80]
+    STR X9, [SP, #-16]!
+    LDR X10, [X23, #8]
+    LDR X9, [SP], #16
+
+
+    SUB X9, X9, X10
+    MOV X10, #2
+
+
+    CMP X10, #0
+    B.NE 1f
+    BL _silica_rt_badarith
+1:
+    SDIV X10, X9, X10
+    LDR X9, [SP], #16
+
+
+    ADD X10, X9, X10
+    LDR X9, [SP], #16
+
+
+
+    CMP X9, X10
+    CSET X3, EQ
+
+L_sc_o63781_done:
+
+L_case_o63736_br_0:
+    CMP W3, #1
+    B.NE L_case_o63736_br_1
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o63873|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_ok_result@PAGE
+    ADD X9, X9, graph_csr_core_ok_result@PAGEOFF
+    BLR X9
+
+    B L_case_o63736_done
+L_case_o63736_br_1:
+    CMP W3, #0
+    B.NE L_case_o63736_fb
+    MOV X16, #35
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o63925|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fail_result@PAGE
+    ADD X9, X9, graph_csr_core_fail_result@PAGEOFF
+    BLR X9
+
+    B L_case_o63736_done
+L_case_o63736_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o63736_done
+L_case_o63736_done:
+
+    B L_case_o63695_done
+L_case_o63695_br_1:
+    LDR X16, [X23, #0]
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o64005|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fail_result@PAGE
+    ADD X9, X9, graph_csr_core_fail_result@PAGEOFF
+    BLR X9
+
+    B L_case_o63695_done
+L_case_o63695_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o63695_done
+L_case_o63695_done:
+
+
+    B L_case_o63586_done
+L_case_o63586_br_1:
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o64070|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, graph_csr_core_fail_result@PAGE
+    ADD X9, X9, graph_csr_core_fail_result@PAGEOFF
+    BLR X9
+
+    B L_case_o63586_done
+L_case_o63586_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o63586_done
+L_case_o63586_done:
+
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    ADD SP, SP, #16
+    LDP X29, X30, [SP], #16
+    RET
+
+graph_csr_core_validate_error_code:     STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    MOV X19, X0
+
+    MOV X3, X19
+L_case_o64145_br_0:
+    MOV X4, #2
+    CMP X3, X4
+    B.NE L_case_o64145_br_1
+    MOV X0, #0
+    B L_case_o64145_done
+L_case_o64145_br_1:
+    MOV X4, #33
+    CMP X3, X4
+    B.NE L_case_o64145_br_2
+    MOV X0, #1
+    B L_case_o64145_done
+L_case_o64145_br_2:
+    MOV X4, #29
+    CMP X3, X4
+    B.NE L_case_o64145_br_3
+    MOV X0, #2
+    B L_case_o64145_done
+L_case_o64145_br_3:
+    MOV X4, #32
+    CMP X3, X4
+    B.NE L_case_o64145_br_4
+    MOV X0, #3
+    B L_case_o64145_done
+L_case_o64145_br_4:
+    MOV X4, #30
+    CMP X3, X4
+    B.NE L_case_o64145_br_5
+    MOV X0, #4
+    B L_case_o64145_done
+L_case_o64145_br_5:
+    MOV X4, #31
+    CMP X3, X4
+    B.NE L_case_o64145_br_6
+    MOV X0, #5
+    B L_case_o64145_done
+L_case_o64145_br_6:
+    MOV X4, #34
+    CMP X3, X4
+    B.NE L_case_o64145_br_7
+    MOV X0, #6
+    B L_case_o64145_done
+L_case_o64145_br_7:
+    MOV X4, #35
+    CMP X3, X4
+    B.NE L_case_o64145_br_8
+    MOV X0, #7
+    B L_case_o64145_done
+L_case_o64145_br_8:
+    MOV X4, #28
+    CMP X3, X4
+    B.NE L_case_o64145_br_9
+    MOV X0, #8
+    B L_case_o64145_done
+L_case_o64145_br_9:
+    MOV X0, #99
+    B L_case_o64145_done
+L_case_o64145_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o64145_done
+L_case_o64145_done:
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+L_pa_helper:
+    CMP X0, #0
+    B.lt L_pa_oob
+    CMP X0, #36
+    B.ge L_pa_oob
+    ADRP X9, L_pa_table@PAGE
+    ADD X9, X9, L_pa_table@PAGEOFF
+    LSL X10, X0, #4
+    ADD X9, X9, X10
+    LDR X1, [X9]
+    LDR X2, [X9, #8]
+    MOV X0, #1
+    MOV X16, #4
+    SVC #0x80
+    MOV X0, #0
+    RET
+L_pa_oob:
+    MOV X0, #0
+    RET
+
+L_list_prepend_helper:
+    STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X1, X2, [SP, #-16]!
+    STP X3, X4, [SP, #-16]!
+    STR X5, [SP, #-16]!
+    CBZ X2, L_lph_new_chunk
+    LDR X6, [X2, #16]
+    CBZ X6, L_lph_new_chunk
+    LDR X7, [X2, #8]
+    ADD X12, X7, X4
+    LDR X9, [X12, #8]
+    CMP X9, X6
+    B.NE L_lph_cow
+    SUB X8, X6, X3
+    STR X8, [X12, #8]
+    ADD X10, X7, X8
+    LDR X11, [SP]
+    CBZ X11, L_lph_room_scalar
+    MOV X12, #0
+L_lph_room_agg:
+    CMP X12, X3
+    B.GE L_lph_room_stored
+    LDR X13, [X1, X12]
+    STR X13, [X10, X12]
+    ADD X12, X12, #8
+    B L_lph_room_agg
+    B L_lph_room_stored
+L_lph_room_scalar:
+    CMP X3, #8
+    B.EQ L_lph_rs8
+    CMP X3, #4
+    B.EQ L_lph_rs4
+    CMP X3, #2
+    B.EQ L_lph_rs2
+    STRB W1, [X10]
+    B L_lph_room_stored
+L_lph_rs2:
+    STRH W1, [X10]
+    B L_lph_room_stored
+L_lph_rs4:
+    STR W1, [X10]
+    B L_lph_room_stored
+L_lph_rs8:
+    STR X1, [X10]
+L_lph_room_stored:
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDR X5, [SP], #16
+    LDP X3, X4, [SP], #16
+    LDP X1, X2, [SP], #16
+    LDR X6, [X2]
+    ADD X6, X6, #1
+    STR X6, [X0]
+    LDR X7, [X2, #8]
+    STR X7, [X0, #8]
+    LDR X8, [X2, #16]
+    SUB X8, X8, X3
+    STR X8, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+L_lph_cow:
+    ADD X0, X4, #16
+    BL _silica_rt_region_alloc
+    MOV X6, X0
+    LDR X5, [SP]
+    LDP X3, X4, [SP, #16]
+    LDP X1, X2, [SP, #32]
+    LDR X7, [X2, #8]
+    LDR X9, [X2, #16]
+    MOV X12, X9
+L_lph_cow_copy:
+    CMP X12, X4
+    B.GE L_lph_cow_copied
+    LDR X13, [X7, X12]
+    STR X13, [X6, X12]
+    ADD X12, X12, #8
+    B L_lph_cow_copy
+L_lph_cow_copied:
+    ADD X12, X7, X4
+    LDR X13, [X12]
+    ADD X12, X6, X4
+    STR X13, [X12]
+    SUB X8, X9, X3
+    ADD X10, X6, X8
+    CBZ X5, L_lph_cow_scalar
+    MOV X12, #0
+L_lph_cow_agg:
+    CMP X12, X3
+    B.GE L_lph_alloc_handle
+    LDR X13, [X1, X12]
+    STR X13, [X10, X12]
+    ADD X12, X12, #8
+    B L_lph_cow_agg
+L_lph_cow_scalar:
+    CMP X3, #8
+    B.EQ L_lph_cs8
+    CMP X3, #4
+    B.EQ L_lph_cs4
+    CMP X3, #2
+    B.EQ L_lph_cs2
+    STRB W1, [X10]
+    B L_lph_alloc_handle
+L_lph_cs2:
+    STRH W1, [X10]
+    B L_lph_alloc_handle
+L_lph_cs4:
+    STR W1, [X10]
+    B L_lph_alloc_handle
+L_lph_cs8:
+    STR X1, [X10]
+    B L_lph_alloc_handle
+L_lph_new_chunk:
+    ADD X0, X4, #16
+    BL _silica_rt_region_alloc
+    MOV X6, X0
+    LDR X5, [SP]
+    LDP X3, X4, [SP, #16]
+    LDP X1, X2, [SP, #32]
+    SUB X8, X4, X3
+    ADD X10, X6, X8
+    CBZ X5, L_lph_new_scalar
+    MOV X12, #0
+L_lph_new_agg:
+    CMP X12, X3
+    B.GE L_lph_new_stored
+    LDR X13, [X1, X12]
+    STR X13, [X10, X12]
+    ADD X12, X12, #8
+    B L_lph_new_agg
+    B L_lph_new_stored
+L_lph_new_scalar:
+    CMP X3, #8
+    B.EQ L_lph_ns8
+    CMP X3, #4
+    B.EQ L_lph_ns4
+    CMP X3, #2
+    B.EQ L_lph_ns2
+    STRB W1, [X10]
+    B L_lph_new_stored
+L_lph_ns2:
+    STRH W1, [X10]
+    B L_lph_new_stored
+L_lph_ns4:
+    STR W1, [X10]
+    B L_lph_new_stored
+L_lph_ns8:
+    STR X1, [X10]
+L_lph_new_stored:
+    CBZ X2, L_lph_next_nil
+    LDR X9, [X2, #8]
+    STR X9, [X6, X4]
+    B L_lph_alloc_handle
+L_lph_next_nil:
+    STR XZR, [X6, X4]
+L_lph_alloc_handle:
+    ADD X9, X6, X4
+    STR X8, [X9, #8]
+    STP X6, X8, [SP, #-16]!
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDP X6, X8, [SP], #16
+    LDR X5, [SP], #16
+    LDP X3, X4, [SP], #16
+    LDP X1, X2, [SP], #16
+    CBZ X2, L_lph_len1
+    LDR X9, [X2]
+    ADD X9, X9, #1
+    B L_lph_setlen
+L_lph_len1:
+    MOV X9, #1
+L_lph_setlen:
+    STR X9, [X0]
+    STR X6, [X0, #8]
+    STR X8, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+
+L_list_tail_helper:
+    STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    LDR X3, [X0]
+    LDR X4, [X0, #8]
+    LDR X5, [X0, #16]
+    ADD X6, X5, X1
+    CMP X6, X2
+    B.GE L_lth_next_chunk
+    SUB X3, X3, #1
+    CBZ X3, L_lth_nil
+    STP X3, X4, [SP, #-16]!
+    STP X6, XZR, [SP, #-16]!
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDP X6, XZR, [SP], #16
+    LDP X3, X4, [SP], #16
+    STR X3, [X0]
+    STR X4, [X0, #8]
+    STR X6, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+L_lth_next_chunk:
+    LDR X7, [X4, X2]
+    CBZ X7, L_lth_nil
+    SUB X3, X3, #1
+    CBZ X3, L_lth_nil
+    STP X3, X7, [SP, #-16]!
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDP X3, X7, [SP], #16
+    STR X3, [X0]
+    STR X7, [X0, #8]
+    STR XZR, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+L_lth_nil:
+    MOV X0, #0
+    LDP X29, X30, [SP], #16
+    RET
+
+L_list_length_helper:
+    CBZ X0, L_list_len_nil
+    LDR X0, [X0]
+    RET
+L_list_len_nil:
+    MOV X0, #0
+    RET
+
+L_region_overflow:
+    BL _silica_rt_abort_region_overflow
+L_buf_invalid:
+    BL _silica_rt_abort_buf_invalid
+L_buf_bounds:
+    BL _silica_rt_abort_buf_bounds
+L_region_grow:
+    STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X19, X20, [SP, #-16]!
+    STP X0, X1, [SP, #-16]!
+    STP X2, X3, [SP, #-16]!
+    STP X4, X5, [SP, #-16]!
+    STP X6, X7, [SP, #-16]!
+    STP X8, X9, [SP, #-16]!
+    STP X10, X11, [SP, #-16]!
+    STP X12, X13, [SP, #-16]!
+    STP X14, X15, [SP, #-16]!
+    STP X16, X17, [SP, #-16]!
+    STR X18, [SP, #-16]!
+    MOV X19, X1
+    SUB X20, X5, X3
+    ADD X20, X20, #15
+    BIC X20, X20, #15
+    MOV X9, #4096
+    CMP X20, X9
+    B.HS 1f
+    MOV X20, X9
+1:
+    ADD X0, X20, #32
+    BL _silica_rt_raw_alloc
+    CBZ X0, L_region_overflow
+    ADD X1, X0, #32
+    ADD X2, X1, X20
+    STR X2, [X0, #24]
+    LDR X3, [X19, #16]
+    STR X3, [X0, #16]
+    STR X0, [X19, #16]
+    STR X1, [X19]
+    STR X2, [X19, #8]
+    LDR X18, [SP], #16
+    LDP X16, X17, [SP], #16
+    LDP X14, X15, [SP], #16
+    LDP X12, X13, [SP], #16
+    LDP X10, X11, [SP], #16
+    LDP X8, X9, [SP], #16
+    LDP X6, X7, [SP], #16
+    LDP X4, X5, [SP], #16
+    LDP X2, X3, [SP], #16
+    LDP X0, X1, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+L_region_contains:
+    STP X6, X7, [SP, #-16]!
+    ADD X6, X2, #32
+    LDR X7, [X2, #24]
+    CMP X1, X6
+    B.LO 2f
+    CMP X1, X7
+    B.LO 3f
+2:
+    LDR X6, [X2, #16]
+1:
+    CBZ X6, 4f
+    ADD X7, X6, #32
+    CMP X1, X7
+    B.LO 5f
+    LDR X7, [X6, #24]
+    CMP X1, X7
+    B.LO 3f
+5:
+    LDR X6, [X6, #16]
+    B 1b
+3:
+    MOV X5, #1
+    LDP X6, X7, [SP], #16
+    RET
+4:
+    MOV X5, #0
+    LDP X6, X7, [SP], #16
+    RET
+
+.section __TEXT,__rodata
+.align	8
+atom_0:
+    .byte  0x3a, 0x65, 0x66, 0x66, 0x69, 0x63, 0x69, 0x65, 0x6e, 0x63, 0x79, 0
+atom_1:
+    .byte  0x3a, 0x70, 0x65, 0x72, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x6e, 0x63, 0x65, 0
+atom_2:
+    .byte  0x3a, 0x6f, 0x6b, 0
+atom_3:
+    .byte  0x3a, 0x6e, 0x6f, 0x72, 0x6d, 0x61, 0x6c, 0
+atom_4:
+    .byte  0x3a, 0x6c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x5f, 0x65, 0x72, 0x72, 0x6f, 0x72, 0
+atom_5:
+    .byte  0x3a, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x5f, 0x66, 0x61, 0x75, 0x6c, 0x74, 0
+atom_6:
+    .byte  0x3a, 0x65, 0x78, 0x70, 0x6c, 0x69, 0x63, 0x69, 0x74, 0
+atom_7:
+    .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0
+atom_8:
+    .byte  0x3a, 0x6e, 0x6f, 0x70, 0x72, 0x6f, 0x63, 0
+atom_9:
+    .byte  0x3a, 0x70, 0x65, 0x72, 0x6d, 0x61, 0x6e, 0x65, 0x6e, 0x74, 0
+atom_10:
+    .byte  0x3a, 0x74, 0x72, 0x61, 0x6e, 0x73, 0x69, 0x65, 0x6e, 0x74, 0
+atom_11:
+    .byte  0x3a, 0x74, 0x65, 0x6d, 0x70, 0x6f, 0x72, 0x61, 0x72, 0x79, 0
+atom_12:
+    .byte  0x3a, 0x6f, 0x6e, 0x65, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x6f, 0x6e, 0x65, 0
+atom_13:
+    .byte  0x3a, 0x6f, 0x6e, 0x65, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x61, 0x6c, 0x6c, 0
+atom_14:
+    .byte  0x3a, 0x72, 0x65, 0x73, 0x74, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x6f, 0x6e, 0x65, 0
+atom_15:
+    .byte  0x3a, 0x69, 0x6e, 0x73, 0x65, 0x72, 0x74, 0
+atom_16:
+    .byte  0x3a, 0x6c, 0x6f, 0x6f, 0x6b, 0x75, 0x70, 0
+atom_17:
+    .byte  0x3a, 0x64, 0x65, 0x6c, 0x65, 0x74, 0x65, 0
+atom_18:
+    .byte  0x3a, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
+atom_19:
+    .byte  0x3a, 0x6e, 0x6f, 0x74, 0x5f, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
+atom_20:
+    .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0x5f, 0x6f, 0x70, 0
+atom_21:
+    .byte  0x3a, 0x70, 0x6c, 0x61, 0x69, 0x6e, 0
+atom_22:
+    .byte  0x3a, 0x64, 0x61, 0x6e, 0x67, 0x65, 0x72, 0x6f, 0x75, 0x73, 0
+atom_23:
+    .byte  0x3a, 0x6c, 0x65, 0x73, 0x73, 0
+atom_24:
+    .byte  0x3a, 0x65, 0x71, 0x75, 0x61, 0x6c, 0
+atom_25:
+    .byte  0x3a, 0x67, 0x72, 0x65, 0x61, 0x74, 0x65, 0x72, 0
+atom_26:
+    .byte  0x3a, 0x69, 0x6e, 0x76, 0x61, 0x6c, 0x69, 0x64, 0x5f, 0x63, 0x6f, 0x6d, 0x70, 0x61, 0x72, 0x61, 0x74, 0x6f, 0x72, 0x5f, 0x72, 0x65, 0x73, 0x75, 0x6c, 0x74, 0
+atom_27:
+    .byte  0x3a, 0x6d, 0x69, 0x6e, 0
+atom_28:
+    .byte  0x3a, 0x75, 0x6e, 0x64, 0x69, 0x72, 0x65, 0x63, 0x74, 0x65, 0x64, 0x5f, 0x61, 0x73, 0x79, 0x6d, 0x6d, 0x65, 0x74, 0x72, 0x79, 0
+atom_29:
+    .byte  0x3a, 0x63, 0x73, 0x72, 0x5f, 0x6f, 0x66, 0x66, 0x73, 0x65, 0x74, 0x5f, 0x76, 0x69, 0x6f, 0x6c, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0
+atom_30:
+    .byte  0x3a, 0x73, 0x6c, 0x6f, 0x74, 0x5f, 0x6d, 0x69, 0x73, 0x6d, 0x61, 0x74, 0x63, 0x68, 0
+atom_31:
+    .byte  0x3a, 0x6d, 0x69, 0x73, 0x73, 0x69, 0x6e, 0x67, 0x5f, 0x65, 0x6e, 0x64, 0x70, 0x6f, 0x69, 0x6e, 0x74, 0
+atom_32:
+    .byte  0x3a, 0x6f, 0x72, 0x64, 0x65, 0x72, 0x5f, 0x76, 0x69, 0x6f, 0x6c, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0
+atom_33:
+    .byte  0x3a, 0x6e, 0x65, 0x67, 0x61, 0x74, 0x69, 0x76, 0x65, 0x5f, 0x63, 0x6f, 0x75, 0x6e, 0x74, 0
+atom_34:
+    .byte  0x3a, 0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x5f, 0x6d, 0x69, 0x73, 0x6d, 0x61, 0x74, 0x63, 0x68, 0
+atom_35:
+    .byte  0x3a, 0x65, 0x64, 0x67, 0x65, 0x5f, 0x63, 0x6f, 0x75, 0x6e, 0x74, 0x5f, 0x6d, 0x69, 0x73, 0x6d, 0x61, 0x74, 0x63, 0x68, 0
+.section __TEXT,__rodata
+.align	8
+L_pb_true:
+    .byte 0x74, 0x72, 0x75, 0x65, 0
+L_pb_false:
+    .byte 0x66, 0x61, 0x6c, 0x73, 0x65, 0
+
+.section __DATA_CONST,__const
+.align	3
+L_pa_table:
+    .quad atom_0
+    .quad 11
+    .quad atom_1
+    .quad 12
+    .quad atom_2
+    .quad 3
+    .quad atom_3
+    .quad 7
+    .quad atom_4
+    .quad 15
+    .quad atom_5
+    .quad 13
+    .quad atom_6
+    .quad 9
+    .quad atom_7
+    .quad 8
+    .quad atom_8
+    .quad 7
+    .quad atom_9
+    .quad 10
+    .quad atom_10
+    .quad 10
+    .quad atom_11
+    .quad 10
+    .quad atom_12
+    .quad 12
+    .quad atom_13
+    .quad 12
+    .quad atom_14
+    .quad 13
+    .quad atom_15
+    .quad 7
+    .quad atom_16
+    .quad 7
+    .quad atom_17
+    .quad 7
+    .quad atom_18
+    .quad 6
+    .quad atom_19
+    .quad 10
+    .quad atom_20
+    .quad 11
+    .quad atom_21
+    .quad 6
+    .quad atom_22
+    .quad 10
+    .quad atom_23
+    .quad 5
+    .quad atom_24
+    .quad 6
+    .quad atom_25
+    .quad 8
+    .quad atom_26
+    .quad 26
+    .quad atom_27
+    .quad 4
+    .quad atom_28
+    .quad 21
+    .quad atom_29
+    .quad 21
+    .quad atom_30
+    .quad 14
+    .quad atom_31
+    .quad 17
+    .quad atom_32
+    .quad 16
+    .quad atom_33
+    .quad 15
+    .quad atom_34
+    .quad 16
+    .quad atom_35
+    .quad 20
+
+.section __TEXT,__rodata
+.align	8
+L_i64_0:
+    .quad 16843009
+
+L_i64_1:
+    .quad 9223372036854775807
+

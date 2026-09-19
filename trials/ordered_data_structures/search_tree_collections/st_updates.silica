@@ -1,0 +1,104 @@
+// search_tree_trait.md §4: SearchTree has no mutation surface of its own; construction and persistent
+// updates go through wbt_set@empty/insert/delete/from_list/from_sorted, and every returned value keeps
+// implementing SearchTree (contains_key) and OrderedSet (size) at once. Deleting an absent key reports
+// removed = false and changes nothing; from_sorted rejects input that is not strictly ascending
+// (valid = false).
+
+use OrderedSet;
+use wbt_set;
+use SearchTree;
+use st_trial_i64;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn show(label: string, value: int64) -> int64 {
+    sequence proc[device_io]
+        println(label);
+        print_int64(value);
+        println("")
+    produces
+        pure value
+    end
+}
+
+fn unsorted_items() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        xs: List[int64, mem(normal)] <- [9, 7, 9, 5]
+    produces
+        pure xs
+    end
+}
+
+fn sorted_items() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        xs: List[int64, mem(normal)] <- [1, 3, 5, 7]
+    produces
+        pure xs
+    end
+}
+
+fn descending_items() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        xs: List[int64, mem(normal)] <- [3, 1]
+    produces
+        pure xs
+    end
+}
+
+fn insert_delete() -> int64 {
+    sequence
+        e: SearchTree[int64, mem(normal)] <- wbt_set@empty({ compare_item: cmp_i64 });
+        i1: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(e, 4);
+        i2: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(i1.set, 8);
+        i3: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, inserted: boolean } <- wbt_set@insert(i2.set, 2);
+        d1: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, removed: boolean } <- wbt_set@delete(i3.set, 8);
+        d2: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, removed: boolean } <- wbt_set@delete(d1.set, 9);
+        _: int64 <- show("insert_contains_8", st_trial_i64@b2i(SearchTree@contains_key(i3.set, 8)));
+        _: int64 <- show("insert_size", OrderedSet@size(i3.set));
+        _: int64 <- show("delete_removed", st_trial_i64@b2i(d1.removed));
+        _: int64 <- show("delete_contains_8", st_trial_i64@b2i(SearchTree@contains_key(d1.set, 8)));
+        _: int64 <- show("delete_contains_4", st_trial_i64@b2i(SearchTree@contains_key(d1.set, 4)));
+        _: int64 <- show("delete_absent_removed", st_trial_i64@b2i(d2.removed));
+        _: int64 <- show("delete_absent_size", OrderedSet@size(d2.set));
+        _: int64 <- show("delete_absent_count", st_trial_i64@count_present(d2.set, 0, 10))
+    produces
+        pure 0
+    end
+}
+
+fn bulk() -> int64 {
+    sequence
+        e: SearchTree[int64, mem(normal)] <- wbt_set@empty({ compare_item: cmp_i64 });
+        fl: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, valid: boolean, error: atom } <- wbt_set@from_list({ compare_item: cmp_i64 }, unsorted_items());
+        fs: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, valid: boolean, error: atom } <- wbt_set@from_sorted(e, sorted_items());
+        bad: { set: { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }, valid: boolean, error: atom } <- wbt_set@from_sorted(e, descending_items());
+        _: int64 <- show("from_list_valid", st_trial_i64@b2i(fl.valid));
+        _: int64 <- show("from_list_count", st_trial_i64@count_present(fl.set, 0, 10));
+        _: int64 <- show("from_list_size", OrderedSet@size(fl.set));
+        _: int64 <- show("from_sorted_valid", st_trial_i64@b2i(fs.valid));
+        _: int64 <- show("from_sorted_contains_3", st_trial_i64@b2i(SearchTree@contains_key(fs.set, 3)));
+        _: int64 <- show("from_sorted_contains_4", st_trial_i64@b2i(SearchTree@contains_key(fs.set, 4)));
+        _: int64 <- show("from_sorted_count", st_trial_i64@count_present(fs.set, 0, 10));
+        _: int64 <- show("from_sorted_size", OrderedSet@size(fs.set));
+        _: int64 <- show("from_sorted_descending_valid", st_trial_i64@b2i(bad.valid))
+    produces
+        pure 0
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        _: int64 <- insert_delete();
+        _: int64 <- bulk()
+    produces
+        pure 0
+    end
+}

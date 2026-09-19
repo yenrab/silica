@@ -1,0 +1,62 @@
+// SD-3 (registered-name shape) unit B: the supervisor. Mints the child id atom `:adder` in ITS
+// OWN compilation unit (first atom literal appearing in this unit); the caller in
+// sd3_cross_unit_atoms_registered_name.silica mints `:adder` again in the MAIN unit and uses it
+// with cast_registered. See that trial's header comment for the defect.
+use Supervisor;
+use sd3_registry_adder;
+
+impl Sd3RegistrySupervisor for Supervisor;
+
+export init/1;
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: (int64, int64), state: int64) -> (:no_reply, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: (int64, int64), state: int64) -> (:no_reply, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :adder,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: sd3_registry_adder@add_and_print,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}

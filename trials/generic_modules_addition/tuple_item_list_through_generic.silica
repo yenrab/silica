@@ -1,0 +1,107 @@
+// Tuple items crossing a generic boundary: in a record field (a field after the tuple-typed
+// ItemType field, gpass@wrap_tagged) and in lists built on either side (gpass walks, indexes
+// and extends a List[(int64, int64)] built here, and builds one that this unit reads). A tuple
+// field and a tuple list cell are one pointer word in both units.
+// Expected output: 4 40 9, 3, 2 20, 0 5, 65, 7 70 8 80, then exit 0.
+
+use gpass;
+
+fn first_of(p: (int64, int64)) -> int64 {
+    (x: int64, _: int64) <- p;
+    x
+}
+
+fn second_of(p: (int64, int64)) -> int64 {
+    (_: int64, y: int64) <- p;
+    y
+}
+
+fn cmp_tp(p: (int64, int64), q: (int64, int64)) -> :less | :equal | :greater {
+    case first_of(p) < first_of(q) of {
+        true -> :less;
+        false -> case first_of(p) == first_of(q) of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn cons_tp(x: (int64, int64), rest: List[(int64, int64), mem(normal)]) -> List[(int64, int64), mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[(int64, int64), mem(normal)] <- prepend[(int64, int64), mem(normal)](x, rest)
+    produces
+        pure out
+    end
+}
+
+fn nil_tp() -> List[(int64, int64), mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[(int64, int64), mem(normal)] <- empty[(int64, int64), mem(normal)]()
+    produces
+        pure out
+    end
+}
+
+fn sum_second(xs: List[(int64, int64), mem(normal)], acc: int64) -> int64 {
+    case xs of {
+        []: List[(int64, int64), mem(normal)] -> acc;
+        [h: (int64, int64), t: List[(int64, int64), mem(normal)]] -> sum_second(t, acc + second_of(h))
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        item: (int64, int64) <- (4, 40);
+        rt: { status: :not_found | :found, value: (int64, int64), tag: int64 } <- gpass@wrap_tagged({ compare_item: cmp_tp }, item, 9);
+        (va: int64, vb: int64) <- rt.value;
+        vt: int64 <- rt.tag;
+        e: List[(int64, int64), mem(normal)] <- nil_tp();
+        l3: List[(int64, int64), mem(normal)] <- cons_tp((3, 30), e);
+        l2: List[(int64, int64), mem(normal)] <- cons_tp((2, 20), l3);
+        xs: List[(int64, int64), mem(normal)] <- cons_tp((1, 10), l2);
+        n: int64 <- gpass@count_items({ compare_item: cmp_tp }, xs);
+        s: (int64, int64) <- gpass@second_item({ compare_item: cmp_tp }, xs);
+        (sa: int64, sb: int64) <- s;
+        z: (int64, int64) <- (0, 5);
+        ys: List[(int64, int64), mem(normal)] <- gpass@push_item({ compare_item: cmp_tp }, z, xs);
+        yh: (int64, int64) <- ys.head;
+        (ya: int64, yb: int64) <- yh;
+        total: int64 <- sum_second(ys, 0);
+        p7: (int64, int64) <- (7, 70);
+        p8: (int64, int64) <- (8, 80);
+        ps: List[(int64, int64), mem(normal)] <- gpass@pair_items({ compare_item: cmp_tp }, p7, p8);
+        ph: (int64, int64) <- ps.head;
+        pt: List[(int64, int64), mem(normal)] <- ps.tail;
+        pn: (int64, int64) <- pt.head;
+        (pha: int64, phb: int64) <- ph;
+        (pna: int64, pnb: int64) <- pn;
+        print_int64(va);
+        print_string(" ");
+        print_int64(vb);
+        print_string(" ");
+        print_int64(vt);
+        println("");
+        print_int64(n);
+        println("");
+        print_int64(sa);
+        print_string(" ");
+        print_int64(sb);
+        println("");
+        print_int64(ya);
+        print_string(" ");
+        print_int64(yb);
+        println("");
+        print_int64(total);
+        println("");
+        print_int64(pha);
+        print_string(" ");
+        print_int64(phb);
+        print_string(" ");
+        print_int64(pna);
+        print_string(" ");
+        print_int64(pnb);
+        println("")
+    produces
+        pure 0
+    end
+}

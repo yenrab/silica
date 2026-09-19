@@ -1,0 +1,82 @@
+module other_unit_sup;
+
+// Helper unit for supervisor_init_in_other_unit.silica: the supervisor implementation (impl and
+// init/1) lives here, and the main unit only spawns it. The start trampoline
+// _silica_supervisor_start_OtherUnitSup is defined here and merely referenced by the spawning unit.
+// Atoms are numbered per compilation unit today, so every atom the supervisor protocol compares
+// (its registry name, the child id :adder) is named in this unit only: registry_name hands main
+// the supervisor's name and send_pair casts to the child. (Named in main, :other_unit_sup and this
+// unit's :adder got the same number and the cast reached the supervisor.)
+
+use Supervisor;
+use other_unit_adder;
+
+impl OtherUnitSup for Supervisor;
+
+export init/1;
+export send_pair/2;
+export registry_name/0;
+
+fn registry_name() -> atom {
+    :other_unit_sup
+}
+
+fn send_pair(left: int64, right: int64) -> boolean {
+    sequence proc[concurrency]
+        sent: boolean <- cast_registered(:adder, (left, right) impl ActorMessage {})
+    produces
+        pure sent
+    end
+}
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: (int64, int64), state: int64) -> (:no_reply, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: (int64, int64), state: int64) -> (:no_reply, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :adder,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: other_unit_adder@add_and_print,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
