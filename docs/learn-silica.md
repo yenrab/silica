@@ -368,6 +368,8 @@ Modules: `[modules_addition](https://github.com/yenrab/silica/tree/main/trials/m
 
 Large types built from many items and layers are the naive design. Silica's standard library supplies persistent data structures instead, each defined by a **trait** (the queries) and one or more **construction modules** (building and updating). The designs are in [data_structure_designs](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/README.md). Bounds below are the designs' stated bounds. The implementations are in [stdlib/data_structures](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/stdlib/data_structures), and each module header lists the deviations the current compiler forces.
 
+Reference: what each trait is for, the module that builds it, its representation and its headline bounds.
+
 | Trait | For | Construction modules | Representation | Headline bounds |
 |---|---|---|---|---|
 | `OrderedSet` | membership, ordered iteration | `wbt_set` | corrected Adams weight-balanced tree, (δ, γ) = (3, 2) | contains, insert, delete `O(log n)`; size `O(1)` |
@@ -380,6 +382,23 @@ Large types built from many items and layers are the naive design. Silica's stan
 | `DirectedGraph` | one-way edges | `graph_wbt_directed`, `graph_csr_directed`, `graph_dense_directed` | live WBT graph, CSR snapshot, dense matrix | has/add edge `O(log V + log d)` (live) |
 | `UndirectedGraph` | two-way edges | `graph_wbt_undirected`, `graph_weighted_undirected`, `graph_csr_undirected`, `graph_csr_weighted_undirected`, `graph_dense_undirected`, `graph_dense_weighted_undirected` | as above | connected `O((V_c + A_c) log V)` |
 | `WeightedGraph` | edge weights | `graph_weighted`, `graph_weighted_undirected`, `graph_csr_weighted`, `graph_csr_weighted_undirected`, `graph_dense_weighted`, `graph_dense_weighted_undirected` | as above | weight lookup `O(log V + log d)` |
+
+Choosing: the algorithm behind each structure, and the reason to reach for it.
+
+| Trait | Algorithms behind it | Why pick it |
+|---|---|---|
+| `OrderedSet` | corrected Adams weight-balanced tree, (δ, γ) = (3, 2), with cached subtree sizes and path copying | You ask whether an item is present and you want the items in order. Duplicates collapse by the comparator. Membership and update are `O(log n)`, size is `O(1)`. |
+| `OrderedMap` | the same weight-balanced tree, one value per node | You look values up by key, and you want the keys in order. Choose it over a list of pairs as soon as the collection is searched more than once. |
+| `SearchTree` | the same weight-balanced tree; a view of the `OrderedSet` value | Your algorithm only searches. Taking `SearchTree` says exactly that, and any ordered set satisfies it. |
+| `Heap` | Brodal–Okasaki bootstrapped skew-binomial queue, min or max orientation fixed by the module | You repeatedly take the smallest or largest item, and you merge queues: peek, push and meld are `O(1)`, pop is `O(log n)`. |
+| `PriorityQueue` | the same queue over (priority, value) entries, compared by priority then value | The same need, but each item carries a payload and ties must break predictably. |
+| `Tree` | rose tree whose child slots are a skew binary random-access list in reverse orientation | A hierarchy where a node has any number of children, child slots keep their numbers as siblings come and go, and you address nodes by path. |
+| `BinaryTree` | persistent fixed-arity binary tree with cached subtree counts and a zipper | Exactly two roles per node, left and right, and you walk up and down in `O(1)`: expression trees, decision trees, an abstract syntax tree. |
+| `DirectedGraph` | live weight-balanced-tree graph; CSR snapshot; dense matrix over a skew binary random-access list | Edges point one way, and you ask what a node points at or what it reaches. |
+| `UndirectedGraph` | the same three, with each edge stored in both directions | Edges are mutual: neighbours, connectivity, components. |
+| `WeightedGraph` | the same three, with a value on every edge | Edges carry data, such as a distance or a capacity, that you read back with the edge. |
+
+For a graph, the representation is the second choice. The live tree accepts updates. The CSR snapshot freezes a live graph in `O(V + A)` and is then read-only, for repeated queries and scans. The dense matrix fits a fixed, small vertex universe and reaches any cell in `O(log V)`. The construction modules and the full bounds are in the sections below.
 
 Everything is persistent. An update returns a new root, the old root stays valid, and every node off the changed path is shared between the two ([README](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/README.md), suite-wide decisions). Recursive nodes are region-allocated in one canonical arena per representation, linked by `ref?`, with `:none` as the empty position. Comparators return `:less | :equal | :greater` and define identity as well as order. A comparator that returns anything else is a deterministic collection error, not a branch.
 
