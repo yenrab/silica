@@ -1,0 +1,1601 @@
+.bss
+.balign 8
+.lcomm silica_frame_depth, 8
+.lcomm silica_frame_max, 8
+.lcomm silica_fuel, 8
+.lcomm silica_saved_pc, 8
+
+    .intel_syntax noprefix
+    .text
+    // use skew_ral_dispatch_access, skew_ral_dispatch_bulk
+.global skew_ral_arena_key
+.global skew_ral_empty
+.global skew_ral_size
+.global skew_ral_is_reversed
+.global skew_ral_prepend
+.global skew_ral_head
+.global skew_ral_tail
+.global skew_ral_lookup
+.global skew_ral_update
+.global skew_ral_logical_to_physical
+.global skew_ral_get
+.global skew_ral_set
+.global skew_ral_append
+.global skew_ral_from_list
+.global skew_ral_filled
+.global skew_ral_fold_logical
+.global skew_ral_fold_physical
+.global skew_ral_range_valid
+.global skew_ral_fold_range
+.global skew_ral_validate
+.global skew_ral_validate_error_code
+.extern silica_rt_ffi_guarded_enter
+.extern silica_rt_ffi_guarded_exit
+.extern silica_rt_ffi_guarded_setjmp
+.extern silica_rt_ffi_guarded_fault_finish
+.extern silica_rt_ffi_arena_bump
+
+    // --- recursion phases (recursion_implementation.jsonld) ---
+    // p1: explicit frame fields; p2: push/dispatch/pop; p3: fuel on back-edges
+    // p4: PC/source map hooks; p5: tail BR (see emit_tail_call_body); p6: trampoline fallback
+
+    // p4 observability: frame -> (fn id, source id) map; filter trampoline frames
+
+    // p6 trampoline fallback (optional):
+    // silica_trampoline_dispatch: load target from frame / BR X8
+    // never rely on unbounded native recursion for general calls
+
+
+
+.set SVR_AREA, 0
+.globl skew_ral_arena_key
+skew_ral_arena_key:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+
+    mov rdi, 81
+
+    leave
+    ret
+
+.set SVR_AREA, 48
+.set SVR_X19, 8
+.set SVR_X20, 16
+.set SVR_X21, 24
+.set SVR_X22, 32
+.set SVR_X23, 40
+.globl skew_ral_empty_ral
+skew_ral_empty_ral:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    lea rsp, [rsp + -288]
+    mov QWORD PTR [rbp - SVR_X19], rdi
+    mov QWORD PTR [rbp - SVR_X20], rsi
+
+    mov rdi, rsp
+
+    mov rsi, 81
+
+    mov rdi, rsi
+    call silica_rt_canonical_arena_lookup
+    mov rsi, rdi
+
+    mov QWORD PTR [rbp - SVR_X21], rsi
+    mov rsi, 0
+
+    mov QWORD PTR [rbp - SVR_X22], rsi
+    mov r10, 0
+
+    mov QWORD PTR [rbp - SVR_AREA - 48], r10
+
+    mov r10, QWORD PTR [rbp - SVR_X20]
+
+    mov QWORD PTR [rbp - SVR_AREA - 40], r10
+
+    mov r12, QWORD PTR [rbp - SVR_X19]
+    mov r10, QWORD PTR [r12]
+
+    mov QWORD PTR [rbp - SVR_AREA - 32], r10
+
+    mov r10, QWORD PTR [rbp - SVR_X22]
+
+    mov QWORD PTR [rbp - SVR_AREA - 24], r10
+
+    mov r10, QWORD PTR [rbp - SVR_X21]
+
+    mov QWORD PTR [rbp - SVR_AREA - 16], r10
+
+    mov r10, 0
+
+    mov QWORD PTR [rbp - SVR_AREA - 8], r10
+
+    lea rdi, [rbp - SVR_AREA - 48]
+
+    mov QWORD PTR [rbp - SVR_X23], rdi
+    mov rdi, QWORD PTR [rbp - SVR_X23]
+
+    lea rsp, [rsp + -16]
+    mov QWORD PTR [rsp + 8], rdi
+    mov rdi, 48
+    call silica_rt_region_alloc
+    mov r8, rdi
+    mov rsi, QWORD PTR [rsp + 8]
+    mov rcx, QWORD PTR [rsi]
+    mov QWORD PTR [r8], rcx
+    mov rcx, QWORD PTR [rsi + 8]
+    mov QWORD PTR [r8 + 8], rcx
+    mov rcx, QWORD PTR [rsi + 16]
+    mov QWORD PTR [r8 + 16], rcx
+    mov rcx, QWORD PTR [rsi + 24]
+    mov QWORD PTR [r8 + 24], rcx
+    mov rcx, QWORD PTR [rsi + 32]
+    mov QWORD PTR [r8 + 32], rcx
+    mov rcx, QWORD PTR [rsi + 40]
+    mov QWORD PTR [r8 + 40], rcx
+    mov rdi, r8
+    lea rsp, [rsp + 16]
+
+
+
+
+    lea rsp, [rsp + 288]
+    leave
+    ret
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.set SVR_X16, 16
+.globl skew_ral_empty
+skew_ral_empty:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    mov rax, QWORD PTR [rbp - SVR_X11]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rsi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 16]
+    mov rsi, QWORD PTR [rsp]
+    lea rsp, [rsp + 32]
+    // effects []|sir_rec:o4176|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    leave
+    lea r10, [rip + skew_ral_empty_ral]
+    jmp r10
+
+
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.globl skew_ral_size
+skew_ral_size:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    mov r12, QWORD PTR [rbp - SVR_X11]
+    mov rdi, QWORD PTR [r12]
+
+    leave
+    ret
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.globl skew_ral_is_reversed
+skew_ral_is_reversed:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    mov r12, QWORD PTR [rbp - SVR_X11]
+    mov rdi, QWORD PTR [r12 + 8]
+
+    leave
+    ret
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.globl skew_ral_prepend_overflow_halt
+skew_ral_prepend_overflow_halt:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    mov r10, 1
+
+    mov r11, 0
+
+
+
+    test r11, r11
+    jne 1f
+    call silica_rt_badarith
+1:
+    mov rax, r10
+    mov r12, r11
+    push rdx
+    cmp r12, -1
+    jne 90f
+    neg rax
+    mov edx, 0
+    jmp 92f
+90:
+    test r12, r12
+    jne 91f
+    mov rdx, rax
+    mov eax, 0
+    jmp 92f
+91:
+    cqo
+    idiv r12
+92:
+    mov r13, rax
+    pop rdx
+    mov rdi, r13
+
+    mov rdi, QWORD PTR [rbp - SVR_X11]
+
+
+    leave
+    ret
+
+.set SVR_AREA, 32
+.set SVR_X16, 8
+.set SVR_X19, 16
+.set SVR_X20, 24
+.set SVR_X21, 32
+.globl skew_ral_prepend_ral
+skew_ral_prepend_ral:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X19], rdi
+    mov QWORD PTR [rbp - SVR_X20], rsi
+
+    mov rax, QWORD PTR [rbp - SVR_X19]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X20]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 16]
+    mov rsi, QWORD PTR [rsp]
+    lea rsp, [rsp + 32]
+    // effects []|sir_rec:o6583|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    lea r10, [rip + skew_ral_dispatch_access_push_front]
+    call r10
+
+    mov QWORD PTR [rbp - SVR_X21], rdi
+    mov r12, QWORD PTR [rbp - SVR_X21]
+    mov rcx, QWORD PTR [r12 + 8]
+
+L_case_o6635_br_0:
+    mov r8, 2
+
+    cmp rcx, r8
+    jne L_case_o6635_br_1
+    mov r12, QWORD PTR [rbp - SVR_X21]
+    mov rdi, QWORD PTR [r12]
+
+    jmp L_case_o6635_done
+L_case_o6635_br_1:
+    mov r8, 23
+
+    cmp rcx, r8
+    jne L_case_o6635_fb
+    mov rax, QWORD PTR [rbp - SVR_X19]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp]
+    lea rsp, [rsp + 16]
+    // effects []|sir_rec:o6706|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    lea r10, [rip + skew_ral_prepend_overflow_halt]
+    call r10
+
+    jmp L_case_o6635_done
+L_case_o6635_fb:
+    call silica_rt_case_clause
+    mov rdi, 0
+    jmp L_case_o6635_done
+L_case_o6635_done:
+
+
+    leave
+    ret
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.set SVR_X16, 16
+.globl skew_ral_prepend
+skew_ral_prepend:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    mov rax, QWORD PTR [rbp - SVR_X11]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rsi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 16]
+    mov rsi, QWORD PTR [rsp]
+    lea rsp, [rsp + 32]
+    // effects []|sir_rec:o7371|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    leave
+    lea r10, [rip + skew_ral_prepend_ral]
+    jmp r10
+
+
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.set SVR_X16, 16
+.globl skew_ral_head
+skew_ral_head:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    mov rax, QWORD PTR [rbp - SVR_X11]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rsi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 16]
+    mov rsi, QWORD PTR [rsp]
+    lea rsp, [rsp + 32]
+    // effects []|sir_rec:o7769|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    leave
+    lea r10, [rip + skew_ral_dispatch_access_peek_front]
+    jmp r10
+
+
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.set SVR_X16, 16
+.globl skew_ral_tail
+skew_ral_tail:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    mov rax, QWORD PTR [rbp - SVR_X11]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp]
+    lea rsp, [rsp + 16]
+    // effects []|sir_rec:o8506|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    leave
+    lea r10, [rip + skew_ral_dispatch_access_pop_front]
+    jmp r10
+
+
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.set SVR_X16, 16
+.globl skew_ral_lookup
+skew_ral_lookup:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    mov rax, QWORD PTR [rbp - SVR_X11]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rsi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rdx
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 32]
+    mov rsi, QWORD PTR [rsp + 16]
+    mov rdx, QWORD PTR [rsp]
+    lea rsp, [rsp + 48]
+    // effects []|sir_rec:o8937|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    leave
+    lea r10, [rip + skew_ral_dispatch_access_lookup_physical]
+    jmp r10
+
+
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.set SVR_X16, 16
+.globl skew_ral_update
+skew_ral_update:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    mov rax, QWORD PTR [rbp - SVR_X11]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rsi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rdx
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 32]
+    mov rsi, QWORD PTR [rsp + 16]
+    mov rdx, QWORD PTR [rsp]
+    lea rsp, [rsp + 48]
+    // effects []|sir_rec:o9637|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    leave
+    lea r10, [rip + skew_ral_dispatch_access_update_physical]
+    jmp r10
+
+
+
+.set SVR_AREA, 16
+.set SVR_X19, 8
+.set SVR_X20, 16
+.globl skew_ral_logical_to_physical
+skew_ral_logical_to_physical:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X19], rdi
+    mov QWORD PTR [rbp - SVR_X20], rsi
+
+    mov r10, QWORD PTR [rbp - SVR_X20]
+
+    mov r11, 0
+
+
+
+    cmp r10, r11
+    setl al
+    movzx eax, al
+    mov rcx, rax
+
+L_case_o10117_br_0:
+    cmp ecx, 1
+    jne L_case_o10117_br_1
+    mov rdi, -1
+
+    jmp L_case_o10117_done
+L_case_o10117_br_1:
+    cmp ecx, 0
+    jne L_case_o10117_fb
+    mov r10, QWORD PTR [rbp - SVR_X20]
+
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], r10
+    mov r12, QWORD PTR [rbp - SVR_X19]
+    mov r11, QWORD PTR [r12]
+
+    mov r10, QWORD PTR [rsp]
+    lea rsp, [rsp + 16]
+
+
+    cmp r10, r11
+    setge al
+    movzx eax, al
+    mov rcx, rax
+
+L_case_o10170_br_0:
+    cmp ecx, 1
+    jne L_case_o10170_br_1
+    mov r12, QWORD PTR [rbp - SVR_X19]
+    mov rdi, QWORD PTR [r12]
+
+    jmp L_case_o10170_done
+L_case_o10170_br_1:
+    cmp ecx, 0
+    jne L_case_o10170_fb
+    mov r12, QWORD PTR [rbp - SVR_X19]
+    mov rcx, QWORD PTR [r12 + 8]
+
+L_case_o10247_br_0:
+    cmp ecx, 0
+    jne L_case_o10247_br_1
+    mov rdi, QWORD PTR [rbp - SVR_X20]
+
+    jmp L_case_o10247_done
+L_case_o10247_br_1:
+    cmp ecx, 1
+    jne L_case_o10247_fb
+    mov r11, QWORD PTR [rbp - SVR_X20]
+
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], r11
+    mov r11, 1
+
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], r11
+    mov r12, QWORD PTR [rbp - SVR_X19]
+    mov r10, QWORD PTR [r12]
+
+    mov r11, QWORD PTR [rsp]
+    lea rsp, [rsp + 16]
+
+
+    mov rax, r10
+    sub rax, r11
+    mov r10, rax
+
+    mov r11, QWORD PTR [rsp]
+    lea rsp, [rsp + 16]
+
+
+    mov rax, r10
+    sub rax, r11
+    mov rdi, rax
+
+    jmp L_case_o10247_done
+L_case_o10247_fb:
+    call silica_rt_case_clause
+    mov rdi, 0
+    jmp L_case_o10247_done
+L_case_o10247_done:
+
+    jmp L_case_o10170_done
+L_case_o10170_fb:
+    call silica_rt_case_clause
+    mov rdi, 0
+    jmp L_case_o10170_done
+L_case_o10170_done:
+
+    jmp L_case_o10117_done
+L_case_o10117_fb:
+    call silica_rt_case_clause
+    mov rdi, 0
+    jmp L_case_o10117_done
+L_case_o10117_done:
+
+    leave
+    ret
+
+.set SVR_AREA, 32
+.set SVR_X16, 8
+.set SVR_X19, 16
+.set SVR_X20, 24
+.set SVR_X21, 32
+.globl skew_ral_get
+skew_ral_get:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X19], rdi
+    mov QWORD PTR [rbp - SVR_X20], rsi
+    mov QWORD PTR [rbp - SVR_X21], rdx
+
+    mov rax, QWORD PTR [rbp - SVR_X19]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X19]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X20]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 16]
+    mov rsi, QWORD PTR [rsp]
+    lea rsp, [rsp + 32]
+    // effects []|sir_rec:o10804|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    lea r10, [rip + skew_ral_logical_to_physical]
+    call r10
+
+    mov QWORD PTR [rbp - SVR_X16], rdi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X21]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 32]
+    mov rsi, QWORD PTR [rsp + 16]
+    mov rdx, QWORD PTR [rsp]
+    lea rsp, [rsp + 48]
+    lea r10, [rip + skew_ral_dispatch_access_lookup_physical]
+    call r10
+
+    leave
+    ret
+
+.set SVR_AREA, 32
+.set SVR_X16, 8
+.set SVR_X19, 16
+.set SVR_X20, 24
+.set SVR_X21, 32
+.globl skew_ral_set
+skew_ral_set:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X19], rdi
+    mov QWORD PTR [rbp - SVR_X20], rsi
+    mov QWORD PTR [rbp - SVR_X21], rdx
+
+    mov rax, QWORD PTR [rbp - SVR_X19]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X19]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X20]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 16]
+    mov rsi, QWORD PTR [rsp]
+    lea rsp, [rsp + 32]
+    // effects []|sir_rec:o11527|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    lea r10, [rip + skew_ral_logical_to_physical]
+    call r10
+
+    mov QWORD PTR [rbp - SVR_X16], rdi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X21]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 32]
+    mov rsi, QWORD PTR [rsp + 16]
+    mov rdx, QWORD PTR [rsp]
+    lea rsp, [rsp + 48]
+    lea r10, [rip + skew_ral_dispatch_access_update_physical]
+    call r10
+
+    leave
+    ret
+
+.set SVR_AREA, 32
+.set SVR_X16, 8
+.set SVR_X19, 16
+.set SVR_X20, 24
+.globl skew_ral_append
+skew_ral_append:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    lea rsp, [rsp + -32]
+    mov QWORD PTR [rbp - SVR_X19], rdi
+    mov QWORD PTR [rbp - SVR_X20], rsi
+
+    mov r12, QWORD PTR [rbp - SVR_X19]
+    mov rcx, QWORD PTR [r12 + 8]
+
+L_case_o12371_br_0:
+    cmp ecx, 1
+    jne L_case_o12371_br_1
+    mov rax, QWORD PTR [rbp - SVR_X19]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X20]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 16]
+    mov rsi, QWORD PTR [rsp]
+    lea rsp, [rsp + 32]
+    // effects []|sir_rec:o12418|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    lea r10, [rip + skew_ral_prepend_ral]
+    call r10
+
+    mov r10, rdi
+
+    mov QWORD PTR [rbp - SVR_AREA - 16], r10
+
+    mov r10, 1
+
+    mov QWORD PTR [rbp - SVR_AREA - 8], r10
+
+    lea rdi, [rbp - SVR_AREA - 16]
+
+    lea rsp, [rsp + -16]
+    mov QWORD PTR [rsp + 8], rdi
+    mov rdi, 16
+    call silica_rt_region_alloc
+    mov r8, rdi
+    mov rsi, QWORD PTR [rsp + 8]
+    mov rcx, QWORD PTR [rsi]
+    mov QWORD PTR [r8], rcx
+    mov rcx, QWORD PTR [rsi + 8]
+    mov QWORD PTR [r8 + 8], rcx
+    mov rdi, r8
+    lea rsp, [rsp + 16]
+    jmp L_case_o12371_done
+L_case_o12371_br_1:
+    cmp ecx, 0
+    jne L_case_o12371_fb
+    mov r10, QWORD PTR [rbp - SVR_X19]
+
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rdi
+    mov QWORD PTR [rsp + 8], rsi
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rdx
+    mov QWORD PTR [rsp + 8], rcx
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], r8
+    mov QWORD PTR [rsp + 8], r9
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], r14
+    mov QWORD PTR [rsp + 8], r15
+    mov rdi, r10
+    lea rsp, [rsp + -16]
+    mov QWORD PTR [rsp + 8], rdi
+    mov rdi, 48
+    call silica_rt_region_alloc
+    mov r8, rdi
+    mov rsi, QWORD PTR [rsp + 8]
+    mov rcx, QWORD PTR [rsi]
+    mov QWORD PTR [r8], rcx
+    mov rcx, QWORD PTR [rsi + 8]
+    mov QWORD PTR [r8 + 8], rcx
+    mov rcx, QWORD PTR [rsi + 16]
+    mov QWORD PTR [r8 + 16], rcx
+    mov rcx, QWORD PTR [rsi + 24]
+    mov QWORD PTR [r8 + 24], rcx
+    mov rcx, QWORD PTR [rsi + 32]
+    mov QWORD PTR [r8 + 32], rcx
+    mov rcx, QWORD PTR [rsi + 40]
+    mov QWORD PTR [r8 + 40], rcx
+    mov rdi, r8
+    lea rsp, [rsp + 16]
+    mov QWORD PTR [rbp - SVR_X16], rdi
+    mov r14, QWORD PTR [rsp]
+    mov r15, QWORD PTR [rsp + 8]
+    lea rsp, [rsp + 16]
+    mov r8, QWORD PTR [rsp]
+    mov r9, QWORD PTR [rsp + 8]
+    lea rsp, [rsp + 16]
+    mov rdx, QWORD PTR [rsp]
+    mov rcx, QWORD PTR [rsp + 8]
+    lea rsp, [rsp + 16]
+    mov rdi, QWORD PTR [rsp]
+    mov rsi, QWORD PTR [rsp + 8]
+    lea rsp, [rsp + 16]
+    mov r10, QWORD PTR [rbp - SVR_X16]
+    mov QWORD PTR [rbp - SVR_AREA - 16], r10
+
+    mov r10, 0
+
+    mov QWORD PTR [rbp - SVR_AREA - 8], r10
+
+    lea rdi, [rbp - SVR_AREA - 16]
+
+    lea rsp, [rsp + -16]
+    mov QWORD PTR [rsp + 8], rdi
+    mov rdi, 16
+    call silica_rt_region_alloc
+    mov r8, rdi
+    mov rsi, QWORD PTR [rsp + 8]
+    mov rcx, QWORD PTR [rsi]
+    mov QWORD PTR [r8], rcx
+    mov rcx, QWORD PTR [rsi + 8]
+    mov QWORD PTR [r8 + 8], rcx
+    mov rdi, r8
+    lea rsp, [rsp + 16]
+    jmp L_case_o12371_done
+L_case_o12371_fb:
+    call silica_rt_case_clause
+    mov rdi, 0
+    jmp L_case_o12371_done
+L_case_o12371_done:
+
+    lea rsp, [rsp + 32]
+    leave
+    ret
+
+.set SVR_AREA, 32
+.set SVR_X16, 8
+.set SVR_X19, 16
+.set SVR_X20, 24
+.set SVR_X21, 32
+.globl skew_ral_from_list
+skew_ral_from_list:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X19], rdi
+    mov QWORD PTR [rbp - SVR_X20], rsi
+    mov QWORD PTR [rbp - SVR_X21], rdx
+
+    mov rax, QWORD PTR [rbp - SVR_X19]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X20]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 16]
+    mov rsi, QWORD PTR [rsp]
+    lea rsp, [rsp + 32]
+    // effects []|sir_rec:o13116|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    lea r10, [rip + skew_ral_empty_ral]
+    call r10
+
+    mov QWORD PTR [rbp - SVR_X16], rdi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X21]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 16]
+    mov rsi, QWORD PTR [rsp]
+    lea rsp, [rsp + 32]
+    lea r10, [rip + skew_ral_dispatch_bulk_build_from_items]
+    call r10
+
+    leave
+    ret
+
+.set SVR_AREA, 48
+.set SVR_X16, 8
+.set SVR_X19, 16
+.set SVR_X20, 24
+.set SVR_X21, 32
+.set SVR_X22, 40
+.globl skew_ral_filled
+skew_ral_filled:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X19], rdi
+    mov QWORD PTR [rbp - SVR_X20], rsi
+    mov QWORD PTR [rbp - SVR_X21], rdx
+    mov QWORD PTR [rbp - SVR_X22], rcx
+
+    mov rax, QWORD PTR [rbp - SVR_X19]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X20]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 16]
+    mov rsi, QWORD PTR [rsp]
+    lea rsp, [rsp + 32]
+    // effects []|sir_rec:o13683|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    lea r10, [rip + skew_ral_empty_ral]
+    call r10
+
+    mov QWORD PTR [rbp - SVR_X16], rdi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X21]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rax, QWORD PTR [rbp - SVR_X22]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 32]
+    mov rsi, QWORD PTR [rsp + 16]
+    mov rdx, QWORD PTR [rsp]
+    lea rsp, [rsp + 48]
+    lea r10, [rip + skew_ral_dispatch_bulk_build_filled_count]
+    call r10
+
+    leave
+    ret
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.set SVR_X16, 16
+.globl skew_ral_fold_logical
+skew_ral_fold_logical:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    mov rax, QWORD PTR [rbp - SVR_X11]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rsi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rdx
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 32]
+    mov rsi, QWORD PTR [rsp + 16]
+    mov rdx, QWORD PTR [rsp]
+    lea rsp, [rsp + 48]
+    // effects []|sir_rec:o14103|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    leave
+    lea r10, [rip + skew_ral_dispatch_bulk_fold_logical]
+    jmp r10
+
+
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.set SVR_X16, 16
+.globl skew_ral_fold_physical
+skew_ral_fold_physical:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    mov rax, QWORD PTR [rbp - SVR_X11]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rsi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rdx
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 32]
+    mov rsi, QWORD PTR [rsp + 16]
+    mov rdx, QWORD PTR [rsp]
+    lea rsp, [rsp + 48]
+    // effects []|sir_rec:o14535|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    leave
+    lea r10, [rip + skew_ral_dispatch_bulk_fold_physical]
+    jmp r10
+
+
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.set SVR_X16, 16
+.globl skew_ral_range_valid
+skew_ral_range_valid:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    mov rax, QWORD PTR [rbp - SVR_X11]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rsi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rdx
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 32]
+    mov rsi, QWORD PTR [rsp + 16]
+    mov rdx, QWORD PTR [rsp]
+    lea rsp, [rsp + 48]
+    // effects []|sir_rec:o14939|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    leave
+    lea r10, [rip + skew_ral_dispatch_bulk_range_valid]
+    jmp r10
+
+
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.set SVR_X16, 16
+.globl skew_ral_fold_range
+skew_ral_fold_range:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    mov rax, QWORD PTR [rbp - SVR_X11]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rsi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rdx
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], rcx
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov QWORD PTR [rbp - SVR_X16], r8
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp + 64]
+    mov rsi, QWORD PTR [rsp + 48]
+    mov rdx, QWORD PTR [rsp + 32]
+    mov rcx, QWORD PTR [rsp + 16]
+    mov r8, QWORD PTR [rsp]
+    lea rsp, [rsp + 80]
+    // effects []|sir_rec:o15506|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    leave
+    lea r10, [rip + skew_ral_dispatch_bulk_fold_range]
+    jmp r10
+
+
+
+.set SVR_AREA, 16
+.set SVR_X11, 8
+.set SVR_X16, 16
+.globl skew_ral_validate
+skew_ral_validate:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_X11], rdi
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    mov rax, QWORD PTR [rbp - SVR_X11]
+    mov QWORD PTR [rbp - SVR_X16], rax
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp]
+    lea rsp, [rsp + 16]
+    // effects []|sir_rec:o15928|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    leave
+    lea r10, [rip + skew_ral_dispatch_bulk_validate]
+    jmp r10
+
+
+
+.set SVR_AREA, 16
+.set SVR_X16, 8
+.globl skew_ral_validate_error_code
+skew_ral_validate_error_code:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+
+    // p3 fuel: LDR X9,=silica_fuel / SUBS / B.EQ silica_yield (optional)
+    mov QWORD PTR [rbp - SVR_X16], rdi
+
+    mov rax, QWORD PTR [rbp - SVR_X16]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], rax
+    mov rdi, QWORD PTR [rsp]
+    lea rsp, [rsp + 16]
+    // effects []|sir_rec:o16019|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    leave
+    lea r10, [rip + skew_ral_dispatch_bulk_validate_error_code]
+    jmp r10
+
+
+L_pa_helper:
+    test rdi, rdi
+    js L_pa_oob
+    cmp rdi, 24
+    jge L_pa_oob
+    lea r9, [rip + L_pa_table]
+    mov r10, rdi
+    shl r10, 4
+    add r9, r10
+    mov rsi, QWORD PTR [r9]
+    mov rdx, QWORD PTR [r9 + 8]
+    mov edi, 1
+    mov eax, 1
+    syscall
+    xor edi, edi
+    ret
+L_pa_oob:
+    xor edi, edi
+    ret
+
+L_list_prepend_helper:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 16
+    mov QWORD PTR [rsp], rsi
+    mov QWORD PTR [rsp + 8], rdx
+    sub rsp, 16
+    mov QWORD PTR [rsp], rcx
+    mov QWORD PTR [rsp + 8], r8
+    sub rsp, 16
+    mov QWORD PTR [rsp], r9
+    test rdx, rdx
+    jz L_lph_new_chunk
+    mov r14, QWORD PTR [rdx + 16]
+    test r14, r14
+    jz L_lph_new_chunk
+    mov r15, QWORD PTR [rdx + 8]
+    lea rbx, [r15 + r8]
+    mov rax, QWORD PTR [rbx + 8]
+    cmp rax, r14
+    jne L_lph_cow
+    mov rbx, r14
+    sub rbx, rcx
+    mov QWORD PTR [r15 + r8 + 8], rbx
+    lea r11, [r15 + rbx]
+    mov r12, QWORD PTR [rsp]
+    test r12, r12
+    jz L_lph_room_scalar
+    xor r13d, r13d
+L_lph_room_agg:
+    cmp r13, rcx
+    jge L_lph_room_stored
+    mov rax, QWORD PTR [rsi + r13]
+    mov QWORD PTR [r11 + r13], rax
+    add r13, 8
+    jmp L_lph_room_agg
+    jmp L_lph_room_stored
+L_lph_room_scalar:
+    cmp rcx, 8
+    je L_lph_rs8
+    cmp rcx, 4
+    je L_lph_rs4
+    cmp rcx, 2
+    je L_lph_rs2
+    mov BYTE PTR [r11], sil
+    jmp L_lph_room_stored
+L_lph_rs2:
+    mov WORD PTR [r11], si
+    jmp L_lph_room_stored
+L_lph_rs4:
+    mov DWORD PTR [r11], esi
+    jmp L_lph_room_stored
+L_lph_rs8:
+    mov QWORD PTR [r11], rsi
+L_lph_room_stored:
+    mov edi, 24
+    call silica_rt_region_alloc
+    mov r9, QWORD PTR [rsp]
+    add rsp, 16
+    mov rcx, QWORD PTR [rsp]
+    mov r8, QWORD PTR [rsp + 8]
+    add rsp, 16
+    mov rsi, QWORD PTR [rsp]
+    mov rdx, QWORD PTR [rsp + 8]
+    add rsp, 16
+    mov r14, QWORD PTR [rdx]
+    add r14, 1
+    mov QWORD PTR [rdi], r14
+    mov r15, QWORD PTR [rdx + 8]
+    mov QWORD PTR [rdi + 8], r15
+    mov rbx, QWORD PTR [rdx + 16]
+    sub rbx, rcx
+    mov QWORD PTR [rdi + 16], rbx
+    pop rbp
+    ret
+L_lph_cow:
+    lea rdi, [r8 + 16]
+    call silica_rt_region_alloc
+    mov r14, rdi
+    mov r9, QWORD PTR [rsp]
+    mov rcx, QWORD PTR [rsp + 16]
+    mov r8, QWORD PTR [rsp + 24]
+    mov rsi, QWORD PTR [rsp + 32]
+    mov rdx, QWORD PTR [rsp + 40]
+    mov r15, QWORD PTR [rdx + 8]
+    mov r10, QWORD PTR [rdx + 16]
+    mov r13, r10
+L_lph_cow_copy:
+    cmp r13, r8
+    jge L_lph_cow_copied
+    mov rax, QWORD PTR [r15 + r13]
+    mov QWORD PTR [r14 + r13], rax
+    add r13, 8
+    jmp L_lph_cow_copy
+L_lph_cow_copied:
+    mov rax, QWORD PTR [r15 + r8]
+    mov QWORD PTR [r14 + r8], rax
+    mov rbx, r10
+    sub rbx, rcx
+    lea r11, [r14 + rbx]
+    test r9, r9
+    jz L_lph_cow_scalar
+    xor r13d, r13d
+L_lph_cow_agg:
+    cmp r13, rcx
+    jge L_lph_alloc_handle
+    mov rax, QWORD PTR [rsi + r13]
+    mov QWORD PTR [r11 + r13], rax
+    add r13, 8
+    jmp L_lph_cow_agg
+L_lph_cow_scalar:
+    cmp rcx, 8
+    je L_lph_cs8
+    cmp rcx, 4
+    je L_lph_cs4
+    cmp rcx, 2
+    je L_lph_cs2
+    mov BYTE PTR [r11], sil
+    jmp L_lph_alloc_handle
+L_lph_cs2:
+    mov WORD PTR [r11], si
+    jmp L_lph_alloc_handle
+L_lph_cs4:
+    mov DWORD PTR [r11], esi
+    jmp L_lph_alloc_handle
+L_lph_cs8:
+    mov QWORD PTR [r11], rsi
+    jmp L_lph_alloc_handle
+L_lph_new_chunk:
+    lea rdi, [r8 + 16]
+    call silica_rt_region_alloc
+    mov r14, rdi
+    mov r9, QWORD PTR [rsp]
+    mov rcx, QWORD PTR [rsp + 16]
+    mov r8, QWORD PTR [rsp + 24]
+    mov rsi, QWORD PTR [rsp + 32]
+    mov rdx, QWORD PTR [rsp + 40]
+    mov rbx, r8
+    sub rbx, rcx
+    lea r11, [r14 + rbx]
+    test r9, r9
+    jz L_lph_new_scalar
+    xor r13d, r13d
+L_lph_new_agg:
+    cmp r13, rcx
+    jge L_lph_new_stored
+    mov rax, QWORD PTR [rsi + r13]
+    mov QWORD PTR [r11 + r13], rax
+    add r13, 8
+    jmp L_lph_new_agg
+    jmp L_lph_new_stored
+L_lph_new_scalar:
+    cmp rcx, 8
+    je L_lph_ns8
+    cmp rcx, 4
+    je L_lph_ns4
+    cmp rcx, 2
+    je L_lph_ns2
+    mov BYTE PTR [r11], sil
+    jmp L_lph_new_stored
+L_lph_ns2:
+    mov WORD PTR [r11], si
+    jmp L_lph_new_stored
+L_lph_ns4:
+    mov DWORD PTR [r11], esi
+    jmp L_lph_new_stored
+L_lph_ns8:
+    mov QWORD PTR [r11], rsi
+L_lph_new_stored:
+    test rdx, rdx
+    jz L_lph_next_nil
+    mov r10, QWORD PTR [rdx + 8]
+    mov QWORD PTR [r14 + r8], r10
+    jmp L_lph_alloc_handle
+L_lph_next_nil:
+    mov QWORD PTR [r14 + r8], 0
+L_lph_alloc_handle:
+    mov QWORD PTR [r14 + r8 + 8], rbx
+    sub rsp, 16
+    mov QWORD PTR [rsp], r14
+    mov QWORD PTR [rsp + 8], rbx
+    mov edi, 24
+    call silica_rt_region_alloc
+    mov r14, QWORD PTR [rsp]
+    mov rbx, QWORD PTR [rsp + 8]
+    add rsp, 16
+    mov r9, QWORD PTR [rsp]
+    add rsp, 16
+    mov rcx, QWORD PTR [rsp]
+    mov r8, QWORD PTR [rsp + 8]
+    add rsp, 16
+    mov rsi, QWORD PTR [rsp]
+    mov rdx, QWORD PTR [rsp + 8]
+    add rsp, 16
+    test rdx, rdx
+    jz L_lph_len1
+    mov r10, QWORD PTR [rdx]
+    add r10, 1
+    jmp L_lph_setlen
+L_lph_len1:
+    mov r10d, 1
+L_lph_setlen:
+    mov QWORD PTR [rdi], r10
+    mov QWORD PTR [rdi + 8], r14
+    mov QWORD PTR [rdi + 16], rbx
+    pop rbp
+    ret
+
+L_list_tail_helper:
+    push rbp
+    mov rbp, rsp
+    mov rcx, QWORD PTR [rdi]
+    mov r8, QWORD PTR [rdi + 8]
+    mov r9, QWORD PTR [rdi + 16]
+    lea r14, [r9 + rsi]
+    cmp r14, rdx
+    jge L_lth_next_chunk
+    sub rcx, 1
+    test rcx, rcx
+    jz L_lth_nil
+    sub rsp, 16
+    mov QWORD PTR [rsp], rcx
+    mov QWORD PTR [rsp + 8], r8
+    sub rsp, 16
+    mov QWORD PTR [rsp], r14
+    mov QWORD PTR [rsp + 8], 0
+    mov edi, 24
+    call silica_rt_region_alloc
+    mov r14, QWORD PTR [rsp]
+    add rsp, 16
+    mov rcx, QWORD PTR [rsp]
+    mov r8, QWORD PTR [rsp + 8]
+    add rsp, 16
+    mov QWORD PTR [rdi], rcx
+    mov QWORD PTR [rdi + 8], r8
+    mov QWORD PTR [rdi + 16], r14
+    pop rbp
+    ret
+L_lth_next_chunk:
+    mov r15, QWORD PTR [r8 + rdx]
+    test r15, r15
+    jz L_lth_nil
+    sub rcx, 1
+    test rcx, rcx
+    jz L_lth_nil
+    sub rsp, 16
+    mov QWORD PTR [rsp], rcx
+    mov QWORD PTR [rsp + 8], r15
+    mov edi, 24
+    call silica_rt_region_alloc
+    mov rcx, QWORD PTR [rsp]
+    mov r15, QWORD PTR [rsp + 8]
+    add rsp, 16
+    mov QWORD PTR [rdi], rcx
+    mov QWORD PTR [rdi + 8], r15
+    mov QWORD PTR [rdi + 16], 0
+    pop rbp
+    ret
+L_lth_nil:
+    xor edi, edi
+    pop rbp
+    ret
+
+L_list_length_helper:
+    test rdi, rdi
+    jz L_list_len_nil
+    mov rdi, QWORD PTR [rdi]
+    ret
+L_list_len_nil:
+    xor edi, edi
+    ret
+
+.section .rodata
+.p2align	8
+atom_0:
+    .byte  0x3a, 0x65, 0x66, 0x66, 0x69, 0x63, 0x69, 0x65, 0x6e, 0x63, 0x79, 0
+atom_1:
+    .byte  0x3a, 0x70, 0x65, 0x72, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x6e, 0x63, 0x65, 0
+atom_2:
+    .byte  0x3a, 0x6f, 0x6b, 0
+atom_3:
+    .byte  0x3a, 0x6e, 0x6f, 0x72, 0x6d, 0x61, 0x6c, 0
+atom_4:
+    .byte  0x3a, 0x6c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x5f, 0x65, 0x72, 0x72, 0x6f, 0x72, 0
+atom_5:
+    .byte  0x3a, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x5f, 0x66, 0x61, 0x75, 0x6c, 0x74, 0
+atom_6:
+    .byte  0x3a, 0x65, 0x78, 0x70, 0x6c, 0x69, 0x63, 0x69, 0x74, 0
+atom_7:
+    .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0
+atom_8:
+    .byte  0x3a, 0x6e, 0x6f, 0x70, 0x72, 0x6f, 0x63, 0
+atom_9:
+    .byte  0x3a, 0x70, 0x65, 0x72, 0x6d, 0x61, 0x6e, 0x65, 0x6e, 0x74, 0
+atom_10:
+    .byte  0x3a, 0x74, 0x72, 0x61, 0x6e, 0x73, 0x69, 0x65, 0x6e, 0x74, 0
+atom_11:
+    .byte  0x3a, 0x74, 0x65, 0x6d, 0x70, 0x6f, 0x72, 0x61, 0x72, 0x79, 0
+atom_12:
+    .byte  0x3a, 0x6f, 0x6e, 0x65, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x6f, 0x6e, 0x65, 0
+atom_13:
+    .byte  0x3a, 0x6f, 0x6e, 0x65, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x61, 0x6c, 0x6c, 0
+atom_14:
+    .byte  0x3a, 0x72, 0x65, 0x73, 0x74, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x6f, 0x6e, 0x65, 0
+atom_15:
+    .byte  0x3a, 0x69, 0x6e, 0x73, 0x65, 0x72, 0x74, 0
+atom_16:
+    .byte  0x3a, 0x6c, 0x6f, 0x6f, 0x6b, 0x75, 0x70, 0
+atom_17:
+    .byte  0x3a, 0x64, 0x65, 0x6c, 0x65, 0x74, 0x65, 0
+atom_18:
+    .byte  0x3a, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
+atom_19:
+    .byte  0x3a, 0x6e, 0x6f, 0x74, 0x5f, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
+atom_20:
+    .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0x5f, 0x6f, 0x70, 0
+atom_21:
+    .byte  0x3a, 0x70, 0x6c, 0x61, 0x69, 0x6e, 0
+atom_22:
+    .byte  0x3a, 0x64, 0x61, 0x6e, 0x67, 0x65, 0x72, 0x6f, 0x75, 0x73, 0
+atom_23:
+    .byte  0x3a, 0x6f, 0x76, 0x65, 0x72, 0x66, 0x6c, 0x6f, 0x77, 0
+.section .data.rel.ro,"aw",@progbits
+.p2align	3
+L_pa_table:
+    .quad atom_0
+    .quad 11
+    .quad atom_1
+    .quad 12
+    .quad atom_2
+    .quad 3
+    .quad atom_3
+    .quad 7
+    .quad atom_4
+    .quad 15
+    .quad atom_5
+    .quad 13
+    .quad atom_6
+    .quad 9
+    .quad atom_7
+    .quad 8
+    .quad atom_8
+    .quad 7
+    .quad atom_9
+    .quad 10
+    .quad atom_10
+    .quad 10
+    .quad atom_11
+    .quad 10
+    .quad atom_12
+    .quad 12
+    .quad atom_13
+    .quad 12
+    .quad atom_14
+    .quad 13
+    .quad atom_15
+    .quad 7
+    .quad atom_16
+    .quad 7
+    .quad atom_17
+    .quad 7
+    .quad atom_18
+    .quad 6
+    .quad atom_19
+    .quad 10
+    .quad atom_20
+    .quad 11
+    .quad atom_21
+    .quad 6
+    .quad atom_22
+    .quad 10
+    .quad atom_23
+    .quad 9
+
+    .section .note.GNU-stack,"",@progbits
+

@@ -1,6 +1,6 @@
 # Porting Silica to Linux x86_64 (hosted)
 
-**Status:** Plan, revised 2026-09-18. Phases 0, 1 and 2 executed on that date (§6); Phase 3's source work (the backend as text: shared layer, site conversions, runtime translation, ladder) was done the same day by the virtual-register method without a build, and its debug phase (§6 Phase 3, runbook) starts when the Mac is free. Not normative; [silica-specification.md](silica-specification.md) governs language and ABI semantics. Use this document when adding the `linux_x86_64` emit backend, producing the first Linux x86-64 selfhost compiler, and deploying to Debian-family x86-64 hosts (DigitalOcean droplets).
+**Status:** Executed through Phase 5 on 2026-09-19: the backend, the ladder, the hand-off, the native selfhost and the **first Linux x86-64 fixed point** (nix, `binaries/silica-999995-linux-x86_64`, gen3 byte-identical to gen2) are done, with the whole trial tree run natively on nix and its `.linux_x86_64.ascomp` goldens recorded; Phase 6 (droplets and project builds) and the Phase 5 fresh-clone exit gate remain. Phases 0, 1 and 2 were executed 2026-09-18 (§6); Phase 3's source work (the backend as text: shared layer, site conversions, runtime translation, ladder) was done the same day by the virtual-register method without a build. Not normative; [silica-specification.md](silica-specification.md) governs language and ABI semantics. Use this document when adding the `linux_x86_64` emit backend, producing the first Linux x86-64 selfhost compiler, and deploying to Debian-family x86-64 hosts (DigitalOcean droplets).
 
 **What changed since the 2026-09-08 plan.** Two facts retired most of its first half:
 
@@ -281,6 +281,17 @@ the AArch64 goldens.
 
 **Exit gate:** `make -C trials integrate SILICA_COMPILER=…/silica-compiler-linux_x86_64` compiles every suite on the Mac and every emitted program passes its `.scout` on nix; every unit has a `.linux_x86_64.ascomp`; `lint-backend` clean.
 
+**Executed 2026-09-18/19.** The ladder ran on nix first with `silica-999997` (14/15; the one miss was app 08,
+whose "139" expectation predated the failure-reporting decision — it prints the fault banner and exits 70, like
+every other host) and again on 2026-09-19 with `silica-999996` after the boxed-record-layout and
+failure-reporting work: **15/15**. Sample suites compiled on the Mac with that cross compiler and run on nix
+(base, int64, list, records, tuples, string, float64, case, modules, traits, generic_modules, memory_region,
+actors, actor_stacks, supervisors — about 5,700 trials) showed no x86-only failure; the remaining misses were
+documented defect stems and trials whose harness runner (the `wait_for_exit` marker driver) the ad-hoc runner
+did not provide. The x86-only defects fixed on 2026-09-18 were the indirect tail call reading its target from a
+frame slot after `leave` and the FFI tail call running C at `rsp` 8 mod 16; the one the native run later found is
+the SysV hidden sret pointer (Phase 5 below).
+
 ### Runbook — what happens when the Mac is free
 
 1. **Clean first.** `make -C src_selfhost clean` — the object stage assembles every `.sams` under the tree
@@ -316,11 +327,57 @@ Execute Phase 1's procedure with the Phase 3 cross compiler: `bootstrap-assembly
 
 **Exit gate:** the native compiler passes the whole trial tree on nix.
 
+**Executed 2026-09-19.** `project_makefiles/platform/platforms.patch` applied (it generalises `bootstrap-assembly`
+with `BOOTSTRAP_TARGET ?= linux_aarch64` and `HOST_RT_ASM := runtime_asm/$(HOST_DEFAULT_TARGET)/…`; the Linux
+AArch64 default is unchanged). `make bootstrap-assembly BOOTSTRAP_TARGET=linux_x86_64` on the Mac: 342 units +
+`__silica_runtime` = 343 `.sams`, 29 min. `rsync` to nix (222 MB without `.sams`, 87 MB of `.sams`), then
+`make -C src_selfhost bootstrap-link` there: every `.sams` assembled with `cc` and linked with
+`cc -no-pie -rdynamic` plus `runtime_asm/linux_x86_64/*.s` into `binaries/silica-999999-linux-x86_64`.
+
+One wiring defect came with the patch and was fixed in `binaries/install_compiler.bash` and
+`binaries/update_silica_compiler_link.bash`: their `make -s -f platforms.mk host-platform` ran inside a parent
+make, so `MAKEFLAGS` (`-w`) leaked "Entering directory" lines into the platform name and the install failed.
+Both call sites now run `MAKEFLAGS= MAKELEVEL= make -s --no-print-directory -f …`.
+
 ### Phase 5 — Fixpoint and publication
 
 Fixed points exist now on both other hosted paths (macOS 2026-09-12; Linux AArch64 "fixed point 1" on the Raspberry Pi, commit `8dcf493d4`), and `src_selfhost/Makefile` has the procedure: `make gen1`, `make gen2`, `make fixpoint` (gen3 == gen2 modulo UUID/signature), `trials-gen1`/`trials-gen2`. Run it on nix unchanged. A gen2/gen3 difference means host-dependent output (uninitialised memory, address-dependent ordering) — fix before publishing. Record peak RSS on the largest unit. Publish with `install_compiler.bash selfhost` → `binaries/silica-NNNNNN-linux-x86_64`; commit the binary and the goldens; add the row to the ROADMAP paths table.
 
 **Exit gate:** fresh clone on nix → `binaries/update_silica_compiler_link.bash` → `make -C trials integrate` green, no Mac involved.
+
+**Executed 2026-09-19 (fixed point 1 for this path).** Generations on nix, each 342 units emitted serially:
+gen1 48 min, gen2 58 min, gen3 (`make fixpoint`) 57 min, peak RSS 7.3 GB on `emitter_core` (13 GB machine).
+`make fixpoint`: **343 units compared, 0 emitted differently by gen2 than by gen1, gen3 byte-identical to gen2.**
+Two facts worth keeping: every `.sams` the first native build emitted on nix is byte-identical to the Mac cross
+compiler's `bootstrap-assembly` output, and the first native compiler is byte-identical to the bootstrap binary —
+the host changes nothing about the emission. Published on nix as `binaries/silica-999995-linux-x86_64`
+(`silica-compiler`) and as the seed `silica-999998-seed-linux-x86_64` (same bytes); the same file is in the Mac
+tree as `binaries/silica-999995-linux-x86_64`. The Mac's cross compiler is
+`binaries/silica-999995-linux_x86_64-macos-applesilicon` (`silica-compiler-linux_x86_64`).
+
+Trial tree on nix under that compiler (`make integrate TRIAL_TARGET=host JOBS=3 SDS_JOBS=1`): **✅ 34,044,
+❌ 74, 35m40s** (Apple reference the same day: 34,005 / 88). Every failure is a documented defect stem
+(`sd1/3/8/10/11/12/14/15/16/18/19/20/21`, `emitter_defect_*`, `defect_*`, the `compile_defects_*_addition`
+suites, `memory_region_addition/buf_write_out_of_bounds_aborts`, `error_enforcement`'s
+`stmt_missing_semicolon_between_binding_*`) or a unit with no golden on any target
+(`generic_modules_addition/pair_sets`, `wbt_set`). 11,931 `.linux_x86_64.ascomp` goldens were recorded — only
+for units whose trial output matched its `.scout`, never for a defect stem — plus
+`stdlib/Supervisor.linux_x86_64.ascomp`; the formal run re-verified every one of them.
+
+Backend defect found by the native run and fixed in `terms/ffi_foreign.silica`: a foreign call returning the
+32-byte result record passed the arena buffer only in `X8` (AArch64 style), so the callee wrote the record over
+its first argument (three FFI string trials faulted). System V AMD64 takes that buffer as a hidden FIRST integer
+argument: `emit_sret_hidden_arg_shift` now moves every integer argument up one home and `X8` into `X0` before the
+guarded call, and `c_call_stack_args` counts the hidden argument. `app_sd18_worker_second_message` still faults
+(in `silica_rt_lock_lock` on the worker's second message) — the documented SD-18 defect, whose Apple symptom is
+the same fault in `os_unfair_lock_lock`.
+
+Two Linux-only harness defects the run exposed (fixed in the Mac tree by the session coordinator, not part of this
+backend): the `compare_scout_*.sh` scripts need bash (`set -o pipefail`) but the makefiles start them with
+`$(SHELL)`, which is dash on Debian-family hosts; and `error_enforcement_addition`'s `silica.config` recipe
+expanded ~11k file names into one shell argument, over Linux's 128 KB `MAX_ARG_STRLEN`. A third, still open:
+`src_selfhost/Makefile`'s `fixpoint` target prints the binary sizes with BSD `stat -f %z` and no GNU fallback, so
+that one line reads as a filesystem dump on Linux (the verdict itself is a `cmp` and is unaffected).
 
 ### Phase 6 — Droplets and project builds
 

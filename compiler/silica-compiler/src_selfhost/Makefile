@@ -476,7 +476,7 @@ fixpoint:
 		[ -f "$$f" ] || { missing=$$((missing + 1)); echo "   - $$f (gone in gen3)"; }; \
 	done; \
 	echo "units: $$n compared, $$changed emitted differently by gen2 than by gen1, $$added new, $$missing gone"; \
-	s2=$$(stat -f %z "$(GEN2_BIN)"); s3=$$(stat -f %z "$(GEN3_EXE)"); \
+	s2=$$(stat -c %s "$(GEN2_BIN)" 2>/dev/null || stat -f %z "$(GEN2_BIN)" 2>/dev/null); s3=$$(stat -c %s "$(GEN3_EXE)" 2>/dev/null || stat -f %z "$(GEN3_EXE)" 2>/dev/null); \
 	echo "binaries: gen2 $$s2 bytes, gen3 $$s3 bytes"; \
 	if cmp -s "$(GEN2_BIN)" "$(GEN3_EXE)"; then \
 		echo "✅ fixed point: gen3 is byte-identical to gen2 ($(GEN2_BIN))"; \

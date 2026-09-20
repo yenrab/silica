@@ -1,0 +1,340 @@
+    .intel_syntax noprefix
+    .text
+.extern silica_rt_ffi_guarded_enter
+.extern silica_rt_ffi_guarded_exit
+.extern silica_rt_ffi_guarded_setjmp
+.extern silica_rt_ffi_guarded_fault_finish
+.extern silica_rt_ffi_arena_bump
+.extern silica_net_parse_port
+.extern free
+.extern malloc
+.global main
+
+
+.set SVR_AREA, 48
+.set SVR_CS0, 8
+.set SVR_CS1, 16
+.set SVR_CS2, 24
+.set SVR_CS3, 32
+.set SVR_CS4, 40
+.globl main
+main:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SVR_AREA
+    mov QWORD PTR [rbp - SVR_CS0], rbx
+    mov QWORD PTR [rbp - SVR_CS1], r12
+    mov QWORD PTR [rbp - SVR_CS2], r13
+    mov QWORD PTR [rbp - SVR_CS3], r14
+    mov QWORD PTR [rbp - SVR_CS4], r15
+
+    call silica_pid_registry_init
+    call silica_dangerous_pid_registry_init
+    mov rdi, 0
+
+    mov rax, rdi
+    mov rbx, QWORD PTR [rbp - SVR_CS0]
+    mov r12, QWORD PTR [rbp - SVR_CS1]
+    mov r13, QWORD PTR [rbp - SVR_CS2]
+    mov r14, QWORD PTR [rbp - SVR_CS3]
+    mov r15, QWORD PTR [rbp - SVR_CS4]
+    leave
+    ret
+L_pa_helper:
+    test rdi, rdi
+    js L_pa_oob
+    cmp rdi, 23
+    jge L_pa_oob
+    lea r9, [rip + L_pa_table]
+    mov r10, rdi
+    shl r10, 4
+    add r9, r10
+    mov rsi, QWORD PTR [r9]
+    mov rdx, QWORD PTR [r9 + 8]
+    mov edi, 1
+    mov eax, 1
+    syscall
+    xor edi, edi
+    ret
+L_pa_oob:
+    xor edi, edi
+    ret
+
+silica_rt_ffi_string_in:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 80
+    mov QWORD PTR [rbp - 8], rdi
+    test rdi, rdi
+    jz L_ffi_in_empty
+    mov r10, QWORD PTR [rdi]
+    cmp r10, -1
+    jne L_ffi_in_bad
+    mov r10, QWORD PTR [rdi + 8]
+    mov QWORD PTR [rbp - 24], r10
+    mov r10, QWORD PTR [rdi + 16]
+    mov QWORD PTR [rbp - 32], r10
+    jmp L_ffi_in_have_src
+L_ffi_in_empty:
+    mov QWORD PTR [rbp - 24], 0
+    mov QWORD PTR [rbp - 32], 0
+L_ffi_in_have_src:
+    call silica_rt_tls_current_actor_get
+    test rdi, rdi
+    jz L_ffi_in_heap
+    mov QWORD PTR [rbp - 40], rdi
+    mov rdi, QWORD PTR [rbp - 32]
+    inc rdi
+    call silica_rt_ffi_arena_bump
+    test rdi, rdi
+    jz L_ffi_in_oom
+    mov QWORD PTR [rbp - 48], rdi
+    mov r11, QWORD PTR [rbp - 32]
+    test r11, r11
+    jz L_ffi_in_nul_arena
+    mov r10, rdi
+    mov r8, QWORD PTR [rbp - 24]
+L_ffi_in_cp_arena:
+    movzx eax, BYTE PTR [r8]
+    inc r8
+    mov BYTE PTR [r10], al
+    inc r10
+    dec r11
+    jnz L_ffi_in_cp_arena
+L_ffi_in_nul_arena:
+    mov rdi, QWORD PTR [rbp - 48]
+    mov rsi, QWORD PTR [rbp - 32]
+    mov BYTE PTR [rdi + rsi], 0
+    xor edx, edx
+    leave
+    ret
+L_ffi_in_heap:
+    mov rdi, QWORD PTR [rbp - 32]
+    inc rdi
+    call malloc
+    mov rdi, rax
+    test rdi, rdi
+    jz L_ffi_in_oom
+    mov r11, QWORD PTR [rbp - 32]
+    test r11, r11
+    jz L_ffi_in_done
+    mov r10, rdi
+    mov r8, QWORD PTR [rbp - 24]
+L_ffi_in_cp:
+    movzx eax, BYTE PTR [r8]
+    inc r8
+    mov BYTE PTR [r10], al
+    inc r10
+    dec r11
+    jnz L_ffi_in_cp
+L_ffi_in_done:
+    mov rsi, QWORD PTR [rbp - 32]
+    mov rdx, rdi
+    leave
+    ret
+L_ffi_in_oom:
+    xor edi, edi
+    xor esi, esi
+    xor edx, edx
+    leave
+    ret
+
+L_ffi_in_bad:
+    ud2
+silica_rt_ffi_string_from_bytes:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 80
+    mov QWORD PTR [rbp - 8], rdi
+    mov QWORD PTR [rbp - 16], rsi
+    test rsi, rsi
+    jz L_ffi_from_empty
+    lea rdi, [rsi + 25]
+    call malloc
+    test rax, rax
+    jz L_ffi_from_empty
+    mov QWORD PTR [rax], -1
+    lea r10, [rax + 24]
+    mov QWORD PTR [rax + 8], r10
+    mov r11, QWORD PTR [rbp - 16]
+    mov QWORD PTR [rax + 16], r11
+    mov r8, QWORD PTR [rbp - 8]
+L_ffi_from_cp:
+    test r11, r11
+    jz L_ffi_from_nul
+    movzx ecx, BYTE PTR [r8]
+    inc r8
+    mov BYTE PTR [r10], cl
+    inc r10
+    dec r11
+    jmp L_ffi_from_cp
+L_ffi_from_nul:
+    mov BYTE PTR [r10], 0
+    mov rdi, rax
+    leave
+    ret
+L_ffi_from_empty:
+    xor edi, edi
+    leave
+    ret
+silica_rt_ffi_string_out_and_free:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 80
+    test rdi, rdi
+    jz L_ffi_out_no_sret
+    mov QWORD PTR [rbp - 8], rdi
+    mov r10, QWORD PTR [rdi]
+    test r10, r10
+    jnz L_ffi_out_err
+    mov rsi, QWORD PTR [rdi + 16]
+    mov rdi, QWORD PTR [rdi + 8]
+    call silica_rt_ffi_string_from_bytes
+    mov QWORD PTR [rbp - 16], rdi
+    mov rax, QWORD PTR [rbp - 8]
+    mov rdi, QWORD PTR [rax + 8]
+    test rdi, rdi
+    jz L_ffi_out_no_cfree
+    call silica_rt_ffi_ptr_in_active_arena
+    test rdi, rdi
+    jnz L_ffi_out_no_cfree
+    mov rax, QWORD PTR [rbp - 8]
+    mov rdi, QWORD PTR [rax + 8]
+    call free
+L_ffi_out_no_cfree:
+    mov rdi, QWORD PTR [rbp - 8]
+    call silica_rt_ffi_ptr_in_active_arena
+    test rdi, rdi
+    jnz L_ffi_out_no_sret_free
+    mov rdi, QWORD PTR [rbp - 8]
+    call free
+L_ffi_out_no_sret_free:
+    mov rdi, QWORD PTR [rbp - 16]
+    leave
+    ret
+L_ffi_out_err:
+    mov rdi, QWORD PTR [rdi + 8]
+    test rdi, rdi
+    jz L_ffi_out_err_skip
+    call silica_rt_ffi_ptr_in_active_arena
+    test rdi, rdi
+    jnz L_ffi_out_err_skip
+    mov rax, QWORD PTR [rbp - 8]
+    mov rdi, QWORD PTR [rax + 8]
+    call free
+L_ffi_out_err_skip:
+    mov rdi, QWORD PTR [rbp - 8]
+    call silica_rt_ffi_ptr_in_active_arena
+    test rdi, rdi
+    jnz L_ffi_out_err_done
+    mov rdi, QWORD PTR [rbp - 8]
+    call free
+L_ffi_out_err_done:
+    xor edi, edi
+    leave
+    ret
+L_ffi_out_no_sret:
+    xor edi, edi
+    leave
+    ret
+
+.section .rodata
+.p2align	8
+atom_0:
+    .byte  0x3a, 0x65, 0x66, 0x66, 0x69, 0x63, 0x69, 0x65, 0x6e, 0x63, 0x79, 0
+atom_1:
+    .byte  0x3a, 0x70, 0x65, 0x72, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x6e, 0x63, 0x65, 0
+atom_2:
+    .byte  0x3a, 0x6f, 0x6b, 0
+atom_3:
+    .byte  0x3a, 0x6e, 0x6f, 0x72, 0x6d, 0x61, 0x6c, 0
+atom_4:
+    .byte  0x3a, 0x6c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x5f, 0x65, 0x72, 0x72, 0x6f, 0x72, 0
+atom_5:
+    .byte  0x3a, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x5f, 0x66, 0x61, 0x75, 0x6c, 0x74, 0
+atom_6:
+    .byte  0x3a, 0x65, 0x78, 0x70, 0x6c, 0x69, 0x63, 0x69, 0x74, 0
+atom_7:
+    .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0
+atom_8:
+    .byte  0x3a, 0x6e, 0x6f, 0x70, 0x72, 0x6f, 0x63, 0
+atom_9:
+    .byte  0x3a, 0x70, 0x65, 0x72, 0x6d, 0x61, 0x6e, 0x65, 0x6e, 0x74, 0
+atom_10:
+    .byte  0x3a, 0x74, 0x72, 0x61, 0x6e, 0x73, 0x69, 0x65, 0x6e, 0x74, 0
+atom_11:
+    .byte  0x3a, 0x74, 0x65, 0x6d, 0x70, 0x6f, 0x72, 0x61, 0x72, 0x79, 0
+atom_12:
+    .byte  0x3a, 0x6f, 0x6e, 0x65, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x6f, 0x6e, 0x65, 0
+atom_13:
+    .byte  0x3a, 0x6f, 0x6e, 0x65, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x61, 0x6c, 0x6c, 0
+atom_14:
+    .byte  0x3a, 0x72, 0x65, 0x73, 0x74, 0x5f, 0x66, 0x6f, 0x72, 0x5f, 0x6f, 0x6e, 0x65, 0
+atom_15:
+    .byte  0x3a, 0x69, 0x6e, 0x73, 0x65, 0x72, 0x74, 0
+atom_16:
+    .byte  0x3a, 0x6c, 0x6f, 0x6f, 0x6b, 0x75, 0x70, 0
+atom_17:
+    .byte  0x3a, 0x64, 0x65, 0x6c, 0x65, 0x74, 0x65, 0
+atom_18:
+    .byte  0x3a, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
+atom_19:
+    .byte  0x3a, 0x6e, 0x6f, 0x74, 0x5f, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
+atom_20:
+    .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0x5f, 0x6f, 0x70, 0
+atom_21:
+    .byte  0x3a, 0x70, 0x6c, 0x61, 0x69, 0x6e, 0
+atom_22:
+    .byte  0x3a, 0x64, 0x61, 0x6e, 0x67, 0x65, 0x72, 0x6f, 0x75, 0x73, 0
+.section .data.rel.ro,"aw",@progbits
+.p2align	3
+L_pa_table:
+    .quad atom_0
+    .quad 11
+    .quad atom_1
+    .quad 12
+    .quad atom_2
+    .quad 3
+    .quad atom_3
+    .quad 7
+    .quad atom_4
+    .quad 15
+    .quad atom_5
+    .quad 13
+    .quad atom_6
+    .quad 9
+    .quad atom_7
+    .quad 8
+    .quad atom_8
+    .quad 7
+    .quad atom_9
+    .quad 10
+    .quad atom_10
+    .quad 10
+    .quad atom_11
+    .quad 10
+    .quad atom_12
+    .quad 12
+    .quad atom_13
+    .quad 12
+    .quad atom_14
+    .quad 13
+    .quad atom_15
+    .quad 7
+    .quad atom_16
+    .quad 7
+    .quad atom_17
+    .quad 7
+    .quad atom_18
+    .quad 6
+    .quad atom_19
+    .quad 10
+    .quad atom_20
+    .quad 11
+    .quad atom_21
+    .quad 6
+    .quad atom_22
+    .quad 10
+
+    .section .note.GNU-stack,"",@progbits
+
