@@ -1,0 +1,147 @@
+# Pull-request gate: makefile and shell syntax on every PR, and the trial tree
+# when compiler, trial, or build files change. Trials run on macOS 26 arm64
+# because emitted programs are built with -mmacosx-version-min=26.0.
+
+name: PR checks
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      trials: ${{ steps.decide.outputs.trials }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - id: decide
+        run: |
+          set -euo pipefail
+          run=true
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            git fetch --depth=1 origin "$base"
+            files="$(git diff --name-only "$base" HEAD)"
+            printf '%s\n' "$files"
+            run=false
+            if printf '%s\n' "$files" | grep -Eq '^(compiler/|trials/|binaries/|project_makefiles/|setup_silica\.sh|\.github/workflows/pr\.yml)'; then
+              run=true
+            fi
+          fi
+          echo "trials=$run" >> "$GITHUB_OUTPUT"
+
+  quality:
+    name: Lint and makefile parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Bash syntax
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            if head -n 1 "$f" | grep -q bash; then
+              bash -n "$f" || fail=1
+            fi
+          done < <(git ls-files '*.sh' '*.bash')
+          exit "$fail"
+
+      - name: Platform table and makefiles
+        run: |
+          set -euo pipefail
+          plat=project_makefiles/platform/platforms.mk
+          test "$(make -s --no-print-directory -f "$plat" host-platform)" = "linux-x86_64"
+          test "$(make -s --no-print-directory -f "$plat" host-emit-target)" = "linux_x86_64"
+          test "$(make -s --no-print-directory -f "$plat" platform-for-target EMIT_TARGET=apple_silicon_mac)" = "macos-applesilicon"
+          test "$(make -s --no-print-directory -f "$plat" platform-for-target EMIT_TARGET=ESP32-S3_raw)" = ""
+          make -s --no-print-directory -f "$plat" platforms
+          make -s --no-print-directory -f "$plat" emit-targets
+          make -C compiler/silica-compiler/src_selfhost help SILICA_TARGET_PROMPT=0
+          make -C trials help SILICA_TARGET_PROMPT=0
+
+      - name: Whitespace in the diff
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          git fetch --depth=1 origin "$base"
+          git diff --check "$base" HEAD
+
+  trials:
+    name: Trials
+    needs: scope
+    if: needs.scope.outputs.trials == 'true'
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Choose the compiler under test
+        id: compiler
+        run: |
+          set -euo pipefail
+          rebuild=false
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            rebuild=true
+          else
+            base="${{ github.event.pull_request.base.sha }}"
+            git fetch --depth=1 origin "$base"
+            if git diff --name-only "$base" HEAD | grep -Eq '^(compiler/silica-compiler/src_selfhost/|compiler/silica-compiler/stdlib/)'; then
+              rebuild=true
+            fi
+          fi
+          echo "rebuild=$rebuild" >> "$GITHUB_OUTPUT"
+          echo "Compiler sources changed: $rebuild"
+
+      - name: Build gen1 from the seed
+        if: steps.compiler.outputs.rebuild == 'true'
+        working-directory: compiler/silica-compiler/src_selfhost
+        run: make gen1 SILICA_TARGET_PROMPT=0 INSTALL_SELFHOST=0
+
+      - name: Run the trial tree
+        working-directory: trials
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.compiler.outputs.rebuild }}" = "true" ]; then
+            comp="$GITHUB_WORKSPACE/binaries/silica-gen1"
+          else
+            comp="$GITHUB_WORKSPACE/binaries/silica-compiler"
+          fi
+          chmod +x "$comp"
+          set +e
+          make integrate \
+            TRIAL_TARGET=host \
+            SILICA_TARGET_PROMPT=0 \
+            JOBS=3 \
+            SDS_JOBS=1 \
+            SILICA_COMPILER="$comp"
+          status=$?
+          if [ -f .integrate_report ]; then
+            echo "----- trials/.integrate_report (tail) -----"
+            tail -n 80 .integrate_report
+          fi
+          exit "$status"
+
+      - name: Upload the trial report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trial-report
+          path: trials/.integrate_report
+          if-no-files-found: ignore
