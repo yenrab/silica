@@ -51,6 +51,9 @@ use user_calls;
 
 export arg_expected_type/2;
 export build_bnot_from_sir/1;
+export build_not_from_sir/1;
+export build_unary_keyword_from_sir/2;
+export unary_keyword_operand_type/1;
 export build_float_predicate_from_sir/2;
 export build_float_special_const/1;
 export build_prim_for_type/5;
@@ -164,6 +167,28 @@ fn build_float_predicate_from_sir(name: string, arg: { nodes: List[{ kind: int64
 
 fn build_bnot_from_sir(arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     sir_ast@make_sir_term(6, "uint64", "", "bnot", arg, sir_ast@dummy_sir_term())
+}
+
+// Logical negation `not p` (spec §3.3.1, §3.9): p is boolean, so `not p` is exactly `p == false`; lowered as the
+// boolean `eq` prim against a false constant, which every emit target already implements.
+fn build_not_from_sir(arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    false_const: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_ast@make_sir_term(0, "bool", "false", "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
+    sir_ast@make_sir_term(6, "bool", "", "eq", arg, false_const)
+}
+
+// Operand type the keyword unary operators expect: `not` takes boolean, `bnot` takes uint64.
+fn unary_keyword_operand_type(call_base: string) -> string {
+    case call_base == "not" of {
+        true -> "boolean";
+        false -> "uint64"
+    }
+}
+
+fn build_unary_keyword_from_sir(call_base: string, arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    case call_base == "not" of {
+        true -> build_not_from_sir(arg);
+        false -> build_bnot_from_sir(arg)
+    }
 }
 
 fn is_shift_op_lexeme(op: string) -> boolean {
@@ -419,6 +444,8 @@ fn sir_infer_call_return(context: { env: List[{ name: string, type_name: string,
     neg_ty: string <- negate_builtins@negate_arg_type(call_base);
     case length_bytes(neg_ty) > 0 of {
         true -> neg_ty;
+        false -> case call_base == "not" of {
+        true -> "boolean";
         false -> case call_base == "bnot" of {
         true -> "uint64";
         false -> case call_base == "spawn" or call_base == "spawn_registered" of {
@@ -450,6 +477,7 @@ fn sir_infer_call_return(context: { env: List[{ name: string, type_name: string,
                 }
                 }
             }
+        }
         }
         }
         }
@@ -915,7 +943,7 @@ fn build_single_arg_call(context: { env: List[{ name: string, type_name: string,
                                             true -> int8_calls@build_print_int8_from_sir(type_checker_expressions_helpers@expr_name(expr), arg);
                                             false -> case type_checker_expressions_helpers@expr_name(expr) == "print_float32" or type_checker_expressions_helpers@expr_name(expr) == "print_float16" of {
                                                 true -> float32_calls@build_print_float32_from_sir(type_checker_expressions_helpers@expr_name(expr), arg);
-                                                false -> case type_checker_expressions_helpers@expr_name(expr) == "print_string" of {
+                                                false -> case type_checker_expressions_helpers@expr_name(expr) == "print_string" or type_checker_expressions_helpers@expr_name(expr) == "print" of {
                                                     true -> string_calls@build_print_string_from_sir(type_checker_expressions_helpers@expr_name(expr), arg);
                                                     false -> case type_checker_expressions_helpers@expr_name(expr) == "println" of {
                                                         true -> string_calls@build_println_from_sir(type_checker_expressions_helpers@expr_name(expr), arg);
@@ -964,7 +992,7 @@ fn region_call_second_arg(expr: { nodes: List[{ kind: int64, value: string, name
 }
 
 fn is_single_arg_builtin(call_name: string) -> boolean {
-    call_name == "atom_bits" or call_name == "actor_ref_bits" or call_name == "actor_ref_of_word" or call_name == "print_atom" or call_name == "print_int32" or call_name == "print_uint32" or call_name == "print_int16" or call_name == "print_uint16" or call_name == "print_int8" or call_name == "print_uint8" or call_name == "print_float16" or call_name == "print_float32" or call_name == "print_string" or call_name == "println" or call_name == "print_string_stderr" or call_name == "println_stderr" or call_name == "length_bytes" or call_name == "length_chars" or call_name == "len" or call_name == "print_int64" or call_name == "print_uint64" or call_name == "print_bool" or call_name == "print_float64" or call_name == "read_lines" or call_name == "file_exists" or call_name == "delete_file"
+    call_name == "atom_bits" or call_name == "actor_ref_bits" or call_name == "actor_ref_of_word" or call_name == "print_atom" or call_name == "print_int32" or call_name == "print_uint32" or call_name == "print_int16" or call_name == "print_uint16" or call_name == "print_int8" or call_name == "print_uint8" or call_name == "print_float16" or call_name == "print_float32" or call_name == "print_string" or call_name == "print" or call_name == "println" or call_name == "print_string_stderr" or call_name == "println_stderr" or call_name == "length_bytes" or call_name == "length_chars" or call_name == "len" or call_name == "print_int64" or call_name == "print_uint64" or call_name == "print_bool" or call_name == "print_float64" or call_name == "read_lines" or call_name == "file_exists" or call_name == "delete_file"
 }
 
 fn arg_expected_type(call_name: string, expected_type: string) -> string {
@@ -977,6 +1005,7 @@ fn arg_expected_type(call_name: string, expected_type: string) -> string {
         "substring" -> "string";
         "substring_until_char" -> "string";
         "print_string" -> "string";
+        "print" -> "string";
         "println" -> "string";
         "print_string_stderr" -> "string";
         "println_stderr" -> "string";

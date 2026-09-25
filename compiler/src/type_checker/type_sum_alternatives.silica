@@ -1,0 +1,159 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Inline sum types with tagged-tuple alternatives, `:none | (:some, T)` (spec 15.4.11.2 writes the
+// failure reason the same way: `:normal | ... | (:explicit, atom) | ...`). A tuple literal, a tuple case
+// pattern and the SIR lowering of either need the ONE tuple alternative of the sum that the value can
+// be, chosen by the atom in its first element. Shared by the type checker and the SIR generator so
+// both pick the same alternative. Surfaces are compared with every space removed.
+
+export has_top_level_sum_bar/1;
+export sum_tuple_alternative/2;
+export tuple_alternative_or_self/2;
+export tuple_head_atom/1;
+
+fn strip_spaces_sa(s: string, i: int64, acc: string) -> string {
+    case i >= length_bytes(s) of {
+        true -> acc;
+        false -> {
+            c: string <- substring(s, i, i + 1);
+            case c == " " or c == "\t" or c == "\n" or c == "\r" of {
+                true -> strip_spaces_sa(s, i + 1, acc);
+                false -> strip_spaces_sa(s, i + 1, concat(acc, c))
+            }
+        }
+    }
+}
+
+// Index of the first `|` at nesting depth 0 from position i, or -1.
+fn find_top_bar_sa(s: string, i: int64, depth: int64) -> int64 {
+    case i >= length_bytes(s) of {
+        true -> 0 - 1;
+        false -> {
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "[" or c == "{" of {
+                true -> find_top_bar_sa(s, i + 1, depth + 1);
+                false -> case c == ")" or c == "]" or c == "}" of {
+                    true -> find_top_bar_sa(s, i + 1, depth - 1);
+                    false -> case c == "|" and depth == 0 of {
+                        true -> i;
+                        false -> find_top_bar_sa(s, i + 1, depth)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn has_top_level_sum_bar(s: string) -> boolean {
+    find_top_bar_sa(strip_spaces_sa(s, 0, ""), 0, 0) >= 0
+}
+
+// Position of the first `,` or `)` at depth 1 inside a `(`-headed text, or its length.
+fn tuple_head_end_sa(s: string, i: int64, depth: int64) -> int64 {
+    case i >= length_bytes(s) of {
+        true -> length_bytes(s);
+        false -> {
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "[" or c == "{" of {
+                true -> tuple_head_end_sa(s, i + 1, depth + 1);
+                false -> case c == ")" or c == "]" or c == "}" of {
+                    true -> case depth == 1 of {
+                        true -> i;
+                        false -> tuple_head_end_sa(s, i + 1, depth - 1)
+                    };
+                    false -> case c == "," and depth == 1 of {
+                        true -> i;
+                        false -> tuple_head_end_sa(s, i + 1, depth)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The atom literal heading a tuple type or tuple pattern text `(:tag, ...)`, or "" when the text is not
+// a tuple or its first element is not an atom literal. Spaces are ignored.
+fn tuple_head_atom(s: string) -> string {
+    t: string <- strip_spaces_sa(s, 0, "");
+    case length_bytes(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, 1, 2) == ":" of {
+        false -> "";
+        true -> substring(t, 1, tuple_head_end_sa(t, 1, 1))
+    }
+}
+
+fn alt_is_tuple_sa(alt: string) -> boolean {
+    length_bytes(alt) >= 2 and substring(alt, 0, 1) == "(" and substring(alt, length_bytes(alt) - 1, length_bytes(alt)) == ")"
+}
+
+// Scan the alternatives of the space-free sum text t from position start; return the first tuple
+// alternative whose head atom equals head_atom (need_head), or the first tuple alternative at all.
+fn scan_alternatives_sa(t: string, start: int64, head_atom: string, need_head: boolean) -> string {
+    case start >= length_bytes(t) of {
+        true -> "";
+        false -> {
+            bar: int64 <- find_top_bar_sa(t, start, 0);
+            end_pos: int64 <- case bar < 0 of {
+                true -> length_bytes(t);
+                false -> bar
+            };
+            alt: string <- substring(t, start, end_pos);
+            matched: boolean <- case alt_is_tuple_sa(alt) of {
+                false -> false;
+                true -> case need_head of {
+                    false -> true;
+                    true -> tuple_head_atom(alt) == head_atom
+                }
+            };
+            case matched of {
+                true -> alt;
+                false -> case bar < 0 of {
+                    true -> "";
+                    false -> scan_alternatives_sa(t, bar + 1, head_atom, need_head)
+                }
+            }
+        }
+    }
+}
+
+// The tuple alternative of the sum surface s for a value whose first element is head_atom ("" when the
+// head is unknown): the alternative with that head, else the first tuple alternative, else "".
+fn sum_tuple_alternative(s: string, head_atom: string) -> string {
+    t: string <- strip_spaces_sa(s, 0, "");
+    by_head: string <- case length_bytes(head_atom) > 0 of {
+        true -> scan_alternatives_sa(t, 0, head_atom, true);
+        false -> ""
+    };
+    case length_bytes(by_head) > 0 of {
+        true -> by_head;
+        false -> scan_alternatives_sa(t, 0, head_atom, false)
+    }
+}
+
+// s itself when it is not a sum; otherwise its tuple alternative for head_atom, or s when it has none.
+fn tuple_alternative_or_self(s: string, head_atom: string) -> string {
+    case has_top_level_sum_bar(s) of {
+        false -> s;
+        true -> {
+            alt: string <- sum_tuple_alternative(s, head_atom);
+            case length_bytes(alt) == 0 of {
+                true -> s;
+                false -> alt
+            }
+        }
+    }
+}
