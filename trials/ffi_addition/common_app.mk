@@ -28,7 +28,10 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
 define APP_INTEGRATE_BODY
 	@$(ENSURE_SILICA_COMPILER)
-	@ln -sf "$(FIXTURES_DIR)/dangerous_exposure_source" "$(APP_TRIAL_DIR)/dangerous_exposure_source"
+	@# -n as well as -f: without it, BSD ln follows an existing symlink-to-directory and
+	@# writes the new link INSIDE the fixtures directory, which corrupts the fixtures for
+	@# every other app in the suite.
+	@ln -sfn "$(FIXTURES_DIR)/dangerous_exposure_source" "$(APP_TRIAL_DIR)/dangerous_exposure_source"
 	@test -f "$(FFI_LEGACY_ARCHIVE)" || { echo "  ❌ $(APP_LABEL): missing $(FFI_LEGACY_ARCHIVE) (run make fixtures)"; exit 1; }
 	@for ar in $(FFI_WRAPPER_ARCHIVES); do \
 		test -f "$$ar" || { echo "  ❌ $(APP_LABEL): missing wrapper archive $$ar (run make fixtures)"; exit 1; }; \

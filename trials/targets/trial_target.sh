@@ -219,7 +219,7 @@ run_board() {
 
     # --- preflight: everything that can fail is checked before anything is compiled ---
     [ -x "$compiler" ] || die "missing $compiler.
-   Build and publish it: cd compiler/silica-compiler/src_selfhost && make TARGET=$target
+   Build and publish it: cd compiler/src && make TARGET=$target
    (or point BOARD_SILICA_COMPILER at a built compiler)."
     [ -x "$py" ] || die "no Python with esptool at $py (the ESP-IDF Python environment; see $reqs, or set BOARD_PYTHON)."
     "$py" -c 'import esptool, serial' 2>/dev/null || die "$py cannot import esptool and pyserial (see $reqs)."

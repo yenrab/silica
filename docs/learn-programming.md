@@ -10,7 +10,7 @@ permalink: /learn-programming/
 
 Copyright © 2026 Lee Scott Barney
 
-Use this book together with a large language model (an LLM — a chat program that can read these pages and answer questions) and the [Silica language documentation](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md). Point the LLM at both. Ask it to walk through examples, check your attempts, and explain a line you do not yet understand. Tell it what computer you are using. It will fill in the practical steps this book leaves out: how to compile a program, how to run it, and how to see the result on your machine. The book and the language documentation are the source of the rules; the LLM is there to help you learn to write programs and to understand how programming works.
+Use this book together with a large language model (an LLM — a chat program that can read these pages and answer questions) and the [Silica language documentation](https://github.com/yenrab/silica/blob/main/compiler/design_documents/silica-specification.md). Point the LLM at both. Ask it to walk through examples, check your attempts, and explain a line you do not yet understand. Tell it what computer you are using. It will fill in the practical steps this book leaves out: how to compile a program, how to run it, and how to see the result on your machine. The book and the language documentation are the source of the rules; the LLM is there to help you learn to write programs and to understand how programming works.
 
 **Do not type programs by hand. Have the LLM write them.** A working program has two kinds of lines. A few lines say what you actually want: add these two numbers, print the total, send this message. The rest are lines that every program of its kind needs around those few: naming the types of things, setting up the supervisor, opening and closing each block of steps. Programmers call that surrounding part *boilerplate*. You do not need to know how to write it, and at first you will not even recognize it. Describe what you want to the LLM and let it write the whole program, boilerplate included. Your job is to read what it wrote, find the lines that do the real work, check them against what you asked for, and ask the LLM about anything you do not understand. This book teaches you to read and judge programs. The typing is the LLM's job. This is also why you can safely read only the lines that end with a `//` comment when a chapter tells you to: those are the lines that say what the program does, and the rest is boilerplate the LLM writes for you.
 
@@ -44,7 +44,7 @@ A few habits will help:
 - Try the short exercises at the ends of chapters. Describe each one to your LLM, let it write the program, then read the result and check that it does what the exercise asks. They are small on purpose.
 - If a later chapter feels sudden, go back one chapter. That is normal.
 
-Silica is still growing. The [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) is the source of truth if this book and the compiler ever disagree.
+Silica is still growing. The [language specification](https://github.com/yenrab/silica/blob/main/compiler/design_documents/silica-specification.md) is the source of truth if this book and the compiler ever disagree.
 
 ## 3. Your first program
 
@@ -612,7 +612,7 @@ Besides its state, each actor has a **stack**: scratch paper it writes on while 
 
 A stack policy answers two questions about that paper. The number says how much paper the actor may ever use; `0` means "as much as this computer has," which is almost always what you want. The atom says what the actor keeps on its desk between messages: `:keep_last_message` means "keep as much paper as the last message needed, and give the rest back."
 
-Silica requires this at every spawn so that nothing about an actor's memory is hidden. The [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) (section 15.1.2.2) lists the other choices, such as `:release_on_return`, which gives all the paper back after every message.
+Silica requires this at every spawn so that nothing about an actor's memory is hidden. The [language specification](https://github.com/yenrab/silica/blob/main/compiler/design_documents/silica-specification.md) (section 15.1.2.2) lists the other choices, such as `:release_on_return`, which gives all the paper back after every message.
 
 ### Try this
 
@@ -723,7 +723,7 @@ Think about a cook who keeps every spice in one big bag, with smaller bags insid
 
 In a program, a record with dozens of fields, or tuples inside tuples inside tuples, is the bag of bags. Every function that takes it has to spell out its whole shape. Every time it is handed to a function or handed back, all of it travels, and each inner group is a separate package the computer has to build and copy. Large types made of many items and layers are naive and inefficient. Silica gives you the spice racks ready-made: **first-class data structures** built for looking things up, checking membership, taking the most urgent item first, and keeping families and networks. Chapter 17 introduces them.
 
-So keep the program's own records and tuples small, and ask your LLM for small ones: two, three, or four values that truly belong together, like a width and a height, or a sticker and an answer. In the few cases where no ready-made structure fits, the [tutorial on reducing parameter and return sizes](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/reducing_parameter_and_return_sizes.md), in the compiler's tutorials section, shows how to keep what goes into and out of functions small.
+So keep the program's own records and tuples small, and ask your LLM for small ones: two, three, or four values that truly belong together, like a width and a height, or a sticker and an answer. In the few cases where no ready-made structure fits, the [tutorial on reducing parameter and return sizes](https://github.com/yenrab/silica/blob/main/compiler/tutorials_and_howtos/reducing_parameter_and_return_sizes.md), in the compiler's tutorials section, shows how to keep what goes into and out of functions small.
 
 ### Try this
 
@@ -1048,7 +1048,7 @@ fn product(numbers: List[int64, mem(normal)]) -> int64 {
 
 Chapter 13 ended with a spice rack, and Chapter 15 with a guest list that has to be searched from the front. This chapter is about the racks.
 
-Large types made of many items and layers are naive and inefficient. Instead, Silica programs use its **first-class data structures**: ready-made structures, supplied with the language, each built for one kind of question. In the few cases where none of them fits, the [tutorial on reducing parameter and return sizes](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/reducing_parameter_and_return_sizes.md), in the compiler's tutorials section, shows what to do instead.
+Large types made of many items and layers are naive and inefficient. Instead, Silica programs use its **first-class data structures**: ready-made structures, supplied with the language, each built for one kind of question. In the few cases where none of them fits, the [tutorial on reducing parameter and return sizes](https://github.com/yenrab/silica/blob/main/compiler/tutorials_and_howtos/reducing_parameter_and_return_sizes.md), in the compiler's tutorials section, shows what to do instead.
 
 ### What they have in common
 
@@ -1205,9 +1205,9 @@ Adding to these five gives back a small record: the new structure and a note abo
 | "yes or no, left or right?" | a binary tree: `BinaryTree`, built with `tree_binary` |
 | "what is connected to what?" | a graph: `UndirectedGraph`, `DirectedGraph`, or `WeightedGraph` |
 
-Silica has a few more in the same families: `Heap` (a priority queue where each value is its own priority), `SearchTree` (an ordered set that can also answer range questions), and graphs whose trails go one way only. The [data structure designs](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/README.md) list every one.
+Silica has a few more in the same families: `Heap` (a priority queue where each value is its own priority), `SearchTree` (an ordered set that can also answer range questions), and graphs whose trails go one way only. The [data structure designs](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/README.md) list every one.
 
-Use a list when you will walk every item in order. Use a small record or tuple for two or three values that belong together. For anything you will search, count, rank, or connect, use a structure. When none of them fits, the [tutorial on reducing parameter and return sizes](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/reducing_parameter_and_return_sizes.md) shows how to keep what you pass around small anyway.
+Use a list when you will walk every item in order. Use a small record or tuple for two or three values that belong together. For anything you will search, count, rank, or connect, use a structure. When none of them fits, the [tutorial on reducing parameter and return sizes](https://github.com/yenrab/silica/blob/main/compiler/tutorials_and_howtos/reducing_parameter_and_return_sizes.md) shows how to keep what you pass around small anyway.
 
 ### Try this
 
@@ -1473,7 +1473,7 @@ The `strategy` in `init`'s `flags` says how the mother reacts when one calf amon
 
 That is the whole of concurrency in this book. Isolation first. Separate workers, private memory, notes instead of shared drawers, and a mother watching every one of them. That is how Silica keeps programs with many workers understandable.
 
-The longer story — supervisors inside supervisors, `call` versus `cast` in detail, pinning work to a core — is in [Silica for Programmers]({{ '/learn-silica/' | relative_url }}) and in the [actor spawning tutorial](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/actor_spawning_tutorial.md).
+The longer story — supervisors inside supervisors, `call` versus `cast` in detail, pinning work to a core — is in [Silica for Programmers]({{ '/learn-silica/' | relative_url }}) and in the [actor spawning tutorial](https://github.com/yenrab/silica/blob/main/compiler/tutorials_and_howtos/actor_spawning_tutorial.md).
 
 ### Try this
 
@@ -1544,9 +1544,9 @@ That is enough to read small Silica programs, and to judge the ones your LLM wri
 
 When you want the same language, explained for people who already program, read [Silica for Programmers]({{ '/learn-silica/' | relative_url }}).
 
-When you want the rules in full, read the [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md).
+When you want the rules in full, read the [language specification](https://github.com/yenrab/silica/blob/main/compiler/design_documents/silica-specification.md).
 
-When you want hands-on topics — actors, regions, foreign functions, project makefiles, and keeping what goes into and out of functions small — start from the [tutorials](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/tutorials_and_howtos).
+When you want hands-on topics — actors, regions, foreign functions, project makefiles, and keeping what goes into and out of functions small — start from the [tutorials](https://github.com/yenrab/silica/tree/main/compiler/tutorials_and_howtos).
 
 When you want to run programs, [build the compiler]({{ '/build-and-test/' | relative_url }}).
 

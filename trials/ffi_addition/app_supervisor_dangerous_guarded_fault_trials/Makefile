@@ -38,12 +38,12 @@ all: integrate
 fixtures: ffi-wrapper-archives
 
 integrate-run: fixtures
-	@ln -sf "$(FIXTURES_DIR)/dangerous_exposure_source" "$(APP_TRIAL_DIR)/dangerous_exposure_source"
+	@ln -sfn "$(FIXTURES_DIR)/dangerous_exposure_source" "$(APP_TRIAL_DIR)/dangerous_exposure_source"
 	@test -f "$(FFI_LEGACY_ARCHIVE)" || { echo "  ❌ $(APP_LABEL): missing legacy archive"; exit 1; }
 	@cd "$(APP_TRIAL_DIR)" && rm -f *.sams *.o *.iface $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime
 	@cd "$(APP_TRIAL_DIR)" && { \
 		find "$(APP_TRIAL_DIR)" -maxdepth 1 -name '*.silica' | sed "s|^$(APP_TRIAL_DIR)/||" | sort; \
-		echo "../../../compiler/silica-compiler/stdlib/Supervisor.silica"; \
+		echo "../../../compiler/stdlib/Supervisor.silica"; \
 	} > silica.config
 	@$(ENSURE_SILICA_COMPILER)
 	@cd "$(APP_TRIAL_DIR)" && if ! { $(RUN_SILICA_COMPILER); }; then echo "❌❌ $(APP_LABEL): compilation failed"; $(INTEGRATE_DOT_FAIL); printf '%d %d\n' 0 1 > .integrate_counts; exit 1; fi

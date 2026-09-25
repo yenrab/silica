@@ -15,9 +15,9 @@ header for that file type (see the appendix in `LICENSE`).
 
 - Read the [README](README.md) for project goals and build instructions.
 - Design and specification material lives under
-  [`compiler/silica-compiler/design_documents/`](compiler/silica-compiler/design_documents/).
+  [`compiler/design_documents/`](compiler/design_documents/).
 - Tutorials and how-tos are indexed under
-  [`compiler/silica-compiler/tutorials_and_howtos/`](compiler/silica-compiler/tutorials_and_howtos/).
+  [`compiler/tutorials_and_howtos/`](compiler/tutorials_and_howtos/).
 
 ## How to contribute
 
@@ -31,7 +31,7 @@ header for that file type (see the appendix in `LICENSE`).
    edits so reviewers can follow the history.
 4. **Continuous Integration** — Execution of all CI trials without regression are required before submition.
    Specifically, before a pull request is submitted, `make integrate` (run from
-   `compiler/silica-compiler/trials/`) must pass without updating the golden
+   [`trials/`](trials/)) must pass without updating the golden
    files for any trial other than the one being added. 
    If the addition or bug fix you are suggesting doesn't change any golden .scout files but does change existing .ascomp golden files, you are required to indicate that:
    1. the assembly in the .sams files are better than that in the .ascomp files, or
@@ -41,15 +41,28 @@ header for that file type (see the appendix in `LICENSE`).
 
 ## Development workflow (summary)
 
-- **Bootstrap compiler (Rust):** `compiler/silica-bootstrap-compiler/` — see
-  its README for `cargo` build options.
-- **Self-hosted compiler (Silica):** `compiler/silica-compiler/src/` — see the
-  root README “Building the compiler” section for `make` and prerequisites.
-- **CI-style trials:** `compiler/silica-compiler/trials/` — `make integrate`
-  after building `silica-compiler`.
+- **The compiler (Silica):** [`compiler/src/`](compiler/src/). Silica is
+  self-hosted: the compiler is written in Silica and is built by an earlier
+  Silica compiler. There is no bootstrap compiler to build and nothing in the
+  build path needs `cargo` or Rust.
+- **Building it:** only needed when you change the compiler itself or port it
+  to a new platform; writing Silica programs uses the compiler already in
+  [`binaries/`](binaries/) or a released one. The scripts are in
+  [`programmer_tools/`](programmer_tools/) —
+  `build_all_platforms.sh` (every platform, some of them with `--targets`, or
+  just this machine with `--local-only`), `run_trials_all_platforms.sh`, and
+  `build_and_trial_all_platforms.sh` for both. Each takes `-h` and `--list`.
+  See the root README “Building the compiler” section for prerequisites and
+  the `make` targets those scripts drive.
+- **Using the compiler already in the checkout:** `binaries/silica-compiler`;
+  `binaries/update_silica_compiler_link.bash` repairs that link for your host.
+- **CI-style trials:** [`trials/`](trials/) — `make integrate`.
 
-Platform support is currently focused on **Apple Silicon (arm64 macOS)** for the
-full pipeline; see the README platform notice if you work on other targets.
+The OS-hosted platforms are **macOS on Apple Silicon**, **Linux on AArch64**
+and **Linux on x86-64**; each builds its own compiler natively on its own
+machine. **ESP32-S3** is OS-free, so its cross compiler is built on a hosted
+machine. A change is not finished until the trials pass on every platform it
+can affect.
 
 ## Code and documentation style
 
@@ -57,7 +70,7 @@ full pipeline; see the README platform notice if you work on other targets.
 - Prefer minimal, purposeful changes over large refactors unless coordinated
   through an issue or design discussion.
 - For compiler-building agent graphs and tools, see
-  [`compiler/silica-compiler/compiler-building-tools/`](compiler/silica-compiler/compiler-building-tools/).
+  [`compiler/compiler-building-tools/`](compiler/compiler-building-tools/).
 
 ## Rules
 

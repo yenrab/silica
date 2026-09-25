@@ -65,7 +65,7 @@ Then, for each suite, [board_suite.sh](board_suite.sh):
    (`diff -Bw`, through the suite's `compare_scout_normalized.sh` when it has one: that folds the
    addresses in a process-fatal report line, `[silica] fault at <PTR>` / `[silica] abort: <reason> at
    <PTR>`, which differ between the board and the host; see
-   [runtime_failure_reporting.md](../../compiler/silica-compiler/design_documents/runtime_failure_reporting.md));
+   [runtime_failure_reporting.md](../../compiler/design_documents/runtime_failure_reporting.md));
 3. compiles each compile-failure trial (`.golden_fail`) alone and compares the diagnostics.
 
 Suites run in parallel, so compiles overlap; the board runs one trial at a time. A board trial takes

@@ -1,6 +1,6 @@
 LEAF_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 THIS_DIR := $(LEAF_DIR)
-LIB_SRC := ../../../compiler/silica-compiler/stdlib/data_structures
+LIB_SRC := ../../../compiler/stdlib/data_structures
 
 STDLIB_PREREQ_MK := $(firstword $(wildcard $(LEAF_DIR)../stdlib_prereq.mk $(LEAF_DIR)../../stdlib_prereq.mk $(LEAF_DIR)../../../stdlib_prereq.mk))
 include $(STDLIB_PREREQ_MK)

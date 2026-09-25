@@ -12,7 +12,7 @@
 #     target    silica-<NNNNNN>-<token>-<platform>   reached through binaries/silica-compiler-<emit-target>
 #
 # A `target` build is a selfhost compiler that runs on this host but emits code for another
-# target (src_selfhost `make TARGET=<emit-target>`, e.g. ESP32-S3_raw). <token> is the emit-target
+# target (src `make TARGET=<emit-target>`, e.g. ESP32-S3_raw). <token> is the emit-target
 # name with each hyphen turned into an underscore (ESP32-S3_raw -> ESP32_S3_raw), because the
 # naming convention allows only a single hyphen-free kind token before the platform.
 #

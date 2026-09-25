@@ -11,7 +11,7 @@
 # volume, and then a fix made here appears to have no effect at all.
 #
 # binaries/silica-compiler is the SELFHOST compiler, which is what compiles application .silica
-# files. binaries/seed-compiler is the seed and is only for building src_selfhost; see
+# files. binaries/seed-compiler is the seed and is only for building src; see
 # binaries/install_compiler.bash.
 ifeq ($(filter command line,$(origin SILICA_COMPILER)),)
   ifeq ($(origin SILICA_COMPILER),undefined)
@@ -29,13 +29,13 @@ endif
 ensure-silica-compiler:
 	@if [ -z "$(SILICA_COMPILER)" ]; then \
 		echo "FAIL: no binaries/ directory above $(abspath $(THIS_DIR)) and no silica-compiler on PATH."; \
-		echo "Build the selfhost compiler (make -C compiler/silica-compiler/src_selfhost),"; \
+		echo "Build the selfhost compiler (make -C compiler/src),"; \
 		echo "or pass SILICA_COMPILER=/path/to/silica-compiler"; \
 		exit 1; \
 	fi; \
 	if [ ! -e "$(SILICA_COMPILER)" ]; then \
 		echo "FAIL: $(SILICA_COMPILER) does not exist."; \
-		echo "Build the selfhost compiler to create it: make -C compiler/silica-compiler/src_selfhost"; \
+		echo "Build the selfhost compiler to create it: make -C compiler/src"; \
 		echo "(that installs binaries/silica-<NNNNNN>-<platform> and links silica-compiler to it)"; \
 		exit 1; \
 	fi; \

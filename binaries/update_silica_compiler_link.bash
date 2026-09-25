@@ -94,7 +94,7 @@ fi
 platform_count="$(printf '%s\n' "$platforms" | grep -c .)"
 
 # silica-compiler must resolve to a SELFHOST build and never to a seed. The two are not
-# interchangeable: seed-compiler builds src_selfhost, silica-compiler compiles applications and
+# interchangeable: seed-compiler builds src, silica-compiler compiles applications and
 # trials, and comparing the two is how miscompiles get found. Because a lower NNNNNN is newer and
 # both kinds share one countdown, an unfiltered scan picks silica-<NNNNNN>-seed-<platform>
 # whenever the seed is newer than the selfhost -- as it is at 999989-seed against 999990 -- and
@@ -345,7 +345,7 @@ if [[ -z "$latest_file" ]]; then
     echo "No selfhost compiler binary found for local platform: $selected_platform" >&2
     echo "Expected silica-<NNNNNN>-$selected_platform (seed builds carry a -seed- token and are" >&2
     echo "reached through seed-compiler instead). Build one with:" >&2
-    echo "  make -C compiler/silica-compiler/src_selfhost" >&2
+    echo "  make -C compiler/src" >&2
     exit 1
 fi
 

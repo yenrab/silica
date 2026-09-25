@@ -39,7 +39,7 @@ silica.config:
 all: executables
 
 # Stage 1: silica-compiler generates .sams (reads silica.config internally).
-# Exit 75 = continue next unit (process-per-unit reclaim), same as src_selfhost.
+# Exit 75 = continue next unit (process-per-unit reclaim), same as src.
 assembly: clean silica.config
 	@echo "Compiling with silica-compiler..."
 	@rm -f *.sams silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams; \

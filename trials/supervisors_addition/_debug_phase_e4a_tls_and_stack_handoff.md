@@ -87,8 +87,8 @@ Either way the **emitter must ensure exactly one POP** per logically distinct st
 Rebuild **compiler**, then trials (assembler output is **`*.sams`**):
 
 ```bash
-cd /Volumes/2T/silica/compiler/silica-compiler/src && make
-cd /Volumes/2T/silica/compiler/silica-compiler/trials/supervisors_addition && make compile all
+cd /Volumes/2T/silica/compiler/src && make
+cd /Volumes/2T/silica/compiler/trials/supervisors_addition && make compile all
 grep -n 'ADD SP' phase_e4a_permanent_one_for_one.sams | head -20
 /path/to/workspace/.../phase_e4a_permanent_one_for_one; echo exit:$?
 ```
@@ -113,8 +113,8 @@ Inspect **`init:`** chunk in **`phase_e4a_permanent_one_for_one.sams`** until **
 
 | Area | File(s) |
 |------|---------|
-| Tuple stack alloc / **`flat_tuple_total_alloc`** | `compiler/silica-compiler/src_selfhost/emitter/apple_silicon_mac/terms/term_emitter.silica` |
-| **`flat_alloc_size`** formula | `compiler/silica-compiler/src_selfhost/emitter/apple_silicon_mac/terms/prims/prims_tuple.silica` |
+| Tuple stack alloc / **`flat_tuple_total_alloc`** | `compiler/src/emitter/apple_silicon_mac/terms/term_emitter.silica` |
+| **`flat_alloc_size`** formula | `compiler/src/emitter/apple_silicon_mac/terms/prims/prims_tuple.silica` |
 | **`rec_flat`** memcpy path | **`emit_flat_tuple_stores`** in `term_emitter.silica` |
 | **`_silica_rt_region_alloc`** / TLS getters | Embedded runtime in **`prims_actors_runtime_asm.silica`** (+ trial **`.sams`**) |
 | Sequence → let lowering | **`sir_generator/terms/terms.silica`** (**`lower_sequence_body_to_lets`**) |

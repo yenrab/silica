@@ -31,7 +31,7 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 silica.config:
 	@cd "$(THIS_DIR)" && { \
 		find "$$PWD" -type f -name '*.silica' ! -name 'trial_negative_*.silica' | sed "s|^$$PWD/||"; \
-		echo "../../compiler/silica-compiler/stdlib/Supervisor.silica"; \
+		echo "../../compiler/stdlib/Supervisor.silica"; \
 	} > silica.config
 
 .DEFAULT_GOAL := all
@@ -50,7 +50,7 @@ compile: clean silica.config
 all: compile
 	@failed=0; \
 	cd "$(THIS_DIR)" && \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/silica-compiler/stdlib/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/stdlib/'); do \
 		base=$${line%.silica}; \
 		sams="$$base.sams"; \
 		if [ ! -f "$$sams" ]; then \
@@ -85,7 +85,7 @@ all: compile
 		ko=$$((ko + 1)); failed=1; \
 	fi; \
 	fi; \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/silica-compiler/stdlib/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/stdlib/'); do \
 		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
 		echo "Linking $$base..."; \
@@ -129,7 +129,7 @@ integrate-run:
 	@$(MAKE) -f "$(THIS_DIR)Makefile" compile
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/silica-compiler/stdlib/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/stdlib/'); do \
 		base=$${line%.silica}; \
 		sams="$$base.sams"; \
 		if [ ! -f "$$sams" ]; then \
@@ -183,7 +183,7 @@ integrate-run:
 			ok=$$((ok + 1)); \
 		fi; \
 	done; \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/silica-compiler/stdlib/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/stdlib/'); do \
 		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
 		echo "Linking $$base..."; \
@@ -207,7 +207,7 @@ integrate-run:
 		fi; \
 		fi; \
 	done; \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/silica-compiler/stdlib/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/stdlib/'); do \
 		base=$${line%.silica}; \
 		if [ ! -x "$$base" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$base missing executable (assemble/link failed earlier)"; \
@@ -303,7 +303,7 @@ stress-j2:
 clean:
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sout traits/*.sams traits/*.o *.iface *.sams __silica_runtime.o && \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/silica-compiler/stdlib/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./compiler/stdlib/'); do \
 		base=$${line%.silica}; \
 		rm -f "$$base" "$$base.o"; \
 	done && \

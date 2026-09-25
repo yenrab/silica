@@ -1,5 +1,5 @@
 # Makefile for Silica trials — `integrate` first ensures binaries/silica-compiler
-# exists (same seed host as src_selfhost), then runs each subdirectory's own
+# exists (same seed host as src), then runs each subdirectory's own
 # Makefile (messages and pass/fail rules come from those Makefiles, not from here).
 #
 # integrate / clean: `make -C <trial> integrate|clean` for each immediate child with Makefile or makefile

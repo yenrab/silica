@@ -4,7 +4,7 @@
 
 Silica is a memory-safe, functional systems language. The compiler rejects unsafe or accidental behavior at compile time, with errors you can act on. Effects are explicit, actors pass messages, and memory is region-based with no garbage collector.
 
-Silica is designed for bare metal systems development, but also supports applications hosted by operating systems. The initial toolchain works, today, on Apple Silicon macOS.
+Silica is designed for bare metal systems development, but also supports applications hosted by operating systems. The toolchain builds and reproduces itself today on macOS (Apple Silicon), Linux on AArch64 and Linux on x86-64, and cross-compiles for the OS-free ESP32-S3.
 
 [Why Silica](https://yenrab.github.io/silica/) — language goals and how to get involved.
 
@@ -23,9 +23,9 @@ fn main() -> atom {
 }
 ```
 
-- [Build the compiler](#building-the-compiler) (seed, gen1, gen2) and [run the trials](#running-the-continuous-integration-trials)
-- [Language specification](compiler/silica-compiler/design_documents/silica-specification.md)
-- [Tutorials](compiler/silica-compiler/tutorials_and_howtos/)
+- [Build the compiler](#building-the-compiler) for every platform, some of them, or just this machine, and [run the trials](#running-the-continuous-integration-trials)
+- [Language specification](compiler/design_documents/silica-specification.md)
+- [Tutorials](compiler/tutorials_and_howtos/)
 - [Roadmap](ROADMAP.md)
 - [Contributing](CONTRIBUTING.md)
 
@@ -39,118 +39,117 @@ fn main() -> atom {
 
 ## Language and runtime
 
-- Effects live in the type system. Memory is organized with regions and per-actor stacks: no shared heap, no GC. See the [language specification](compiler/silica-compiler/design_documents/silica-specification.md), [actor stack architecture](compiler/silica-compiler/design_documents/silica-specification.md#spec-actor-stack-architecture), and [region handles](compiler/silica-compiler/design_documents/silica-specification.md#spec-region-handles-actor-spawn).
-- Dead bindings, duplicate work, redundant arithmetic, and similar “the optimizer will fix it” patterns are compile-time errors. See [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md).
-- FFI goes through Fifi, the compiler’s outbound foreign-function layer. Think of a cute poodle that bites: non-Silica code looks approachable and lives outside Silica’s guarantees. Wrappers and anything that depends on them must be named `dangerous_*` all the way to the app root. See the [FFI wrapper specification](compiler/silica-compiler/design_documents/silica_ffi_wrapper_specification.md), the [dangerous FFI security model](compiler/silica-compiler/design_documents/dangerous_ffi_security_model.md), and [designing apps with foreign functions](compiler/silica-compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md).
-- The runtime is lightweight actors, message passing, and let-it-crash isolation (BEAM-like, native), with hardware help such as MTE on AArch64. See [crash containment](compiler/silica-compiler/design_documents/beam_like_crash_containment_design_notes.md). Brokered IPC for untrusted C is proposed as an alternative to in-process FFI; that path would not need `dangerous_*` names. See [brokered IPC](compiler/silica-compiler/design_documents/brokered_ipc_isolation_architecture.md).
-- Types and syntax stay explicit. There are no generics; polymorphism is traits plus concrete types. Language-level crypto labels and richer proof tooling are proposed: [crypto proposal](compiler/silica-compiler/design_documents/crypto-proposal-introduction.md), [formal verification](compiler/silica-compiler/design_documents/silica-formal-verification-specification.md).
+- Effects live in the type system. Memory is organized with regions and per-actor stacks: no shared heap, no GC. See the [language specification](compiler/design_documents/silica-specification.md), [actor stack architecture](compiler/design_documents/silica-specification.md#spec-actor-stack-architecture), and [region handles](compiler/design_documents/silica-specification.md#spec-region-handles-actor-spawn).
+- Dead bindings, duplicate work, redundant arithmetic, and similar “the optimizer will fix it” patterns are compile-time errors. See [additional compiler rules](compiler/design_documents/silica-specification-additional.md).
+- FFI goes through Fifi, the compiler’s outbound foreign-function layer. Think of a cute poodle that bites: non-Silica code looks approachable and lives outside Silica’s guarantees. Wrappers and anything that depends on them must be named `dangerous_*` all the way to the app root. See the [FFI wrapper specification](compiler/design_documents/silica_ffi_wrapper_specification.md), the [dangerous FFI security model](compiler/design_documents/dangerous_ffi_security_model.md), and [designing apps with foreign functions](compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md).
+- The runtime is lightweight actors, message passing, and let-it-crash isolation (BEAM-like, native), with hardware help such as MTE on AArch64. See [crash containment](compiler/design_documents/beam_like_crash_containment_design_notes.md). Brokered IPC for untrusted C is proposed as an alternative to in-process FFI; that path would not need `dangerous_*` names. See [brokered IPC](compiler/design_documents/brokered_ipc_isolation_architecture.md).
+- Types and syntax stay explicit. There are no generics; polymorphism is traits plus concrete types. Language-level crypto labels and richer proof tooling are proposed: [crypto proposal](compiler/design_documents/crypto-proposal-introduction.md), [formal verification](compiler/design_documents/silica-formal-verification-specification.md).
 
-Related notes: [actor capabilities](compiler/silica-compiler/design_documents/silica_actor_capabilities_specification.md) (draft), [memory effects on AArch64 / OS-free targets](compiler/silica-compiler/design_documents/memory-effects-aarch64-implementation-plan.md).
+Related notes: [actor capabilities](compiler/design_documents/silica_actor_capabilities_specification.md) (draft), [memory effects on AArch64 / OS-free targets](compiler/design_documents/memory-effects-aarch64-implementation-plan.md).
 
 ## Contributing and roadmap
 
-Working on a self-hosted toolchain plus the runtime around it, in the open, with the spec and the errors meant to stay aligned. How to open issues and PRs is in [CONTRIBUTING.md](CONTRIBUTING.md). [Code organization](compiler/silica-compiler/design_documents/silica-compiler-code-organization.md) is a map of the tree.
+Working on a self-hosted toolchain plus the runtime around it, in the open, with the spec and the errors meant to stay aligned. How to open issues and PRs is in [CONTRIBUTING.md](CONTRIBUTING.md). [Code organization](compiler/design_documents/silica-compiler-code-organization.md) is a map of the tree.
 
-Development is organised by emitter path — Apple Silicon leads, Linux AArch64 is in lock-step, ESP32-S3 follows at its own pace — and delivered in chunks between fixed points. See the [roadmap](ROADMAP.md). Compiler-building tools (including JSON-LD agent graphs) live under [compiler-building-tools/](compiler/silica-compiler/compiler-building-tools/).
+Development is organised by emitter path — Apple Silicon leads, Linux AArch64 is in lock-step, ESP32-S3 follows at its own pace — and delivered in chunks between milestones: fixed points on the hosted paths, board releases on the raw ones, which cannot host a compiler. See the [roadmap](ROADMAP.md). Compiler-building tools (including JSON-LD agent graphs) live under [compiler-building-tools/](compiler/compiler-building-tools/).
 
 ## Documentation
 
 Design docs are working documents and change with the implementation. Start here:
 
-- [Required software](docs/required-software.md): what to install to build the compilers and run the trials, on the Mac and on an ESP32-S3 board
+- [Required software](docs/required-software.md): what to install to build the compiler and run the trials, on a host machine and on an ESP32-S3 board
 
-- [Language specification](compiler/silica-compiler/design_documents/silica-specification.md) and [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md)
-- Fifi: [§26.3](compiler/silica-compiler/design_documents/silica-specification.md#spec-fifi), [FFI wrapper specification](compiler/silica-compiler/design_documents/silica_ffi_wrapper_specification.md), [dangerous FFI security model](compiler/silica-compiler/design_documents/dangerous_ffi_security_model.md), [macOS guarded FFI crash handling](compiler/silica-compiler/design_documents/macos_crash_handling_for_silica.md)
-- [Actor capabilities](compiler/silica-compiler/design_documents/silica_actor_capabilities_specification.md), [memory effects (AArch64 / OS-free)](compiler/silica-compiler/design_documents/memory-effects-aarch64-implementation-plan.md)
-- Full index: [design_documents/](compiler/silica-compiler/design_documents/)
-- Hosted vs OS-free: on a mainstream OS, kernel policy limits what you can assume about memory spaces and core pinning. Short overview: [execution environments](compiler/silica-compiler/design_documents/execution-environments-hosted-vs-bare-metal.md).
+- [Language specification](compiler/design_documents/silica-specification.md) and [additional compiler rules](compiler/design_documents/silica-specification-additional.md)
+- Fifi: [§26.3](compiler/design_documents/silica-specification.md#spec-fifi), [FFI wrapper specification](compiler/design_documents/silica_ffi_wrapper_specification.md), [dangerous FFI security model](compiler/design_documents/dangerous_ffi_security_model.md), [macOS guarded FFI crash handling](compiler/design_documents/macos_crash_handling_for_silica.md)
+- [Actor capabilities](compiler/design_documents/silica_actor_capabilities_specification.md), [memory effects (AArch64 / OS-free)](compiler/design_documents/memory-effects-aarch64-implementation-plan.md)
+- Full index: [design_documents/](compiler/design_documents/)
+- Hosted vs OS-free: on a mainstream OS, kernel policy limits what you can assume about memory spaces and core pinning. Short overview: [execution environments](compiler/design_documents/execution-environments-hosted-vs-bare-metal.md).
 
-Tutorials (actors, regions, lists, blocks, and related topics) are in [tutorials_and_howtos/](compiler/silica-compiler/tutorials_and_howtos/). Useful starting points:
+Tutorials (actors, regions, lists, blocks, and related topics) are in [tutorials_and_howtos/](compiler/tutorials_and_howtos/). Useful starting points:
 
-- Foreign functions: [designing apps with foreign functions](compiler/silica-compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md), then [FFI wrappers and Makefiles](compiler/silica-compiler/tutorials_and_howtos/ffi_wrappers_and_makefiles.md)
-- App builds: [building apps with project Makefiles](compiler/silica-compiler/tutorials_and_howtos/building_apps_with_project_makefiles.md) (drop-in files in `[project_makefiles/](project_makefiles/)`)
-- Large apps: [compiling with less RAM](compiler/silica-compiler/tutorials_and_howtos/compiling_with_less_ram.md)
+- Foreign functions: [designing apps with foreign functions](compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md), then [FFI wrappers and Makefiles](compiler/tutorials_and_howtos/ffi_wrappers_and_makefiles.md)
+- App builds: [building apps with project Makefiles](compiler/tutorials_and_howtos/building_apps_with_project_makefiles.md) (drop-in files in `[project_makefiles/](project_makefiles/)`)
+- Large apps: [compiling with less RAM](compiler/tutorials_and_howtos/compiling_with_less_ram.md)
 
 
 
 ## Building the compiler
 
-These steps build the self-hosted toolchain ([roadmap](ROADMAP.md) Track 1). The same instructions, with more context, are on the project site: [Build and test the compiler](https://yenrab.github.io/silica/build-and-test/).
+**You probably do not need to build the compiler.** Building is for people who change the compiler's own code in [compiler/src/](compiler/src/), or who port it to a new platform. To write Silica programs, use the compiler already in [binaries/](binaries/) or download a released one; see [Use the compiler that is already here](https://yenrab.github.io/silica/build-and-test/#use-the-compiler-that-is-already-here) and [Get a released compiler from GitHub](https://yenrab.github.io/silica/build-and-test/#get-a-released-compiler-from-github).
 
-**Platform notice (temporary):** the build and link path is validated on Apple Silicon (arm64 macOS) only. Other hosts are not yet supported end-to-end. A useful early contribution is another emit backend under [src_selfhost/emitter/](compiler/silica-compiler/src_selfhost/emitter/) (see `apple_silicon_mac/`, `linux_aarch64/`, and `ESP32-S3_raw/`), then `make TARGET=…`.
+These steps build the self-hosted toolchain ([roadmap](ROADMAP.md) Track 1). The same instructions, with more detail, are on the project site: [Build and test the compiler](https://yenrab.github.io/silica/build-and-test/).
 
-### The three compilers
+The compiler is written in Silica and builds itself. There is no bootstrap compiler to build and no separate seed source tree: a compiler binary already in `binaries/` (reached through `binaries/seed-compiler`) compiles the sources in [compiler/src/](compiler/src/), and the compiler that comes out compiles them again until the two agree byte for byte — the **fixed point**. Nothing in the build path is written in Rust and nothing needs `cargo`; the retired Rust bootstrap lives only in the repository's history.
 
-| Name | Source | Built by | Published as |
-| ---- | ------ | -------- | ------------ |
-| Seed | the previous fixed-point self-host, kept as a binary; `binaries/seed-compiler` points at it | itself, one generation earlier | `binaries/silica-NNNNNN-<platform>`. The original Rust bootstrap (`silica-boot`) and the seeds it produced (`silica-NNNNNN-seed-<platform>`) stay in `binaries/` for the record; their sources are in the repository's history |
-| Selfhost | [compiler/silica-compiler/src_selfhost/](compiler/silica-compiler/src_selfhost/) (Silica, Rust-free) | the seed, itself an earlier selfhost (**gen1**), or the selfhost that produced (**gen2**) | `binaries/silica-NNNNNN-<platform>`, reached through `binaries/silica-compiler` |
-| ESP32-S3 compiler | the same tree with `TARGET=ESP32-S3_raw`: runs on the Mac, emits ESP32-S3 (Xtensa) assembly | the seed | `binaries/silica-NNNNNN-ESP32_S3_raw-<platform>`, reached through `binaries/silica-compiler-ESP32-S3_raw` |
+### Platforms
 
-Generation numbers in `binaries/` count **down**: the lowest `NNNNNN` is the newest build. Each kind (seed, selfhost, and each emit target such as ESP32-S3_raw) is numbered on its own, and its symlink always points at its newest build. `gen1` is the selfhost tree compiled by the seed; `gen2` is the same tree compiled by gen1, and it is the build that must pass every trial before the selfhost can replace the seed.
+A platform is an **emit target**: the directory under [compiler/src/emitter/](compiler/src/emitter/) whose backend a compiler bakes in. The table of record is [project_makefiles/platform/platforms.mk](project_makefiles/platform/platforms.mk).
 
-### 1. Prerequisites
+| Emit target | Runs on | How it is built |
+| ----------- | ------- | --------------- |
+| `apple_silicon_mac` | macOS on Apple Silicon (`macos-applesilicon`) | OS-hosted: built natively on an Apple Silicon Mac |
+| `linux_aarch64` | Linux on AArch64 (`linux-aarch64`) | OS-hosted: built natively on a Linux AArch64 machine |
+| `linux_x86_64` | Linux on x86-64 (`linux-x86_64`) | OS-hosted: built natively on a Linux x86-64 machine |
+| `ESP32-S3_raw` | nothing — the ESP32-S3 has no OS | Raw: its cross compiler is built on whichever machine you start from |
 
-The complete list, with versions, install commands and the ESP32-S3 board tools, is on its own page: [Required software](docs/required-software.md).
+An OS-hosted platform can run a compiler, so it builds its own and reaches its own fixed point on its own machine. A raw platform cannot run a compiler at all, so the compiler that emits its code is built elsewhere and published as `binaries/silica-compiler-<emit target>`.
 
-| Requirement | Role |
-| ----------- | ---- |
-| Seed compiler | `binaries/seed-compiler` (symlink to the previous fixed-point self-host, a versioned `silica-NNNNNN-<platform>`). Present in the checkout; it advances only when a new fixed point is released. `binaries/update_silica_compiler_link.bash` repairs the `silica-compiler` link for your host platform (where the compiler runs, not an emit target). |
-| GNU Make | Drives every build and the trial tree. |
-| Clang | Assembles `.sams` → `.o` and links. On Apple Silicon with Homebrew LLVM, the Makefiles prefer `/opt/homebrew/opt/llvm/bin/clang` when present. |
+### The three build scripts
 
-### 2. The seed
+| Script | What it does |
+| ------ | ------------ |
+| [`programmer_tools/build_all_platforms.sh`](programmer_tools/build_all_platforms.sh) | Builds Silica for every platform you name, from whatever machine you start on. |
+| [`programmer_tools/run_trials_all_platforms.sh`](programmer_tools/run_trials_all_platforms.sh) | Runs the full trial tree on each platform with that platform's own compiler. It never builds a compiler. |
+| [`programmer_tools/build_and_trial_all_platforms.sh`](programmer_tools/build_and_trial_all_platforms.sh) | Both, in one command: build every indicated platform, then run the full trial tree on each one. |
 
-There is no seed to rebuild. The seed is the previous fixed-point self-host, so a change to the compiler is made in `src_selfhost` and becomes the next seed when it reaches fixed point and is released. The Rust bootstrap and the seed source it compiled were retired once the self-host reproduced itself; their binaries stay in `binaries/` and their sources in the repository's history.
-
-### 3. Build the selfhost from the seed (gen1)
-
-```bash
-cd compiler/silica-compiler/src_selfhost
-make gen1
-```
-
-`make gen1` compiles `src_selfhost` with `binaries/seed-compiler`, links `silica-compiler` in that directory, installs it as the next `binaries/silica-NNNNNN-<platform>` (moving `binaries/silica-compiler` to it), and keeps a stable copy as `binaries/silica-gen1`. Plain `make` (or `make build`) does the same build and install but does not keep the `silica-gen1` copy.
-
-**Emit target.** With more than one backend under `emitter/`, an interactive `make` first asks which one to bake in:
-
-```
-Select the emit target (emitter/<name>/ to bake into silica-compiler):
-  1) ESP32-S3_raw
-  2) apple_silicon_mac  [default: host]
-  3) linux_aarch64
-Number or name [apple_silicon_mac]:
-```
-
-Answer with a number or a name; an empty answer takes the host default. The choice is written to `silica.target` and passed to the sub-makes, so you are asked once per build. `make TARGET=<name>` skips the question, `SILICA_TARGET_PROMPT=0` always takes the host default (for scripts), and builds without a terminal (CI, `nohup`, pipes) take the host default silently. `make help` and `make clean` never ask. `TARGET` is a code-generation backend baked into the binary, not a runtime switch and not the `binaries/` host platform tag.
-
-### 4. Build the selfhost from the selfhost (gen2)
+Each prints its own manual with `-h`, and shows what a run would do — without doing it — with `--list`.
 
 ```bash
-cd compiler/silica-compiler/src_selfhost
-make gen2
+bash programmer_tools/build_all_platforms.sh --list                    # the plan, then stop
+bash programmer_tools/build_all_platforms.sh                           # every platform
+bash programmer_tools/build_all_platforms.sh --targets "apple_silicon_mac linux_x86_64"
+bash programmer_tools/build_all_platforms.sh --local-only              # this machine, plus raw cross compilers
+bash programmer_tools/build_all_platforms.sh --targets ESP32-S3_raw    # one raw device's cross compiler
+bash programmer_tools/build_all_platforms.sh \
+    --remote linux_aarch64=admin@pix.local \
+    --remote linux_x86_64=lee@nix.local:~/silica                       # hosted platforms, each on its own machine
 ```
 
-`make gen2` compiles `src_selfhost` with `binaries/silica-gen1` (it stops with a message if gen1 has not been built), installs the result as the next numbered selfhost, moves `binaries/silica-compiler` to it, and keeps the copy `binaries/silica-gen2`. Every unit is recompiled: the compiler binary is a staleness input, so there is no incremental path between generations. `INSTALL_SELFHOST=0` on either generation builds and keeps the `silica-genN` copy without touching the numbered install or the `silica-compiler` link.
+The machine you start from always builds its own native compiler first, whatever the list says; the list chooses which *other* platforms are built, and which raw cross compilers are built here. An OS-hosted platform is never cross-built: the script builds it natively on its own machine, over ssh, and takes it to its fixed point there. The one exception is a hosted machine with no compiler of its own yet — the script builds that target's compiler here, emits the assembly here, copies it over, and links the first binary there.
 
-### Other `src_selfhost` targets
+**Which machines, remembered once.** `build_all_platforms.sh` writes the platforms and their machines to `.silica_build_hosts` in the repository root, one line per platform: `<emit target> <user@host|local> <repository path>`. The first run asks; later runs read it silently, and the other two scripts read the same file. **It is gitignored and must never be committed**: it names your machines. `--targets "<list>"` overrides it for one run, `--set_targets "<list>"` replaces it, and `--refresh_targets` asks again for the platforms already in it.
 
-| Command | What it does |
-| ------- | ------------ |
-| `make` / `make build` | Full build with `seed-compiler`: config → compile → objects → link → install. |
-| `make gen1` / `make gen2` | The generation builds described above. |
-| `make trials-gen1` / `make trials-gen2` / `make trials-both` | Run the whole trial tree against a generation (next section). |
-| `make fixpoint` | Build gen3 with gen2 and pass only if it is byte-identical to gen2 (see the trials section). |
-| `make assembly` | Compile only (produce / refresh `.sams`). |
-| `make objects` | Assemble `.sams` → `.o` (runs assembly first if needed). |
-| `make executables` | Link `silica-compiler` (runs objects first if needed). |
-| `make clean` | Remove generated artifacts (`.sams`, `.o`, configs, iface caches, the local executable). |
-| `make all` | `clean`, then `build`. |
-| `make help` | List targets, the active emit target, and allowable `TARGET` values. |
-| `make TARGET=<name>` | Bake a specific backend from `emitter/<name>/` (writes `silica.target`). A backend other than the host's is published as `binaries/silica-compiler-<name>` (for example the ESP32-S3 compiler), never as `binaries/silica-compiler`. |
-| `make all-targets` | Clean/build once per allowable emit target, producing `silica-compiler-<TARGET>` for each. |
-| `make EXECUTABLE=<name>` | Override the output binary name (default: `silica-compiler`). |
-| `make build SILICA_COMPILER=<binary>` | Compile with any compiler binary (this is what `gen2` does with `silica-gen1`). |
+**ssh must be key-based.** The scripts run `ssh` in batch mode and never type a password. Set a key up with `ssh-keygen` and `ssh-copy-id user@host`, and check it with `ssh -o BatchMode=yes user@host true`.
+
+**Per machine** the work is: build, gen1, gen2, the fixed-point check, and publish. `--no-fixpoint` stops after the build. `--trials` also runs the trial tree, `--jobs N` sets the parallelism, and `--log-dir DIR` sets where the logs go (default `../silica_builds/<timestamp>` beside the repository). One compiler build runs at a time per machine; the heaviest unit needs 6–8 GB of RAM.
+
+The Makefile targets the scripts drive (`make gen1`, `make gen2`, `make fixpoint`, `make TARGET=…` and the rest, in `compiler/src/`) are documented on the site page: [Build and test the compiler](https://yenrab.github.io/silica/build-and-test/).
+
+### Use the compiler that is already here
+
+Nothing above is needed to compile Silica programs. A checkout already carries built compilers in [`binaries/`](binaries/), reached through stable links: `binaries/silica-compiler` is the newest compiler that runs on **this** machine and emits code for it — the one applications use — `binaries/silica-compiler-<emit target>` is the newest compiler that runs here and emits code for another target, for example `binaries/silica-compiler-ESP32-S3_raw`, and `binaries/seed-compiler` is the one used to build the compiler itself. The links never cross.
+
+A compiler binary is named `silica-<NNNNNN>-<platform>` (a cross compiler carries the emit target as an extra token, `silica-<NNNNNN>-<emit_target>-<platform>`). `<platform>` is where the binary **runs**. `<NNNNNN>` is a generation counter that counts **down**: the lowest number is the newest build. Each kind is numbered independently and their links never cross.
+
+The compiler takes no `--version` flag, and the strings inside the binary do not identify it. A build is identified by its file name, so ask the link what it resolves to: `ls -l binaries/silica-compiler`.
+
+- [`binaries/install_compiler.bash`](binaries/install_compiler.bash) installs a freshly built binary into `binaries/` and repoints its stable link at it: `install_compiler.bash selfhost <binary>` for this host, `install_compiler.bash target <emit-target> <binary>` for a cross compiler, `install_compiler.bash seed <binary>` for the compiler that builds the compiler. It works out the next number itself. The build scripts call it for you.
+- [`binaries/update_silica_compiler_link.bash`](binaries/update_silica_compiler_link.bash) is the repair path for a missing or stale link. Run it with no arguments: it scans `binaries/`, detects your host platform, picks the newest binary built for it, makes it executable and points `binaries/silica-compiler` at it. If it cannot tell which platform you want it lists what it found and asks. It only ever selects a compiler that runs on this host and emits for it: never a cross compiler and never a `-seed-` build.
+
+### Get a released compiler from GitHub
+
+Published compilers appear on the repository's releases page: [github.com/yenrab/silica/releases](https://github.com/yenrab/silica/releases). If that page is empty, no release has been published yet; build from source with the scripts above, or use the binaries already in the checkout.
+
+A release asset is a compiler binary under the same naming rule as the ones in `binaries/`, so pick the one whose `<platform>` matches the machine you will run it on — `macos-applesilicon`, `linux-aarch64` or `linux-x86_64` — and, for a cross compiler, whose emit-target token matches the device you are building for. Download it into `binaries/`, make it executable, and point the link at it:
+
+```bash
+curl -L -o binaries/<asset-name> <the asset's download URL>
+chmod +x binaries/<asset-name>
+bash binaries/update_silica_compiler_link.bash      # picks the newest for this host platform
+ln -sfn <asset-name> binaries/silica-compiler       # or point the link at that exact file
+```
+
+Use a relative name in the `ln`, not a path: the link lives in `binaries/` and must resolve inside it.
 
 ### Runtime (Track 2): no single documented build yet
 
@@ -160,35 +159,25 @@ make gen2
 
 CI trials live under [trials/](trials/). Each suite directory (for example `atoms_addition`, `case_addition`, `error_enforcement_addition`, `ordered_data_structures`) holds Silica sources and golden files: `.ascomp` (expected assembly), `.scout` (expected stdout followed by the exit code), and `.golden_fail` (expected compiler diagnostics for programs that must not compile). The [trials Makefile](trials/Makefile) compiles every trial with the chosen compiler, compares the assembly to `.ascomp`, assembles and links, runs the binary, and compares its output to `.scout` (or the diagnostics to `.golden_fail`). Suites run in parallel; a counter line at the bottom of the terminal shows passes and failures as they happen.
 
-### Run the tree against gen1 and gen2
+### Run the tree on every platform
 
 ```bash
-cd compiler/silica-compiler/src_selfhost
-make trials-gen1     # whole tree with binaries/silica-gen1
-make trials-gen2     # whole tree with binaries/silica-gen2
-make trials-both     # gen1, then gen2
+bash programmer_tools/run_trials_all_platforms.sh --list      # what it would run
+bash programmer_tools/run_trials_all_platforms.sh             # every platform it knows
+bash programmer_tools/run_trials_all_platforms.sh --targets linux_x86_64
+bash programmer_tools/run_trials_all_platforms.sh --sync --board
 ```
 
-Each run writes `trials/.integrate_report` and keeps a copy as `trials/.integrate_report.gen1` or `.gen2`, so running both does not lose the first result. The make target's exit status is the run's.
+This script never builds a compiler: each machine must already have its own native compiler at `<repo>/binaries/silica-compiler`, and a raw target is driven from this machine with the cross compiler this machine built for it. It reads the same `.silica_build_hosts`. `--targets` also takes the short names `mac`, `pi`, `nix`, `esp32`, `all` and `hosted`; `--board` adds an attached board's run (off by default); `--sync` copies trials, stdlib and project makefiles to each remote machine first. Remote machines run at the same time; this machine runs its own trials and then the board, because both take `trials/.integrate.lock`. One summary table is printed at the end, and the exit status is 0 only when every platform passed.
 
-### Check for a fixed point
-
-```bash
-cd compiler/silica-compiler/src_selfhost
-make gen2       # if not already done: the .sams left here must be gen1's emission
-make fixpoint
-```
-
-`make fixpoint` builds gen3, `src_selfhost` compiled by `binaries/silica-gen2`, and passes only if gen3 is byte-identical to gen2. Passing the trials shows gen2 compiles programs correctly; the fixed point shows the compiler reproduces itself with nothing inherited from the seed, which is the condition for retiring the bootstrap.
-
-It must run right after `make gen2`: the `.sams` left in `src_selfhost/` are then gen1's emission of the sources, and `make gen2` stamps them. The target refuses to run if that stamp is missing or any `.sams` was rewritten since, saves those `.sams` to `compiler/silica-compiler/.src_selfhost_fixpoint/gen1_sams/`, builds gen3 with gen2, and prints how many units gen2 emits differently from gen1 (with the first differing lines, `o<N>` node counters normalised) and both binary sizes. gen3 is linked at the same path as gen2, `src_selfhost/silica-compiler`, because Apple's linker derives the binary's UUID and signature identifier from the output path; it is not installed and is kept as `silica-compiler-gen3`. Running it again needs a fresh `make gen2`.
+To build and then trial in one command, use [`programmer_tools/build_and_trial_all_platforms.sh`](programmer_tools/build_and_trial_all_platforms.sh); the trials do not run if the builds fail.
 
 ### Run the tree or one suite with any compiler
 
 ```bash
 cd trials
-make integrate                                    # default: binaries/silica-compiler (the newest selfhost build)
-make integrate SILICA_COMPILER=/path/to/compiler  # any binary, e.g. ../binaries/seed-compiler
+make integrate                                    # default: binaries/silica-compiler (the newest build for this host)
+make integrate SILICA_COMPILER=/path/to/compiler  # any binary
 make -C case_addition integrate SILICA_COMPILER=/path/to/compiler   # one suite
 ```
 
@@ -196,12 +185,12 @@ make -C case_addition integrate SILICA_COMPILER=/path/to/compiler   # one suite
 
 ### Run the trials on an ESP32-S3 board
 
-The same trials can run on an ESP32-S3 board over USB: compiled by `binaries/silica-compiler-ESP32-S3_raw`, loaded into the board's RAM one at a time, and compared with the same `.scout` goldens. An interactive `make integrate` asks where to run (Enter = this Mac); set `TRIAL_TARGET` to skip the question:
+The same trials can run on an ESP32-S3 board over USB: compiled by `binaries/silica-compiler-ESP32-S3_raw`, loaded into the board's RAM one at a time, and compared with the same `.scout` goldens. An interactive `make integrate` asks where to run (Enter = this machine); set `TRIAL_TARGET` to skip the question:
 
 ```bash
 cd trials
 make integrate TRIAL_TARGET=ESP32-S3_raw          # the whole tree on the board (takes hours)
-make integrate TRIAL_TARGET=both                  # this Mac, then the board
+make integrate TRIAL_TARGET=both                  # this machine, then the board
 make -C case_addition integrate TRIAL_TARGET=ESP32-S3_raw   # one suite on the board
 ```
 
@@ -222,7 +211,7 @@ Other useful targets in `trials/`:
 - `make help` — list targets and suites.
 - `make integrate-ffi` — the success-path FFI application trials only.
 
-The harness assumes the same Apple Silicon / macOS toolchain as the compiler build (see [Required software](docs/required-software.md)). Some suites have their own READMEs.
+The harness needs the same toolchain as the compiler build on whichever machine it runs (see [Required software](docs/required-software.md)). Some suites have their own READMEs.
 
 ## License
 

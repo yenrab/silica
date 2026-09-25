@@ -7,7 +7,7 @@ witness record), where the caller and the generic module are separate units. Eve
 
 A generic unit keeps every `ItemType` value in one word: a scalar, or a pointer to a record or tuple.
 Since 2026-09-18 every unit uses the same uniform boxed layout (header of
-`compiler/silica-compiler/src_selfhost/emitter/*/terms/prims/prims_record.silica`): each record field
+`compiler/src/emitter/*/terms/prims/prims_record.silica`): each record field
 is one 8-byte slot and a record-, tuple-, list-, string- or function-typed field holds a pointer; a
 list cell of a record or tuple element holds a pointer too. These trials check that values built on
 one side of the generic boundary read back correctly on the other.

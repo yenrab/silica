@@ -8,7 +8,7 @@ permalink: /design-principles/
 
 These principles are the choices Silica is built around. They decide how the language looks, what the compiler will accept, and how programs run.
 
-The [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) is the normative source (§1.2 and §1.3). This page is the reader-facing statement of the same list.
+The [language specification](https://github.com/yenrab/silica/blob/main/compiler/design_documents/silica-specification.md) is the normative source (§1.2 and §1.3). This page is the reader-facing statement of the same list.
 
 [Back to Silica]({% link index.md %})
 
@@ -204,6 +204,6 @@ There is no `type UserId = int64` and no chain of synonyms that hide a record or
 
 ---
 
-See the [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) for the full rules these principles imply.
+See the [language specification](https://github.com/yenrab/silica/blob/main/compiler/design_documents/silica-specification.md) for the full rules these principles imply.
 
 [Back to Silica]({% link index.md %})

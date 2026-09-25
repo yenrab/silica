@@ -33,8 +33,8 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 silica.config:
 	@cd "$(THIS_DIR)" && { \
 		find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/wbt_map.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/OrderedMap.silica"; \
+		echo "../../compiler/stdlib/data_structures/wbt_map.silica"; \
+		echo "../../compiler/stdlib/data_structures/OrderedMap.silica"; \
 	} > silica.config
 
 all: executables

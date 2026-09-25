@@ -14,7 +14,7 @@ Silica is a functional systems language. Effects are explicit. Actors stay isola
 
 If you have never programmed, use [Learn to Program]({{ '/learn-programming/' | relative_url }}) first. That book is slower on purpose.
 
-The [language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md) wins if this book and the compiler disagree. The hosted target today is macOS on Apple silicon.
+The [language specification](https://github.com/yenrab/silica/blob/main/compiler/design_documents/silica-specification.md) wins if this book and the compiler disagree. The hosted targets today are macOS on Apple Silicon, Linux on AArch64 and Linux on x86-64; the ESP32-S3 is supported OS-free through a cross compiler.
 
 Simple runnable programs live in `[trials/](https://github.com/yenrab/silica/tree/main/trials)`. Each subdirectory is one topic. The snippets in this book are maps of the idea. Open those files when you want a program that is meant to compile and run.
 
@@ -306,7 +306,7 @@ fn main() -> int64 {
 }
 ```
 
-Recursive tuples are only for building non-naive data structures of the kind the built-in ones exemplify: `OrderedMap`, `OrderedSet`, `SearchTree`, `Heap`, `PriorityQueue`, `Tree`, `BinaryTree` and the graph structures are written this way, as balanced, persistent structures with stated bounds, inside the standard library. Application code does not hand-build linked lists or ad hoc trees from them; it uses `List[T, mem(Space)]` and the built-in structures, and reaches for recursive tuples only when it is writing a new data structure of that quality. See [why no named types](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/why_no_named_types.md) and [region handles and references](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/region_handles_and_references.md).
+Recursive tuples are only for building non-naive data structures of the kind the built-in ones exemplify: `OrderedMap`, `OrderedSet`, `SearchTree`, `Heap`, `PriorityQueue`, `Tree`, `BinaryTree` and the graph structures are written this way, as balanced, persistent structures with stated bounds, inside the standard library. Application code does not hand-build linked lists or ad hoc trees from them; it uses `List[T, mem(Space)]` and the built-in structures, and reaches for recursive tuples only when it is writing a new data structure of that quality. See [why no named types](https://github.com/yenrab/silica/blob/main/compiler/tutorials_and_howtos/why_no_named_types.md) and [region handles and references](https://github.com/yenrab/silica/blob/main/compiler/tutorials_and_howtos/region_handles_and_references.md).
 
 **Strings** are UTF-8. Join and slice with the string operations (`concatenate` / `concat`, `substring` with character indices, `length_chars` / `length_bytes`, `starts_with` / `ends_with` / `contains`). There is no `+` for strings, no f-string, and no `str.format`. See `[string_addition](https://github.com/yenrab/silica/tree/main/trials/string_addition)` (`test_concat_literals.silica`, `test_length_chars.silica`).
 
@@ -360,13 +360,13 @@ Traits are files, not `trait T { }` blocks and not Python ABCs or `Protocol`. `s
 
 There is no `Option<T>`. Shared operations live on traits implemented for concrete sums such as `Some(int64) | None`. Marker traits (`ActorMessage`) are compile-time tags. In that sum, `None` is a constructor, not Python `None`.
 
-If two compilation units need to recurse into each other, do not create a `use` cycle. Pass the recursive entry as a callback. See [open recursion](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/open_recursion_callbacks.md).
+If two compilation units need to recurse into each other, do not create a `use` cycle. Pass the recursive entry as a callback. See [open recursion](https://github.com/yenrab/silica/blob/main/compiler/tutorials_and_howtos/open_recursion_callbacks.md).
 
 Modules: `[modules_addition](https://github.com/yenrab/silica/tree/main/trials/modules_addition)` (`one_use_main.silica`, `lib/lib_base.silica`). Traits: `[traits_addition](https://github.com/yenrab/silica/tree/main/trials/traits_addition)` (`shape_main.silica`, `traits/Shape.silica`).
 
 ## 9. Standard data structures
 
-Large types built from many items and layers are the naive design. Silica's standard library supplies persistent data structures instead, each defined by a **trait** (the queries) and one or more **construction modules** (building and updating). The designs are in [data_structure_designs](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/README.md). Bounds below are the designs' stated bounds. The implementations are in [stdlib/data_structures](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/stdlib/data_structures), and each module header lists the deviations the current compiler forces.
+Large types built from many items and layers are the naive design. Silica's standard library supplies persistent data structures instead, each defined by a **trait** (the queries) and one or more **construction modules** (building and updating). The designs are in [data_structure_designs](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/README.md). Bounds below are the designs' stated bounds. The implementations are in [stdlib/data_structures](https://github.com/yenrab/silica/tree/main/compiler/stdlib/data_structures), and each module header lists the deviations the current compiler forces.
 
 Reference: what each trait is for, the module that builds it, its representation and its headline bounds.
 
@@ -400,33 +400,33 @@ Choosing: the algorithm behind each structure, and the reason to reach for it.
 
 For a graph, the representation is the second choice. The live tree accepts updates. The CSR snapshot freezes a live graph in `O(V + A)` and is then read-only, for repeated queries and scans. The dense matrix fits a fixed, small vertex universe and reaches any cell in `O(log V)`. The construction modules and the full bounds are in the sections below.
 
-Everything is persistent. An update returns a new root, the old root stays valid, and every node off the changed path is shared between the two ([README](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/README.md), suite-wide decisions). Recursive nodes are region-allocated in one canonical arena per representation, linked by `ref?`, with `:none` as the empty position. Comparators return `:less | :equal | :greater` and define identity as well as order. A comparator that returns anything else is a deterministic collection error, not a branch.
+Everything is persistent. An update returns a new root, the old root stays valid, and every node off the changed path is shared between the two ([README](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/README.md), suite-wide decisions). Recursive nodes are region-allocated in one canonical arena per representation, linked by `ref?`, with `:none` as the empty position. Comparators return `:less | :equal | :greater` and define identity as well as order. A comparator that returns anything else is a deterministic collection error, not a branch.
 
 ### Ordered sets, maps and search trees
 
-`wbt_set` and `wbt_map` are the corrected Adams-family weight-balanced tree ([weight_balanced_tree.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/weight_balanced_tree.md)), with the (3, 2) parameters proved in Hirai and Yamamoto (2011). Each node caches its subtree size, so `size` is `O(1)`. Search, insert and delete are `O(log n)` and path-copy `O(log n)` nodes on change. A duplicate insert or an absent delete allocates nothing. `from_sorted` builds in `O(n)`, `from_list` in `O(n log u)`, and `fold` visits in ascending order in `O(n)` ([ordered_set_trait.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/ordered_set_trait.md) §9, [ordered_map_trait.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/ordered_map_trait.md) §12).
+`wbt_set` and `wbt_map` are the corrected Adams-family weight-balanced tree ([weight_balanced_tree.md](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/weight_balanced_tree.md)), with the (3, 2) parameters proved in Hirai and Yamamoto (2011). Each node caches its subtree size, so `size` is `O(1)`. Search, insert and delete are `O(log n)` and path-copy `O(log n)` nodes on change. A duplicate insert or an absent delete allocates nothing. `from_sorted` builds in `O(n)`, `from_list` in `O(n log u)`, and `fold` visits in ascending order in `O(n)` ([ordered_set_trait.md](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/ordered_set_trait.md) §9, [ordered_map_trait.md](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/ordered_map_trait.md) §12).
 
-`OrderedSet` and `OrderedMap` forward to those cores. `OrderedMap@get` takes a placeholder value to return with `:not_found`, because Silica source cannot conjure a zero of a programmer-declared type. `SearchTree` is not a third structure. It is a behavioural view over the same `wbt_set` value, so one value implements both traits ([SearchTree.silica](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/stdlib/data_structures/SearchTree.silica) header).
+`OrderedSet` and `OrderedMap` forward to those cores. `OrderedMap@get` takes a placeholder value to return with `:not_found`, because Silica source cannot conjure a zero of a programmer-declared type. `SearchTree` is not a third structure. It is a behavioural view over the same `wbt_set` value, so one value implements both traits ([SearchTree.silica](https://github.com/yenrab/silica/blob/main/compiler/stdlib/data_structures/SearchTree.silica) header).
 
 ### Heaps and priority queues
 
-`brodal_okasaki` is the Brodal–Okasaki bootstrapped skew-binomial queue ([brodal_okasaki_queue.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/brodal_okasaki_queue.md)): `peek`, `push` and `meld` are `O(1)`, and `pop` is `O(log n)`. `brodal_okasaki_min` and `brodal_okasaki_max` are thin forwarders that fix the orientation; one `Heap` impl serves both. `brodal_okasaki_priority` runs the same core over `{ priority, value }` entries, compared priority-first and then by value. Equal entries coexist. Arbitrary deletion and decrease-key are deliberately absent ([priority_queue_trait.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/priority_queue_trait.md)). The priority and value placeholders are spelled `KeyType` and `ValueType` in the code (module header, deviation 1).
+`brodal_okasaki` is the Brodal–Okasaki bootstrapped skew-binomial queue ([brodal_okasaki_queue.md](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/brodal_okasaki_queue.md)): `peek`, `push` and `meld` are `O(1)`, and `pop` is `O(log n)`. `brodal_okasaki_min` and `brodal_okasaki_max` are thin forwarders that fix the orientation; one `Heap` impl serves both. `brodal_okasaki_priority` runs the same core over `{ priority, value }` entries, compared priority-first and then by value. Equal entries coexist. Arbitrary deletion and decrease-key are deliberately absent ([priority_queue_trait.md](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/priority_queue_trait.md)). The priority and value placeholders are spelled `KeyType` and `ValueType` in the code (module header, deviation 1).
 
 ### Trees
 
-`tree_rose` is a rose tree whose child slots are a skew binary random-access list in reverse orientation, so appending a child is `O(1)` and slot numbers stay stable ([tree_trait.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/tree_trait.md)). Removing a child vacates its slot. Siblings are never renumbered. Paths are `List[int64, mem(normal)]` of slot numbers, with the empty list as the root. The design's `add_child` is exported as `add_leaf`, because `add_child` is a supervisor built-in name.
+`tree_rose` is a rose tree whose child slots are a skew binary random-access list in reverse orientation, so appending a child is `O(1)` and slot numbers stay stable ([tree_trait.md](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/tree_trait.md)). Removing a child vacates its slot. Siblings are never renumbered. Paths are `List[int64, mem(normal)]` of slot numbers, with the empty list as the root. The design's `add_child` is exported as `add_leaf`, because `add_child` is a supervisor built-in name.
 
-`tree_binary` is a persistent fixed-arity binary tree with fixed left and right roles, cached subtree counts, and a zipper whose down and up moves are `O(1)` ([persistent_binary_tree.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/persistent_binary_tree.md)). Paths are built with `tree_binary@path_root`, `path_left` and `path_right`, because atoms are numbered per compilation unit and `:left` / `:right` written in another unit would not match.
+`tree_binary` is a persistent fixed-arity binary tree with fixed left and right roles, cached subtree counts, and a zipper whose down and up moves are `O(1)` ([persistent_binary_tree.md](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/persistent_binary_tree.md)). Paths are built with `tree_binary@path_root`, `path_left` and `path_right`, because atoms are numbered per compilation unit and `:left` / `:right` written in another unit would not match.
 
 ### Graphs
 
 There are three representations, all behind the same traits, each a distinct concrete record with no runtime tag:
 
-- **Live WBT graph.** `graph_wbt_core` is a WBT map from node to a WBT map from target to edge value, over `wbt_map`. It supports updates. `has_edge` and `add_edge` are `O(log V + log d)`, and `reachable` / `connected` walk with a WBT visited set ([live_wbt_graph.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/live_wbt_graph.md)).
-- **CSR snapshot.** `graph_csr_core` freezes a live graph in `O(V + A)` into offset, target and value buffers plus a node-to-slot WBT index. It is read-only. `has_edge` is a binary search, `O(log V + log d)` ([csr_graph_snapshot.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/csr_graph_snapshot.md)).
-- **Dense matrix.** `graph_dense_core` has a fixed vertex universe and `V × V` cells in a skew binary random-access list. An edge update path-copies one cell in `O(log V)`, and a neighbour scan is `O(log V + V)` ([dense_matrix_graph.md](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/Phase1_TODOs/data_structure_designs/dense_matrix_graph.md)).
+- **Live WBT graph.** `graph_wbt_core` is a WBT map from node to a WBT map from target to edge value, over `wbt_map`. It supports updates. `has_edge` and `add_edge` are `O(log V + log d)`, and `reachable` / `connected` walk with a WBT visited set ([live_wbt_graph.md](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/live_wbt_graph.md)).
+- **CSR snapshot.** `graph_csr_core` freezes a live graph in `O(V + A)` into offset, target and value buffers plus a node-to-slot WBT index. It is read-only. `has_edge` is a binary search, `O(log V + log d)` ([csr_graph_snapshot.md](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/csr_graph_snapshot.md)).
+- **Dense matrix.** `graph_dense_core` has a fixed vertex universe and `V × V` cells in a skew binary random-access list. An edge update path-copies one cell in `O(log V)`, and a neighbour scan is `O(log V + V)` ([dense_matrix_graph.md](https://github.com/yenrab/silica/blob/main/compiler/design_documents/Phase1_TODOs/data_structure_designs/dense_matrix_graph.md)).
 
-Vertex IDs are any type the node comparator accepts. They are never slot indexes. A weighted undirected graph also implements `UndirectedGraph`. The weighted directed `graph_weighted` does not implement `DirectedGraph` today; it offers the same directed queries as its own module functions ([DirectedGraph.silica](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/stdlib/data_structures/DirectedGraph.silica) header, deviation 5).
+Vertex IDs are any type the node comparator accepts. They are never slot indexes. A weighted undirected graph also implements `UndirectedGraph`. The weighted directed `graph_weighted` does not implement `DirectedGraph` today; it offers the same directed queries as its own module functions ([DirectedGraph.silica](https://github.com/yenrab/silica/blob/main/compiler/stdlib/data_structures/DirectedGraph.silica) header, deviation 5).
 
 ### What the current compiler forces
 
@@ -684,7 +684,7 @@ Memory lives on the actor’s stack, which can grow. Lifetimes follow frames and
 
 Spaces (`normal`, `normal_writethrough`, `atomic`, `device`, …) are part of the type. Full hardware distinction is for OS-free targets. On a hosted OS the discipline still holds; the attributes are OS-chosen.
 
-Tutorials: [memory region types](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/memory_region_types.md), [region handles and references](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/region_handles_and_references.md).
+Tutorials: [memory region types](https://github.com/yenrab/silica/blob/main/compiler/tutorials_and_howtos/memory_region_types.md), [region handles and references](https://github.com/yenrab/silica/blob/main/compiler/tutorials_and_howtos/region_handles_and_references.md).
 
 Regions: `[memory_region_addition](https://github.com/yenrab/silica/tree/main/trials/memory_region_addition)` (`alloc_region_normal.silica`, `alloc_ref_int64.silica`, `read_ref_int64.silica`, `write_ref_int64.silica`).
 
@@ -741,7 +741,7 @@ The runtime model is Erlang `gen_server`, not a user-level receive loop:
 
 `call` blocks for `Reply`. `cast` does not. A dead target raises `actor_not_found`. If the target dies with outstanding `call`s, those callers get the actor-death result. A restarted actor does not inherit the failed actor’s mailbox.
 
-Supervisors are a different handle (`supervisor_ref`). You maintain them with `call_supervisor`, not ordinary `call` / `cast`. See the [supervisors tutorial](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/supervisors_and_failure_reporter_tutorial.md).
+Supervisors are a different handle (`supervisor_ref`). You maintain them with `call_supervisor`, not ordinary `call` / `cast`. See the [supervisors tutorial](https://github.com/yenrab/silica/blob/main/compiler/tutorials_and_howtos/supervisors_and_failure_reporter_tutorial.md).
 
 ### Keep `main` small
 
@@ -951,7 +951,7 @@ reply thanks = gracias
 
 Both requests are in flight before either answer is handled; the client never blocks. The replies here are string literals because today's compiler has a defect: a record message cast from one actor to another can arrive corrupted. The general form carries a record such as `{ kind: atom, reply_to: atom, id: int64, value: int64 }` and replies with `cast_registered(msg.reply_to, …)`.
 
-`spawn` has variants for pinning, registration, device workers, and FFI workers. Migration strategy (`lazy`, `eager_copy`, `static_core`) is about how much stack one message uses and how often the actor moves, not about “how long the actor lives.” [Spawning tutorial](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/actor_spawning_tutorial.md).
+`spawn` has variants for pinning, registration, device workers, and FFI workers. Migration strategy (`lazy`, `eager_copy`, `static_core`) is about how much stack one message uses and how often the actor moves, not about “how long the actor lives.” [Spawning tutorial](https://github.com/yenrab/silica/blob/main/compiler/tutorials_and_howtos/actor_spawning_tutorial.md).
 
 Actors: `[actors_addition](https://github.com/yenrab/silica/tree/main/trials/actors_addition)` (`actor_boolean_state_reply.silica`, `actor_cast_fire_and_forget.silica`). Supervisors: `[supervisors_addition](https://github.com/yenrab/silica/tree/main/trials/supervisors_addition)`. Pinning: `[cpu_discovery_and_spawn_pinning](https://github.com/yenrab/silica/tree/main/trials/cpu_discovery_and_spawn_pinning)`.
 
@@ -969,9 +969,9 @@ The rules that matter in practice:
 
 The audit story is `grep dangerous_`. Mixed artifacts advertise themselves. You should not need a linker map or tribal knowledge to see that a release is no longer pure Silica.
 
-Read: [designing apps with foreign functions](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md), [FFI wrapper spec](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica_ffi_wrapper_specification.md), [dangerous FFI model](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/dangerous_ffi_security_model.md).
+Read: [designing apps with foreign functions](https://github.com/yenrab/silica/blob/main/compiler/tutorials_and_howtos/designing_apps_with_foreign_functions.md), [FFI wrapper spec](https://github.com/yenrab/silica/blob/main/compiler/design_documents/silica_ffi_wrapper_specification.md), [dangerous FFI model](https://github.com/yenrab/silica/blob/main/compiler/design_documents/dangerous_ffi_security_model.md).
 
-A proposed alternative to in-process FFI is [brokered IPC](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/brokered_ipc_isolation_architecture.md): keep the unsafe work out of process so the safe application does not load it at all.
+A proposed alternative to in-process FFI is [brokered IPC](https://github.com/yenrab/silica/blob/main/compiler/design_documents/brokered_ipc_isolation_architecture.md): keep the unsafe work out of process so the safe application does not load it at all.
 
 FFI trials: `[ffi_addition](https://github.com/yenrab/silica/tree/main/trials/ffi_addition)`. Compile-fail goldens for the taint rules: `[error_enforcement_addition](https://github.com/yenrab/silica/tree/main/trials/error_enforcement_addition)`.
 
@@ -993,7 +993,7 @@ Silica would rather stop you than “optimize away” a mistake or wait for a te
 - **Region, lifetime, or isolation violations** — a `ref` returned without its region, a ref that outlives its region, a handle used after a move.
 - `dangerous_` **taint that was not declared** — a foreign dependency that did not walk up the module graph.
 
-Diagnostics carry a code (`E2000`, …), a location, and a spec section. Read the human sentence first, then the location, then the `See specification` pointer. See spec §1.6 and [additional compiler rules](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification-additional.md).
+Diagnostics carry a code (`E2000`, …), a location, and a spec section. Read the human sentence first, then the location, then the `See specification` pointer. See spec §1.6 and [additional compiler rules](https://github.com/yenrab/silica/blob/main/compiler/design_documents/silica-specification-additional.md).
 
 Programs the compiler is supposed to refuse: `[error_enforcement_addition](https://github.com/yenrab/silica/tree/main/trials/error_enforcement_addition)`, `[warning_enforcement_addition](https://github.com/yenrab/silica/tree/main/trials/warning_enforcement_addition)`.
 
@@ -1002,8 +1002,8 @@ Programs the compiler is supposed to refuse: `[error_enforcement_addition](https
 Read the trials when you want a small program in hand. Read the specification when you want the rule. The tutorials are the middle ground for actors, regions, and FFI.
 
 - [trials](https://github.com/yenrab/silica/tree/main/trials) — simple programs, grouped by topic. Run one directory with `make -C trials/<name> integrate`.
-- [Language specification](https://github.com/yenrab/silica/blob/main/compiler/silica-compiler/design_documents/silica-specification.md)
-- [Tutorials](https://github.com/yenrab/silica/tree/main/compiler/silica-compiler/tutorials_and_howtos)
+- [Language specification](https://github.com/yenrab/silica/blob/main/compiler/design_documents/silica-specification.md)
+- [Tutorials](https://github.com/yenrab/silica/tree/main/compiler/tutorials_and_howtos)
 - [Build and test the compiler]({{ '/build-and-test/' | relative_url }})
 - [Participate]({{ '/participate/' | relative_url }})
 - [Learn to Program]({{ '/learn-programming/' | relative_url }}) — same language, slower on-ramp

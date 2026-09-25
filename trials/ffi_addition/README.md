@@ -50,7 +50,7 @@ Each `app_*` directory is a self-contained runnable program (or small set of pro
 ## Phase 0
 
 ```bash
-make -C compiler/silica-compiler/trials/ffi_addition phase-0
+make -C compiler/trials/ffi_addition phase-0
 ```
 
 ## Phase 9: `silica.link` emission, archive validation, and Makefile link integration
@@ -65,9 +65,9 @@ App trials diff `silica.link` against `silica.link.scout`.
 At Stage 3 link, `trials/silica_link.sh` reads `archive:` lines from `silica.link` and passes those static archives directly to `rust-lld` / `clang`. App trial Makefiles no longer set manual `-L` / `-l` flags.
 
 ```bash
-make -C compiler/silica-compiler/trials/ffi_addition phase-9
-make -C compiler/silica-compiler/trials/ffi_addition phase-11
-make -C compiler/silica-compiler/trials integrate-ffi
+make -C compiler/trials/ffi_addition phase-9
+make -C compiler/trials/ffi_addition phase-11
+make -C compiler/trials integrate-ffi
 ```
 
 Phase 11 adds `_silica_rt_ffi_guarded_enter` / `_silica_rt_ffi_guarded_exit` around every emitted `foreign c_wrapper` call. Per-thread guarded-call metadata lives in `__silica_runtime.sams` (see `ffi_guarded_runtime_asm.silica`).
@@ -82,24 +82,24 @@ Compile/link **failure** goldens for Phase 9 live under `error_enforcement_addit
 ## Running the full success-path suite
 
 ```bash
-make -C compiler/silica-compiler/trials/ffi_addition all
+make -C compiler/trials/ffi_addition all
 ```
 
 `all` runs `phase-9` (all app integrates with `.scout` / `silica.link.scout` goldens). App `integrate` targets depend on `fixtures`, which compiles C wrapper sources into `fixtures/dangerous_exposure_source/lib/*.a` via `fixtures.mk`.
 
-`make fixtures` or `make -C compiler/silica-compiler/trials/ffi_addition fixtures` builds the wrapper archives alone.
+`make fixtures` or `make -C compiler/trials/ffi_addition fixtures` builds the wrapper archives alone.
 
 ## Running all app trials
 
 ```bash
-make -C compiler/silica-compiler/trials/ffi_addition integrate
+make -C compiler/trials/ffi_addition integrate
 ```
 
 ## Rebuilding fixtures
 
 ```bash
-make -C compiler/silica-compiler/trials/ffi_addition clean
-make -C compiler/silica-compiler/trials/ffi_addition fixtures
+make -C compiler/trials/ffi_addition clean
+make -C compiler/trials/ffi_addition fixtures
 ```
 
 Archives are built for **macOS AArch64** (`-arch arm64`) using `clang` and `ar`.

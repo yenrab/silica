@@ -33,20 +33,20 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 silica.config:
 	@cd "$(THIS_DIR)" && { \
 		find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/skew_ral_build.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/skew_ral_dispatch_access.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/skew_ral_dispatch_bulk.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/skew_ral_forest.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/skew_ral_index.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/skew_ral_node.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/skew_ral_traverse.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/skew_ral_tree_read.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/skew_ral_tree_write.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/skew_ral_validate.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/skew_ral_weights.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/skew_ral.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/tree_rose.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/Tree.silica"; \
+		echo "../../compiler/stdlib/data_structures/skew_ral_build.silica"; \
+		echo "../../compiler/stdlib/data_structures/skew_ral_dispatch_access.silica"; \
+		echo "../../compiler/stdlib/data_structures/skew_ral_dispatch_bulk.silica"; \
+		echo "../../compiler/stdlib/data_structures/skew_ral_forest.silica"; \
+		echo "../../compiler/stdlib/data_structures/skew_ral_index.silica"; \
+		echo "../../compiler/stdlib/data_structures/skew_ral_node.silica"; \
+		echo "../../compiler/stdlib/data_structures/skew_ral_traverse.silica"; \
+		echo "../../compiler/stdlib/data_structures/skew_ral_tree_read.silica"; \
+		echo "../../compiler/stdlib/data_structures/skew_ral_tree_write.silica"; \
+		echo "../../compiler/stdlib/data_structures/skew_ral_validate.silica"; \
+		echo "../../compiler/stdlib/data_structures/skew_ral_weights.silica"; \
+		echo "../../compiler/stdlib/data_structures/skew_ral.silica"; \
+		echo "../../compiler/stdlib/data_structures/tree_rose.silica"; \
+		echo "../../compiler/stdlib/data_structures/Tree.silica"; \
 	} > silica.config
 
 all: executables

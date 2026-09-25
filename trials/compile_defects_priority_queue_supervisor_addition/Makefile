@@ -33,19 +33,19 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 silica.config:
 	@cd "$(THIS_DIR)" && { \
 		find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||"; \
-		echo "../../compiler/silica-compiler/stdlib/Supervisor.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/brodal_okasaki_node.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/brodal_okasaki_compare.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/brodal_okasaki_link.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/brodal_okasaki_forest.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/brodal_okasaki_extract.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/brodal_okasaki_boot.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/brodal_okasaki_validate.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/brodal_okasaki_dispatch_core.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/brodal_okasaki_dispatch_bulk.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/brodal_okasaki.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/brodal_okasaki_priority.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/PriorityQueue.silica"; \
+		echo "../../compiler/stdlib/Supervisor.silica"; \
+		echo "../../compiler/stdlib/data_structures/brodal_okasaki_node.silica"; \
+		echo "../../compiler/stdlib/data_structures/brodal_okasaki_compare.silica"; \
+		echo "../../compiler/stdlib/data_structures/brodal_okasaki_link.silica"; \
+		echo "../../compiler/stdlib/data_structures/brodal_okasaki_forest.silica"; \
+		echo "../../compiler/stdlib/data_structures/brodal_okasaki_extract.silica"; \
+		echo "../../compiler/stdlib/data_structures/brodal_okasaki_boot.silica"; \
+		echo "../../compiler/stdlib/data_structures/brodal_okasaki_validate.silica"; \
+		echo "../../compiler/stdlib/data_structures/brodal_okasaki_dispatch_core.silica"; \
+		echo "../../compiler/stdlib/data_structures/brodal_okasaki_dispatch_bulk.silica"; \
+		echo "../../compiler/stdlib/data_structures/brodal_okasaki.silica"; \
+		echo "../../compiler/stdlib/data_structures/brodal_okasaki_priority.silica"; \
+		echo "../../compiler/stdlib/data_structures/PriorityQueue.silica"; \
 	} > silica.config
 
 all: executables

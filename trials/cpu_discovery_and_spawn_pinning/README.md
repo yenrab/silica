@@ -2,7 +2,7 @@
 
 Silica sources covering **CPU topology / affinity** from `cpu_topology_implementation_plan` (parser Phase C onward): optional third `spawn` argument, nullary topology list helpers, `get_cpu_topology`, unary `get_core_capabilities`.
 
-**Design index:** [compiler/silica-compiler/design_documents/README.md](../../design_documents/README.md) — working specs and plans (including [actor_spawn_core_affinity_os_semantics.md](../../design_documents/actor_spawn_core_affinity_os_semantics.md) for OS affinity semantics). Where those documents disagree with each other or with the code, treat it as documentation catching up unless a doc explicitly claims to be normative for that area.
+**Design index:** [compiler/design_documents/README.md](../../design_documents/README.md) — working specs and plans (including [actor_spawn_core_affinity_os_semantics.md](../../design_documents/actor_spawn_core_affinity_os_semantics.md) for OS affinity semantics). Where those documents disagree with each other or with the code, treat it as documentation catching up unless a doc explicitly claims to be normative for that area.
 
 | File | Intent |
 |------|--------|
@@ -27,13 +27,13 @@ After intentional source or environment changes, regenerate from this directory,
 
 ## Phase H (verification)
 
-**Static checks** (no binary): from `compiler/silica-compiler`, run:
+**Static checks** (no binary): from `compiler`, run:
 
 ```bash
 make -C trials/cpu_discovery_and_spawn_pinning phase-h
 ```
 
-This runs `phase_h_static.sh`, which asserts that `compiler/silica-compiler/src_selfhost/emitter/apple_silicon_mac/terms/prims/prims_actors_runtime_asm.silica` still defines the sysctl-backed topology/capability symbols and the **`get_core_capabilities`** failure sentinel.
+This runs `phase_h_static.sh`, which asserts that `compiler/src/emitter/apple_silicon_mac/terms/prims/prims_actors_runtime_asm.silica` still defines the sysctl-backed topology/capability symbols and the **`get_core_capabilities`** failure sentinel.
 
 ## Build
 

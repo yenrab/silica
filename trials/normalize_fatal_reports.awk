@@ -12,7 +12,7 @@
 # program output on the same line (a program that printed no newline), so the match is not anchored.
 # A golden is written in the folded form. Used by trials/<suite>/compare_scout_normalized.sh,
 # trials/targets/board_suite.sh (through those scripts), the ESP32-S3 board's tools/compare_sout.sh and
-# the x86-64 ladder; see compiler/silica-compiler/design_documents/runtime_failure_reporting.md.
+# the x86-64 ladder; see compiler/design_documents/runtime_failure_reporting.md.
 { sub(/\r$/, "") }
 {
     i = index($0, "[silica] fault at ")

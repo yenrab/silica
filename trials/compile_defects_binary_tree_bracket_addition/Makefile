@@ -33,8 +33,8 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 silica.config:
 	@cd "$(THIS_DIR)" && { \
 		find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/tree_binary.silica"; \
-		echo "../../compiler/silica-compiler/stdlib/data_structures/BinaryTree.silica"; \
+		echo "../../compiler/stdlib/data_structures/tree_binary.silica"; \
+		echo "../../compiler/stdlib/data_structures/BinaryTree.silica"; \
 	} > silica.config
 
 all: executables

@@ -9,7 +9,7 @@ The first program from *Learn to Program* (`docs/learn-programming.md`, Chapter 
 
 `main.silica` also contains the supervisor's `init` function, which lists the one child the supervisor gives birth to.
 
-The program also uses the standard-library `Supervisor` trait, `compiler/silica-compiler/stdlib/Supervisor.silica`. List it in `silica.config` beside these two files (the trials in `trials/supervisors_addition` show one way to do that).
+The program also uses the standard-library `Supervisor` trait, `compiler/stdlib/Supervisor.silica`. List it in `silica.config` beside these two files (the trials in `trials/supervisors_addition` show one way to do that).
 
 ## Expected output
 
