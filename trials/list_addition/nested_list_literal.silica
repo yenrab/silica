@@ -1,0 +1,34 @@
+// A list literal whose elements are list literals, `[[1], [2, 3]]` bound as
+// List[List[int64, mem(normal)], mem(normal)]. Until 2026-09-24 the parser left the inner `]` in the
+// token stream (E1000, fixed by the DIAGNOSTICS lane's list-literal closer rule) and the type checker then
+// rejected the inner literal with E2001 "literal requires integer or float return type, got List[int64,
+// normal]": list-literal roots and their spine pairs were both kind-20 nodes with no marker, so a lone
+// nested literal `[[1]]` was flattened into its element and a last element that was itself a list literal
+// was walked as a spine pair. Spine pairs now carry name ","; the type checker and the SIR lowering treat a
+// kind-20 node without it in the tail slot as one element. Formerly compile_defects_nested_list_literal_addition
+// (whose second_len ran length[...] outside a sequence proc[mem(normal)] block, which E3001 rightly rejects,
+// and whose hand-derived golden counted [2, 3] as three elements).
+// Expected: xs has 2 elements and its second element has 2; exit 4.
+
+fn second_len(xs: List[List[int64, mem(normal)], mem(normal)]) -> int64 {
+    sequence proc[mem(normal)]
+        n: int64 <- case xs of {
+            [_first: List[int64, mem(normal)], rest: List[List[int64, mem(normal)], mem(normal)]] -> case rest of {
+                [second: List[int64, mem(normal)], _more: List[List[int64, mem(normal)], mem(normal)]] -> length[int64, mem(normal)](second);
+                _: List[List[int64, mem(normal)], mem(normal)] -> 0
+            };
+            _: List[List[int64, mem(normal)], mem(normal)] -> 0
+        }
+    produces
+        pure n
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        xs: List[List[int64, mem(normal)], mem(normal)] <- [[1], [2, 3]];
+        outer: int64 <- length[List[int64, mem(normal)], mem(normal)](xs)
+    produces
+        pure outer + second_len(xs)
+    end
+}

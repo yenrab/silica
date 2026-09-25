@@ -36,6 +36,8 @@ export get_space_from_region_type/1;
 export get_space_from_ref_type/1;
 export is_region_builtin_call/1;
 export check_sequence_return_lifetime/2;
+export ref_types_equal_modulo_lifetime/2;
+export carrier_lifetime_ident/1;
 export is_valid_memory_space/1;
 
 // Valid memory space keywords per spec §4.4.1
@@ -776,6 +778,114 @@ fn union_list_string(a: List[string, mem(normal)], b: List[string, mem(normal)])
         false -> case list_contains_string(a.head, b) of {
             true -> union_list_string(a.tail, b);
             false -> cons_string(a.head, union_list_string(a.tail, b))
+        }
+    }
+}
+
+// Spec 12.1.4: a lifetime named in a function signature ("functions may take `L: lifetime` as a parameter
+// for polymorphism") is a binder local to that signature, not a name the caller has to spell the same way.
+// True when both surfaces are the same lifetime carrier (ref, ref?, region, buf, atomic_ref) and agree on
+// everything except the lifetime identifier in the first parameter slot.
+fn ref_types_equal_modulo_lifetime(a: string, b: string) -> boolean {
+    an: string <- strip_spaces_lm(a, 0, "");
+    bn: string <- strip_spaces_lm(b, 0, "");
+    pa: string <- lifetime_carrier_prefix_lm(an);
+    pb: string <- lifetime_carrier_prefix_lm(bn);
+    case length_bytes(pa) > 0 and pa == pb of {
+        false -> false;
+        true -> {
+            ca: int64 <- first_comma_from_lm(an, length_bytes(pa));
+            cb: int64 <- first_comma_from_lm(bn, length_bytes(pb));
+            case ca < 0 or cb < 0 of {
+                true -> false;
+                false -> is_lifetime_ident_lm(substring(an, length_bytes(pa), ca)) and is_lifetime_ident_lm(substring(bn, length_bytes(pb), cb)) and substring(an, ca, length_bytes(an)) == substring(bn, cb, length_bytes(bn))
+            }
+        }
+    }
+}
+
+fn strip_spaces_lm(s: string, i: int64, acc: string) -> string {
+    case i >= length_bytes(s) of {
+        true -> acc;
+        false -> {
+            c: string <- substring(s, i, i + 1);
+            case c == " " or c == "\t" or c == "\n" or c == "\r" of {
+                true -> strip_spaces_lm(s, i + 1, acc);
+                false -> strip_spaces_lm(s, i + 1, concat(acc, c))
+            }
+        }
+    }
+}
+
+fn starts_with_lm(s: string, prefix: string) -> boolean {
+    length_bytes(s) >= length_bytes(prefix) and substring(s, 0, length_bytes(prefix)) == prefix
+}
+
+// The type constructors whose first parameter is a lifetime identifier (spec 4.4.2, 12.1).
+fn lifetime_carrier_prefix_lm(s: string) -> string {
+    case starts_with_lm(s, "atomic_ref(") of {
+        true -> "atomic_ref(";
+        false -> case starts_with_lm(s, "ref?(") of {
+            true -> "ref?(";
+            false -> case starts_with_lm(s, "ref(") of {
+                true -> "ref(";
+                false -> case starts_with_lm(s, "region(") of {
+                    true -> "region(";
+                    false -> case starts_with_lm(s, "buf(") of {
+                        true -> "buf(";
+                        false -> ""
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn first_comma_from_lm(s: string, i: int64) -> int64 {
+    case i >= length_bytes(s) of {
+        true -> 0 - 1;
+        false -> case substring(s, i, i + 1) == "," of {
+            true -> i;
+            false -> first_comma_from_lm(s, i + 1)
+        }
+    }
+}
+
+fn is_lifetime_ident_lm(s: string) -> boolean {
+    case length_bytes(s) == 0 of {
+        true -> false;
+        false -> lifetime_ident_chars_ok_lm(s, 0)
+    }
+}
+
+// An identifier slot: no delimiter of the type grammar may appear in it.
+fn lifetime_ident_chars_ok_lm(s: string, i: int64) -> boolean {
+    case i >= length_bytes(s) of {
+        true -> true;
+        false -> {
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == ")" or c == "[" or c == "]" or c == "{" or c == "}" or c == "," or c == "|" or c == ":" or c == "<" or c == ">" or c == "?" or c == "." of {
+                true -> false;
+                false -> lifetime_ident_chars_ok_lm(s, i + 1)
+            }
+        }
+    }
+}
+
+// The lifetime identifier in the first parameter slot of a lifetime carrier surface, or "" when the
+// surface is not one. Used to tell a signature binder (spec 12.1.4, matched by position) from a
+// lifetime the current scope declared (spec 12.4.1, region isolation, matched literally).
+fn carrier_lifetime_ident(s: string) -> string {
+    t: string <- strip_spaces_lm(s, 0, "");
+    p: string <- lifetime_carrier_prefix_lm(t);
+    case length_bytes(p) == 0 of {
+        true -> "";
+        false -> {
+            c: int64 <- first_comma_from_lm(t, length_bytes(p));
+            case c < 0 of {
+                true -> "";
+                false -> substring(t, length_bytes(p), c)
+            }
         }
     }
 }

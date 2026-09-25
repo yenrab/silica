@@ -10,9 +10,7 @@ directory. This directory holds only this README (it has no Makefile, so it is n
 
 Open:
 
-- From book-verification (2026-09-19, open): `compile_defects_not_operator_addition` (unary `not`
-  not implemented as a general prefix operator outside guard clauses, E2002/E2005/E1069 depending
-  on position), `compile_defects_list_tuple_literal_addition` (a list literal of tuple literals is
+- From book-verification (2026-09-19, open): `compile_defects_list_tuple_literal_addition` (a list literal of tuple literals is
   E1040 at the second element), `compile_defects_ordered_set_field_annotation_addition` and
   `compile_defects_ordered_set_field_projection_addition` (a bracket collection type nested inside
   a record field, or read back through a `.field` projection, is not recognized as its own
@@ -23,9 +21,7 @@ Open:
   typed `PriorityQueue[...]` is E2003 "type mismatch: children", a third shape of the same
   bracket-representation family), `compile_defects_binary_tree_bracket_addition`
   (`BinaryTree[...]` is missing from `type_checker_collections.silica`'s
-  `representation_id_from_module`, so it is E1040 wherever used), and
-  `compile_defects_lifetime_parameter_name_addition` (a function's lifetime parameter name is
-  compared by source spelling instead of treated as a polymorphic binder, E2003; spec §12.1.4).
+  `representation_id_from_module`, so it is E1040 wherever used).
 
 - From the graph work (open): `compile_defects_trait_nested_placeholder_addition` (an impl cannot bind a
   placeholder nested inside `List[...]` to a record, E2092), `compile_defects_graph_bracket_receiver_addition` (a
@@ -34,11 +30,27 @@ Open:
   rejected by a method with a placeholder argument, E2003), `compile_defects_trait_placeholder_return_addition` (a
   placeholder-result trait method cannot be called on a trait-typed parameter, E2003),
   `compile_defects_trait_placeholder_result_dispatch_addition` (a placeholder-result trait method is resolved
-  against the last implementation, E2003) and `compile_defects_tagged_optional_type_addition`
-  (`:none | (:some, T)` is E1040 in a type position).
+  against the last implementation, E2003).
 
 Resolved 2026-09-19: the bare `ref?(L, normal, rec)` binding of SD-5 is invalid per spec §4.2.2 and is now the error trial
 `error_enforcement_addition/rec_bare_ref_opt_binding_annotation` (E2010), by Lee's decision.
+
+Fixed 2026-09-24 (front end: lexer, parser, type checker, SIR generator) and moved:
+
+- `compile_defects_not_operator_addition` (`not` was not even a lexer keyword; every position was E2002,
+  E2005 or E1069, guard clauses included) -> `boolean_addition/not_operator`: `not` is a keyword unary
+  operator (spec §2.2.1, §3.3.1, §3.9), parsed like `bnot`, typed boolean -> boolean, lowered as the boolean
+  `eq` prim against `false`, so no emitter changed.
+- `compile_defects_lifetime_parameter_name_addition` (E2003 when the caller's lifetime name differed from
+  the callee's) -> `memory_region_addition/lifetime_parameter_name`: ref/ref?/region/buf/atomic_ref
+  arguments are compared modulo the lifetime binder (spec §12.1.4) at the identifier-argument site.
+- `compile_defects_tagged_optional_type_addition` (`:none | (:some, T)` was E1040 in every type position)
+  -> `tuples_addition/emitter_defect_tagged_optional_type`: the parser accepts a tuple alternative after
+  `|`, the OR-return-type validator accepts a tagged tuple, and `type_checker/type_sum_alternatives.silica`
+  picks the tuple alternative by tag for tuple literals, tuple case patterns and their SIR lowering. Still
+  fails at run time on the open emitter defect `case_addition/emitter_defect_tuple_pattern_atom_element`
+  (a tuple pattern with an atom-literal or named element never matches), so it keeps the emitter_defect
+  prefix and has no .ascomp.
 
 Fixed 2026-09-18 (front end: parser and type checker) and moved:
 

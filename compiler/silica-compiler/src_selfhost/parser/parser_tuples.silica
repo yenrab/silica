@@ -501,7 +501,18 @@ fn extract_atom_option_tail_from_slots(slots: List[{ token: { kind: int64, lexem
                             next_acc: string <- concat(concat(acc, " | "), after_bar.head.token.lexeme);
                             extract_atom_option_tail_from_slots(after_bar.tail, next_acc)
                         };
-                        false -> { type_str: acc, rest_slots: trimmed }
+                        // Tagged-tuple alternative of an inline sum type, `:none | (:some, T)` (spec §15.4.11.2 writes
+                        // `... | (:explicit, atom) | ...`): the alternative after `|` is a tuple type.
+                        false -> case after_bar.head.token.lexeme == "(" of {
+                            true -> {
+                                tup: { type_str: string, rest_slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] } <- extract_tuple_type_from_slots(after_bar);
+                                case length_bytes(tup.type_str) == 0 of {
+                                    true -> { type_str: acc, rest_slots: trimmed };
+                                    false -> extract_atom_option_tail_from_slots(tup.rest_slots, concat(concat(acc, " | "), tup.type_str))
+                                }
+                            };
+                            false -> { type_str: acc, rest_slots: trimmed }
+                        }
                     }
                 }
             };

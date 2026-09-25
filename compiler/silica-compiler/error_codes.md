@@ -71,7 +71,8 @@ Per silica-error-code-scheme.jsonld and silica-specification.md §1.6.
 
 ### SIR generator (E4000-E4049)
 - E4000 SIR default
-- E4001-E4049 Reserved for SIR-specific errors
+- E4001 UnloweredBuiltinCall — a call the type checker accepted as a builtin (spec §5) that the SIR generator did not lower; reported with the module, the function and the builtin at the function's declaration, instead of an unresolved `<module>_<builtin>` symbol at link time
+- E4002-E4049 Reserved for SIR-specific errors
 
 ### Emitter (E4050-E4099)
 - E4050 Emitter default

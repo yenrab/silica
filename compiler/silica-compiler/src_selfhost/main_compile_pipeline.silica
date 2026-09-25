@@ -23,6 +23,7 @@ use type_checker_core;
 use type_checker_modules;
 use effect_checker_capabilities;
 use sir_generator_core;
+use sir_call_verify;
 use sir_ast;
 use diagnostics_core;
 use module_checker_core;
@@ -267,7 +268,16 @@ fn compile_to_sir_module(filename: string, program: { declarations: List[{ tag: 
                                                                             };
                                                                             false -> 0
                                                                         };
-                                                                        (0, sir_module)
+                                                                        // E4001: a builtin the type checker accepted but the SIR generator left as a bare
+                                                                        // callee would only fail at link time; report it here with module, function, builtin.
+                                                                        verify_r: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- sir_call_verify@verify_module_calls(sir_module, mangled_program);
+                                                                        case verify_r.is_ok of {
+                                                                            true -> (0, sir_module);
+                                                                            false -> {
+                                                                                diagnostics_core@print_compiler_error("CodegenError", verify_r.error_code, verify_r.error_location, verify_r.error_message, verify_r.spec_section);
+                                                                                (1, sir_ast@dummy_sir_module())
+                                                                            }
+                                                                        }
                                                                     };
                                                                     false -> {
                                                                         effect_error_code: string <- case effect_result.error_code == "" of {
