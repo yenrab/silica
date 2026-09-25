@@ -5,6 +5,22 @@ wrapper_meta "dangerous_exposure_source/bad_link_only_symbol.meta";
 foreign c_wrapper "silica_legacy_math_symbol_not_in_archive"
 fn missing_raw(left: int64, right: int64) -> int64;
 
+// The binding is reached the way spec 4.4/4.5 require: from the external_danger sequence of the FFI
+// worker installed by spawn_dangerous. A direct call from main is E4042 at compile time and would never
+// reach the linker. The symbol is not in the archive, so the program compiles and fails at link.
+fn ffi_worker(msg: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[external_danger]
+        _: int64 <- missing_raw(msg, state)
+    produces
+        pure (:no_reply, state)
+    end
+}
+
 fn main() -> int64 {
-    missing_raw(1, 2)
+    sequence proc[concurrency]
+        worker_ref: dangerous_actor_ref <- spawn_dangerous(0, ffi_worker, stack_policy(0, :keep_last_message));
+        _: boolean <- cast(worker_ref, 1 impl ActorMessage {})
+    produces
+        pure 0
+    end
 }

@@ -55,6 +55,7 @@ export trailing_semicolon_marker/2;
 export wrap_let_or_return/2;
 export expr_same_source_span/2;
 export statement_boundary_error_wrapper/4;
+export binding_terminator_check/5;
 export tuple_decompose_build_expr/5;
 export extract_optional_generic_type_args_after_name/1;
 export should_extract_call_after_name/1;
@@ -1435,6 +1436,34 @@ fn statement_boundary_error_wrapper(err_loc: { file: string, line: int64, column
     case next_token_starts_statement(after_trim) of {
         true -> missing_statement_terminator_wrapper(err_loc, first_expr, rest_body);
         false -> uncategorized_syntax_defect_wrapper(err_loc, first_expr, rest_body)
+    }
+}
+
+
+// A binding statement (`pattern <- rhs`) ends with `;` like a bare expression statement does (spec
+// §3). The binding continuation sites skipped semicolons without checking that one was there, so a
+// missing `;` after a binding parsed silently. The block may also end right after the binding (`}`,
+// `produces`, the caller's stop_kind; `pure`/`end` are left to the E1049 missing-produces check) or the
+// input may end; anything else gets the same E1040 / E1000
+// markers that statement_boundary_error_wrapper puts on an expression statement.
+fn binding_terminator_follows(slot: { token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, stop_kind: int64) -> boolean {
+    slot.token.lexeme == ";" or slot.token.lexeme == "}" or slot.token.kind == lexer_token_kind@token_kind_right_brace() or constraint_core@slot_role(slot) == constraint_extract_slots@role_right_brace() or slot.token.lexeme == "produces" or slot.token.lexeme == "pure" or slot.token.lexeme == "end" or slot.token.kind == stop_kind
+}
+
+fn binding_terminator_check(bind_loc: { file: string, line: int64, column: int64, offset: int64 }, rhs_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, let_expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, rest_after_rhs: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], stop_kind: int64) -> { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } {
+    after_w: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- constraint_extract_slots@skip_leading_whitespace_slots(rest_after_rhs);
+    case rhs_expr.root < 0 or after_w.is_nil of {
+        true -> let_expr;
+        false -> case binding_terminator_follows(after_w.head, stop_kind) of {
+            true -> let_expr;
+            false -> {
+                dummy: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@dummy_expr();
+                case next_token_starts_statement(after_w) of {
+                    true -> parser_ast@make_expr(996, "E1040", "", bind_loc, let_expr, dummy, parser_ast@nil_tuple_decompose_bindings(), parser_ast@empty_effect_name_list());
+                    false -> parser_ast@make_expr(995, "E1000", "", bind_loc, let_expr, dummy, parser_ast@nil_tuple_decompose_bindings(), parser_ast@empty_effect_name_list())
+                }
+            }
+        }
     }
 }
 

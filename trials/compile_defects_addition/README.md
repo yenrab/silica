@@ -40,6 +40,11 @@ Open:
 Resolved 2026-09-24: the float64 literal pool did not walk case nodes (`case x > 2.0 of` emitted `L_f64_-1`);
 fixed in both float literal pools and the trial moved to `float64_addition/float_literal_case_scrutinee`.
 
+- From the DIAGNOSTICS lane (2026-09-24, open): `compile_defects_nested_list_literal_addition` (a list literal
+  of list literals, `[[1], [2, 3]]`, now parses -- the parser used to leave the inner `]` before the outer `]`
+  in the token stream -- but the type checker types list-literal elements as scalars only, E2001 "literal
+  requires integer or float return type, got List[int64, normal]"; handed to lane FRONTEND).
+
 Resolved 2026-09-19: the bare `ref?(L, normal, rec)` binding of SD-5 is invalid per spec §4.2.2 and is now the error trial
 `error_enforcement_addition/rec_bare_ref_opt_binding_annotation` (E2010), by Lee's decision.
 
