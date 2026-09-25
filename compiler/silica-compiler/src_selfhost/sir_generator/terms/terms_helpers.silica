@@ -802,7 +802,13 @@ fn expected_or_inferred_call_arg_type(context: { env: List[{ name: string, type_
     // `(x: float64, y: float64)` must lower as float64 constants, not the float32 that literal
     // inference defaults to, or the caller loads S0/S1 while the callee reads D0/D1 (defect A1).
     literal_takes_formal: boolean <- type_checker_expressions_helpers@expr_kind(expr) == 0 and formal_is_scalar_numeric_type(formal_type);
-    case literal_takes_formal of {
+    // A tuple literal argument (kind 9) takes the callee's formal tuple type when every element of
+    // that type is a scalar: its own inference gives an unsuffixed float element the float32 default,
+    // so `tagged_value((:ok, 2.5), 9.0)` against `(atom, float64)` built a boxed float32 slot the
+    // callee read as a float64 word (float64_addition/float_literal_in_tuple_argument). Placeholder
+    // and nested formals keep the inferred type as before.
+    tuple_literal_takes_formal: boolean <- type_checker_expressions_helpers@expr_kind(expr) == 9 and formal_is_all_scalar_tuple_type(formal_type);
+    case literal_takes_formal or tuple_literal_takes_formal of {
         true -> formal_type;
         false -> case length_bytes(inferred) > 0 of {
             true -> inferred;
@@ -810,6 +816,33 @@ fn expected_or_inferred_call_arg_type(context: { env: List[{ name: string, type_
             // retain the signature formal so they lower as function addresses.
             false -> formal_type
         }
+    }
+}
+
+fn formal_is_scalar_elem_type(t: string) -> boolean {
+    formal_is_scalar_numeric_type(t) or t == "atom" or t == "boolean" or t == "string"
+}
+
+// `(atom, float64)`, `(int64, boolean, string)` ...: every top-level element a scalar. A nested tuple,
+// record, list or placeholder element answers false.
+fn formal_tuple_elems_all_scalar(t: string) -> boolean {
+    case length_bytes(t) >= 2 and substring(t, 0, 1) == "(" of {
+        true -> {
+            first: string <- tuple_first_element_type(t);
+            rest: string <- tuple_rest_element_type(t);
+            case length_bytes(rest) == 0 of {
+                true -> formal_is_scalar_elem_type(first);
+                false -> formal_is_scalar_elem_type(first) and formal_tuple_elems_all_scalar(rest)
+            }
+        };
+        false -> formal_is_scalar_elem_type(t)
+    }
+}
+
+fn formal_is_all_scalar_tuple_type(t: string) -> boolean {
+    case length_bytes(t) >= 2 and substring(t, 0, 1) == "(" of {
+        true -> formal_tuple_elems_all_scalar(t);
+        false -> false
     }
 }
 

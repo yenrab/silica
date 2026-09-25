@@ -1853,9 +1853,12 @@ fn use_full_param_shadow(fn_val: { name: string, return_type: string, effects: s
                 true -> false;
                 false -> case emitter_effects@has_concurrency(fn_val.effects) of {
                     true -> false;
-                    false -> case count_float_spill_eligible_lets_in_term(fn_val.body) >= 1 of {
-                        true -> false;
-                        false -> {
+                    // Float lets no longer disable the shadow. A let's float RHS is staged in D0 (as an int
+                    // RHS is staged in X1), so a float parameter left in its ABI home was destroyed by the
+                    // body's first float let: `lim: float64 <- 2.0; x > lim` read 2.0 as x
+                    // (float64_addition/float_let_literal_compare). The float spill chain skips the D8+
+                    // homes the shadow binds (fp_v_index_bound) and the D-frame predicates add both counts.
+                    false -> {
                             n: int64 <- fs_count_params(fn_val.param_names);
                             case n >= 1 and n <= 8 of {
                                 false -> false;
@@ -1872,9 +1875,10 @@ fn use_full_param_shadow(fn_val: { name: string, return_type: string, effects: s
                                 // as a region and faulted in L_region_contains.
                                 // See trials/standard_data_structures/wbt_core/wbt_validate_malformed_fixture.
                                 true -> fs_subtree_has_user_call(fn_val.body) or fs_term_has_case(fn_val.body) or body_has_bl_producing_prim(fn_val.body)
+                                    // ... or a float let in a body with float parameters: the let's D0 staging is the clobber.
+                                    or (fs_float_param_count(fn_val.param_types, n) >= 1 and count_float_spill_eligible_lets_in_term(fn_val.body) >= 1)
                                 }
                             }
-                        }
                     }
                 }
             }
@@ -2179,6 +2183,23 @@ fn fn_destroys_region_param(fn_val: { name: string, return_type: string, effects
         }
     }
 }
+// A tuple arm parks every named element in its own frame slot
+// (term_case_patterns@emit_tuple_case_bind_one). One slot per element is an upper
+// bound that needs no parse of the pattern: literals and wildcards take none.
+fn tuple_pattern_bind_slots(raw: string) -> int64 {
+    tuple_pattern_comma_count(raw, 0) + 1
+}
+
+fn tuple_pattern_comma_count(s: string, i: int64) -> int64 {
+    case i >= length_bytes(s) of {
+        true -> 0;
+        false -> case substring(s, i, i + 1) == "," of {
+            true -> 1 + tuple_pattern_comma_count(s, i + 1);
+            false -> tuple_pattern_comma_count(s, i + 1)
+        }
+    }
+}
+
 
 // Case `bind` arms now park the unwrapped scrutinee in a frame slot (see
 // term_emit_kind_case), so the frame must reserve room for them or the slot lands
@@ -2194,7 +2215,7 @@ fn case_bind_slots(term: { nodes: List[{ kind: int64, type_name: string, value: 
             // function reserved a zero-byte frame while the arm still stored to
             // [X29,#-16] -- the slot the callee-saved STP pair occupies. The epilogue
             // then restored the caller's X19 from it. See trials/standard_data_structures.
-            here: int64 <- case n.value == "bind" and length_bytes(n.name) > 1 of { true -> 1; false -> 0 };
+            here: int64 <- case n.value == "bind" and length_bytes(n.name) > 1 of { true -> 1; false -> case n.value == "tuple" of { true -> tuple_pattern_bind_slots(n.name); false -> 0 } };
             here + case_bind_slots(sir_term_at(term, n.inner)) + case_bind_slots(sir_term_at(term, n.right_expr))
         }
     }
