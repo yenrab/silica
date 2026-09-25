@@ -1,0 +1,221 @@
+PROPOSED, NOT APPLIED (2026-09-18). Rewires the existing build files at the one platform name
+table, project_makefiles/platform/platforms.mk (plan Step 0.4), and generalises the Linux
+bootstrap hand-off in src/Makefile from linux_aarch64 to any Linux target. Two other
+agents were building in this tree when it was written, so it is a patch file, not an edit.
+Apply from the repository root with:   git apply --check project_makefiles/platform/platforms.patch
+Then delete the same inline macOS lines from the other 42 trial makefiles that trials/base/makefile
+shows here (the list is in trials/platform/apple_silicon_mac.mk).
+
+--- a/compiler/src/emit_target.mk
++++ b/compiler/src/emit_target.mk
+@@ -20,20 +20,10 @@
+ # directories that actually exist under emitter/. Computed whether or not TARGET is given:
+ # the Makefile's publish step compares TARGET with it (a host build installs as the selfhost,
+ # any other target as its own kind -- see install_compiler.bash).
+-TARGET_CANDIDATES :=
+-ifeq ($(HOST_UNAME_S),Darwin)
+-  ifeq ($(HOST_UNAME_M),arm64)
+-    TARGET_CANDIDATES := apple_silicon_mac
+-  endif
+-endif
+-ifeq ($(HOST_UNAME_S),Linux)
+-  ifneq ($(filter $(HOST_UNAME_M),aarch64 arm64),)
+-    TARGET_CANDIDATES := linux_aarch64
+-  endif
+-  ifeq ($(HOST_UNAME_M),x86_64)
+-    TARGET_CANDIDATES := linux_x86_64
+-  endif
+-endif
++# The host default comes from the one platform table (project_makefiles/platform/platforms.mk):
++# uname -s / uname -m -> SILICA_HOST_EMIT_TARGET (empty when this host has no emitter yet).
++include $(THIS_DIR)../../../project_makefiles/platform/platforms.mk
++TARGET_CANDIDATES := $(SILICA_HOST_EMIT_TARGET)
+ HOST_DEFAULT_TARGET := $(firstword $(filter $(TARGET_CANDIDATES),$(ALLOWED_TARGETS)))
+ # Default TARGET to the current host platform when the user does not pass
+ # TARGET=... on the command line or via the environment.
+--- a/compiler/src/Makefile
++++ b/compiler/src/Makefile
+@@ -44,7 +44,7 @@
+ 
+ # Host toolchain (where this build runs; HOST_UNAME_S comes from emit_target.mk).
+ # macOS: clang + Apple ld; main_entry_alias.s supplies _main.
+-# Linux (64-bit Raspberry Pi OS / Debian AArch64): cc + GNU ld from build-essential. No entry
++# Linux (Debian-family AArch64 or x86-64): cc + GNU ld from build-essential. No entry
+ # alias (crt1 calls `main`), -no-pie (emitted data tables hold absolute pointers).
+ # Neither host raises the main-thread stack any more: `main` is not an actor and stays on the
+ # platform's ordinary stack (spec §15.1.2.2); the compiler's pipeline runs in an actor whose
+@@ -61,7 +61,8 @@
+ ASFLAGS_host :=
+ LINKER_CLANG := cc
+ LDFLAGS_STACK := -no-pie -rdynamic
+-HOST_RT_ASM := runtime_asm/linux_aarch64/deviceio_link_thunks.s runtime_asm/linux_aarch64/silica_rt_shim.s
++# The hand-written runtime of the host's own emit target (runtime_asm/<target>/, one per Linux target).
++HOST_RT_ASM := runtime_asm/$(HOST_DEFAULT_TARGET)/deviceio_link_thunks.s runtime_asm/$(HOST_DEFAULT_TARGET)/silica_rt_shim.s
+ endif
+ 
+ # Parallel .sams → .o assembly (Stage 2). Silica emission (Stage 1) stays serial
+@@ -341,21 +342,23 @@
+ 	$(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,executables)
+ 
+ # ---- Bootstrap of the first Linux-hosted compiler (temporary) ----------------------
+-# No Linux compiler exists yet, so the first one is built in two halves on two machines.
+-#   Mac:  make bootstrap-assembly    the macOS-hosted cross compiler emits every unit of this
+-#                                    tree as Linux assembly (.sams); nothing is assembled here.
+-#   Pi:   make bootstrap-link        the system assembler and linker turn the shipped .sams and
+-#                                    the Linux hand-written runtime into silica-compiler, and
+-#                                    install it as this host's selfhost compiler. No compiler runs.
+-# Between the two, copy this tree with its .sams to the Pi. Once a Linux compiler exists the
+-# ordinary `make build` runs natively there and these two targets are no longer needed.
+-BOOTSTRAP_CROSS_COMPILER := $(BINARIES_DIR)/silica-compiler-linux_aarch64
++# No compiler exists on a new Linux host, so its first one is built in two halves on two machines.
++#   Mac:   make bootstrap-assembly [BOOTSTRAP_TARGET=linux_x86_64]
++#                                    the macOS-hosted cross compiler for that target emits every
++#                                    unit of this tree as its assembly (.sams); nothing is assembled here.
++#   Linux: make bootstrap-link       the system assembler and linker turn the shipped .sams and
++#                                    runtime_asm/<target>/ into silica-compiler, and install it as
++#                                    this host's selfhost compiler. No compiler runs.
++# Between the two, copy this tree with its .sams to the Linux host. Once a compiler exists there
++# the ordinary `make build` runs natively and these two targets are no longer needed.
++BOOTSTRAP_TARGET ?= linux_aarch64
++BOOTSTRAP_CROSS_COMPILER := $(BINARIES_DIR)/silica-compiler-$(BOOTSTRAP_TARGET)
+ 
+ bootstrap-assembly:
+-	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" assembly TARGET=linux_aarch64 \
++	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" assembly TARGET=$(BOOTSTRAP_TARGET) \
+ 		SILICA_COMPILER="$(BOOTSTRAP_CROSS_COMPILER)" INSTALL_SELFHOST=0 SILICA_TARGET_PROMPT=0
+ 	@n=$$(find "$(THIS_DIR)" -name '*.sams' -type f ! -path '*/_wd_probe/*' | wc -l | tr -d ' '); \
+-	echo "bootstrap-assembly: $$n .sams emitted for linux_aarch64; copy this tree to the Pi and run make bootstrap-link there"
++	echo "bootstrap-assembly: $$n .sams emitted for $(BOOTSTRAP_TARGET); copy this tree to the Linux host and run make bootstrap-link there"
+ 
+ bootstrap-link:
+ 	@if [ "$$(uname -s)" != Linux ]; then echo "FAIL: bootstrap-link assembles and links on the Linux host, not here"; exit 1; fi
+@@ -553,6 +556,7 @@
+ 	@echo "    make fixpoint                 # build gen3 with gen2; pass iff gen3 == gen2 byte for byte"
+ 	@echo "    make TARGET=apple_silicon_mac     # explicit emit backend"
+ 	@echo "    make TARGET=linux_aarch64         # Linux AArch64 backend (64-bit Raspberry Pi OS)"
++	@echo "    make TARGET=linux_x86_64          # Linux x86-64 backend (Debian-family x86-64 hosts)"
+ 	@echo "    make assembly TARGET=apple_silicon_mac"
+ 	@echo "    make all-targets              # loop clean/build for each allowable TARGET"
+ 	@echo ""
+--- a/trials/silica_compiler.mk
++++ b/trials/silica_compiler.mk
+@@ -44,17 +44,9 @@
+ # for a build that emits for this host. Override it when the compiler reaches the trials
+ # under some other name, e.g. through a wrapper:
+ #   make integrate SILICA_EMIT_TARGET=linux_aarch64
+-SILICA_HOST_UNAME_S := $(shell uname -s 2>/dev/null)
+-SILICA_HOST_UNAME_M := $(shell uname -m 2>/dev/null)
+-ifeq ($(SILICA_HOST_UNAME_S),Darwin)
+-  SILICA_HOST_EMIT_TARGET := apple_silicon_mac
+-else ifeq ($(SILICA_HOST_UNAME_S),Linux)
+-  ifneq ($(filter $(SILICA_HOST_UNAME_M),aarch64 arm64),)
+-    SILICA_HOST_EMIT_TARGET := linux_aarch64
+-  else ifeq ($(SILICA_HOST_UNAME_M),x86_64)
+-    SILICA_HOST_EMIT_TARGET := linux_x86_64
+-  endif
+-endif
++# The host's own emit target comes from the one platform table.
++include $(_SILICA_COMPILER_MK_DIR)../project_makefiles/platform/platforms.mk
++# (SILICA_HOST_EMIT_TARGET, SILICA_HOST_PLATFORM, SILICA_HOST_UNAME_S/_M are defined there.)
+ 
+ _SILICA_COMPILER_NAME := $(notdir $(SILICA_COMPILER))
+ SILICA_EMIT_TARGET ?= $(if $(filter silica-compiler-%,$(_SILICA_COMPILER_NAME)),$(patsubst silica-compiler-%,%,$(_SILICA_COMPILER_NAME)),$(SILICA_HOST_EMIT_TARGET))
+@@ -74,6 +66,11 @@
+ # writes the same name, so one checkout serves every target it has goldens for.
+ ASCOMP_EXT := $(if $(filter apple_silicon_mac,$(SILICA_EMIT_TARGET)),.ascomp,.$(SILICA_EMIT_TARGET).ascomp)
+ 
++# Toolchain for the emitted target's code: trials/platform/<emit target>.mk (assembler, linker,
++# link flags, FFI fixture flags, golden suffix, skip list). Optional while the per-trial makefiles
++# still carry their own macOS values; once those lines are deleted this include is the only source.
++-include $(_SILICA_COMPILER_MK_DIR)platform/$(SILICA_EMIT_TARGET).mk
++
+ # If silica-compiler is missing, run update_silica_compiler_link.bash and re-check.
+ define ENSURE_SILICA_COMPILER
+ 	if [ ! -x "$(SILICA_COMPILER)" ]; then \
+--- a/binaries/install_compiler.bash
++++ b/binaries/install_compiler.bash
+@@ -27,6 +27,7 @@
+ set -euo pipefail
+ 
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ 
+ die() {
+     echo "install_compiler: $*" >&2
+@@ -36,6 +37,13 @@
+ # Must agree with detect_local_platform in update_silica_compiler_link.bash.
+ detect_local_platform() {
+     local os arch distro id_like
++    # The one platform table decides when it is present (project_makefiles/platform/platforms.mk);
++    # the case statement below is the fallback for a checkout without it.
++    local table="$ROOT_DIR/project_makefiles/platform/platforms.mk" from_table
++    if [[ -f "$table" ]] && from_table="$(make -s -f "$table" host-platform 2>/dev/null)" && [[ -n "$from_table" ]]; then
++        echo "$from_table"
++        return 0
++    fi
+     os="$(uname -s)"
+     arch="$(uname -m)"
+ 
+--- a/binaries/update_silica_compiler_link.bash
++++ b/binaries/update_silica_compiler_link.bash
+@@ -3,6 +3,7 @@
+ set -euo pipefail
+ 
+ cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
++ROOT_DIR="$(cd .. && pwd)"
+ 
+ # Versioned compilers look like either:
+ #   silica-<NNNNNN>-<kind>-<platform>   e.g. silica-999998-seed-macos-applesilicon
+@@ -14,6 +15,11 @@
+ 
+ # Host platforms this script understands (must match detect_local_platform).
+ CANONICAL_PLATFORMS=$'macos-applesilicon\nmacos-x86_64\nlinux-aarch64\nlinux-x86_64'
++# The one platform table wins when it is present.
++if [[ -f "$ROOT_DIR/project_makefiles/platform/platforms.mk" ]]; then
++    from_table="$(make -s -f "$ROOT_DIR/project_makefiles/platform/platforms.mk" platforms 2>/dev/null || true)"
++    [[ -z "$from_table" ]] || CANONICAL_PLATFORMS="$from_table"
++fi
+ 
+ is_canonical_platform() {
+     local needle="$1"
+@@ -145,6 +151,13 @@
+ # Returns 0 and prints the id when known; returns 1 when unsupported/unknown.
+ detect_local_platform() {
+     local os arch distro id_like
++    # The one platform table decides when it is present (project_makefiles/platform/platforms.mk);
++    # the case statement below is the fallback for a checkout without it.
++    local table="$ROOT_DIR/project_makefiles/platform/platforms.mk" from_table
++    if [[ -f "$table" ]] && from_table="$(make -s -f "$table" host-platform 2>/dev/null)" && [[ -n "$from_table" ]]; then
++        echo "$from_table"
++        return 0
++    fi
+     os="$(uname -s)"
+     arch="$(uname -m)"
+ 
+--- a/trials/base/makefile
++++ b/trials/base/makefile
+@@ -16,22 +16,9 @@
+ SAMS_FILES := $(addsuffix .sams, $(EXECUTABLES))
+ OBJ_FILES := $(addsuffix .o, $(EXECUTABLES))
+ 
+-# Rust toolchain linker (rust-lld) - optional override
+-RUST_SYSROOT := $(shell rustc --print sysroot 2>/dev/null)
+-RUST_TARGET := $(shell rustc -vV 2>/dev/null | sed -n "s/^host: *//p")
+-RUST_LLD := $(RUST_SYSROOT)/lib/rustlib/$(RUST_TARGET)/bin/rust-lld
++# Assembler, linker and link flags come from trials/platform/<emit target>.mk, included by
++# silica_compiler.mk above (ASSEMBLER, ASFLAGS_macos, LINKER, RUST_LLD, LDFLAGS_rust-lld, LDFLAGS_clang).
+ 
+-# Use rust-lld if it exists, otherwise clang for linking
+-LINKER := $(shell test -x "$(RUST_LLD)" && echo "$(RUST_LLD)" || echo "clang")
+-ASSEMBLER := clang
+-
+-# macOS: linker flags for minimal executable (when using rust-lld)
+-MACOS_SDK := $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
+-MACOS_MIN_VERSION ?= 26.0
+-ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
+-LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
+-LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
+-
+ TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
+ MSG_PREFIX := $(TRIAL_DIR)/
+ 
