@@ -37,6 +37,9 @@ Open:
   against the last implementation, E2003) and `compile_defects_tagged_optional_type_addition`
   (`:none | (:some, T)` is E1040 in a type position).
 
+Resolved 2026-09-24: the float64 literal pool did not walk case nodes (`case x > 2.0 of` emitted `L_f64_-1`);
+fixed in both float literal pools and the trial moved to `float64_addition/float_literal_case_scrutinee`.
+
 Resolved 2026-09-19: the bare `ref?(L, normal, rec)` binding of SD-5 is invalid per spec §4.2.2 and is now the error trial
 `error_enforcement_addition/rec_bare_ref_opt_binding_annotation` (E2010), by Lee's decision.
 
