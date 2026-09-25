@@ -8,6 +8,7 @@ use type_checker_traits;
 use type_checker_collections;
 use type_checker_tuple_decompose_helpers;
 use type_checker_record_types;
+use type_interner;
 
 export placeholder_param_types_compatible/5;
 export placeholder_return_types_compatible/4;
@@ -119,7 +120,13 @@ fn placeholder_return_types_compatible(impl_ret: string, req_ret: string, trait_
                     true -> type_checker_collections@collection_type_fits_concrete_record(req_t, impl_t, world);
                     false -> case type_checker_collections@is_collection_trait_type(impl_t) of {
                         true -> type_checker_collections@collection_type_fits_concrete_record(impl_t, req_t, world);
-                        false -> placeholder_param_types_compatible(impl_t, req_t, "", trait_prog, world)
+                        false -> case placeholder_param_types_compatible(impl_t, req_t, "", trait_prog, world) of {
+                            true -> true;
+                            // A placeholder nested inside the required result (List[ValueType, ...])
+                            // may resolve to any type, a record included (common_contract.md §1):
+                            // the implementation's result instantiates the required schema.
+                            false -> contains(req_t, "Type") and type_interner@surface_matches_schema(impl_t, req_t)
+                        }
                     }
                 }
             }

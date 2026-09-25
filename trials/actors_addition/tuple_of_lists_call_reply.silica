@@ -1,0 +1,57 @@
+// A call whose reply is a tuple of two lists built inside the behaviour, and a record reply that
+// holds a let-bound record built in the behaviour's frame.
+// Expected:
+//   ints 3 2 1 words gamma beta alpha
+//   inner 7 8
+//   0
+
+fn show_ints(xs: List[int64, mem(normal)], acc: string) -> string {
+    case xs.is_nil of {
+        true -> acc;
+        false -> show_ints(xs.tail, concat(concat(acc, " "), substring("0123456789", xs.head, xs.head + 1)))
+    }
+}
+
+fn show_words(xs: List[string, mem(normal)], acc: string) -> string {
+    case xs.is_nil of {
+        true -> acc;
+        false -> show_words(xs.tail, concat(concat(acc, " "), xs.head))
+    }
+}
+
+fn lists(msg: int64, state: int64) -> (:reply, (List[int64, mem(normal)], List[string, mem(normal)]), int64) {
+    sequence proc[mem(normal)]
+        ints: List[int64, mem(normal)] <- [3, 2, 1];
+        words: List[string, mem(normal)] <- ["gamma", "beta", "alpha"];
+        pair: (List[int64, mem(normal)], List[string, mem(normal)]) <- (ints, words)
+    produces
+        pure (:reply, pair, state + msg)
+    end
+}
+
+fn nested(msg: int64, state: int64) -> (:reply, { tag: atom, inner: { a: int64, b: int64 } }, int64) {
+    sequence
+        inner: { a: int64, b: int64 } <- { a: msg, b: msg + 1 };
+        out: { tag: atom, inner: { a: int64, b: int64 } } <- { tag: :ok, inner: inner }
+    produces
+        pure (:reply, out, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        l: actor_ref <- spawn(0, lists, stack_policy(0, :keep_last_message));
+        n: actor_ref <- spawn(0, nested, stack_policy(0, :keep_last_message));
+        r: (List[int64, mem(normal)], List[string, mem(normal)]) <- call(l, 1 impl ActorMessage {});
+        (ints: List[int64, mem(normal)], words: List[string, mem(normal)]) <- r;
+        println(concat(concat("ints", show_ints(ints, "")), concat(" words", show_words(words, ""))));
+        o: { tag: atom, inner: { a: int64, b: int64 } } <- call(n, 7 impl ActorMessage {});
+        print_string("inner ");
+        _: atom <- print_int64(o.inner.a);
+        print_string(" ");
+        _: atom <- print_int64(o.inner.b);
+        println("")
+    produces
+        pure 0
+    end
+}

@@ -1,0 +1,81 @@
+// Two cast_registered calls in a row, each with an inline tuple-literal message (book-verification
+// repro r_tuple2, defect D2). A tuple message travels as a pointer, and both literals were built in
+// the same frame region of main, so the second overwrote the first before the worker read it and
+// both messages carried (2, 10). Spec §15.4.7.3 / §16.3.5: a message is copied at send time; the
+// emitter now copies a tuple or record message into the sender's region before the runtime enqueues
+// it (prims_actors@actor_message_copy_x10). The supervisor impl/init and the child id live in this
+// unit so only one thing is under test (not the cross-unit atom defect).
+// Expected: 3*4=12, then 2*10=20.
+//   12
+//   done
+//   20
+//   done
+//   0
+
+use Supervisor;
+use calf_double_tuple;
+
+impl DoubleTupleSup for Supervisor;
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: (int64, int64), state: int64) -> (:no_reply, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: (int64, int64), state: int64) -> (:no_reply, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :adder,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: calf_double_tuple@multiply_and_print,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        _: supervisor_ref <- spawn_registered_supervisor(DoubleTupleSup, 0, :double_tuple_supervisor, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_registered(:adder, (3, 4) impl ActorMessage {});
+        _: boolean <- cast_registered(:adder, (2, 10) impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

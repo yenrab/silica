@@ -307,6 +307,7 @@ bo_generic_payloads_pop_joined:     STP X29, X30, [SP, #-16]!
     MOV X19, X0
     MOV X20, X1
 
+L_tcob_bo_generic_payloads_pop_joined:
     MOV X16, X19
     STR X16, [SP, #-16]!
     ADRP X16, L_str_5@PAGE
@@ -346,11 +347,7 @@ L_case_o2253_br_1:
     LDR X0, [SP, #16]
     LDR X1, [SP, #0]
     ADD SP, SP, #32
-    ; effects []|sir_rec:o2317|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
-    ADRP X9, bo_generic_payloads_pop_joined@PAGE
-    ADD X9, X9, bo_generic_payloads_pop_joined@PAGEOFF
-    BLR X9
-
+    B L_tco_bo_generic_payloads_pop_joined
     B L_case_o2253_done
 L_case_o2253_fb:
     BL _silica_rt_case_clause
@@ -365,6 +362,13 @@ L_case_o2253_done:
     LDP X19, X20, [SP], #16
     LDP X29, X30, [SP], #16
     RET
+L_tco_bo_generic_payloads_pop_joined:
+    MOV SP, X29
+    SUB SP, SP, #64
+    MOV X19, X0
+    MOV X20, X1
+    B L_tcob_bo_generic_payloads_pop_joined
+
 
 main:     STP X29, X30, [SP, #-16]!
     MOV X29, SP
@@ -975,6 +979,20 @@ L_sc_bump_alloc:
     ADD X0, X0, #7
     LSR X0, X0, #3
     LSL X19, X0, #3
+    ADRP X1, L_sc_lock@PAGE
+    ADD X1, X1, L_sc_lock@PAGEOFF
+    MOV W2, #1
+L_sc_lock_spin:
+    LDAXR W3, [X1]
+    CBNZ W3, L_sc_lock_wait
+    STXR W3, W2, [X1]
+    CBZ W3, L_sc_lock_held
+    B L_sc_lock_spin
+L_sc_lock_wait:
+    CLREX
+    YIELD
+    B L_sc_lock_spin
+L_sc_lock_held:
     ADRP X20, L_sc_arena_ptr@PAGE
     ADD X20, X20, L_sc_arena_ptr@PAGEOFF
     LDR X21, [X20]
@@ -987,6 +1005,9 @@ L_sc_bump_alloc:
     B.HI L_sc_bump_new
     STR X3, [X20]
     MOV X0, X21
+    ADRP X1, L_sc_lock@PAGE
+    ADD X1, X1, L_sc_lock@PAGEOFF
+    STLR WZR, [X1]
     LDP X20, X21, [SP, #16]
     LDP X19, X30, [SP], #32
     RET
@@ -1020,11 +1041,17 @@ L_sc_bump_new:
     ADD X3, X0, X21
     STR X3, [X2]
     MOV X0, X1
+    ADRP X1, L_sc_lock@PAGE
+    ADD X1, X1, L_sc_lock@PAGEOFF
+    STLR WZR, [X1]
     LDP X20, X21, [SP, #16]
     LDP X19, X30, [SP], #32
     RET
 L_sc_bump_fail:
     MOV X0, #0
+    ADRP X1, L_sc_lock@PAGE
+    ADD X1, X1, L_sc_lock@PAGEOFF
+    STLR WZR, [X1]
     LDP X20, X21, [SP, #16]
     LDP X19, X30, [SP], #32
     RET
@@ -1126,6 +1153,8 @@ L_sc_rel_done:
 L_sc_len_key:
     .space 8
 L_sc_len_val:
+    .space 8
+L_sc_lock:
     .space 8
 L_sc_arena_ptr:
     .space 8
@@ -1309,6 +1338,13 @@ atom_24:
     .byte  0x3a, 0x65, 0x71, 0x75, 0x61, 0x6c, 0
 atom_25:
     .byte  0x3a, 0x67, 0x72, 0x65, 0x61, 0x74, 0x65, 0x72, 0
+.section __TEXT,__rodata
+.align	8
+L_pb_true:
+    .byte 0x74, 0x72, 0x75, 0x65, 0
+L_pb_false:
+    .byte 0x66, 0x61, 0x6c, 0x73, 0x65, 0
+
 .section __DATA_CONST,__const
 .align	3
 L_pa_table:

@@ -17,4 +17,4 @@ POSITIVE_SILICA := \
 	gc_dense_weighted_trait.silica \
 	gc_dense_weighted_undirected_trait.silica \
 	gc_trait_record_edge_data.silica \
-	emitter_defect_trait_placeholder_result_dispatch.silica
+	trait_placeholder_result_dispatch.silica

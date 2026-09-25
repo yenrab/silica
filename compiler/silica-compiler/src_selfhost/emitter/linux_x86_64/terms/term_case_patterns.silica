@@ -29,12 +29,14 @@ use term_sir_helpers;
 use term_user_call_abi;
 use x86_isa;
 use x86_mem;
+use x86_float;
 
 export case_emit_done_label/1;
 export case_emit_fb_label/1;
 export case_emit_branch_entry_label/2;
 export emit_case_pattern_check/7;
 export emit_record_case_pattern_asm/7;
+export emit_tuple_case_pattern_asm/7;
 export list_cons_tail_rebind_suffix/1;
 export emit_list_cons_pattern_loads/3;
 export emit_case_pick_scrut_reg/3;
@@ -175,7 +177,10 @@ fn emit_case_pattern_check_inner(branch: { nodes: List[{ kind: int64, type_name:
                                         concat(ln, x86_isa@x86_cmp_branch("NE", scrut_reg, lit_reg, fail_l))
                                     };
                                     false -> case pk == "tuple" of {
-                                        true -> emit_tuple_case_pattern_check(branch, scrut_t, scrut_reg, lit_reg, fail_l, pools.string_literal_table);
+                                        true -> {
+                                            (tuple_asm: string, _: string, _: string) <- emit_tuple_case_pattern_asm(branch, scrut_t, scrut_reg, lit_reg, fail_l, "", pools);
+                                            tuple_asm
+                                        };
                                         false -> x86_isa@x86_b(fail_l)
                                     }
                                 }
@@ -188,154 +193,233 @@ fn emit_case_pattern_check_inner(branch: { nodes: List[{ kind: int64, type_name:
     }
 }
 
-// Tuple literal patterns, e.g. `("/", "/") -> true`. The SIR branch (kind 8, value "tuple") carries the
-// raw pattern text in .name; each element is a string literal or `_`. Ported from the seed
-// (term_emitter emit_tuple_case_pattern_check): the selfhost had no arm for pk == "tuple", so every
-// such branch was emitted as an unconditional `B fail` and never matched -- which is why gen3
-// (selfhost built by selfhost) stopped recognising `//` comments (lexer_comments@
-// is_line_comment_start). Trial: compiler_addition/tuple_pattern_string_literals.
+// Tuple case patterns (spec §3.5 tuple_pattern, §4.1.7 tagged tuples): `(:ok, n: int64) -> ...`,
+// `("/", "/") -> ...`, `(0, (:a, _: int64)) -> ...`. The SIR branch (kind 8, value "tuple") carries
+// the raw pattern text in .name. Each element is matched against its slot of the scrutinee tuple
+// (prims_tuple@tuple_field_start_byte_offset; a nested tuple or record is a pointer word, a float32
+// of a multi-element tuple is boxed): a string, atom, integer, float or boolean literal is compared,
+// `_` and `_: T` match anything, a nested tuple or record sub-pattern is matched through its pointer,
+// and a named element `n` / `n: T` is copied into a frame slot and bound as %n for the guard and the
+// arm body. A slot, not a register, is its home because the arm's own calls clobber every
+// caller-saved register; emitter_core@case_bind_slots reserves the slots through
+// prims_tuple@tuple_pattern_named_count, which classifies elements with the same
+// prims_tuple@tuple_pattern_elem_binds_name used here.
+// History: the selfhost first had no tuple arm at all (gen3 lost `//` comments), then compared only
+// string elements and emitted `B fail` for every other element, so `(:ok, n: int64)` never matched.
+// See trials/case_addition/tuple_pattern_atom_and_named_elements.
 
-fn emit_flip_bool(b: boolean) -> boolean {
-    case b of { true -> false; false -> true }
+// --- target instructions for tuple patterns (x86-64, virtual registers) ---
+
+fn tuple_pat_ldr(dst: string, mem_ref: string) -> string {
+    x86_mem@x86_ldr(dst, mem_ref)
 }
 
-fn emit_tuple_pat_comma(s: string, i: int64, in_string: boolean, pdepth: int64) -> int64 {
+fn tuple_pat_cmp_ne(a: string, b: string, fail_l: string) -> string {
+    x86_isa@x86_cmp_branch("NE", a, b, fail_l)
+}
+
+fn tuple_pat_fcmp_ne(a: string, b: string, _tmp: string, fail_l: string) -> string {
+    x86_float@x86_fcmp_branch("NE", a, b, fail_l)
+}
+
+fn tuple_pat_b(fail_l: string) -> string {
+    x86_isa@x86_b(fail_l)
+}
+
+fn tuple_pat_push(r: string) -> string {
+    x86_mem@x86_str(r, "[SP, #-16]!")
+}
+
+fn tuple_pat_pop(r: string) -> string {
+    x86_mem@x86_ldr(r, "[SP], #16")
+}
+
+// L_string_eq_helper (x86) writes rdi rsi rdx rcx r8 r9 r10 r11 = X0-X5, X9, X10.
+fn tuple_pat_string_call(tr: string, lit_reg: string, fail_l: string) -> string {
+    save: string <- concat(concat(concat(tuple_pat_push("X0"), tuple_pat_push("X1")), concat(tuple_pat_push("X2"), tuple_pat_push("X3"))), concat(concat(tuple_pat_push("X4"), tuple_pat_push("X5")), concat(tuple_pat_push("X9"), tuple_pat_push("X10"))));
+    args: string <- concat(x86_isa@x86_mov("X0", tr), x86_isa@x86_mov("X1", lit_reg));
+    call: string <- concat(x86_isa@x86_call("L_string_eq_helper"), x86_isa@x86_mov("W12", "W0"));
+    restore: string <- concat(concat(concat(tuple_pat_pop("X10"), tuple_pat_pop("X9")), concat(tuple_pat_pop("X5"), tuple_pat_pop("X4"))), concat(concat(tuple_pat_pop("X3"), tuple_pat_pop("X2")), concat(tuple_pat_pop("X1"), tuple_pat_pop("X0"))));
+    concat(concat(save, args), concat(concat(call, restore), x86_isa@x86_cmp_branch("EQ", "W12", "#0", fail_l)))
+}
+
+fn tuple_pat_is_paren_wrapped(raw: string) -> boolean {
+    length_bytes(raw) >= 2 and substring(raw, 0, 1) == "(" and substring(raw, length_bytes(raw) - 1, length_bytes(raw)) == ")"
+}
+
+fn tuple_pat_elem_at(inner: string, idx: int64) -> string {
+    c: int64 <- prims_tuple@tuple_pattern_next_comma(inner, 0, false, 0);
+    case idx == 0 of {
+        true -> substring(inner, 0, c);
+        false -> case c < length_bytes(inner) of {
+            true -> tuple_pat_elem_at(substring(inner, c + 1, length_bytes(inner)), idx - 1);
+            false -> ""
+        }
+    }
+}
+
+fn tuple_pat_count(inner: string) -> int64 {
+    case length_bytes(inner) == 0 of {
+        true -> 0;
+        false -> {
+            c: int64 <- prims_tuple@tuple_pattern_next_comma(inner, 0, false, 0);
+            case c < length_bytes(inner) of {
+                true -> 1 + tuple_pat_count(substring(inner, c + 1, length_bytes(inner)));
+                false -> 1
+            }
+        }
+    }
+}
+
+fn tuple_pat_name_of(el: string) -> string {
+    colon: int64 <- tuple_pat_colon_at(el, 0);
+    substring(el, 0, colon)
+}
+
+fn tuple_pat_colon_at(s: string, i: int64) -> int64 {
     case i >= length_bytes(s) of {
         true -> length_bytes(s);
-        false -> case substring(s, i, i + 1) == "\"" of {
-            true -> emit_tuple_pat_comma(s, i + 1, emit_flip_bool(in_string), pdepth);
-            false -> case in_string of {
-                true -> emit_tuple_pat_comma(s, i + 1, true, pdepth);
-                false -> case substring(s, i, i + 1) of {
-                    "(" -> emit_tuple_pat_comma(s, i + 1, false, pdepth + 1);
-                    ")" -> emit_tuple_pat_comma(s, i + 1, false, case pdepth > 0 of { true -> pdepth - 1; false -> 0 });
-                    "," -> case pdepth == 0 of { true -> i; false -> emit_tuple_pat_comma(s, i + 1, false, pdepth) };
-                    _: string -> emit_tuple_pat_comma(s, i + 1, false, pdepth)
-                }
-            }
+        false -> case substring(s, i, i + 1) == ":" of {
+            true -> i;
+            false -> tuple_pat_colon_at(s, i + 1)
         }
     }
 }
 
-fn emit_strip_spaces(s: string) -> string {
-    emit_strip_spaces_from(s, 0, "")
+fn tuple_pat_w_view(reg: string) -> string {
+    concat("W", substring(reg, 1, length_bytes(reg)))
 }
 
-fn emit_strip_spaces_from_run_end(s: string, j: int64, n: int64) -> int64 {
-    case j >= n of {
-        true -> j;
-        false -> case substring(s, j, j + 1) == " " of {
-            true -> j;
-            false -> emit_strip_spaces_from_run_end(s, j + 1, n)
-        }
+// Load the element into GPR tr: boxed float32 through its box, narrow types sign/zero-extended like a
+// record field, everything else (int64, pointers, float64 bits) as one word.
+fn tuple_pat_load_elem(et: string, boxed_f32: boolean, tr: string, mem_ref: string) -> string {
+    case boxed_f32 of {
+        true -> concat(tuple_pat_ldr(tr, mem_ref), tuple_pat_ldr(tuple_pat_w_view(tr), concat(concat("[", tr), "]")));
+        false -> emit_ldr_record_field(et, tr, mem_ref)
     }
 }
 
-fn emit_strip_spaces_from(s: string, i: int64, acc: string) -> string {
-    case i >= length_bytes(s) of {
-        true -> acc;
-        false -> case substring(s, i, i + 1) == " " of {
-            true -> emit_strip_spaces_from(s, i + 1, acc);
-            false -> {
-                n: int64 <- length_bytes(s);
-                e: int64 <- emit_strip_spaces_from_run_end(s, i, n);
-                emit_strip_spaces_from(s, e, concat(acc, substring(s, i, e)))
-            }
-        }
-    }
+// A float literal element is loaded from the module's float literal pool: the pools add pattern
+// literals from the branch text (prims_tuple@tuple_pattern_float_literals), since pattern text is not a
+// SIR constant. The pool load uses X10 as its pointer, so X10 is reserved while elements are matched.
+fn tuple_pat_float_check(et: string, lit: string, boxed_f32: boolean, tr: string, mem_ref: string, fail_l: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }) -> string {
+    is64: boolean <- reg_conventions@is_float64_type(et);
+    is32: boolean <- reg_conventions@is_float32_type(et);
+    ea: string <- case is64 of { true -> "D16"; false -> case is32 of { true -> "S16"; false -> "H16" } };
+    eb: string <- case is64 of { true -> "D17"; false -> case is32 of { true -> "S17"; false -> "H17" } };
+    ld_elem: string <- case boxed_f32 of {
+        true -> concat(tuple_pat_ldr(tr, mem_ref), tuple_pat_ldr(ea, concat(concat("[", tr), "]")));
+        false -> tuple_pat_ldr(ea, mem_ref)
+    };
+    syn: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@make_leaf_sir_const(et, lit);
+    ld_lit: string <- const_dispatcher@emit_const(syn, eb, pools.table, pools.literal_table, pools.float64_literal_table, pools.float32_literal_table, "");
+    concat(ld_elem, concat(concat(ld_lit, "\n"), tuple_pat_fcmp_ne(ea, eb, tr, fail_l)))
 }
 
-fn emit_tuple_pat_elem_at(inner: string, idx: int64) -> string {
-    case idx == 0 of {
-        true -> {
-            c: int64 <- emit_tuple_pat_comma(inner, 0, false, 0);
-            emit_strip_spaces(substring(inner, 0, c))
-        };
+// The string compare is the only call a tuple pattern makes; tuple_pat_string_call saves exactly the
+// registers the target's helper clobbers, so every tuple base (the scrutinee is X1-X5, nested bases can
+// be any register) survives it.
+fn tuple_pat_string_check(content: string, tr: string, mem_ref: string, lit_reg: string, fail_l: string, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }) -> string {
+    syn: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@make_leaf_sir_const("string", content);
+    ld_lit: string <- concat(term_user_call_abi@emit_string_const(syn, lit_reg, string_literal_table), "\n");
+    concat(concat(tuple_pat_ldr(tr, mem_ref), ld_lit), tuple_pat_string_call(tr, lit_reg, fail_l))
+}
+
+fn emit_tuple_pat_elems(inner: string, tup_t: string, base: string, ctx: { lit_reg: string, fail_l: string }, idx: int64, acc: { held: string, binds: string }, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }) -> (string, string, string) {
+    case idx >= tuple_pat_count(inner) of {
+        true -> ("", acc.held, acc.binds);
         false -> {
-            c: int64 <- emit_tuple_pat_comma(inner, 0, false, 0);
-            rest: string <- case c < length_bytes(inner) of { true -> substring(inner, c + 1, length_bytes(inner)); false -> "" };
-            emit_tuple_pat_elem_at(rest, idx - 1)
+            el: string <- tuple_pat_elem_at(inner, idx);
+            (one: string, held1: string, binds1: string) <- emit_tuple_pat_elem(el, tup_t, base, ctx, idx, acc, pools);
+            (rest: string, held2: string, binds2: string) <- emit_tuple_pat_elems(inner, tup_t, base, ctx, idx + 1, { held: held1, binds: binds1 }, pools);
+            (concat(one, rest), held2, binds2)
         }
     }
 }
 
-fn emit_tuple_pat_count_from(inner: string, i: int64, acc: int64) -> int64 {
-    case i >= length_bytes(inner) of {
-        true -> acc;
-        false -> {
-            c: int64 <- emit_tuple_pat_comma(inner, i, false, 0);
-            case c >= length_bytes(inner) of {
-                true -> acc + 1;
-                false -> emit_tuple_pat_count_from(inner, c + 1, acc + 1)
-            }
-        }
-    }
-}
-
-fn emit_tuple_pat_count(inner: string) -> int64 {
-    case length_bytes(emit_strip_spaces(inner)) == 0 of {
-        true -> 0;
-        false -> emit_tuple_pat_count_from(inner, 0, 0)
-    }
-}
-
-fn emit_string_lit_pat_content(pat: string) -> string {
-    case length_bytes(pat) >= 2 and substring(pat, 0, 1) == "\"" of {
-        true -> {
-            cq: int64 <- case_close_quote_index_emit(pat, 1);
-            case cq < 0 of { true -> ""; false -> substring(pat, 1, cq) }
-        };
-        false -> ""
-    }
-}
-
-fn emit_tuple_elem_string_check(elem_content: string, scrut_reg: string, byte_off: int64, lit_reg: string, fail_l: string, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }) -> string {
-    syn: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@make_leaf_sir_const("string", elem_content);
-    off_s: string <- atom_table@int64_to_decimal_string(byte_off);
-    ld_elem: string <- x86_mem@x86_ldr("X9", concat("[", concat(scrut_reg, concat(", #", concat(off_s, "]")))));
-    ld: string <- term_user_call_abi@emit_string_const(syn, lit_reg, string_literal_table);
-    str_save: string <- concat(x86_mem@x86_str(scrut_reg, "[SP, #-16]!"), concat(ld, "\n"));
-    mov_x0_ln: string <- x86_isa@x86_mov("X0", "X9");
-    mov_x1_ln: string <- x86_isa@x86_mov("X1", lit_reg);
-    bl_ln: string <- x86_isa@x86_call("L_string_eq_helper");
-    mov_bl: string <- concat(concat(mov_x0_ln, mov_x1_ln), bl_ln);
-    cmp_bne: string <- x86_isa@x86_cmp_branch("EQ", "W12", "#0", fail_l);
-    tail: string <- concat(x86_isa@x86_mov("W12", "W0"), concat(x86_mem@x86_ldr(scrut_reg, "[SP], #16"), cmp_bne));
-    concat(concat(ld_elem, str_save), concat(mov_bl, tail))
-}
-
-fn emit_tuple_case_elems_check(inner: string, scrut_t: string, scrut_reg: string, lit_reg: string, fail_l: string, idx: int64, n: int64, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }) -> string {
-    case idx >= n of {
-        true -> "";
-        false -> {
-            pel: string <- emit_tuple_pat_elem_at(inner, idx);
-            content: string <- emit_string_lit_pat_content(pel);
-            one: string <- case length_bytes(content) > 0 or (length_bytes(pel) >= 2 and substring(pel, 0, 1) == "\"" and substring(pel, length_bytes(pel) - 1, length_bytes(pel)) == "\"") of {
+fn emit_tuple_pat_elem(el: string, tup_t: string, base: string, ctx: { lit_reg: string, fail_l: string }, idx: int64, acc: { held: string, binds: string }, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }) -> (string, string, string) {
+    et: string <- prims_record@strip_spaces_rt(prims_tuple@tuple_type_nth_element(tup_t, idx));
+    mem_ref: string <- var@reg_offset_for_byte(base, prims_tuple@tuple_field_start_byte_offset(tup_t, idx));
+    boxed_f32: boolean <- prims_tuple@tuple_type_uses_boxed_float32(tup_t) and reg_conventions@is_float32_type(et);
+    tr: string <- var@next_free_int_reg(acc.held);
+    c0: string <- case length_bytes(el) > 0 of { true -> substring(el, 0, 1); false -> "" };
+    case el == "_" or length_bytes(el) == 0 or (length_bytes(el) >= 2 and substring(el, 0, 2) == "_:") of {
+        true -> ("", acc.held, acc.binds);
+        false -> case c0 == "\"" of {
+            true -> (tuple_pat_string_check(extract_string_pat_content_emit(el), tr, mem_ref, ctx.lit_reg, ctx.fail_l, pools.string_literal_table), acc.held, acc.binds);
+            false -> case c0 == "(" of {
+                // Nested tuple: its slot holds a pointer. Keep that base register reserved while the
+                // nested elements are matched.
                 true -> {
-                    byte_off: int64 <- prims_tuple@tuple_field_start_byte_offset(scrut_t, idx);
-                    emit_tuple_elem_string_check(content, scrut_reg, byte_off, lit_reg, fail_l, string_literal_table)
+                    ld: string <- tuple_pat_ldr(tr, mem_ref);
+                    held_n: string <- concat(acc.held, var@reg_binding(concat("%__silica_tup_base", atom_table@int64_to_decimal_string(idx)), tr));
+                    (asm_n: string, held_o: string, binds_o: string) <- emit_tuple_pat_elems(substring(el, 1, length_bytes(el) - 1), et, tr, ctx, 0, { held: held_n, binds: acc.binds }, pools);
+                    (concat(ld, asm_n), held_o, binds_o)
                 };
-                false -> case pel == "_" or (length_bytes(pel) >= 2 and substring(pel, 0, 2) == "_:") of {
-                    true -> "";
-                    false -> x86_isa@x86_b(fail_l)
+                false -> case c0 == "{" of {
+                    // Record sub-pattern: the slot holds the record pointer (boxed layout).
+                    true -> {
+                        ld: string <- tuple_pat_ldr(tr, mem_ref);
+                        held_r: string <- concat(acc.held, var@reg_binding(concat("%__silica_tup_rec", atom_table@int64_to_decimal_string(idx)), tr));
+                        (asm_r: string, outer_r: string) <- emit_record_case_rem(prims_record@record_case_inner_body(el), et, tr, 0, ctx.lit_reg, ctx.fail_l, held_r, pools);
+                        new_binds: string <- substring(outer_r, length_bytes(held_r), length_bytes(outer_r));
+                        (concat(ld, asm_r), outer_r, concat(acc.binds, new_binds))
+                    };
+                    false -> case c0 == ":" of {
+                        true -> {
+                            syn: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@make_leaf_sir_const("atom", el);
+                            ld_lit: string <- const_dispatcher@emit_const(syn, ctx.lit_reg, pools.table, pools.literal_table, pools.float64_literal_table, pools.float32_literal_table, "");
+                            cmp: string <- concat("\n", tuple_pat_cmp_ne(tr, ctx.lit_reg, ctx.fail_l));
+                            (concat(emit_ldr_record_field("int64", tr, mem_ref), concat(ld_lit, cmp)), acc.held, acc.binds)
+                        };
+                        false -> case el == "true" or el == "false" of {
+                            true -> {
+                                imm: string <- case el == "true" of { true -> "1"; false -> "0" };
+                                cmp: string <- tuple_pat_cmp_ne(tuple_pat_w_view(tr), concat("#", imm), ctx.fail_l);
+                                (concat(emit_ldr_record_field("boolean", tr, mem_ref), cmp), acc.held, acc.binds)
+                            };
+                            false -> case (reg_conventions@is_float64_type(et) or reg_conventions@is_float32_type(et) or reg_conventions@is_float16_type(et)) and prims_tuple@tuple_pattern_is_number(el) of {
+                                true -> (tuple_pat_float_check(et, el, boxed_f32, tr, mem_ref, ctx.fail_l, pools), acc.held, acc.binds);
+                                false -> case is_int_literal_pat_emit(el) of {
+                                    true -> {
+                                        syn: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- term_sir_helpers@make_leaf_sir_const(et, el);
+                                        ld_lit: string <- const_dispatcher@emit_const(syn, ctx.lit_reg, pools.table, pools.literal_table, pools.float64_literal_table, pools.float32_literal_table, "");
+                                        // A narrow element is extended into the low word only: compare words.
+                                        (ra: string, rb: string) <- case reg_conventions@is_narrow_type(et) of {
+                                            true -> (tuple_pat_w_view(tr), tuple_pat_w_view(ctx.lit_reg));
+                                            false -> (tr, ctx.lit_reg)
+                                        };
+                                        cmp: string <- concat("\n", tuple_pat_cmp_ne(ra, rb, ctx.fail_l));
+                                        (concat(emit_ldr_record_field(et, tr, mem_ref), concat(ld_lit, cmp)), acc.held, acc.binds)
+                                    };
+                                    false -> case prims_tuple@tuple_pattern_elem_binds_name(el) of {
+                                        true -> {
+                                            slot: string <- term_reg_spill@next_frame_spill_slot(acc.held);
+                                            nb: string <- var@reg_binding(concat("%", tuple_pat_name_of(el)), slot);
+                                            asm_b: string <- concat(tuple_pat_load_elem(et, boxed_f32, tr, mem_ref), var@emit_str_mem_ref(tr, slot));
+                                            (asm_b, concat(acc.held, nb), concat(acc.binds, nb))
+                                        };
+                                        false -> (tuple_pat_b(ctx.fail_l), acc.held, acc.binds)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-            };
-            concat(one, emit_tuple_case_elems_check(inner, scrut_t, scrut_reg, lit_reg, fail_l, idx + 1, n, string_literal_table))
+            }
         }
     }
 }
 
-fn emit_tuple_case_pattern_check(branch: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, scrut_t: string, scrut_reg: string, lit_reg: string, fail_l: string, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] }) -> string {
-    raw: string <- emit_strip_spaces(term_sir_helpers@sir_term_root_node(branch).name);
-    case length_bytes(raw) >= 2 and substring(raw, 0, 1) == "(" and substring(raw, length_bytes(raw) - 1, length_bytes(raw)) == ")" of {
-        false -> x86_isa@x86_b(fail_l);
+fn emit_tuple_case_pattern_asm(branch: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, scrut_t: string, scrut_reg: string, lit_reg: string, fail_l: string, outer_reg: string, pools: { table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }, literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float64_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, float32_literal_table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, values: List[string, mem(normal)] }, string_literal_table: { is_empty: boolean, values: List[string, mem(normal)] } }) -> (string, string, string) {
+    raw: string <- prims_tuple@tuple_pattern_strip_spaces(term_sir_helpers@sir_term_root_node(branch).name, 0, "");
+    case tuple_pat_is_paren_wrapped(raw) and length_bytes(raw) > 2 of {
+        false -> (tuple_pat_b(fail_l), "", outer_reg);
         true -> {
-            inner: string <- substring(raw, 1, length_bytes(raw) - 1);
-            n: int64 <- emit_tuple_pat_count(inner);
-            case n < 1 of {
-                true -> x86_isa@x86_b(fail_l);
-                false -> emit_tuple_case_elems_check(inner, scrut_t, scrut_reg, lit_reg, fail_l, 0, n, string_literal_table)
-            }
+            // The scrutinee, literal and float-pool (X10) registers stay reserved while element temps are picked.
+            held: string <- concat(outer_reg, concat(var@reg_binding("%__silica_tup_scrut", scrut_reg), concat(var@reg_binding("%__silica_tup_lit", lit_reg), var@reg_binding("%__silica_tup_fpool", "X10"))));
+            (asm: string, _: string, binds: string) <- emit_tuple_pat_elems(substring(raw, 1, length_bytes(raw) - 1), scrut_t, scrut_reg, { lit_reg: lit_reg, fail_l: fail_l }, 0, { held: held, binds: "" }, pools);
+            (asm, "", concat(outer_reg, binds))
         }
     }
 }

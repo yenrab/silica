@@ -1,0 +1,72 @@
+// Every element kind a tuple case pattern can hold (spec §3.5 tuple_pattern): atom, integer, string
+// and boolean literals, `_` and `_: T` wildcards, a nested tuple pattern, and a named binding -- one
+// of which is read after a call in the same arm, so its frame slot (not a caller-saved register) is
+// what makes it survive. Written with the emitter fix of 2026-09-19 that matches every element kind
+// (terms/term_case_patterns@emit_tuple_case_pattern_asm); before it only string elements were
+// compared and every other element was an unconditional `B fail`.
+// Expected, by hand: 100, 6, 2, 3, 10, 11, 12, 13, 1002, 7, 0, 11.
+
+fn classify(p: (atom, int64)) -> int64 {
+    case p of {
+        (:ok, 0) -> 100;
+        (:ok, n: int64) -> n + 1;
+        (:error, _: int64) -> 2;
+        _: (atom, int64) -> 3
+    }
+}
+
+fn tag(p: (string, boolean)) -> int64 {
+    case p of {
+        ("go", true) -> 10;
+        ("go", false) -> 11;
+        (_: string, true) -> 12;
+        _: (string, boolean) -> 13
+    }
+}
+
+fn nested(p: (atom, (int64, int64))) -> int64 {
+    case p of {
+        (:sum, (1, m: int64)) -> m + 1000;
+        (:sum, (a: int64, b: int64)) -> a + b;
+        _: (atom, (int64, int64)) -> 0
+    }
+}
+
+fn add_one(n: int64) -> int64 {
+    n + 1
+}
+
+fn bound_across_call(p: (atom, int64)) -> int64 {
+    case p of {
+        (:ok, n: int64) -> add_one(n) + n;
+        _: (atom, int64) -> 0
+    }
+}
+
+fn show(n: int64) -> atom {
+    sequence proc[device_io]
+        _: atom <- print_int64(n);
+        r: atom <- println("")
+    produces
+        pure r
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        _: atom <- show(classify((:ok, 0)));
+        _: atom <- show(classify((:ok, 5)));
+        _: atom <- show(classify((:error, 9)));
+        _: atom <- show(classify((:other, 1)));
+        _: atom <- show(tag(("go", true)));
+        _: atom <- show(tag(("go", false)));
+        _: atom <- show(tag(("stop", true)));
+        _: atom <- show(tag(("stop", false)));
+        _: atom <- show(nested((:sum, (1, 2))));
+        _: atom <- show(nested((:sum, (3, 4))));
+        _: atom <- show(nested((:other, (1, 1))));
+        _: atom <- show(bound_across_call((:ok, 5)))
+    produces
+        pure 0
+    end
+}

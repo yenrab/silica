@@ -46,6 +46,7 @@ Each `app_*` directory is a self-contained runnable program (or small set of pro
 | `app_e2e_scalar_string_echo` | Full cast/worker e2e: int64 add and string echo through C wrappers |
 | `app_legacy_math_add_guarded` | Phase 11: single `silica_legacy_math_add_int64` call through guarded runtime boundary |
 | `app_legacy_math_add_twice` | Phase 11: two sequential guarded legacy-math calls (reentrant depth reset) |
+| `app_process_fatal_paths` | Spec §15.4.5.5 paths a program cannot reach from Silica source, driven by a C probe linked after the runtime: a fault before `main` (handlers installed by the startup code), a fault inside the fault handler (last-resort report), and a guarded foreign fault with no current actor; all `[silica] fault at` + 70 |
 
 ## Phase 0
 

@@ -45,20 +45,20 @@ one side of the generic boundary read back correctly on the other.
   edge_target of `ordered_data_structures/graph_live_core/gl_tuple_node_ids`). Expected `1 2`, `1 2`,
   `5 6`, one number per line.
 
+- `two_generic_collections_round_trip` (+ `pair_sets`, `wbt_set`; formerly the open defect D13,
+  found while writing docs/learn-silica.md §10, fixed 2026-09-19): a tuple holding two generic
+  collections (`pair_sets@make_pair`, two `wbt_set` instances over different ItemTypes), returned
+  across the `pair_sets`/`main` module boundary and passed back into `pair_sets@waiting`. Each
+  `wbt_set@empty` result is rebuilt at the call site (the ordering-bundle merge) and so lives in
+  `make_pair`'s frame region; the return copied the outer pair to the region but left both elements
+  pointing into the popped frame, and `wbt_set@size` faulted. A let-bound record or tuple packed by
+  name into a tuple is now copied to the region when its pointer is in the current frame
+  (`term_aggregate_helpers@tuple_elem_frame_var_promote`). Expected `0 at start`, exit 0.
+
+- `two_generic_collections_record_round_trip`: the record form of the same round trip
+  (`pair_sets@make_record`/`waiting_record`, the `{ queue, seen }` shape of the original D13 report).
+  A let-bound aggregate stored in a record field was always copied to the region at the store, so
+  this form passed while the tuple form faulted; it stays as the regression guard. Expected `0 at
+  start`, exit 0.
+
 Every trial exits 0.
-
-## Open defects
-
-- `emitter_defect_two_generic_collections_round_trip` (+ `pair_sets`, `wbt_set`; D13, found while
-  writing docs/learn-silica.md §10, 2026-09-19): a tuple holding two generic collections
-  (`pair_sets@make_pair`, two `wbt_set` instances over different ItemTypes), returned across the
-  `pair_sets`/`main` module boundary and passed back into `pair_sets@waiting`, arrives corrupted --
-  the original report (job_queue's `(PriorityQueue, OrderedSet)` tuple and `{queue, seen}` record)
-  read a corrupted count (`16384` instead of `0`) and then faulted on the next call; this reduction
-  faults immediately inside `wbt_set@size` on the first read. The same construction round-trips
-  correctly when caller and builder are the same unit. A hand-written generic module with the same
-  record shape and the same region/`canonical_arena_lookup` recipe, with no other stdlib code
-  present, did not reproduce it, so `wbt_set` itself (its size or frame complexity) seems to matter,
-  not just the field shape. Looks like a stack-frame-relative address escaping the callee's frame
-  instead of being promoted into the region before crossing the module boundary. Expected `0 at
-  start`, exit 0. No `.ascomp` until fixed.

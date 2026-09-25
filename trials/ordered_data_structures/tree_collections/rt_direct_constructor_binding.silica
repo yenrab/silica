@@ -1,0 +1,49 @@
+// A tree_rose constructor bound DIRECTLY to its inline record type, then read through a validated
+// path lookup. tree_rose owns one fixed canonical arena for every value (canonical_arena_lookup(
+// arena_key())) and get validates the node with ref_in_region against tree.region. The SIR
+// constructor lowering (sir_generator/terms/collection_constructor_calls) re-anchors a registered
+// representation's record to the binding's specialization-key arena; that contract belongs to the
+// placeholder representations (wbt_set, wbt_map) and, applied here, made every validated read miss:
+// binary_tree_core/bt_generic_payloads printed empty strings the day tree_binary was registered, and
+// tree_rose had the same hole with no trial binding its constructor directly (the other tree trials
+// construct through helpers). A module that exports arena_key/0 is now left alone by the lowering.
+// Expected: 7 (root_item), 1 (get found at the root path), 7 (its value), then status 0.
+//   7
+//   1
+//   7
+//   0
+
+use tree_rose;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        t: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- tree_rose@with_root({ compare_item: cmp_i64 }, 7);
+        p0: List[int64, mem(normal)] <- tree_rose@path_root();
+        got: { status: :not_found | :found, value: int64 } <- tree_rose@get(t, p0, 0);
+        found: int64 <- case got.status of { :found -> 1; :not_found -> 0 };
+        _: atom <- print_int64(tree_rose@root_item(t));
+        println("");
+        _: atom <- print_int64(found);
+        println("");
+        _: atom <- print_int64(got.value);
+        println("")
+    produces
+        pure 0
+    end
+}

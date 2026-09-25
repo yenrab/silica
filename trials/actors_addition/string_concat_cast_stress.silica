@@ -1,0 +1,119 @@
+// Regression guard for book defect D12 (2026-09-19): a string built with `concat` in one actor
+// and cast to another was once seen overwritten (1 of 8 runs of the book's translator example).
+// Cause: the string helpers (L_concat_helper, L_substring_helper) bump-allocate from one
+// arena per compilation unit, and the bump (load pointer, add, store pointer) was not atomic,
+// so two actors on two threads that built strings at the same moment could be handed the same
+// bytes; the substring position caches were shared the same way. Both are now taken under a
+// per-unit lock.
+//
+// Here `producer` builds 10,000 distinct strings with concat and substring and casts each one
+// to `consumer`, which rebuilds the expected string itself -- so both actors allocate strings
+// concurrently in the same unit -- and compares on arrival. Only the final count and any
+// mismatch are printed. Messages from one sender arrive in order (§16.3.5), so the consumer
+// knows which label it should see next. Before the fix every run failed -- a mismatch, or a trap
+// when a string descriptor was overwritten; after it, 20 runs in a row were clean.
+// Expected:
+//   received 10000 strings, 0 mismatches
+//   done
+//   0
+
+fn digit(d: int64) -> string {
+    substring("0123456789", d, d + 1)
+}
+
+fn number_text(n: int64) -> string {
+    case n < 10 of {
+        true -> digit(n);
+        false -> concat(number_text(n / 10), digit(n % 10))
+    }
+}
+
+// ".<n+k>" appended for k = count .. 1: many small allocations per label, so the two actors'
+// allocations overlap in time.
+fn tail_digits(s: string, n: int64, k: int64) -> string {
+    case k == 0 of {
+        true -> s;
+        false -> tail_digits(concat(concat(s, "."), number_text(n + k)), n, k - 1)
+    }
+}
+
+// "item-<n>-<7n>.<n+12>...<n+1>": the prefix is a 5-character substring, so the substring
+// arena is used too.
+fn label(n: int64) -> string {
+    prefix: string <- substring("item-number-", 0, 5);
+    head: string <- concat(concat(prefix, number_text(n)), concat("-", number_text(n * 7)));
+    tail_digits(head, n, 12)
+}
+
+fn report(seen: int64, bad: int64) -> atom {
+    sequence proc[device_io]
+        print_string("received ");
+        _: atom <- print_int64(seen);
+        print_string(" strings, ");
+        _: atom <- print_int64(bad);
+        println(" mismatches");
+        println("done")
+    produces
+        pure :ok
+    end
+}
+
+fn report_mismatch(n: int64, got: string) -> atom {
+    sequence proc[device_io]
+        print_string("mismatch at ");
+        _: atom <- print_int64(n);
+        print_string(": got ");
+        println(got)
+    produces
+        pure :ok
+    end
+}
+
+fn consumer(msg: string, state: { seen: int64, bad: int64 }) -> (:no_reply, { seen: int64, bad: int64 }) {
+    sequence
+        expected: string <- label(state.seen);
+        bad: int64 <- case msg == expected of {
+            true -> state.bad;
+            false -> {
+                _: atom <- report_mismatch(state.seen, msg);
+                state.bad + 1
+            }
+        };
+        seen: int64 <- state.seen + 1;
+        _: atom <- case seen == 10000 of {
+            true -> report(seen, bad);
+            false -> :ok
+        }
+    produces
+        pure (:no_reply, { seen: seen, bad: bad })
+    end
+}
+
+fn send_labels(to: actor_ref, i: int64, n: int64) -> atom {
+    sequence proc[concurrency]
+        text: string <- label(i);
+        _: boolean <- cast(to, text impl ActorMessage {});
+        r: atom <- case i + 1 == n of { true -> :ok; false -> send_labels(to, i + 1, n) }
+    produces
+        pure r
+    end
+}
+
+fn producer(msg: int64, state: actor_ref) -> (:no_reply, actor_ref) {
+    sequence
+        _: atom <- send_labels(state, 0, msg)
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        c: actor_ref <- spawn({ seen: 0, bad: 0 }, consumer, stack_policy(0, :keep_last_message));
+        p: actor_ref <- spawn(c, producer, stack_policy(0, :keep_last_message));
+        _: boolean <- cast(p, 10000 impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

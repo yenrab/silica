@@ -282,7 +282,7 @@ Genericity: `ral_generic_payloads` (string and tuple items through build/head/lo
 |---|---|---|---|
 | 1 | Directed graph abstract value | I | Design §1 |
 | 2 | Constructor `{compare_node, compare_edge, edge_target}` | C | `error_enforcement/` → `directed_graph_constructor_record` (planned) |
-| 3 | Trait contract | T | `graph_collections/` → `gc_directed_trait`, `gc_csr_directed_trait`, `gc_dense_directed_trait`; `traits_addition/` → `emitter_defect_trait_param_single_impl`, `emitter_defect_bracket_receiver_impl_order` (open defects) (**graph pass 2026-09-18**) |
+| 3 | Trait contract | T | `graph_collections/` → `gc_directed_trait`, `gc_csr_directed_trait`, `gc_dense_directed_trait`; `traits_addition/` → `trait_param_dispatch_per_impl`, `bracket_receiver_dispatch_by_representation` (**graph pass 2026-09-18**) |
 | 4 | `graph_wbt_directed` module surface | T | `graph_live_core/` → `gl_directed_vertices`, `gl_directed_add_edge`, `gl_directed_payloads` (**graph pass 2026-09-18**) |
 | 5 | Vertex retain; auto-add endpoints on edge | T | `graph_live_core/` → `gl_directed_add_edge`, `gl_directed_remove_edge` (**graph pass 2026-09-18**) |
 | 6 | Query semantics (`reachable`, empty neighbors) | T | `graph_live_core/` → `gl_directed_folds_reachable`, `gl_directed_vertices`; `graph_collections/` → `gc_directed_trait` (**graph pass 2026-09-18**) |

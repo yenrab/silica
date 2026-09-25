@@ -19,13 +19,14 @@ main:     STP X29, X30, [SP, #-16]!
     ADRP X1, L_str_0@PAGE
     ADD X1, X1, L_str_0@PAGEOFF
     MOV X19, X1
-    MOV X0, X19
-    STR X0, [SP, #-16]!
-    MOV X1, #0
+    MOV X9, X19
+    STR X9, [SP, #-16]!
+    MOV X9, #0
+    STR X9, [SP, #-16]!
+    MOV X9, #0
+    MOV X2, X9
+    LDR X1, [SP], #16
     LDR X0, [SP], #16
-    STP X0, X1, [SP, #-16]!
-    MOV X2, #0
-    LDP X0, X1, [SP], #16
     BL L_substring_helper
     MOV X20, X0
     MOV X0, X20
@@ -130,15 +131,32 @@ L_ss_bad:
 L_ss_have_base:
     CMP X20, X21
     B.GE L_ss_empty
+    ADRP X1, L_ss_lock@PAGE
+    ADD X1, X1, L_ss_lock@PAGEOFF
+    MOV W2, #1
+L_ss_lk_cls_spin:
+    LDAXR W3, [X1]
+    CBNZ W3, L_ss_lk_cls_wait
+    STXR W3, W2, [X1]
+    CBZ W3, L_ss_lk_cls_held
+    B L_ss_lk_cls_spin
+L_ss_lk_cls_wait:
+    CLREX
+    YIELD
+    B L_ss_lk_cls_spin
+L_ss_lk_cls_held:
     ADRP X1, L_ss_ascii_key@PAGE
     ADD X1, X1, L_ss_ascii_key@PAGEOFF
     LDR X2, [X1]
-    CMP X2, X19
-    B.NE L_ss_ascii_classify
     ADRP X1, L_ss_ascii_flag@PAGE
     ADD X1, X1, L_ss_ascii_flag@PAGEOFF
-    LDR X2, [X1]
-    CBNZ X2, L_ss_ascii_fast
+    LDR X3, [X1]
+    ADRP X1, L_ss_lock@PAGE
+    ADD X1, X1, L_ss_lock@PAGEOFF
+    STLR WZR, [X1]
+    CMP X2, X19
+    B.NE L_ss_ascii_classify
+    CBNZ X3, L_ss_ascii_fast
     B L_ss_utf8_slow
 L_ss_ascii_classify:
     MOV X9, #0
@@ -152,6 +170,20 @@ L_ss_cls:
     ADD X9, X9, #1
     B L_ss_cls
 L_ss_cls_done:
+    ADRP X1, L_ss_lock@PAGE
+    ADD X1, X1, L_ss_lock@PAGEOFF
+    MOV W2, #1
+L_ss_lk_clw_spin:
+    LDAXR W3, [X1]
+    CBNZ W3, L_ss_lk_clw_wait
+    STXR W3, W2, [X1]
+    CBZ W3, L_ss_lk_clw_held
+    B L_ss_lk_clw_spin
+L_ss_lk_clw_wait:
+    CLREX
+    YIELD
+    B L_ss_lk_clw_spin
+L_ss_lk_clw_held:
     ADRP X1, L_ss_ascii_key@PAGE
     ADD X1, X1, L_ss_ascii_key@PAGEOFF
     STR X19, [X1]
@@ -161,6 +193,9 @@ L_ss_cls_done:
     ADRP X1, L_ss_cached_len@PAGE
     ADD X1, X1, L_ss_cached_len@PAGEOFF
     STR X22, [X1]
+    ADRP X1, L_ss_lock@PAGE
+    ADD X1, X1, L_ss_lock@PAGEOFF
+    STLR WZR, [X1]
     CBNZ X14, L_ss_ascii_fast
     B L_ss_utf8_slow
 L_ss_ascii_fast:
@@ -173,17 +208,34 @@ L_ss_ascii_fast:
     SUB X11, X9, X23
     B L_ss_materialize
 L_ss_utf8_slow:
+    ADRP X1, L_ss_lock@PAGE
+    ADD X1, X1, L_ss_lock@PAGEOFF
+    MOV W2, #1
+L_ss_lk_cur_spin:
+    LDAXR W3, [X1]
+    CBNZ W3, L_ss_lk_cur_wait
+    STXR W3, W2, [X1]
+    CBZ W3, L_ss_lk_cur_held
+    B L_ss_lk_cur_spin
+L_ss_lk_cur_wait:
+    CLREX
+    YIELD
+    B L_ss_lk_cur_spin
+L_ss_lk_cur_held:
     ADRP X1, L_ss_cur_key@PAGE
     ADD X1, X1, L_ss_cur_key@PAGEOFF
     LDR X2, [X1]
-    CMP X2, X19
-    B.NE L_ss_from_zero
     ADRP X1, L_ss_cur_char@PAGE
     ADD X1, X1, L_ss_cur_char@PAGEOFF
     LDR X14, [X1]
     ADRP X1, L_ss_cur_byte@PAGE
     ADD X1, X1, L_ss_cur_byte@PAGEOFF
     LDR X9, [X1]
+    ADRP X1, L_ss_lock@PAGE
+    ADD X1, X1, L_ss_lock@PAGEOFF
+    STLR WZR, [X1]
+    CMP X2, X19
+    B.NE L_ss_from_zero
     CMP X9, X22
     CSEL X9, X22, X9, HI
     CMP X20, X14
@@ -230,26 +282,26 @@ L_ss_adv1:
     ADD X14, X14, #1
     B L_ss_find_start
 L_ss_adv2:
-    SUB X18, X22, X9
+    SUB X12, X22, X9
     MOV X17, #2
-    CMP X18, #2
-    CSEL X17, X18, X17, LO
+    CMP X12, #2
+    CSEL X17, X12, X17, LO
     ADD X9, X9, X17
     ADD X14, X14, #1
     B L_ss_find_start
 L_ss_adv3:
-    SUB X18, X22, X9
+    SUB X12, X22, X9
     MOV X17, #3
-    CMP X18, #3
-    CSEL X17, X18, X17, LO
+    CMP X12, #3
+    CSEL X17, X12, X17, LO
     ADD X9, X9, X17
     ADD X14, X14, #1
     B L_ss_find_start
 L_ss_adv4:
-    SUB X18, X22, X9
+    SUB X12, X22, X9
     MOV X17, #4
-    CMP X18, #4
-    CSEL X17, X18, X17, LO
+    CMP X12, #4
+    CSEL X17, X12, X17, LO
     ADD X9, X9, X17
     ADD X14, X14, #1
     B L_ss_find_start
@@ -276,26 +328,26 @@ L_ss_eadv1:
     ADD X14, X14, #1
     B L_ss_find_end
 L_ss_eadv2:
-    SUB X18, X22, X9
+    SUB X12, X22, X9
     MOV X17, #2
-    CMP X18, #2
-    CSEL X17, X18, X17, LO
+    CMP X12, #2
+    CSEL X17, X12, X17, LO
     ADD X9, X9, X17
     ADD X14, X14, #1
     B L_ss_find_end
 L_ss_eadv3:
-    SUB X18, X22, X9
+    SUB X12, X22, X9
     MOV X17, #3
-    CMP X18, #3
-    CSEL X17, X18, X17, LO
+    CMP X12, #3
+    CSEL X17, X12, X17, LO
     ADD X9, X9, X17
     ADD X14, X14, #1
     B L_ss_find_end
 L_ss_eadv4:
-    SUB X18, X22, X9
+    SUB X12, X22, X9
     MOV X17, #4
-    CMP X18, #4
-    CSEL X17, X18, X17, LO
+    CMP X12, #4
+    CSEL X17, X12, X17, LO
     ADD X9, X9, X17
     ADD X14, X14, #1
     B L_ss_find_end
@@ -307,6 +359,20 @@ L_ss_end_found:
     CMP X9, X22
     CSEL X9, X22, X9, GT
     SUB X11, X9, X23
+    ADRP X1, L_ss_lock@PAGE
+    ADD X1, X1, L_ss_lock@PAGEOFF
+    MOV W2, #1
+L_ss_lk_cuw_spin:
+    LDAXR W3, [X1]
+    CBNZ W3, L_ss_lk_cuw_wait
+    STXR W3, W2, [X1]
+    CBZ W3, L_ss_lk_cuw_held
+    B L_ss_lk_cuw_spin
+L_ss_lk_cuw_wait:
+    CLREX
+    YIELD
+    B L_ss_lk_cuw_spin
+L_ss_lk_cuw_held:
     ADRP X1, L_ss_cur_key@PAGE
     ADD X1, X1, L_ss_cur_key@PAGEOFF
     STR X19, [X1]
@@ -316,12 +382,29 @@ L_ss_end_found:
     ADRP X1, L_ss_cur_byte@PAGE
     ADD X1, X1, L_ss_cur_byte@PAGEOFF
     STR X9, [X1]
+    ADRP X1, L_ss_lock@PAGE
+    ADD X1, X1, L_ss_lock@PAGEOFF
+    STLR WZR, [X1]
     B L_ss_materialize
 L_ss_materialize:
     CBZ X11, L_ss_empty
     CMP X11, #1
     B.NE L_ss_heap
     LDRB W13, [X8, X23]
+    ADRP X9, L_ss_lock@PAGE
+    ADD X9, X9, L_ss_lock@PAGEOFF
+    MOV W10, #1
+L_ss_lk_one_spin:
+    LDAXR W11, [X9]
+    CBNZ W11, L_ss_lk_one_wait
+    STXR W11, W10, [X9]
+    CBZ W11, L_ss_lk_one_held
+    B L_ss_lk_one_spin
+L_ss_lk_one_wait:
+    CLREX
+    YIELD
+    B L_ss_lk_one_spin
+L_ss_lk_one_held:
     ADRP X0, L_ss_1char_ready@PAGE
     ADD X0, X0, L_ss_1char_ready@PAGEOFF
     LDR X1, [X0]
@@ -345,6 +428,9 @@ L_ss_1char_init:
     MOV X1, #1
     STR X1, [X0]
 L_ss_1char_ok:
+    ADRP X9, L_ss_lock@PAGE
+    ADD X9, X9, L_ss_lock@PAGEOFF
+    STLR WZR, [X9]
     ADRP X0, L_ss_1char_table@PAGE
     ADD X0, X0, L_ss_1char_table@PAGEOFF
     ADD X0, X0, X13, LSL #5
@@ -388,6 +474,20 @@ L_ss_bump_alloc:
     ADD X0, X0, #7
     LSR X0, X0, #3
     LSL X19, X0, #3
+    ADRP X1, L_ss_lock@PAGE
+    ADD X1, X1, L_ss_lock@PAGEOFF
+    MOV W2, #1
+L_ss_lk_bump_spin:
+    LDAXR W3, [X1]
+    CBNZ W3, L_ss_lk_bump_wait
+    STXR W3, W2, [X1]
+    CBZ W3, L_ss_lk_bump_held
+    B L_ss_lk_bump_spin
+L_ss_lk_bump_wait:
+    CLREX
+    YIELD
+    B L_ss_lk_bump_spin
+L_ss_lk_bump_held:
     ADRP X20, L_ss_arena_ptr@PAGE
     ADD X20, X20, L_ss_arena_ptr@PAGEOFF
     LDR X21, [X20]
@@ -400,6 +500,9 @@ L_ss_bump_alloc:
     B.HI L_ss_bump_new
     STR X3, [X20]
     MOV X0, X21
+    ADRP X1, L_ss_lock@PAGE
+    ADD X1, X1, L_ss_lock@PAGEOFF
+    STLR WZR, [X1]
     LDP X20, X21, [SP, #16]
     LDP X19, X30, [SP], #32
     RET
@@ -433,11 +536,17 @@ L_ss_bump_new:
     ADD X3, X0, X21
     STR X3, [X2]
     MOV X0, X1
+    ADRP X1, L_ss_lock@PAGE
+    ADD X1, X1, L_ss_lock@PAGEOFF
+    STLR WZR, [X1]
     LDP X20, X21, [SP, #16]
     LDP X19, X30, [SP], #32
     RET
 L_ss_bump_fail:
     MOV X0, #0
+    ADRP X1, L_ss_lock@PAGE
+    ADD X1, X1, L_ss_lock@PAGEOFF
+    STLR WZR, [X1]
     LDP X20, X21, [SP, #16]
     LDP X19, X30, [SP], #32
     RET
@@ -499,6 +608,8 @@ L_ss_cur_key:
 L_ss_cur_char:
     .space 8
 L_ss_cur_byte:
+    .space 8
+L_ss_lock:
     .space 8
 L_ss_arena_ptr:
     .space 8

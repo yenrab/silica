@@ -1622,6 +1622,106 @@ fn fpb_count_from(s: string, i: int64, n: int64, pat: string, m: int64, acc: int
     }
 }
 
+// --- self tail calls ---------------------------------------------------------
+//
+// A call to the function itself in tail position (SIR kind 4 reached from the body root through let
+// bodies and case arm bodies only) is compiled as a jump, so a recursive loop runs in constant stack
+// (design_documents/sir_recursion_strategy.md: tail recursion costs no stack; every BEAM-style loop
+// is recursion). The arguments are evaluated into X0-X7 / D0-D7 exactly as for the call; the jump
+// then goes to a per-function restart stub that puts SP back at its post-prologue depth (dropping
+// every slab the body pushed on the way), re-runs the prologue's parameter moves (the shadow copies
+// into X19.., D8..), and branches to the first body instruction. The callee-saved registers are not
+// saved again: the frame already holds the caller's values from the first entry, and the one real
+// epilogue restores them. Kind 5 (a whole-body tail call) keeps its own path.
+// See trials/recursive_function_addition/tail_recursion_runs_in_constant_stack.
+fn tco_eligible(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, arena_ok: boolean, region_ok: boolean) -> boolean {
+    scoped: boolean <- (arena_ok or region_ok) and emitter_effects@is_pure(fn_val.effects) and arena_scope_ret_ok(fn_val.return_type) and body_creates_region(fn_val.body);
+    fs_is_program_main_name(fn_val.name) == false
+        and sir_term_root_node(fn_val.body).kind != 5
+        and use_actor_reply_sret_buffer(fn_val) == false
+        and reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) == false
+        and fn_destroys_region_param(fn_val) == false
+        and tco_body_allocates_region(fn_val.body) == false
+        and scoped == false
+        and fs_count_params(fn_val.param_names) <= 8
+}
+
+// A let-bound region is destroyed when its scope ends; a jump out of that scope would skip it.
+fn tco_body_allocates_region(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
+    case term.root < 0 of {
+        true -> false;
+        false -> {
+            n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case n.kind == 6 and n.name == "alloc_region" of {
+                true -> true;
+                false -> tco_body_allocates_region(sir_term_at(term, n.inner)) or tco_body_allocates_region(sir_term_at(term, n.right_expr))
+            }
+        }
+    }
+}
+
+// ",i,j," -- the node indices of the self calls in tail position.
+fn tco_tail_self_calls(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, fname: string) -> string {
+    case term.root < 0 of {
+        true -> "";
+        false -> {
+            n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
+            case n.kind of {
+                2 -> tco_tail_self_calls(sir_term_at(term, n.right_expr), fname);
+                3 -> tco_tail_self_calls(sir_term_at(term, n.right_expr), fname);
+                7 -> concat(tco_tail_self_calls(sir_term_at(term, n.inner), fname), tco_tail_self_calls(sir_term_at(term, n.right_expr), fname));
+                8 -> tco_tail_self_calls(sir_term_at(term, n.right_expr), fname);
+                4 -> case n.name == fname of {
+                    true -> concat(",", concat(atom_table@int64_to_decimal_string(term.root), ","));
+                    false -> ""
+                };
+                _: int64 -> ""
+            }
+        }
+    }
+}
+
+fn tco_line_end(s: string, i: int64, n: int64) -> int64 {
+    case i >= n of {
+        true -> n;
+        false -> case substring(s, i, i + 1) == "\n" of {
+            true -> i;
+            false -> tco_line_end(s, i + 1, n)
+        }
+    }
+}
+
+fn tco_is_move_line(line: string) -> boolean {
+    case line == "    MOV X29, SP" of {
+        true -> false;
+        false -> (length_bytes(line) > 8 and substring(line, 0, 8) == "    MOV ") or (length_bytes(line) > 9 and substring(line, 0, 9) == "    FMOV ")
+    }
+}
+
+// The register moves of the prologue (parameter shadows), in order, without its pushes.
+fn tco_prologue_moves_from(s: string, i: int64, n: int64, acc: string) -> string {
+    case i >= n of {
+        true -> acc;
+        false -> {
+            e: int64 <- tco_line_end(s, i, n);
+            line: string <- substring(s, i, e);
+            next_acc: string <- case tco_is_move_line(line) of {
+                true -> concat(acc, concat(line, "\n"));
+                false -> acc
+            };
+            tco_prologue_moves_from(s, e + 1, n, next_acc)
+        }
+    }
+}
+
+fn tco_restart_stub(entry_label: string, prologue_text: string, below_fp: int64) -> string {
+    n: int64 <- length_bytes(prologue_text);
+    start: int64 <- fpb_after_fp_set(prologue_text, 0, n);
+    moves: string <- tco_prologue_moves_from(prologue_text, start, n, "");
+    head: string <- concat(concat("L_tco_", entry_label), ":\n    MOV SP, X29\n");
+    concat(concat(head, emit_sp_add_sub_imm("SUB", below_fp)), concat(moves, concat(concat("    B L_tcob_", entry_label), "\n")))
+}
+
 fn prologue_bytes_below_fp(prologue_text: string, frame_spill_nbytes: int64) -> int64 {
     n: int64 <- length_bytes(prologue_text);
     start: int64 <- fpb_after_fp_set(prologue_text, 0, n);
@@ -1846,26 +1946,30 @@ fn use_full_param_shadow(fn_val: { name: string, return_type: string, effects: s
                 true -> false;
                 false -> case emitter_effects@has_concurrency(fn_val.effects) of {
                     true -> false;
-                    false -> case count_float_spill_eligible_lets_in_term(fn_val.body) >= 1 of {
-                        true -> false;
-                        false -> {
-                            n: int64 <- fs_count_params(fn_val.param_names);
-                            case n >= 1 and n <= 8 of {
+                    // Float lets no longer opt a function out: their spill registers come from
+                    // fp_spill_reg_chain_from_outer, which skips the D8.. homes the shadow binds, and the D-pair
+                    // frame predicates count both. Opting out left float params in D0-D7, where a let's own
+                    // arithmetic staging (FMOV D1/D2) and a call's D0 result overwrote them.
+                    // See trials/float64_addition/float_parameter_survives_let_and_call.
+                    false -> {
+                        n: int64 <- fs_count_params(fn_val.param_names);
+                        case n >= 1 and n <= 8 of {
+                            false -> false;
+                            // A float param joins the shadow (D8-D15) except in a tail-call body: the D-pair saves are
+                            // not emitted there (needs_callee_d8_d9_frame), so those keep their ABI homes as before.
+                            true -> case fs_all_params_shadowable(fn_val.param_types) and (fs_float_param_count(fn_val.param_types, n) == 0 or sir_term_root_node(fn_val.body).kind != 5) of {
                                 false -> false;
-                                // A float param joins the shadow (D8-D15) except in a tail-call body: the D-pair saves are
-                                // not emitted there (needs_callee_d8_d9_frame), so those keep their ABI homes as before.
-                                true -> case fs_all_params_shadowable(fn_val.param_types) and (fs_float_param_count(fn_val.param_types, n) == 0 or sir_term_root_node(fn_val.body).kind != 5) of {
-                                    false -> false;
-                                    // A memory prim is a call too: alloc_rec/alloc_buf branch to
-                                // L_region_grow, which clobbers X0-X18. Gating only on user calls
-                                // left a third GPR64 parameter sitting in its caller-saved ABI home
-                                // (the int64 shadow covers just X19/X20), so build_set_wrong_arena_i64
-                                // read its second alloc_rec region from a clobbered X1 and stored a
-                                // node pointer into the set's region field. validate then walked that
-                                // as a region and faulted in L_region_contains.
-                                // See trials/standard_data_structures/wbt_core/wbt_validate_malformed_fixture.
-                                true -> fs_subtree_has_user_call(fn_val.body) or fs_term_has_case(fn_val.body) or body_has_bl_producing_prim(fn_val.body)
-                                }
+                                // A memory prim is a call too: alloc_rec/alloc_buf branch to
+                            // L_region_grow, which clobbers X0-X18. Gating only on user calls
+                            // left a third GPR64 parameter sitting in its caller-saved ABI home
+                            // (the int64 shadow covers just X19/X20), so build_set_wrong_arena_i64
+                            // read its second alloc_rec region from a clobbered X1 and stored a
+                            // node pointer into the set's region field. validate then walked that
+                            // as a region and faulted in L_region_contains.
+                            // See trials/standard_data_structures/wbt_core/wbt_validate_malformed_fixture.
+                            // A float param is live across float arithmetic too, which stages its operands
+                            // in D0-D2 -- the ABI homes of the first float params.
+                            true -> fs_subtree_has_user_call(fn_val.body) or fs_term_has_case(fn_val.body) or body_has_bl_producing_prim(fn_val.body) or fs_float_param_count(fn_val.param_types, n) > 0
                             }
                         }
                     }
@@ -2193,7 +2297,15 @@ fn case_bind_slots(term: { nodes: List[{ kind: int64, type_name: string, value: 
             // function reserved a zero-byte frame while the arm still stored to
             // [X29,#-16] -- the slot the callee-saved STP pair occupies. The epilogue
             // then restored the caller's X19 from it. See trials/standard_data_structures.
-            here: int64 <- case n.value == "bind" and length_bytes(n.name) > 1 of { true -> 1; false -> 0 };
+            // A tuple pattern parks each named element in a slot too (term_case_patterns@
+            // emit_tuple_case_pattern_asm); count them with the classifier that emitter uses.
+            here: int64 <- case n.value == "bind" and length_bytes(n.name) > 1 of {
+                true -> 1;
+                false -> case n.kind == 8 and n.value == "tuple" of {
+                    true -> prims_tuple@tuple_pattern_named_count(n.name);
+                    false -> 0
+                }
+            };
             here + case_bind_slots(sir_term_at(term, n.inner)) + case_bind_slots(sir_term_at(term, n.right_expr))
         }
     }
@@ -2678,13 +2790,30 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
         // _aggb: size of the aggregate REGION area, the shallow end of the frame
         // spill allocation. Regions are indexed by SIR node within [0, _aggb);
         // register spill slots start below it, so the two never overlap.
-        body_outer_root: string <- concat(param_outer_emit_fnret, concat("|_broot=", concat(atom_table@int64_to_decimal_string(fn_val.body.root), concat("|_aggb=", atom_table@int64_to_decimal_string((agg_region_bytes(fn_val.body) + 15) / 16 * 16)))));
+        tco_nodes: string <- case tco_eligible(fn_val, arena_ok, region_ok) of {
+            true -> tco_tail_self_calls(fn_val.body, fn_val.name);
+            false -> ""
+        };
+        tco_on: boolean <- length_bytes(tco_nodes) > 0;
+        tco_outer: string <- case tco_on of {
+            true -> concat("|_tco=L_tco_", concat(entry_label, concat("|_tcon=", tco_nodes)));
+            false -> ""
+        };
+        body_outer_root: string <- concat(concat(param_outer_emit_fnret, concat("|_broot=", concat(atom_table@int64_to_decimal_string(fn_val.body.root), concat("|_aggb=", atom_table@int64_to_decimal_string((agg_region_bytes(fn_val.body) + 15) / 16 * 16))))), tco_outer);
         body: string <- case sir_term_root_node(fn_val.body).kind == 5 of {
             true -> case kind5_no_tail of {
                 true -> term_emitter@emit_function_non_tail_user_call_root(fn_val.body, dest_reg, { table: ctx.table, int64_table: ctx.int64_table, int32_table: ctx.int32_table, int16_table: ctx.int16_table, int8_table: ctx.int8_table, literal_table: ctx.literal_table, float64_literal_table: ctx.float64_literal_table, float32_literal_table: ctx.float32_literal_table, string_literal_table: ctx.string_literal_table }, param_outer_emit_fnret, fn_val.effects, ctx.debug, main_k5_asm_line_before_call);
                 false -> term_emitter@emit_function_tail_user_call_root(fn_val.body, dest_reg, { table: ctx.table, int64_table: ctx.int64_table, int32_table: ctx.int32_table, int16_table: ctx.int16_table, int8_table: ctx.int8_table, literal_table: ctx.literal_table, float64_literal_table: ctx.float64_literal_table, float32_literal_table: ctx.float32_literal_table, string_literal_table: ctx.string_literal_table }, param_outer_emit_fnret, fn_val.effects, ctx.debug)
             };
             false -> term_emitter@term_to_asm_debug_with_outer(fn_val.body, dest_reg, { table: ctx.table, int64_table: ctx.int64_table, int32_table: ctx.int32_table, int16_table: ctx.int16_table, int8_table: ctx.int8_table, literal_table: ctx.literal_table, float64_literal_table: ctx.float64_literal_table, float32_literal_table: ctx.float32_literal_table, string_literal_table: ctx.string_literal_table }, body_outer_root, ctx.debug)
+        };
+        tco_body_label: string <- case tco_on of {
+            true -> concat(concat("L_tcob_", entry_label), ":\n");
+            false -> ""
+        };
+        tco_stub: string <- case tco_on of {
+            true -> concat("\n", tco_restart_stub(entry_label, prologue_full, fpb_verify));
+            false -> ""
         };
         float_to_exit: string <- case kind5_tail_returns_directly of {
             true -> "";
@@ -2821,7 +2950,7 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
             true -> "    LDP X16, X17, [SP], #16\n    BL L_sc_arena_release_to\n";
             false -> ""
         };
-        concat(concat(concat(eff_comment, "\n"), concat(concat(concat(concat(concat(concat(fpb_comment, ra_comment), prologue_full), rgn_save), region_mark_push), arena_mark_push), "\n")), concat(registry_init_inject, concat(concat(concat(body, "\n"), float_to_exit), concat(arena_release_pop, concat(region_release_pop, epilogue)))))
+        concat(concat(concat(eff_comment, "\n"), concat(concat(concat(concat(concat(concat(fpb_comment, ra_comment), prologue_full), rgn_save), region_mark_push), arena_mark_push), "\n")), concat(registry_init_inject, concat(concat(concat(concat(tco_body_label, body), "\n"), float_to_exit), concat(arena_release_pop, concat(region_release_pop, concat(epilogue, tco_stub))))))
 }
 
 // True when main returns float64: emit FCVTZS W0, D0 so process exit code reflects computed value.

@@ -89,7 +89,37 @@ fn let_rhs_is_fn_pointer_materialization(type_name: string) -> boolean {
     }
 }
 
+// The register a let's RHS is evaluated into follows the RHS's own type, not the function's result
+// register. An int64, boolean or atom let inside a float-returning function was handed that
+// function's D0 and the emitter then produced `CSET D0, EQ` and `MOV X1, D0`, which the assembler
+// rejects ("invalid operand for instruction").
+// See trials/float64_addition/int_let_in_float_function.
+fn rhs_reg_is_float(reg: string) -> boolean {
+    case length_bytes(reg) >= 2 of {
+        false -> false;
+        true -> {
+            p0: string <- substring(reg, 0, 1);
+            p0 == "D" or p0 == "S" or p0 == "H"
+        }
+    }
+}
+
+fn rhs_type_is_float(rhs_type: string) -> boolean {
+    reg_conventions@is_float64_type(rhs_type) or reg_conventions@is_float32_type(rhs_type) or reg_conventions@is_float16_type(rhs_type)
+}
+
+fn rhs_reg_for_type(rhs_type: string, reg: string) -> string {
+    case rhs_reg_is_float(reg) and rhs_type_is_float(rhs_type) == false of {
+        true -> "X0";
+        false -> reg
+    }
+}
+
 fn compute_rhs_reg_in_let(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, bound_name: string, bound_reg: string, outer_reg: string) -> string {
+    rhs_reg_for_type(sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name, rhs_reg_raw_g_in_let(term, dest, bound_name, bound_reg, outer_reg))
+}
+
+fn rhs_reg_raw_g_in_let(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string, bound_name: string, bound_reg: string, outer_reg: string) -> string {
     case reg_conventions@is_tuple_type(sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name) of {
         true -> let_tuple@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
         false -> case let_rhs_is_fn_pointer_materialization(sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name) of {
@@ -138,6 +168,10 @@ fn compute_rhs_reg_in_let(term: { nodes: List[{ kind: int64, type_name: string, 
 }
 
 fn compute_rhs_reg_top_level(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, bound_reg: string, dest: string) -> string {
+    rhs_reg_for_type(sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name, rhs_reg_raw_op_level(term, bound_reg, dest))
+}
+
+fn rhs_reg_raw_op_level(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, bound_reg: string, dest: string) -> string {
     case reg_conventions@is_tuple_type(sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name) of {
         true -> let_tuple@compute_rhs_reg_top_level(term, bound_reg, dest);
         false -> case let_rhs_is_fn_pointer_materialization(sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name) of {

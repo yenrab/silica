@@ -73,11 +73,56 @@ fn expr_to_sir_tuple_decompose_in_body(context: { env: List[{ name: string, type
 }
 
 fn expr_to_sir_tuple_inline(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, expected_type: string, lower_expected: fn({ env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, lower_in_body: fn({ env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, string, string, string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    first_type: string <- terms_helpers@tuple_first_element_type(expected_type);
-    rest_type: string <- terms_helpers@tuple_rest_element_type(expected_type);
+    // An expected inline sum type (`:none | (:some, T)`, silica-specification §15.4.11.2) contributes
+    // the tagged-tuple variant this literal builds; the tuple itself carries that variant's type.
+    variant_type: string <- sum_variant_for_tuple_literal(expr, expected_type);
+    first_type: string <- terms_helpers@tuple_first_element_type(variant_type);
+    rest_type: string <- terms_helpers@tuple_rest_element_type(variant_type);
     first: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- lower_expected(context, type_checker_expressions_helpers@expr_child_inner(expr), first_type);
     second: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- lower_expected(context, type_checker_expressions_helpers@expr_child_right(expr), rest_type);
-    sir_type: string <- types@type_name_to_sir(expected_type);
+    sir_type: string <- types@type_name_to_sir(variant_type);
     sir_ast@make_sir_term(6, sir_type, "", "tuple_make", first, second)
 }
 
+// The tagged-tuple variant of an inline sum type that this tuple literal builds: the variant whose
+// first element is the literal's leading atom, else the sum's first tuple variant. A non-sum
+// expected type is returned unchanged.
+fn sum_variant_for_tuple_literal(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, expected_type: string) -> string {
+    case type_checker_tuple_decompose_helpers@case_sum_bar_depth0(expected_type, 0, 0) < 0 of {
+        true -> expected_type;
+        false -> {
+            head_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- type_checker_expressions_helpers@expr_child_inner(expr);
+            tag: string <- case type_checker_expressions_helpers@expr_kind(head_e) == 5 of {
+                true -> type_checker_expressions_helpers@expr_value(head_e);
+                false -> ""
+            };
+            found: string <- sum_variant_scan_sir(expected_type, tag);
+            case length_bytes(found) == 0 of {
+                true -> expected_type;
+                false -> found
+            }
+        }
+    }
+}
+
+fn sum_variant_scan_sir(rest: string, tag: string) -> string {
+    bar: int64 <- type_checker_tuple_decompose_helpers@case_sum_bar_depth0(rest, 0, 0);
+    head: string <- case bar < 0 of {
+        true -> type_checker_tuple_decompose_helpers@tuple_trim(rest);
+        false -> type_checker_tuple_decompose_helpers@tuple_trim(substring(rest, 0, bar))
+    };
+    hit: boolean <- case type_checker_tuple_decompose_helpers@case_is_tuple_pattern_form(head) of {
+        false -> false;
+        true -> case length_bytes(tag) == 0 of {
+            true -> true;
+            false -> type_checker_tuple_decompose_helpers@tuple_trim(terms_helpers@tuple_first_element_type(head)) == tag
+        }
+    };
+    case hit of {
+        true -> head;
+        false -> case bar < 0 of {
+            true -> "";
+            false -> sum_variant_scan_sir(substring(rest, bar + 1, length_bytes(rest)), tag)
+        }
+    }
+}

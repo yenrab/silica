@@ -1,0 +1,46 @@
+// An actor whose state is a list of records. Each :add call prepends a record built inside the
+// behaviour's helper (a let-bound literal in that frame); a later call walks the list.
+// Expected:
+//   labels c b a
+//   0
+
+fn labels(items: List[{ id: int64, label: string }, mem(normal)], acc: string) -> string {
+    case items.is_nil of {
+        true -> acc;
+        false -> labels(items.tail, concat(concat(acc, " "), items.head.label))
+    }
+}
+
+fn add_item(id: int64, label: string, items: List[{ id: int64, label: string }, mem(normal)]) -> List[{ id: int64, label: string }, mem(normal)] {
+    sequence proc[mem(normal)]
+        item: { id: int64, label: string } <- { id: id * 10, label: label };
+        next: List[{ id: int64, label: string }, mem(normal)] <- prepend[{ id: int64, label: string }, mem(normal)](item, items)
+    produces
+        pure next
+    end
+}
+
+fn keeper(msg: { op: atom, id: int64, label: string }, state: List[{ id: int64, label: string }, mem(normal)]) -> (:reply, string, List[{ id: int64, label: string }, mem(normal)]) {
+    case msg.op of {
+        :add -> (:reply, "added", add_item(msg.id, msg.label, state));
+        _: atom -> (:reply, labels(state, ""), state)
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io, mem(normal)]
+        empty: List[{ id: int64, label: string }, mem(normal)] <- [];
+        k: actor_ref <- spawn(empty, keeper, stack_policy(0, :keep_last_message));
+        m1: { op: atom, id: int64, label: string } <- { op: :add, id: 1, label: "a" };
+        _: string <- call(k, m1 impl ActorMessage {});
+        m2: { op: atom, id: int64, label: string } <- { op: :add, id: 2, label: "b" };
+        _: string <- call(k, m2 impl ActorMessage {});
+        m3: { op: atom, id: int64, label: string } <- { op: :add, id: 3, label: "c" };
+        _: string <- call(k, m3 impl ActorMessage {});
+        q: { op: atom, id: int64, label: string } <- { op: :list, id: 0, label: "" };
+        r: string <- call(k, q impl ActorMessage {});
+        println(concat("labels", r))
+    produces
+        pure 0
+    end
+}

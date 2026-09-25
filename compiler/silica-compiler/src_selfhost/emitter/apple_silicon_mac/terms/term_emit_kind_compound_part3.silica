@@ -92,7 +92,21 @@ case prims_actors@is_actor_prim(term_sir_helpers@sir_term_root_node(term).name) 
                                                 true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(tuple_bytes_a), "\n"));
                                                 false -> ""
                                             };
-                                            concat(concat(concat(concat(concat(concat(left_asm_a, "\n"), init_hold_spawn), concat(right_asm_a, "\n")), op_asm_a), "\n"), tuple_sp_restore_a)
+                                            // The generic two-operand prims (migrate_actor, pin_actor_to_core, set_actor_priority, ...) hand
+                                            // the runtime X9 and X10. A right operand that is itself computed (arithmetic,
+                                            // a call, a case) stages through X9 as well, so the actor_ref in X9 was lost:
+                                            // migrate_actor(ref, 1 + i % 2) passed the core number as the ref. Park the left
+                                            // operand below the right one's slab and reload it.
+                                            // See trials/actors_addition/migrate_actor_expression_core.
+                                            right_kind_a: int64 <- term_sir_helpers@sir_term_root_node(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).right_expr)).kind;
+                                            park_left_a: boolean <- (spawn_three or spawn_registered_tuple or actor_msg_binary) == false and right_kind_a != 0 and right_kind_a != 1 and right_kind_a >= 0;
+                                            left_park_a: string <- case park_left_a of { true -> "    STR X9, [SP, #-16]!\n"; false -> "" };
+                                            left_reload_a: string <- case park_left_a of {
+                                                true -> concat("    LDR X9, [SP, #", concat(atom_table@int64_to_decimal_string(tuple_bytes_a), "]\n"));
+                                                false -> ""
+                                            };
+                                            left_unpark_a: string <- case park_left_a of { true -> "    ADD SP, SP, #16\n"; false -> "" };
+                                            concat(concat(concat(concat(concat(concat(left_asm_a, "\n"), concat(init_hold_spawn, left_park_a)), concat(concat(right_asm_a, "\n"), left_reload_a)), op_asm_a), "\n"), concat(tuple_sp_restore_a, left_unpark_a))
                                         }
                                     }
                                 }

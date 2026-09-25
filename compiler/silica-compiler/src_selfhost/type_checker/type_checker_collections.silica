@@ -52,6 +52,9 @@ export is_undirected_graph_type/1;
 export is_weighted_graph_type/1;
 export is_priority_queue_type/1;
 export is_tree_type/1;
+export parse_binary_tree_type/1;
+export is_binary_tree_type/1;
+export witness_matches_binary_tree_declaration/3;
 export witness_matches_search_tree_declaration/3;
 export witness_matches_undirected_graph_declaration/4;
 export witness_matches_weighted_graph_declaration/6;
@@ -73,6 +76,9 @@ export constructor_ordering_field_count/1;
 export constructor_ordering_field_at/2;
 export constructor_ordering_field_count_for_module/1;
 export constructor_ordering_field_at_for_module/2;
+export collection_aware_types_compatible/3;
+export bracket_canonical_representation/2;
+export bracket_representation_fits_formal/3;
 
 fn strip_all_spaces_col(s: string) -> string {
     case string_has_space_col(s, 0) of {
@@ -359,6 +365,18 @@ fn parse_tree_type(full: string) -> (boolean, string, string) {
     case ok of { true -> (true, item, space); false -> (false, "", "") }
 }
 
+// BinaryTree[ItemType, mem(SpaceType)] (common_contract.md §1, binary_tree_trait.md): the
+// tree_binary representation's bracket family.
+fn parse_binary_tree_type(full: string) -> (boolean, string, string) {
+    (ok: boolean, item: string, space: string, _: string, _: string) <- parse_bracketed_collection(full, "BinaryTree", 2);
+    case ok of { true -> (true, item, space); false -> (false, "", "") }
+}
+
+fn is_binary_tree_type(s: string) -> boolean {
+    (ok: boolean, _: string, _: string) <- parse_binary_tree_type(s);
+    ok
+}
+
 fn is_ordered_set_type(s: string) -> boolean {
     (ok: boolean, _: string, _: string) <- parse_ordered_set_type(s);
     ok
@@ -407,7 +425,7 @@ fn is_tree_type(s: string) -> boolean {
 fn is_collection_trait_type(s: string) -> boolean {
     is_ordered_set_type(s) or is_ordered_map_type(s) or is_heap_type(s) or is_directed_graph_type(s)
         or is_search_tree_type(s) or is_undirected_graph_type(s) or is_weighted_graph_type(s)
-        or is_priority_queue_type(s) or is_tree_type(s)
+        or is_priority_queue_type(s) or is_tree_type(s) or is_binary_tree_type(s)
 }
 
 fn comparator_return_type_ok(ret: string) -> boolean {
@@ -693,12 +711,15 @@ fn fn_type_witnesses_edge_target(fn_type: string, edge_type: string, node_type: 
         true -> {
             edge: string <- strip_spaces_col(edge_type);
             node: string <- strip_spaces_col(node_type);
-            param_ok: boolean <- type_checker_lists@types_equal_strip(param, edge);
+            // A generated record spells edge_target with the module's own placeholders
+            // (fn(ValueType) -> KeyType); a placeholder witnesses any concrete type, exactly as
+            // param_witnesses_item_col accepts one for the compare_* fields.
+            param_ok: boolean <- param_witnesses_item_col(param, edge);
             case param_ok of {
                 false -> false;
                 true -> {
                     ret: string <- fn_return_after_arrow_col(fn_type);
-                    type_checker_lists@types_equal_strip(ret, node)
+                    param_witnesses_item_col(ret, node)
                 }
             }
         }
@@ -722,6 +743,17 @@ fn witness_matches_tree_declaration(decl_type: string, witness_fn_type: string, 
         false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid Tree type declaration: ", decl_type), ""), "sect4");
         true -> case collection_space_has_mem_form(space) of {
             false -> type_checker_core@type_check_err("E2015", location, concat(concat("Tree requires mem(Space): ", decl_type), ""), "sect4");
+            true -> witness_matches_ordered_set_declaration(concat(concat(concat("OrderedSet[", item), ", "), concat(space, "]")), witness_fn_type, location)
+        }
+    }
+}
+
+fn witness_matches_binary_tree_declaration(decl_type: string, witness_fn_type: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    (ok: boolean, item: string, space: string) <- parse_binary_tree_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid BinaryTree type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("BinaryTree requires mem(Space): ", decl_type), ""), "sect4");
             true -> witness_matches_ordered_set_declaration(concat(concat(concat("OrderedSet[", item), ", "), concat(space, "]")), witness_fn_type, location)
         }
     }
@@ -857,6 +889,14 @@ fn collection_return_accepts_tree(decl_type: string, return_type: string, world:
     }
 }
 
+fn collection_return_accepts_binary_tree(decl_type: string, return_type: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> boolean {
+    (ok: boolean, item: string, _: string) <- parse_binary_tree_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_item", item, world)
+    }
+}
+
 fn collection_return_accepts_undirected_graph(decl_type: string, return_type: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> boolean {
     (ok: boolean, node: string, edge_data: string, _: string) <- parse_undirected_graph_type(decl_type);
     case ok of {
@@ -928,7 +968,10 @@ fn collection_return_accepts_constructor(decl_type: string, return_type: string,
                                     true -> collection_return_accepts_undirected_graph(decl_type, return_type, world);
                                     false -> case is_weighted_graph_type(decl_type) of {
                                         true -> collection_return_accepts_weighted_graph(decl_type, return_type, world);
-                                        false -> false
+                                        false -> case is_binary_tree_type(decl_type) of {
+                                            true -> collection_return_accepts_binary_tree(decl_type, return_type, world);
+                                            false -> false
+                                        }
                                     }
                                 }
                             }
@@ -1037,7 +1080,13 @@ fn collection_param_type_for_trait_arg(collection_type: string, arg_index: int64
                                         };
                                         _: int64 -> ""
                                     };
-                                    false -> ""
+                                    false -> case is_binary_tree_type(collection_type) of {
+                                        true -> {
+                                            (ok: boolean, item: string, _: string) <- parse_binary_tree_type(collection_type);
+                                            case ok of { true -> item; false -> "" }
+                                        };
+                                        false -> ""
+                                    }
                                 }
                             }
                         }
@@ -1099,7 +1148,13 @@ fn collection_space_from_type(collection_type: string) -> string {
                                             (ok: boolean, _: string, space: string) <- parse_tree_type(collection_type);
                                             case ok of { true -> space; false -> "" }
                                         };
-                                        false -> record_runtime_space_from_region_field(collection_type)
+                                        false -> case is_binary_tree_type(collection_type) of {
+                                            true -> {
+                                                (ok: boolean, _: string, space: string) <- parse_binary_tree_type(collection_type);
+                                                case ok of { true -> space; false -> "" }
+                                            };
+                                            false -> record_runtime_space_from_region_field(collection_type)
+                                        }
                                     }
                                 }
                             }
@@ -1477,7 +1532,19 @@ fn validate_one_collection_surface(col_type: string, location: { file: string, l
                                                 }
                                             }
                                         };
-                                        false -> type_checker_core@type_check_ok()
+                                        false -> case is_binary_tree_type(col_type) of {
+                                            true -> {
+                                                (ok: boolean, _: string, space: string) <- parse_binary_tree_type(col_type);
+                                                case ok of {
+                                                    false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid BinaryTree type: ", col_type), ""), "sect4");
+                                                    true -> case collection_space_has_mem_form(space) of {
+                                                        false -> type_checker_core@type_check_err("E2015", location, concat(concat("BinaryTree requires mem(Space): ", col_type), ""), "sect4");
+                                                        true -> type_checker_core@type_check_ok()
+                                                    }
+                                                }
+                                            };
+                                            false -> type_checker_core@type_check_ok()
+                                        }
                                     }
                                 }
                             }
@@ -1513,7 +1580,7 @@ fn collection_keyword_len_at(s: string, pos: int64) -> int64 {
                         true -> 10;
                         false -> case pos >= 0 and length_bytes(s) - pos >= 10 and substring(s, pos, pos + 10) == "OrderedMap" of {
                             true -> 10;
-                            false -> case pos >= 0 and length_bytes(s) - pos >= 10 and substring(s, pos, pos + 10) == "SearchTree" of {
+                            false -> case pos >= 0 and length_bytes(s) - pos >= 10 and (substring(s, pos, pos + 10) == "SearchTree" or substring(s, pos, pos + 10) == "BinaryTree") of {
                                 true -> 10;
                                 false -> case pos >= 0 and length_bytes(s) - pos >= 4 and substring(s, pos, pos + 4) == "Heap" of {
                                     true -> 4;
@@ -1574,9 +1641,10 @@ fn find_earliest_collection_keyword(s: string, i: int64) -> (int64, int64) {
     pos_wg: int64 <- find_valid_collection_keyword_index(s, i, "WeightedGraph");
     pos_pq: int64 <- find_valid_collection_keyword_index(s, i, "PriorityQueue");
     pos_tree: int64 <- find_valid_collection_keyword_index(s, i, "Tree");
+    pos_bt: int64 <- find_valid_collection_keyword_index(s, i, "BinaryTree");
     pos0123: int64 <- min_pos4(pos_set, pos_map, pos_search, pos_heap);
     pos4567: int64 <- min_pos4(pos_dg, pos_ug, pos_wg, pos_pq);
-    pos: int64 <- min_pos3(pos0123, pos4567, pos_tree);
+    pos: int64 <- min_pos4(pos0123, pos4567, pos_tree, pos_bt);
     case pos < 0 of {
         true -> (-1, 0);
         false -> (pos, collection_keyword_len_at(s, pos))
@@ -1762,7 +1830,7 @@ fn required_constructor_fields(bind_type: string) -> List[string, mem(normal)] {
                 true -> cons_constructor_field("compare_value", cons_constructor_field("compare_key", empty_constructor_field_list()));
                 false -> case is_heap_type(bind_type) of {
                     true -> cons_constructor_field("compare_item", empty_constructor_field_list());
-                    false -> case is_tree_type(bind_type) of {
+                    false -> case is_tree_type(bind_type) or is_binary_tree_type(bind_type) of {
                         true -> cons_constructor_field("compare_item", empty_constructor_field_list());
                         false -> case is_priority_queue_type(bind_type) of {
                             true -> cons_constructor_field("compare_item", cons_constructor_field("compare_priority", empty_constructor_field_list()));
@@ -1854,6 +1922,7 @@ fn representation_id_from_module(module_name: string) -> int64 {
         "StubPriorityQueue" -> 7;
         "tree_rose" -> 8;
         "StubTreeRose" -> 8;
+        "tree_binary" -> 14;
         _: string -> 0
     }
 }
@@ -1903,6 +1972,7 @@ fn required_constructor_fields_for_module(module_name: string) -> List[string, m
         "StubPriorityQueue" -> cons_constructor_field("compare_item", cons_constructor_field("compare_priority", empty_constructor_field_list()));
         "tree_rose" -> cons_constructor_field("compare_item", empty_constructor_field_list());
         "StubTreeRose" -> cons_constructor_field("compare_item", empty_constructor_field_list());
+        "tree_binary" -> cons_constructor_field("compare_item", empty_constructor_field_list());
         _: string -> empty_constructor_field_list()
     }
 }
@@ -1965,7 +2035,10 @@ fn public_trait_family_tag(bind_type: string) -> int64 {
                                     true -> 8;
                                     false -> case is_tree_type(bind_type) of {
                                         true -> 9;
-                                        false -> 0
+                                        false -> case is_binary_tree_type(bind_type) of {
+                                            true -> 10;
+                                            false -> 0
+                                        }
                                     }
                                 }
                             }
@@ -2071,9 +2144,12 @@ fn collection_type_param_tag(bind_type: string) -> int64 {
                     (ok: boolean, item: string, _: string) <- parse_heap_type(bind_type);
                     case ok of { true -> type_param_tag(item); false -> 0 }
                 };
-                false -> case is_tree_type(bind_type) of {
+                false -> case is_tree_type(bind_type) or is_binary_tree_type(bind_type) of {
                     true -> {
-                        (ok: boolean, item: string, _: string) <- parse_tree_type(bind_type);
+                        (ok: boolean, item: string, _: string) <- case is_tree_type(bind_type) of {
+                            true -> parse_tree_type(bind_type);
+                            false -> parse_binary_tree_type(bind_type)
+                        };
                         case ok of { true -> type_param_tag(item); false -> 0 }
                     };
                     false -> case is_ordered_map_type(bind_type) of {
@@ -2182,6 +2258,7 @@ fn record_collection_type_param_tag(bind_type: string, rep: int64) -> int64 {
             record_binary_field_param_tag(bind_type, "compare_node"),
             record_binary_field_param_tag(bind_type, "compare_edge_data")
         );
+        14 -> record_binary_field_param_tag(bind_type, "compare_item");
         _: int64 -> 0
     }
 }
@@ -2231,7 +2308,10 @@ fn collection_trait_accepts_module(bind_type: string, module_name: string) -> bo
                                         true -> rep == 5;
                                         false -> case is_tree_type(bind_type) of {
                                             true -> rep == 8;
-                                            false -> false
+                                            false -> case is_binary_tree_type(bind_type) of {
+                                                true -> rep == 14;
+                                                false -> false
+                                            }
                                         }
                                     }
                                 }
@@ -2252,4 +2332,316 @@ fn module_name_from_qualified_call(call_name: string) -> string {
 fn is_collection_constructor_base_name(call_name: string) -> boolean {
     base: string <- type_checker_core@user_call_base_function_name(call_name);
     base == "empty" or base == "with_root"
+}
+
+// ---------------------------------------------------------------------------
+// Collection-aware structural compatibility (defect batch 2, D6/D7).
+//
+// A collection bracket type (OrderedSet[...], Tree[...], PriorityQueue[...], ...) resolves to the
+// concrete inline record its construction module returns (common_contract.md §2). The top-level
+// checks already accept that record for a bracket-typed binding; this walk applies the same rule
+// wherever the bracket type sits inside a composite type: a record field
+// (`r: { set: OrderedSet[string, mem(normal)], inserted: boolean } <- wbt_set@insert(s, x)`,
+// ordered_set_trait.md §10), a list element, a tuple element or a function type's parameter or
+// result (a supervisor child spec's `behavior`). Two spellings of the same type also meet here:
+// `fn(...)` against the interner's `(...)`, named against unnamed function parameters, and
+// `mem(normal)` against `normal`. A placeholder (ItemType, KeyType, ...) on either side is an
+// unbound schema variable and matches any leaf, as in surface_matches_schema.
+// Callers use this only after their exact checks failed, so it can widen but never narrow.
+
+fn cat_normalize_leaf(s: string) -> string {
+    t: string <- strip_all_spaces_col(s);
+    replace_assoc_token_in_type(t, "mem(normal)", "normal")
+}
+
+fn cat_is_fn_type(s: string) -> boolean {
+    t: string <- strip_spaces_col(s);
+    arrow: int64 <- find_arrow_col_depth(t, 0, 0);
+    case arrow < 0 of {
+        true -> false;
+        false -> starts_with_col(t, "fn(") or starts_with_col(t, "(")
+    }
+}
+
+fn cat_is_tuple_type(s: string) -> boolean {
+    t: string <- strip_spaces_col(s);
+    case length_bytes(t) >= 2 and starts_with_col(t, "(") of {
+        false -> false;
+        true -> case find_arrow_col_depth(t, 0, 0) < 0 of {
+            false -> false;
+            true -> substring(t, length_bytes(t) - 1, length_bytes(t)) == ")"
+        }
+    }
+}
+
+fn cat_paren_inner(s: string) -> string {
+    t: string <- strip_spaces_col(s);
+    case length_bytes(t) >= 2 of {
+        false -> "";
+        true -> substring(t, 1, length_bytes(t) - 1)
+    }
+}
+
+fn cat_is_ident_char(c: string) -> boolean {
+    length_bytes(c) == 1 and contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_", c)
+}
+
+fn cat_all_ident_chars(s: string, i: int64) -> boolean {
+    case i >= length_bytes(s) of {
+        true -> true;
+        false -> case cat_is_ident_char(substring(s, i, i + 1)) of {
+            false -> false;
+            true -> cat_all_ident_chars(s, i + 1)
+        }
+    }
+}
+
+fn cat_first_colon(s: string, i: int64) -> int64 {
+    case i >= length_bytes(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == ":" of {
+            true -> i;
+            false -> cat_first_colon(s, i + 1)
+        }
+    }
+}
+
+// `msg: int64` -> `int64`; an atom-union parameter type (`:a | :b`) starts with ':' and keeps it.
+fn cat_strip_param_name(seg: string) -> string {
+    t: string <- strip_spaces_col(seg);
+    colon: int64 <- cat_first_colon(t, 0);
+    case colon <= 0 of {
+        true -> t;
+        false -> {
+            name: string <- strip_spaces_col(substring(t, 0, colon));
+            case length_bytes(name) > 0 and cat_all_ident_chars(name, 0) of {
+                true -> strip_spaces_col(substring(t, colon + 1, length_bytes(t)));
+                false -> t
+            }
+        }
+    }
+}
+
+fn cat_fn_params_inner(s: string) -> string {
+    t0: string <- strip_spaces_col(s);
+    t: string <- case starts_with_col(t0, "fn") of {
+        true -> strip_spaces_col(substring(t0, 2, length_bytes(t0)));
+        false -> t0
+    };
+    arrow: int64 <- find_arrow_col_depth(t, 0, 0);
+    case arrow < 0 of {
+        true -> "";
+        false -> cat_paren_inner(substring(t, 0, arrow))
+    }
+}
+
+fn cat_fn_result(s: string) -> string {
+    t0: string <- strip_spaces_col(s);
+    t: string <- case starts_with_col(t0, "fn") of {
+        true -> strip_spaces_col(substring(t0, 2, length_bytes(t0)));
+        false -> t0
+    };
+    arrow: int64 <- find_arrow_col_depth(t, 0, 0);
+    case arrow < 0 of {
+        true -> "";
+        false -> strip_spaces_col(substring(t, arrow + 2, length_bytes(t)))
+    }
+}
+
+fn cat_leaf_equal(a: string, f: string) -> boolean {
+    case cat_normalize_leaf(a) == cat_normalize_leaf(f) of {
+        true -> true;
+        // Every placeholder name ends in "Type"; the substring test keeps the interner parse off
+        // the common path.
+        false -> (contains(a, "Type") and is_assoc_type_placeholder(a)) or (contains(f, "Type") and is_assoc_type_placeholder(f))
+    }
+}
+
+fn collection_aware_types_compatible(actual: string, formal: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> boolean {
+    cat_compat(actual, formal, world, 32)
+}
+
+fn cat_compat(actual: string, formal: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], fuel: int64) -> boolean {
+    // Printed surfaces carry spaces ("List [ ValueType , mem ( normal ) ]"); compare space-free.
+    a: string <- strip_all_spaces_col(actual);
+    f: string <- strip_all_spaces_col(formal);
+    case fuel <= 0 or length_bytes(a) == 0 or length_bytes(f) == 0 of {
+        true -> false;
+        false -> case cat_leaf_equal(a, f) of {
+            true -> true;
+            false -> cat_compat_shapes(a, f, world, fuel)
+        }
+    }
+}
+
+fn cat_compat_shapes(a: string, f: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], fuel: int64) -> boolean {
+    a_col: boolean <- is_collection_trait_type(a);
+    f_col: boolean <- is_collection_trait_type(f);
+    case a_col or f_col of {
+        true -> cat_compat_collection(a, f, a_col, f_col, world);
+        false -> case type_checker_record_types@record_type_starts(a) and type_checker_record_types@record_type_starts(f) of {
+            true -> cat_records_compatible(a, f, world, fuel);
+            false -> case starts_with_col(a, "List[") and starts_with_col(f, "List[") of {
+                true -> cat_lists_compatible(a, f, world, fuel);
+                false -> case cat_is_fn_type(a) and cat_is_fn_type(f) of {
+                    true -> cat_fns_compatible(a, f, world, fuel);
+                    false -> case cat_is_tuple_type(a) and cat_is_tuple_type(f) of {
+                        true -> cat_seq_compatible(cat_paren_inner(a), cat_paren_inner(f), false, world, fuel);
+                        false -> type_checker_lists@formal_type_accepts_actual(a, f, world) or type_checker_lists@formal_type_accepts_actual(f, a, world)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn cat_compat_collection(a: string, f: string, a_col: boolean, f_col: boolean, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> boolean {
+    case a_col and f_col of {
+        // Two bracket types: the same family with the same parameters (spellings normalized).
+        true -> public_trait_family_tag(a) == public_trait_family_tag(f) and cat_normalize_leaf(a) == cat_normalize_leaf(f);
+        false -> case f_col of {
+            true -> type_checker_record_types@record_type_starts(a) and collection_return_accepts_constructor(f, a, world);
+            false -> type_checker_record_types@record_type_starts(f) and collection_return_accepts_constructor(a, f, world)
+        }
+    }
+}
+
+fn cat_records_compatible(a: string, f: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], fuel: int64) -> boolean {
+    case type_checker_record_types@count_record_fields(a) == type_checker_record_types@count_record_fields(f) of {
+        false -> false;
+        true -> cat_record_fields_loop(type_checker_record_types@record_case_inner_body(f), a, world, fuel)
+    }
+}
+
+fn cat_record_fields_loop(rem: string, a: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], fuel: int64) -> boolean {
+    case length_bytes(strip_spaces_col(rem)) == 0 of {
+        true -> true;
+        false -> {
+            (seg: string, rest: string) <- type_checker_record_types@record_case_field_step(rem);
+            (fname: string, ftype: string) <- type_checker_record_types@record_field_segment_name_sub(seg);
+            case length_bytes(fname) == 0 of {
+                true -> false;
+                false -> {
+                    atype: string <- type_checker_record_types@find_field_type_in_record(a, fname);
+                    case length_bytes(atype) == 0 of {
+                        true -> false;
+                        false -> case cat_compat(atype, ftype, world, fuel - 1) of {
+                            false -> false;
+                            true -> cat_record_fields_loop(rest, a, world, fuel)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn cat_lists_compatible(a: string, f: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], fuel: int64) -> boolean {
+    (ok_a: boolean, ea: string, sa: string) <- type_checker_lists@parse_list_type_params(a);
+    (ok_f: boolean, ef: string, sf: string) <- type_checker_lists@parse_list_type_params(f);
+    case ok_a and ok_f of {
+        false -> false;
+        true -> case length_bytes(sa) == 0 or length_bytes(sf) == 0 or cat_normalize_leaf(sa) == cat_normalize_leaf(sf) of {
+            false -> false;
+            true -> cat_compat(ea, ef, world, fuel - 1)
+        }
+    }
+}
+
+fn cat_fns_compatible(a: string, f: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], fuel: int64) -> boolean {
+    case cat_seq_compatible(cat_fn_params_inner(a), cat_fn_params_inner(f), true, world, fuel) of {
+        false -> false;
+        true -> cat_compat(cat_fn_result(a), cat_fn_result(f), world, fuel - 1)
+    }
+}
+
+// Pairwise over top-level comma-separated elements; strip_names drops `name:` prefixes (fn params).
+fn cat_seq_compatible(a_inner: string, f_inner: string, strip_names: boolean, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], fuel: int64) -> boolean {
+    a_t: string <- strip_spaces_col(a_inner);
+    f_t: string <- strip_spaces_col(f_inner);
+    case length_bytes(a_t) == 0 or length_bytes(f_t) == 0 of {
+        true -> length_bytes(a_t) == 0 and length_bytes(f_t) == 0;
+        false -> {
+            ca: int64 <- find_first_comma_depth0_col(a_t, 0, 0);
+            cf: int64 <- find_first_comma_depth0_col(f_t, 0, 0);
+            head_a0: string <- substring(a_t, 0, ca);
+            head_f0: string <- substring(f_t, 0, cf);
+            head_a: string <- case strip_names of { true -> cat_strip_param_name(head_a0); false -> head_a0 };
+            head_f: string <- case strip_names of { true -> cat_strip_param_name(head_f0); false -> head_f0 };
+            case cat_compat(head_a, head_f, world, fuel - 1) of {
+                false -> false;
+                true -> {
+                    rest_a: string <- case ca >= length_bytes(a_t) of { true -> ""; false -> substring(a_t, ca + 1, length_bytes(a_t)) };
+                    rest_f: string <- case cf >= length_bytes(f_t) of { true -> ""; false -> substring(f_t, cf + 1, length_bytes(f_t)) };
+                    cat_seq_compatible(rest_a, rest_f, strip_names, world, fuel - 1)
+                }
+            }
+        }
+    }
+}
+
+// The bracket-constructible representation of a collection bracket type: the result record of
+// the empty/with_root constructor of the registered construction module in `world` that the
+// bracket family accepts (collection_trait_accepts_module). A value typed with the bracket was
+// built by that constructor (or is its update result), so trait dispatch on a bracket-typed
+// receiver selects the implementation whose parameter is this record, not whichever
+// implementation merely carries the family's comparator witnesses. "" when none is in scope.
+fn bracket_canonical_representation(bracket_type: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> string {
+    case is_collection_trait_type(bracket_type) of {
+        false -> "";
+        true -> bracket_rep_scan(bracket_type, world)
+    }
+}
+
+fn bracket_rep_scan(bracket_type: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> string {
+    case world.is_nil of {
+        true -> "";
+        false -> case collection_trait_accepts_module(bracket_type, world.head.module_name) of {
+            false -> bracket_rep_scan(bracket_type, world.tail);
+            true -> {
+                r: string <- bracket_rep_ctor_return(world.head.program.declarations);
+                case length_bytes(r) > 0 of {
+                    true -> r;
+                    false -> bracket_rep_scan(bracket_type, world.tail)
+                }
+            }
+        }
+    }
+}
+
+fn bracket_rep_ctor_return(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> string {
+    case decls.is_nil of {
+        true -> "";
+        false -> case decls.head.tag == 0 and (decls.head.name == "empty" or decls.head.name == "with_root") of {
+            true -> decls.head.return_type_name;
+            false -> bracket_rep_ctor_return(decls.tail)
+        }
+    }
+}
+
+// True when some registered construction module of this bracket family (in `world`) returns a record
+// that instantiates `formal` -- the implementation parameter under test. A program may have more
+// than one representation of a family in scope (the stdlib's and a trial's stub), so every one is
+// tried; dispatch is unique when exactly one implementation matches one of them.
+fn bracket_representation_fits_formal(bracket_type: string, formal: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> boolean {
+    case is_collection_trait_type(bracket_type) of {
+        false -> false;
+        true -> brf_scan(bracket_type, formal, world)
+    }
+}
+
+fn brf_scan(bracket_type: string, formal: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> boolean {
+    case world.is_nil of {
+        true -> false;
+        false -> case collection_trait_accepts_module(bracket_type, world.head.module_name) of {
+            false -> brf_scan(bracket_type, formal, world.tail);
+            true -> {
+                r: string <- bracket_rep_ctor_return(world.head.program.declarations);
+                case length_bytes(r) > 0 and type_interner@surface_matches_schema(r, formal) of {
+                    true -> true;
+                    false -> brf_scan(bracket_type, formal, world.tail)
+                }
+            }
+        }
+    }
 }

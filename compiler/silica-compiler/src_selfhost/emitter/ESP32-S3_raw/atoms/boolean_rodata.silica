@@ -91,21 +91,18 @@ fn term_uses_booleans(term: { nodes: List[{ kind: int64, type_name: string, valu
         true -> false;
         false -> {
             node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
-            case node.kind of {
-                0 -> node.type_name == "bool";
-                2 -> case term_uses_booleans(sir_term_at(term, node.inner)) of {
+            // Every kind's children are searched: a print_bool or boolean literal inside a case arm
+            // (kinds 3/7/8) or in a later call argument (a call's right_expr) needs L_pb_true /
+            // L_pb_false just the same. See trials/codegen_defects_addition/print_bool_in_case_arm_block.
+            case node.kind == 0 of {
+                true -> node.type_name == "bool";
+                false -> case node.kind == 4 and node.name == "main.print_bool" of {
                     true -> true;
-                    false -> term_uses_booleans(sir_term_at(term, node.right_expr))
-                };
-                4 -> case node.name == "main.print_bool" of {
-                    true -> true;
-                    false -> term_uses_booleans(sir_term_at(term, node.inner))
-                };
-                6 -> case term_uses_booleans(sir_term_at(term, node.inner)) of {
-                    true -> true;
-                    false -> term_uses_booleans(sir_term_at(term, node.right_expr))
-                };
-                _: int64 -> false
+                    false -> case term_uses_booleans(sir_term_at(term, node.inner)) of {
+                        true -> true;
+                        false -> term_uses_booleans(sir_term_at(term, node.right_expr))
+                    }
+                }
             }
         }
     }
@@ -116,20 +113,15 @@ fn term_has_print_bool_var(term: { nodes: List[{ kind: int64, type_name: string,
         true -> false;
         false -> {
             node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
-            case node.kind of {
-                4 -> case node.name == "main.print_bool" of {
-                    true -> sir_term_root_node(sir_term_at(term, node.inner)).kind != 0;
-                    false -> term_has_print_bool_var(sir_term_at(term, node.inner))
-                };
-                2 -> case term_has_print_bool_var(sir_term_at(term, node.inner)) of {
-                    true -> true;
-                    false -> term_has_print_bool_var(sir_term_at(term, node.right_expr))
-                };
-                6 -> case term_has_print_bool_var(sir_term_at(term, node.inner)) of {
-                    true -> true;
-                    false -> term_has_print_bool_var(sir_term_at(term, node.right_expr))
-                };
-                _: int64 -> false
+            case node.kind == 4 and node.name == "main.print_bool" and sir_term_root_node(sir_term_at(term, node.inner)).kind != 0 of {
+                true -> true;
+                false -> case node.kind == 0 of {
+                    true -> false;
+                    false -> case term_has_print_bool_var(sir_term_at(term, node.inner)) of {
+                        true -> true;
+                        false -> term_has_print_bool_var(sir_term_at(term, node.right_expr))
+                    }
+                }
             }
         }
     }

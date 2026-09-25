@@ -1,0 +1,24 @@
+// D13 (found while writing docs/learn-silica.md §10, 2026-09-19): a tuple holding two generic
+// collections, returned across a module boundary and passed back in. pair_sets@make_pair binds two
+// wbt_set@empty results -- records rebuilt at the call site (the ordering-bundle merge) and so held
+// in make_pair's frame region -- and returns `(a, b)`. The return copied the outer pair to the region
+// but left both elements pointing into the popped frame; pair_sets@waiting then faulted in
+// wbt_set_size. A let-bound record or tuple packed by name into a tuple is now copied to the region
+// when its pointer lies in the current frame (term_aggregate_helpers@tuple_elem_frame_var_promote).
+// The record form is two_generic_collections_record_round_trip.
+// Expected: "0 at start", exit 0.
+
+use pair_sets;
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        p: (
+            { root: ref?(L, normal, rec), compare_item: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 },
+            { root: ref?(L, normal, rec), compare_item: fn(string, string) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_item_ordering_bundle: int64 }
+        ) <- pair_sets@make_pair();
+        _: atom <- print_int64(pair_sets@waiting(p));
+        println(" at start")
+    produces
+        pure 0
+    end
+}

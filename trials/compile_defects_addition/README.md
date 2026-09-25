@@ -27,6 +27,11 @@ Open:
   `compile_defects_lifetime_parameter_name_addition` (a function's lifetime parameter name is
   compared by source spelling instead of treated as a polymorphic binder, E2003; spec §12.1.4).
 
+- From defect batch 2 (2026-09-19, open): `compile_defects_float_literal_pattern_addition` (a float
+  literal is not accepted as a case pattern -- on its own or as a tuple element -- because
+  `case_parse_pattern` classifies numeric literals with `case_string_is_signed_int_literal`, E2005;
+  the emitter matches a float tuple element already).
+
 - From the graph work (open): `compile_defects_trait_nested_placeholder_addition` (an impl cannot bind a
   placeholder nested inside `List[...]` to a record, E2092), `compile_defects_graph_bracket_receiver_addition` (a
   `DirectedGraph[...]`/`WeightedGraph[...]` value is rejected by trait calls, E2003),
@@ -43,9 +48,9 @@ Resolved 2026-09-19: the bare `ref?(L, normal, rec)` binding of SD-5 is invalid 
 Fixed 2026-09-18 (front end: parser and type checker) and moved:
 
 - `defect_tuple_pattern_named_binding` (`(:ok, n: int64)` was E2002) ->
-  `supervisors_addition/emitter_defect_tuple_pattern_named_binding`: now accepted, but the emitter never matches a
-  tuple pattern with atom or named elements (open emitter defect; also isolated as
-  `case_addition/emitter_defect_tuple_pattern_atom_element`). No `.ascomp` until the emitter is fixed.
+  `supervisors_addition/tuple_pattern_named_binding_in_behaviour`. The emitter half (every element kind
+  of a tuple pattern, and a frame slot for each named element) was fixed on 2026-09-19; the isolated
+  case is `case_addition/tuple_pattern_atom_and_named_elements`.
 - `compile_defects_priority_type_addition` (PriorityType never substituted in composite types, E2003) ->
   `ordered_data_structures/heap_collections/pq_priority_type_composite_result` (+ `lib/StubPriorityQueue.silica`).
 - `compile_defects_item_type_addition` (ItemType resolved to the first PriorityQueue bracket parameter, E2001) ->

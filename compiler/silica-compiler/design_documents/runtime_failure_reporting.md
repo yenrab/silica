@@ -3,7 +3,9 @@
 Status: implemented 2026-09-19 in all four emitter trees (`apple_silicon_mac`, `linux_aarch64`,
 `linux_x86_64`, `ESP32-S3_raw`) and the ESP32-S3 board runtime. Verified on the Mac; the Linux and x86-64
 runtime text is assembled but not yet run on its hosts; the board runtime is assembled and linked into
-images but not yet run on the board.
+images but not yet run on the board. The follow-up decisions of the same day (handlers installed by the
+startup code, a last-resort path for a fault inside the handler, `_exit` on every process-fatal path, and
+the two paths that used to exit 1) were implemented in defect batch 2 (§6).
 
 The contract is normative in the specification, **§15.4.5.5 Process-Fatal Reports and Exit Status**
 ([silica-specification.md](silica-specification.md)). This document is non-normative: it describes how each
@@ -75,15 +77,43 @@ attributed to the function after it.
 
 **Signals.** `silica_rt_install_sync_fault_handlers` (`emitter/<target>/terms/ffi_fault_runtime_asm.silica`)
 installs `silica_rt_sync_fault_handler` with `sigaction` for SIGSEGV, SIGBUS, SIGILL and SIGFPE
-(`SA_SIGINFO | SA_ONSTACK`) and gives the installing thread a 64 KB `sigaltstack`. Each actor thread gets
-its own 64 KB alternate stack (ACB +464). The install runs in `silica_rt_actor_spawn`, and every
-program's `main` spawns the pid registry actors in its prologue (the emitter injects
-`_silica_pid_registry_init`), so the handlers exist before any user code runs, including in a program that
-never spawns an actor itself. A stack overflow in `main` therefore faults on the guard page below the
-main thread's stack and the handler runs on the alternate stack.
+(`SA_SIGINFO | SA_ONSTACK | SA_NODEFER`) and gives the installing thread a 64 KB `sigaltstack`. Each actor
+thread gets its own 64 KB alternate stack (ACB +464). **The startup code installs the handlers before
+`main` runs**: the same module puts the install routine in the program's constructor list
+(`__DATA,__mod_init_func` on Darwin, `.init_array` on Linux), which dyld or the C runtime runs before
+`main`, so a fault in `main`'s prologue, or in anything else that runs before `main`'s body (a foreign
+library's constructor), is reported like any other. The calls from `silica_rt_actor_spawn` and from
+`main`'s prologue (the emitter injects `_silica_pid_registry_init`) remain and return at once (the
+installed flag). A stack overflow in `main` faults on the guard page below the main thread's stack and the
+handler runs on the alternate stack.
+
+`SA_NODEFER` keeps a signal deliverable while its own handler runs. Without it the signal is blocked there,
+and a synchronous fault on a blocked signal is not delivered: the kernel ends the process with the default
+action (status 139).
 
 **The decision** (spec §15.4.5.3), in `silica_rt_sync_fault_handler`:
 
+0. **a fault raised while a handler runs on this thread takes the last-resort path**
+   (`silica_rt_fault_in_handler`, `silica_rt_fault_last_resort`; spec §15.4.5.5). The test is whether the
+   interrupted stack pointer, read from the `ucontext`, lies on this thread's alternate signal stack
+   (`sigaltstack(NULL, &ss)`): only the handler, and the runtime code it calls or leaves the thread in
+   (`silica_rt_actor_fail_current`, the guarded-FFI teardown), runs there. The comparison is strict at
+   both ends. An actor's execution stack is often mapped directly below that thread's alternate stack,
+   so the top of the reservation *is* the alternate stack's base, and the growth fault of a behavior's
+   first push interrupts code whose stack pointer is exactly that base; with an inclusive bound every
+   actor's first message was reported as a fault inside the handler
+   (`actor_stacks_addition/stack_many_idle_actors_hold_nothing` caught it). The last resort writes
+   `[silica] fault at 0x<pc>  addr=0x<fault address>` with `write(2)` and ends with `_exit(70)`: no `dladdr`
+   (it takes the loader's lock, which the faulting handler may hold, and it may be what faulted), no TLS,
+   no actor fields. The line may follow part of the first handler's line; the report tools fold everything
+   after the first `[silica] fault at ` on a line (§5), so it compares the same.
+
+   Why this test and not the alternatives: a per-thread "in handler" flag needs TLS the handler can
+   reach without allocating, and it stays set when the handler leaves by `siglongjmp` (guarded-FFI
+   recovery, an actor failing on `:stack_exhausted`) unless every such exit clears it; the stack pointer
+   test keeps no state, so nothing can go stale. `SA_RESETHAND` resets the action for the whole process,
+   which would take stack growth away from every other actor thread while one thread reports. A second
+   handler would still need this test to know it was nested.
 1. a fault inside the current actor's reservation is stack growth (`silica_rt_stack_grow_to`): grown,
    return; the end of a reservation the program lowered, the actor fails with
    `(:explicit, :stack_exhausted)` (supervision, not a process report); **the host refused to commit
@@ -96,7 +126,16 @@ main thread's stack and the handler runs on the alternate stack.
    pc, address and stack);
 3. a fault inside a guarded FFI call is recovered (`siglongjmp`) and becomes an actor failure;
 4. anything else is a **fatal fault**: `silica_rt_print_fault_site` writes the report line from the
-   recorded fields (`dladdr` for the symbol), and the process calls `exit(70)`.
+   recorded fields (`dladdr` for the symbol), and the process ends with C `_exit(70)` (Darwin assembly
+   `bl __exit`; `bl _exit` there is C `exit()`, which would run atexit handlers and flush stdio from inside
+   the signal handler).
+
+A guarded foreign fault recovered when **no actor is current** has no supervisor to deliver it to:
+`silica_rt_ffi_guarded_fault_finish` (`L_gff_process`) writes the fault report line from the fields the
+handler recorded before its `siglongjmp` and ends with `_exit(70)`. It used to print `foreign_fault` and exit 1.
+Silica source cannot make a guarded call outside an actor (the call must be the root body of a
+`spawn_dangerous` behavior), so only foreign code driving the runtime entries reaches it; trial
+`ffi_addition/app_process_fatal_paths/foreign_fault_without_actor` does.
 
 **Runtime aborts.** One routine per target, in the same module as the fault report so that it shares the
 output helpers (`silica_rt_fault_puts`, `silica_rt_fault_puthex`, the `dladdr` buffer):
@@ -116,8 +155,16 @@ handler on its alternate stack; a second caller on any thread parks (`yield` / `
 process has gone. It writes `[silica] abort: <reason> at 0x<pc>`, then ` in <symbol>+0x<offset>` when
 `dladdr` names the address, then a newline, with `write(2, ...)`, and ends with C `_exit(71)`
 (Darwin `__exit`): async-signal-safe, no atexit handlers and no stdio flush, as the `abort()` it replaces.
-Silica's own output never sits in a stdio buffer (the print helpers make the `write` system call).
-The fault report keeps `exit(70)` as before.
+Silica's own output never sits in a stdio buffer (the print helpers make the `write` system call), so no
+Silica output is lost by skipping the flush. Every process-fatal path now ends this way (the fault report,
+the last resort, the foreign fault with no actor). A normal exit (`main` returning, `wait_for_exit`) and
+a language-level failure in `main` (`badarith`, `case_clause`, status 1) keep C `exit()`: they are not in a
+signal handler, and flushing a foreign library's stdio buffers there is what a normal exit does.
+
+A spawn whose stack reservation fails while `main` is the spawner (`silica_rt_spawn_reserve_failed`,
+`prims_actors_stack_asm`) is a runtime abort, `stack reservation failed`, status 71 (spec §15.1.2.2),
+reported at the spawn routine's call to `silica_rt_spawn_reserve_failed`. It used to print
+`stack_reserve_failed` and exit 1.
 
 ### 3.2 The ESP32-S3 board (OS-free)
 
@@ -146,6 +193,14 @@ the fatal trampoline does and calls `silica_rt_abort_report` on the fault stack,
 heap-exhausted abort is safe. `silica_rt_abort()` without a reason remains, as `runtime check failed`,
 for code compiled before the per-site entries existed.
 
+**A fault while a report is being written.** `silica_rt_fatal_depth` (a word in `.data`, so it reads 0
+even before `rt_start` zeroes `.bss`) counts the entries into `silica_rt_fatal_trampoline` and
+`silica_rt_abort_trampoline`. The first entry reports as above. A second one (a fault raised while a fatal
+or abort report runs) goes to `silica_rt_fatal_nested`, which writes only `[silica] fault at 0x<epc>`
+(`silica_rt_fatal_last_resort`, `rt_console.S`) and the exit marker with status 70 from a fresh fault stack;
+a third one, a fault in that last resort, halts. Before this a report that faulted re-entered the trampoline,
+which started the report again from the top, forever.
+
 **Console protocol.** `rt_start.S` prints `\x02SILICA:START\x03` before `main`; `silica_rt_exit` prints
 `\x02SILICA:EXIT:<status>\x03` and halts. `board/tools/run_on_board.py` prints the program's bytes followed
 by the status on its own line, which is exactly the `.sout` form, and sends anything after the exit marker
@@ -173,6 +228,7 @@ Hosted runtime (`emitter/<target>/terms/`):
 | `prims_actors_runtime_asm` (x86-64: `_b`): `Lsie_abort`, supervision ingress at its 1024 bound | `silica_rt_abort_ingress_full` | `supervision ingress queue is full` |
 | `prims_actors_runtime_asm` (x86-64: `_c`): `Lde_abort`, exit delivery into a supervisor's ingress at its bound | `silica_rt_abort_exit_queue_full` | `supervisor ingress queue is full (exit delivery)` |
 | `ffi_fault_runtime_asm`: `L_sfh_unrecoverable` (host refused to commit a growing stack) | `silica_rt_abort_with_pc` at the faulting pc | `cannot commit memory for a growing actor stack` |
+| `prims_actors_stack_asm`: `silica_rt_spawn_reserve_failed` with `main` as the spawner | `silica_rt_abort_stack_reserve` | `stack reservation failed` |
 
 Board runtime (`board/runtime/`):
 
@@ -190,7 +246,10 @@ The ESP32-S3 emitter tree still carries the AArch64 runtime chunks it was copied
 marker only) and are edited in step with the Mac tree.
 
 Reachable from Silica source today, and covered by a trial: the list index, the invalid buffer size, the
-zero canonical-arena key, and the fatal fault of a stack overflow in `main`. Not reachable in practice: the
+zero canonical-arena key, the fatal fault of a stack overflow in `main`, and `main`'s failed stack
+reservation (`actor_stacks_addition/stack_reserve_failed_in_main`). Covered by a trial through a C probe
+linked after the runtime (`ffi_addition/app_process_fatal_paths`): a fault before `main`, a fault inside
+the fault handler, a guarded foreign fault with no current actor. Not reachable in practice: the
 allocator failures (region, arena, guarded FFI state), a full supervision ingress (1024 pending entries),
 and the stack-commit refusal. **The buffer bounds check is never emitted** (an open defect): the store only
 checks when its SIR node carries a `|bounds:` marker, which no trial produces, and loads have no check;
@@ -215,7 +274,8 @@ Where it is applied:
 - **Trial suites** that contain such trials use the per-suite hook `compare_scout_normalized.sh` (the
   convention `supervisors_addition` and `ffi_addition` already had): `actor_stacks_addition`,
   `list_addition`, `memory_region_addition`. Their Makefiles compare every trial's `.sout` with its
-  `.scout` through it.
+  `.scout` through it. `ffi_addition`'s own script (pointer fields of actor-failure banners) folds the
+  report lines too since defect batch 2, for `app_process_fatal_paths`.
 - **Board trial runs** (`trials/targets/board_suite.sh`) use the suite's `compare_scout_normalized.sh` when
   it has one, so the same `.scout` holds on the host and on the board.
 - **Board apps**: `board/tools/host_reference.sh` writes `expected.sout` in the folded form, and
@@ -224,32 +284,35 @@ Where it is applied:
 
 ## 6. Limits
 
-- **Decided 2026-09-19, not yet implemented** (spec §15.4.5.5 as updated): the fault handlers are to be
-  installed by the startup code before `main` runs, and a fault raised inside the handler is to take a
-  last-resort path that writes the fault line and exits 70. Today both cases still end with the default action
-  (status 139): the signal is blocked while the handler runs, and a fault before `main`'s prologue finds no
-  handler installed.
-- **Decided 2026-09-19, not yet implemented:** process-fatal paths end with the async-signal-safe `_exit`. The
-  runtime-abort routine already does. The fault handler still calls C `exit()`: in Darwin assembly `bl _exit` is
-  C's `exit()`, and `bl __exit` is C's `_exit()` (Linux spells them `exit` and `_exit`).
+- **Implemented in defect batch 2 (2026-09-19)** (spec §15.4.5.5 as updated): the fault handlers are installed by
+  the startup code before `main` runs (§3.1), and a fault raised inside the handler takes the last-resort path
+  (line + 70; §3.1 step 0, §3.2). Every process-fatal path ends with the async-signal-safe `_exit` (in Darwin
+  assembly `bl __exit`; `bl _exit` there is C's `exit()`; Linux spells them `_exit` and `exit`). Trials:
+  `ffi_addition/app_process_fatal_paths` (`fault_before_main`, `fault_inside_handler`,
+  `foreign_fault_without_actor`). The Linux AArch64 and x86-64 text is assembled, not yet run on those hosts;
+  the board text is assembled and linked into images, not yet run on the board.
+- The last-resort test needs the thread to have an alternate signal stack. Every thread the runtime creates has
+  one; a thread created by foreign code does not, and a fault inside the handler on such a thread still ends
+  with status 139. So does a fault that exhausts the 64 KB alternate stack itself: the kernel cannot deliver
+  the signal at all.
 - Two reports at once (two threads failing together) can interleave their lines; only the first abort
   reports, but a fault on another thread does not take the abort's claim word.
 - On Linux the symbol is missing from most reports until the emitters write `.size` for their functions.
 - The board has one core and no actor runtime, so there is no actor failure on the board yet: a fault is
   always fatal there.
-- **Decided 2026-09-19, not yet implemented:** a spawn whose stack reservation fails while `main` is the spawner
-  becomes a runtime abort (`stack reservation failed`, 71; spec §15.1.2.2), and a guarded FFI fault with no
-  current actor becomes a fatal fault (70). Today they print `stack_reserve_failed` or `foreign_fault` and exit 1
-  (`prims_actors_stack_asm`, trial `actor_stacks_addition/stack_reserve_failed_in_main`;
-  `ffi_fault_runtime_asm` `L_gff_process`).
+- **Implemented in defect batch 2 (2026-09-19):** a spawn whose stack reservation fails while `main` is the
+  spawner is a runtime abort (`stack reservation failed`, 71; spec §15.1.2.2; trial
+  `actor_stacks_addition/stack_reserve_failed_in_main`), and a guarded FFI fault with no current actor is a
+  fatal fault (70; trial `ffi_addition/app_process_fatal_paths/foreign_fault_without_actor`). They used to
+  print `stack_reserve_failed` or `foreign_fault` and exit 1.
 - Process-fatal paths write only the report line; unwind reports belong to actor failures (spec §15.4.5.5).
 
 ## 7. Where the code is
 
 | Target | Fault report | Runtime abort |
 | --- | --- | --- |
-| `apple_silicon_mac`, `linux_aarch64`, `linux_x86_64` | `emitter/<target>/terms/ffi_fault_runtime_asm.silica`: `silica_rt_install_sync_fault_handlers`, `silica_rt_sync_fault_handler`, `silica_rt_print_fault_site` | same file, `emit_abort_runtime_asm`: `silica_rt_abort_with`, `silica_rt_abort_with_pc`, `silica_rt_abort_<site>`; the claim word and the 32 KB report stack in its `.bss` |
-| `ESP32-S3_raw` | `board/runtime/rt_vectors.S` (vectors, `silica_rt_fatal_trampoline`), `rt_console.S` (`silica_rt_fatal_report`), `rt_start.S` (VECBASE, stack-guard breakpoints) | `rt_console.S` (`silica_rt_abort_with`, `silica_rt_abort_<site>`, `silica_rt_abort_body`, `silica_rt_abort_report`), `rt_vectors.S` (`silica_rt_abort_trampoline`) |
+| `apple_silicon_mac`, `linux_aarch64`, `linux_x86_64` | `emitter/<target>/terms/ffi_fault_runtime_asm.silica`: `silica_rt_install_sync_fault_handlers` (and its constructor entry), `silica_rt_sync_fault_handler`, `silica_rt_print_fault_site`, `silica_rt_fault_in_handler`, `silica_rt_fault_last_resort` | same file, `emit_abort_runtime_asm`: `silica_rt_abort_with`, `silica_rt_abort_with_pc`, `silica_rt_abort_<site>`; the claim word and the 32 KB report stack in its `.bss` |
+| `ESP32-S3_raw` | `board/runtime/rt_vectors.S` (vectors, `silica_rt_fatal_trampoline`, `silica_rt_fatal_nested`, `silica_rt_fatal_depth`), `rt_console.S` (`silica_rt_fatal_report`, `silica_rt_fatal_last_resort`), `rt_start.S` (VECBASE, stack-guard breakpoints) | `rt_console.S` (`silica_rt_abort_with`, `silica_rt_abort_<site>`, `silica_rt_abort_body`, `silica_rt_abort_report`), `rt_vectors.S` (`silica_rt_abort_trampoline`) |
 
 Related: [porting_for_os_free_targets.md](porting_for_os_free_targets.md),
 [porting_to_linux_x86_64_hosted.md](porting_to_linux_x86_64_hosted.md), the board pack's
