@@ -1,0 +1,46 @@
+// A let-bound record and a let-bound tuple, packed by name into a tuple that the function returns.
+// Both live in the callee's frame region; before the fix only the outer tuple was copied to the
+// region on return, so its elements still pointed into the popped frame and the caller read
+// whatever the next calls left there (the non-generic shape of
+// generic_modules_addition/two_generic_collections_round_trip). The caller makes several calls
+// before reading the fields so the old frame is certainly reused.
+// Expected:
+//   11 22 33 44
+//   0
+
+fn make_parts(base: int64) -> ({ a: int64, b: int64 }, (int64, int64)) {
+    r: { a: int64, b: int64 } <- { a: base + 1, b: base + 12 };
+    t: (int64, int64) <- (base + 23, base + 34);
+    (r, t)
+}
+
+fn churn(n: int64, acc: int64) -> int64 {
+    case n == 0 of {
+        true -> acc;
+        false -> churn(n - 1, acc + n * 3)
+    }
+}
+
+fn scribble(n: int64) -> ({ a: int64, b: int64 }, (int64, int64)) {
+    make_parts(n * 100)
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        parts: ({ a: int64, b: int64 }, (int64, int64)) <- make_parts(10);
+        _: ({ a: int64, b: int64 }, (int64, int64)) <- scribble(7);
+        _: int64 <- churn(40, 0);
+        (r: { a: int64, b: int64 }, t: (int64, int64)) <- parts;
+        (c: int64, d: int64) <- t;
+        _: atom <- print_int64(r.a);
+        print_string(" ");
+        _: atom <- print_int64(r.b);
+        print_string(" ");
+        _: atom <- print_int64(c);
+        print_string(" ");
+        _: atom <- print_int64(d);
+        println("")
+    produces
+        pure 0
+    end
+}

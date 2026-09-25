@@ -74,8 +74,6 @@ L_srt_hw_memsize:
 	.asciz	\"hw.memsize\"
 L_srt_vm_swapusage:
 	.asciz	\"vm.swapusage\"
-L_srt_reserve_failed_msg:
-	.asciz	\"stack_reserve_failed\\n\"
 ")
 }
 
@@ -723,8 +721,9 @@ Lafc_thread_exit:
 	.p2align	2
 _silica_rt_spawn_reserve_failed:
 ; A spawn could not make its reservation. The spawning actor fails with
-; (:explicit, :stack_reserve_failed); `main` is not an actor, so there it is reported and the
-; program exits, as for any failure in non-actor code. Never returns.
+; (:explicit, :stack_reserve_failed). `main` is not an actor and has no supervisor, so there the
+; process ends with a runtime abort, reason stack reservation failed, status 71 (spec §15.1.2.2,
+; §15.4.5.5), reported at the spawn routine's call to this function. Never returns.
 	stp	x29, x30, [sp, #-16]!
 	mov	x29, sp
 	bl	_silica_rt_tls_current_actor_get
@@ -734,14 +733,8 @@ _silica_rt_spawn_reserve_failed:
 	ldr	x1, [x8]
 	bl	_silica_rt_actor_fail_current
 Lsrf_main:
-	mov	w0, #2
-	adrp	x1, L_srt_reserve_failed_msg@PAGE
-	add	x1, x1, L_srt_reserve_failed_msg@PAGEOFF
-	mov	w2, #21
-	bl	_write
-	mov	w0, #1
-	bl	_exit
-	b	Lsrf_main
+	ldp	x29, x30, [sp], #16
+	b	_silica_rt_abort_stack_reserve
 	.globl	_silica_rt_get_actor_memory_usage
 	.p2align	2
 _silica_rt_get_actor_memory_usage:

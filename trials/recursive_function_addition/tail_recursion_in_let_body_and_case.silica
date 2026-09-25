@@ -1,0 +1,28 @@
+// The tail self-call reached through a sequence binding and then a case arm: `r <- case i == 0 of {
+// ... false -> count_down(...) }` is the body's last value, so the call is in tail position and is
+// compiled as a jump back into the function (emitter_core@tco_tail_self_calls walks let bodies, case
+// arms and branch lists). 5,000,000 iterations of a three-parameter loop run in constant stack; before
+// 2026-09-19 each one cost a frame.
+// Expected, by hand: acc gains `step` once per level for i = 5,000,000 .. 1, so 2 * 5,000,000 =
+// 10000000.
+
+fn count_down(i: int64, acc: int64, step: int64) -> int64 {
+    sequence
+        next: int64 <- acc + step;
+        r: int64 <- case i == 0 of {
+            true -> acc;
+            false -> count_down(i - 1, next, step)
+        }
+    produces
+        pure r
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        _: atom <- print_int64(count_down(5000000, 0, 2));
+        println("")
+    produces
+        pure 0
+    end
+}

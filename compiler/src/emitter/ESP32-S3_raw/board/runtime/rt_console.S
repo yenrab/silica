@@ -41,6 +41,8 @@
 //   silica_rt_fatal_report(cause, epc, excvaddr)   fatal fault: "[silica] fault at 0x<epc>" (plus
 //                                      "  addr=0x<excvaddr>" for the causes that set EXCVADDR) as program
 //                                      output, exit status 70, then the board-only details after the marker
+//   silica_rt_fatal_last_resort(epc)   a fault raised while a report was being written (rt_vectors.S):
+//                                      "[silica] fault at 0x<epc>" and exit status 70, nothing else
 // How these meet the contract on every target: design_documents/runtime_failure_reporting.md.
 //   silica_rt_badarith()               "badarith\n", exit status 1 (division by zero; the host prints
 //                                      this on stderr, which the trial harness merges into .sout)
@@ -440,6 +442,25 @@ silica_rt_fatal_report:
     call8   silica_rt_halt
     retw
     .size   silica_rt_fatal_report, . - silica_rt_fatal_report
+
+// a2 = the pc of a fault raised while a fatal or abort report was being written (spec §15.4.5.5). The
+// line and the exit marker only: the details after the marker, and the fault address, are left out.
+    .align  4
+    .global silica_rt_fatal_last_resort
+    .type   silica_rt_fatal_last_resort, @function
+silica_rt_fatal_last_resort:
+    entry   a1, 32
+    mov     a6, a2
+    movi    a10, silica_rt_fault_pre
+    call8   silica_rt_puts
+    mov     a10, a6
+    call8   silica_rt_print_hex32
+    movi    a10, 10
+    call8   silica_rt_putc
+    movi    a10, 70
+    call8   silica_rt_exit
+    retw
+    .size   silica_rt_fatal_last_resort, . - silica_rt_fatal_last_resort
 
     .section .rodata.silica_rt_console, "a"
 silica_rt_exit_prefix:

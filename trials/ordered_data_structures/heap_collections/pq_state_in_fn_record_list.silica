@@ -1,0 +1,45 @@
+// A list of records whose fields hold a PriorityQueue[...] and a function over that queue (the
+// shape of a supervisor child spec), built by a list literal and returned inside a tuple. The
+// binding's declared type and the function's result type spell the same record type, but the
+// checker compares the declared `fn(int64, PriorityQueue[...]) -> ...` field with the interner's
+// `(int64, PriorityQueue[int64, string, normal]) -> ...` spelling of it, so the bracket family
+// must be recognized inside a function type nested in a list element record
+// (type_checker_collections@collection_aware_types_compatible; defect batch 2, D7 family).
+// Expected: kids() returns (1, [one record with id 2]); 1 + 2 = 3 is printed; exit 0.
+
+use brodal_okasaki_priority;
+use PriorityQueue;
+
+fn cmp_i(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn cmp_s(a: string, b: string) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn room() -> PriorityQueue[int64, string, mem(normal)] {
+    brodal_okasaki_priority@empty({ compare_priority: cmp_i, compare_item: cmp_s })
+}
+
+fn step(msg: int64, state: PriorityQueue[int64, string, mem(normal)]) -> (:no_reply, PriorityQueue[int64, string, mem(normal)]) {
+    (:no_reply, state)
+}
+
+fn kids() -> (int64, List[{ id: int64, st: PriorityQueue[int64, string, mem(normal)], beh: fn(msg: int64, state: PriorityQueue[int64, string, mem(normal)]) -> (:no_reply, PriorityQueue[int64, string, mem(normal)]) }, mem(normal)]) {
+    sequence proc[mem(normal)]
+        xs: List[{ id: int64, st: PriorityQueue[int64, string, mem(normal)], beh: fn(msg: int64, state: PriorityQueue[int64, string, mem(normal)]) -> (:no_reply, PriorityQueue[int64, string, mem(normal)]) }, mem(normal)] <- [ { id: 2, st: room(), beh: step } ]
+    produces
+        pure (1, xs)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        (n: int64, k: List[{ id: int64, st: PriorityQueue[int64, string, mem(normal)], beh: fn(msg: int64, state: PriorityQueue[int64, string, mem(normal)]) -> (:no_reply, PriorityQueue[int64, string, mem(normal)]) }, mem(normal)]) <- kids();
+        print_int64(n + k.head.id);
+        println("")
+    produces
+        pure 0
+    end
+}

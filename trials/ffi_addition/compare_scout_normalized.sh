@@ -40,7 +40,11 @@ tmp_actual="$(mktemp)"
 tmp_golden="$(mktemp)"
 trap 'rm -f "$tmp_actual" "$tmp_golden"' EXIT
 
-normalize_pointer_lines "$actual" > "$tmp_actual"
-normalize_pointer_lines "$golden" > "$tmp_golden"
+# Process-fatal report lines (silica-specification §15.4.5.5) are folded as every suite folds them:
+# a fault line keeps only "[silica] fault at <PTR>", an abort line its reason (../normalize_fatal_reports.awk).
+fatal_normalizer="$(cd "$(dirname "$0")" && pwd)/../normalize_fatal_reports.awk"
+
+normalize_pointer_lines "$actual" | awk -f "$fatal_normalizer" > "$tmp_actual"
+normalize_pointer_lines "$golden" | awk -f "$fatal_normalizer" > "$tmp_golden"
 
 diff -Bw "$tmp_actual" "$tmp_golden"

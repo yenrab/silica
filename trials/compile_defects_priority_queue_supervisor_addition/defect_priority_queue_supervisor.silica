@@ -1,10 +1,12 @@
-// Documented open type-checker defect (book-verification 2026-09-19, repros r_pq2 / r_pq3).
-// A supervisor whose child state is a `PriorityQueue[int64, string, mem(normal)]` is rejected
+// Type-checker defect (book-verification 2026-09-19, repros r_pq2 / r_pq3; fixed in defect batch 2
+// the same day: a collection bracket type nested in a record, list or fn type meets its constructor
+// record, type_checker_collections@collection_aware_types_compatible).
+// A supervisor whose child state is a `PriorityQueue[int64, string, mem(normal)]` was rejected
 // with a bare E2003 "type mismatch: children" on the static `children` list literal, at the
 // `initial_state: empty_waiting_room()` field. Binding the queue to a name first
 // (`room: PriorityQueue[...] <- empty_waiting_room();`, r_pq3) does not help -- same error, same
 // column -- ruling out the double-cast-literal defect
-// (supervisors_addition/emitter_defect_cast_registered_double_*_literal.silica) as the cause.
+// (supervisors_addition/cast_registered_double_*_literal.silica) as the cause.
 // Plain (non-supervisor) `spawn` with the same queue as actor state works today (r_pq4). So the
 // defect is specific to a bracket collection type used as a supervisor child spec's
 // `initial_state` (substituting the `Supervisor` trait's `ActorState` placeholder) -- a third
@@ -15,7 +17,10 @@
 //   Next to see the vet: zebra with a cough
 //   done
 //   0
-// Observed: E2003 "type mismatch: children" at the child spec list literal.
+// Before the fix: E2003 "type mismatch: children" at the child spec list literal. triage declares
+// only device_io: push_priority allocates inside its own module, and the checker does not propagate
+// a callee's effects to the caller (compile_defects_effect_propagation_addition), so a mem(normal)
+// here is reported unused (E3010).
 
 use Supervisor;
 use brodal_okasaki_priority;
@@ -48,7 +53,7 @@ fn empty_waiting_room() -> PriorityQueue[int64, string, mem(normal)] {
 }
 
 fn triage(msg: (int64, string), state: PriorityQueue[int64, string, mem(normal)]) -> (:no_reply, PriorityQueue[int64, string, mem(normal)]) {
-    sequence proc[device_io, mem(normal)]
+    sequence proc[device_io]
         (urgency: int64, animal: string) <- msg;
         waiting: PriorityQueue[int64, string, mem(normal)] <- brodal_okasaki_priority@push_priority(state, urgency, animal);
         next: { status: :not_found | :found, value: string } <- PriorityQueue@peek_value(waiting, 0, "");

@@ -1,0 +1,49 @@
+// Type-checker defect (2026-09-18; fixed in defect batch 2, 2026-09-19: a trait-typed receiver is
+// checked against the required signature and the body is copied per implementation,
+// trait_specialization), found while writing algorithms over the graph traits
+// (stdlib/data_structures/DirectedGraph.silica deviation 2; the graph traits' neighbors,
+// weighted_neighbors and edge_weight results mention placeholders). main declares mem(normal)
+// because its list literal allocates.
+//
+// Defect: inside a function whose parameter is typed with a trait (b: ItemBag), calling a trait
+// method whose result type mentions a placeholder (List[ValueType, ...] here; a bare ItemType result
+// fails the same way) rejects the receiver: the call is resolved against the implementation's record
+// parameter, not the trait. Methods returning int64 or boolean work in the same position, and the
+// same call on a concretely typed value works. Provided bodies hit it as well, which is why the graph
+// traits make has_edge / reachable / connected required methods.
+// Expected: compiles and prints 7, exit 0.
+// Before the fix: E2003 "argument type ItemBag does not match parameter type {...} for ItemBag@items".
+//
+// To run by hand:
+//   mkdir -p /tmp/tpr && cp BagStore.silica ItemBag.silica defect_trait_placeholder_return.silica /tmp/tpr/ && cd /tmp/tpr
+//   printf 'BagStore.silica\nItemBag.silica\ndefect_trait_placeholder_return.silica\n' > silica.config
+//   /Volumes/2T/silica/binaries/silica-compiler
+
+use ItemBag;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn first_item(b: ItemBag) -> int64 {
+    xs: List[int64, mem(normal)] <- ItemBag@items(b);
+    xs.head
+}
+
+fn main() -> int64 {
+    sequence proc[device_io, mem(normal)]
+        e: List[int64, mem(normal)] <- [7, 8];
+        b: { compare_value: fn(int64, int64) -> :less | :equal | :greater, entries: List[int64, mem(normal)] } <- { compare_value: cmp_i64, entries: e };
+        n: int64 <- first_item(b);
+        print_int64(n);
+        println("")
+    produces
+        pure 0
+    end
+}

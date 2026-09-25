@@ -1,0 +1,48 @@
+// A canonical arena survives a callee that owns and destroys its handle. count_in takes the region
+// as a parameter, never returns it and makes no further call with it, so by spec §4.4.2 the handle
+// moved into count_in and the emitter destroys it at count_in's end
+// (emitter_core@fn_destroys_region_param, BL _silica_rt_region_destroy). A canonical arena is
+// process-shared and belongs to the canonical arena table (canonical_arena_lookup hands the same
+// base out for the same key for the life of the process), so that destroy must release nothing:
+// the runtime consults the table first and leaves a registered base alone (every hosted target;
+// the board's region_destroy releases nothing anyway). Before the fix the destroy handed the arena,
+// which is not a malloc block, to free: libmalloc assertion, SIGTRAP, status 133, no output.
+// The proof is that after count_in has "destroyed" the arena, the reference allocated before the
+// call still reads back, a fresh lookup of the same key hands the same arena out, and a new
+// allocation in it works and reads back.
+// Expected output (by hand): 1, 7, 1, 35, then status 0.
+//   1
+//   7
+//   1
+//   35
+//   0
+
+fn count_in(r: region(L, normal), node: ref(L, normal, int64)) -> int64 {
+    sequence
+        ok: boolean <- ref_in_region(node, r)
+    produces
+        pure case ok of { true -> 1; false -> 0 }
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal), device_io]
+        L: lifetime <- fresh_lifetime();
+        r: region(L, normal) <- canonical_arena_lookup(4242);
+        x: ref(L, normal, int64) <- alloc_ref(r, 7);
+        a: int64 <- count_in(r, x);
+        _: atom <- print_int64(a);
+        println("");
+        _: atom <- print_int64(read_ref(x));
+        println("");
+        again: region(L, normal) <- canonical_arena_lookup(4242);
+        y: ref(L, normal, int64) <- alloc_ref(again, 35);
+        b: int64 <- count_in(again, y);
+        _: atom <- print_int64(b);
+        println("");
+        _: atom <- print_int64(read_ref(y));
+        println("")
+    produces
+        pure 0
+    end
+}

@@ -18,7 +18,8 @@
 // Phase 13 — Linux (glibc, x86-64) sigaltstack / sigaction guarded-FFI fault bridge.
 // Ported from linux_aarch64: stack_t, struct sigaction, ucontext_t and siginfo_t use the Linux x86-64
 // layouts (struct sigaction 152 B: handler @0, mask @8, flags @136, restorer @144; siginfo si_addr @16;
-// ucontext gregs @40 with RIP @168); SIGBUS is 7; sa_flags = SA_SIGINFO (4) | SA_ONSTACK (0x08000000).
+// ucontext gregs @40 with RSP @160 and RIP @168); SIGBUS is 7; sa_flags = SA_SIGINFO (4) |
+// SA_ONSTACK (0x08000000) | SA_NODEFER (0x40000000).
 // Register model: routines called from Silica code take X0.. in rdi rsi rdx rcx r8 r9 and answer in
 // rdi; C library results arrive in rax; the AArch64 callee-saved X19..X24 live in frame slots
 // [rbp-8]..[rbp-48]. The signal handler is C-called (rdi signo, rsi siginfo*, rdx ucontext*) and
@@ -67,6 +68,8 @@ Lrta_r_exit_queue_full:
 	.asciz	\"supervisor ingress queue is full (exit delivery)\"
 Lrta_r_stack_commit:
 	.asciz	\"cannot commit memory for a growing actor stack\"
+Lrta_r_stack_reserve:
+	.asciz	\"stack reservation failed\"
 	.text
 	.globl	silica_rt_abort_with
 	.p2align	4
@@ -179,6 +182,11 @@ silica_rt_abort_ingress_full:
 silica_rt_abort_exit_queue_full:
 	lea	rdi, [rip + Lrta_r_exit_queue_full]
 	jmp	silica_rt_abort_with
+	.globl	silica_rt_abort_stack_reserve
+	.p2align	4
+silica_rt_abort_stack_reserve:
+	lea	rdi, [rip + Lrta_r_stack_reserve]
+	jmp	silica_rt_abort_with
 "
 }
 
@@ -249,7 +257,10 @@ L_ifh_zero:
 	jne	L_ifh_zero
 	lea	rax, [rip + silica_rt_sync_fault_handler]
 	mov	QWORD PTR [rsp + 32], rax
-	mov	DWORD PTR [rsp + 168], 0x08000004
+# SA_NODEFER keeps the signal deliverable while its handler runs: a fault inside the handler must
+# reach silica_rt_fault_last_resort, and a synchronous fault on a blocked signal is the default action
+# (status 139) instead (spec 15.4.5.5).
+	mov	DWORD PTR [rsp + 168], 0x48000004
 	mov	edi, 11
 	lea	rsi, [rsp + 32]
 	xor	edx, edx
@@ -270,6 +281,14 @@ L_ifh_zero:
 L_ifh_done:
 	pop	rbp
 	ret
+# The startup code installs the handlers before main runs (spec 15.4.5.5): the C runtime calls every
+# .init_array entry before main, so a fault in main's prologue, or in anything else that runs before
+# main's body, is reported like any other. The calls from spawn and from main's prologue remain and
+# return at once (the installed flag).
+	.section .init_array, \"aw\"
+	.p2align	3
+	.quad	silica_rt_install_sync_fault_handlers
+	.text
 	.globl	silica_rt_ffi_fault_altstack_probed
 	.p2align	4
 silica_rt_ffi_fault_altstack_probed:
@@ -314,6 +333,12 @@ silica_rt_sync_fault_handler:
 	mov	QWORD PTR [rbp - 32], rdi
 	mov	QWORD PTR [rbp - 40], rsi
 	mov	QWORD PTR [rbp - 48], rdx
+# A fault raised while a handler runs on this thread (the handler itself, or the runtime code it calls)
+# takes the last-resort path and never re-enters the decision below (spec 15.4.5.5).
+	mov	rdi, rdx
+	call	silica_rt_fault_in_handler
+	test	eax, eax
+	jnz	L_sfh_last_resort
 # Stack growth is established first (spec §15.1.2.2): a fault at an address inside the current
 # actor's reservation is growth, and only afterwards is a guarded foreign fault considered.
 # Linux siginfo_t: si_addr @16.
@@ -409,9 +434,15 @@ L_sfh_unrecoverable:
 Lsfh_unrec_pc:
 	jmp	silica_rt_abort_with_pc
 L_sfh_crash:
+# Process-fatal: the report line, then C _exit, never exit(), which would run atexit handlers and
+# flush stdio from inside the signal handler (spec 15.4.5.5).
 	call	silica_rt_print_fault_site
 	mov	edi, 70
-	call	exit
+	call	_exit
+L_sfh_last_resort:
+	mov	rdi, QWORD PTR [rbp - 40]
+	mov	rsi, QWORD PTR [rbp - 48]
+	jmp	silica_rt_fault_last_resort
 L_sfh_done:
 	mov	rbx, QWORD PTR [rbp - 56]
 	mov	r12, QWORD PTR [rbp - 64]
@@ -606,17 +637,12 @@ L_gff_thread_exit:
 	call	pthread_exit
 	jmp	L_gff_thread_exit
 L_gff_process:
-	mov	edi, 2
-	lea	rsi, [rip + L_silica_foreign_fault_msg]
-	mov	edx, 14
-	call	write
-	mov	edi, 1
-	call	exit
+# A guarded foreign fault with no current actor has no supervisor to deliver it to: a fatal fault
+# (spec 15.4.5.5), reported from the fields the handler recorded before it jumped back here.
+	call	silica_rt_print_fault_site
+	mov	edi, 70
+	call	_exit
 	jmp	L_gff_process
-	.section .rodata
-L_silica_foreign_fault_msg:
-	.asciz	\"foreign_fault\\n\"
-	.text
 	.section .rodata
 	.p2align	2
 Lpfs_pre:
@@ -763,6 +789,82 @@ Lpfs_nl:
 Lpfs_done:
 	leave
 	ret
+# rdi = ucontext -> eax = 1 when the fault interrupted code running on this thread's alternate signal
+# stack. Only the signal handler, and the runtime code it calls or leaves the thread in, runs there, so
+# that is a fault inside the handler. The test keeps no state: a per-thread in-handler flag would stay
+# set after the handler leaves by siglongjmp (guarded FFI recovery, an actor failing) and would need
+# TLS. sigaltstack(NULL, &ss) is a plain system call. A thread without an alternate stack
+# (SS_DISABLE) answers 0; every thread the runtime creates has one. The bounds are strict at both
+# ends: an actor's execution stack can be mapped directly below the alternate stack, so its top is
+# the alternate stack's base, and the growth fault of the first push of a behavior interrupts code
+# whose SP is exactly that base (a whole trial of idle actors reported a fault instead of running).
+# Frame: [rbp-8] the interrupted
+# rsp, [rbp-32..-8) the Linux stack_t (ss_sp @0, ss_flags (int) @8, ss_size @16).
+	.p2align	4
+silica_rt_fault_in_handler:
+	push	rbp
+	mov	rbp, rsp
+	sub	rsp, 48
+	test	rdi, rdi
+	jz	Lfih_no
+# Linux x86-64 ucontext_t: uc_mcontext.gregs @40; REG_RSP = gregs[15] @160.
+	mov	rax, QWORD PTR [rdi + 160]
+	mov	QWORD PTR [rbp - 8], rax
+	xor	edi, edi
+	lea	rsi, [rbp - 32]
+	call	sigaltstack
+	test	eax, eax
+	jnz	Lfih_no
+	test	DWORD PTR [rbp - 24], 2
+	jnz	Lfih_no
+	mov	rcx, QWORD PTR [rbp - 32]
+	mov	rdx, QWORD PTR [rbp - 16]
+	mov	rax, QWORD PTR [rbp - 8]
+	cmp	rax, rcx
+	jbe	Lfih_no
+	add	rdx, rcx
+	cmp	rax, rdx
+	jae	Lfih_no
+	mov	eax, 1
+	leave
+	ret
+Lfih_no:
+	xor	eax, eax
+	leave
+	ret
+# Last-resort fault report (spec 15.4.5.5): rdi = siginfo, rsi = ucontext of the fault raised inside
+# the handler. Writes the line [silica] fault at 0x<pc>  addr=0x<fault address> and ends with
+# _exit(70). It uses only write(2) and _exit: no dladdr (it takes the loader's lock, which the faulting
+# handler may hold, and it may be what faulted), no TLS, no actor fields. The first handler may have
+# written part of its own line; the report tools fold everything after the first fault banner on a
+# line. Reached by a jump from the handler's 16-byte aligned frame. r12/r13 survive the calls below.
+# Never returns.
+	.p2align	4
+silica_rt_fault_last_resort:
+	xor	r12d, r12d
+	xor	r13d, r13d
+	test	rsi, rsi
+	jz	Llr_addr
+	mov	r12, QWORD PTR [rsi + 168]
+Llr_addr:
+	test	rdi, rdi
+	jz	Llr_write
+	mov	r13, QWORD PTR [rdi + 16]
+Llr_write:
+	lea	rdi, [rip + Lpfs_pre]
+	call	silica_rt_fault_puts
+	mov	rdi, r12
+	call	silica_rt_fault_puthex
+	lea	rdi, [rip + Lpfs_ad]
+	call	silica_rt_fault_puts
+	mov	rdi, r13
+	call	silica_rt_fault_puthex
+	lea	rdi, [rip + Lpfs_eol]
+	call	silica_rt_fault_puts
+	mov	edi, 70
+	call	_exit
+Llr_hang:
+	jmp	Llr_hang
 	.p2align	4
 silica_rt_fault_bufcat:
 # rdi = buf, rsi = cap, rdx = pos, rcx = NUL-terminated src -> rdi = new pos.

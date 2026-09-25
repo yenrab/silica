@@ -31,6 +31,13 @@
 // (so they never pollute captured program output). The stack-guard data breakpoints enter the same path
 // through the debug vector. A runtime abort (silica_rt_abort_*, rt_console.S) resets the context the same
 // way, through silica_rt_abort_trampoline below, and reports status 71.
+//
+// A fault raised while a report is being written (spec §15.4.5.5: a fault inside the fault handler) takes
+// a last-resort path instead of starting the report again: silica_rt_fatal_depth counts the trampolines
+// entered; the second writes only "[silica] fault at 0x<epc>" and the exit marker with status 70
+// (silica_rt_fatal_last_resort, rt_console.S), and a third, a fault in that last resort, halts. Before this
+// the trampoline re-ran the report from the top, so a report that faulted repeated itself forever. The
+// word is in .data, not .bss, so a fault before rt_start zeroes .bss still reads 0.
 
     .section .WindowVectors.text, "ax"
 
@@ -230,12 +237,38 @@ silica_rt_fatal_trampoline:
     movi    a1, 0x40020           // PS: WOE=1, EXCM=0, UM=1, INTLEVEL=0, CALLINC=0
     wsr     a1, ps
     rsync
+    movi    a2, silica_rt_fatal_depth
+    l32i    a3, a2, 0
+    addi    a4, a3, 1
+    s32i    a4, a2, 0
+    bnez    a3, 2f                // a report was already running: last resort
     movi    a1, _silica_fault_stack_top
     rsr     a2, excsave1
     rsr     a3, epc1
     rsr     a4, excvaddr
     movi    a0, 0
     call0   silica_rt_fatal_report_c0
+1:  j       1b
+2:  rsr     a2, epc1
+    j       silica_rt_fatal_nested
+
+// a2 = the faulting pc, a3 = silica_rt_fatal_depth before this entry (nonzero). Depth 1: a report was
+// running, so write the last-resort line and exit 70 on a fresh fault stack; deeper: the last resort
+// itself faulted, so halt (the bytes already in the UART FIFO still drain).
+    .align  4
+silica_rt_fatal_nested:
+    movi    a4, 1
+    bne     a3, a4, 1f
+    movi    a1, _silica_fault_stack_top
+    movi    a0, 0
+    call0   silica_rt_fatal_last_resort_c0
+1:  j       1b
+
+// call0 shim: a2 pc, passed on as argument 0.
+    .align  4
+silica_rt_fatal_last_resort_c0:
+    mov     a10, a2
+    call8   silica_rt_fatal_last_resort
 1:  j       1b
 
 // call0 shim into the windowed world: a2 cause, a3 epc, a4 excvaddr, passed on as arguments 0-2.
@@ -265,10 +298,18 @@ silica_rt_abort_trampoline:
     movi    a1, 0x40020           // PS: WOE=1, EXCM=0, UM=1, INTLEVEL=0, CALLINC=0
     wsr     a1, ps
     rsync
+    movi    a4, silica_rt_fatal_depth // the abort report counts as a running report (see the top)
+    l32i    a5, a4, 0
+    addi    a6, a5, 1
+    s32i    a6, a4, 0
+    bnez    a5, 2f
     movi    a1, _silica_fault_stack_top
     movi    a0, 0
     call0   silica_rt_abort_report_c0
 1:  j       1b
+2:  mov     a2, a3                // report the abort site's call as the pc
+    mov     a3, a5
+    j       silica_rt_fatal_nested
 
 // call0 shim: a2 reason, a3 address, passed on as arguments 0 and 1.
     .align  4
@@ -277,3 +318,9 @@ silica_rt_abort_report_c0:
     mov     a12, a3
     call8   silica_rt_abort_report
 1:  j       1b
+
+    .section .data.silica_rt_fatal, "aw"
+    .align  4
+    .global silica_rt_fatal_depth
+silica_rt_fatal_depth:
+    .word   0

@@ -1,0 +1,54 @@
+// A record message whose fields are a nested record and a tuple, built inside a helper function
+// (its frame is gone before the receiver runs) and cast between two actors.
+// Expected:
+//   origin 3 4 span 10 20
+//   done
+//   0
+
+fn describe(msg: { name: string, at: { x: int64, y: int64 }, span: (int64, int64) }, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        (lo: int64, hi: int64) <- msg.span;
+        print_string(msg.name);
+        print_string(" ");
+        _: atom <- print_int64(msg.at.x);
+        print_string(" ");
+        _: atom <- print_int64(msg.at.y);
+        print_string(" span ");
+        _: atom <- print_int64(lo);
+        print_string(" ");
+        _: atom <- print_int64(hi);
+        println("");
+        println("done")
+    produces
+        pure (:no_reply, state + 1)
+    end
+}
+
+fn send_point(to: actor_ref, x: int64, y: int64) -> boolean {
+    sequence proc[concurrency]
+        at: { x: int64, y: int64 } <- { x: x, y: y };
+        span: (int64, int64) <- (x + 7, y + 16);
+        msg: { name: string, at: { x: int64, y: int64 }, span: (int64, int64) } <- { name: "origin", at: at, span: span };
+        sent: boolean <- cast(to, msg impl ActorMessage {})
+    produces
+        pure sent
+    end
+}
+
+fn churn(n: int64, acc: int64) -> int64 {
+    case n == 0 of {
+        true -> acc;
+        false -> churn(n - 1, acc + n)
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        d: actor_ref <- spawn(0, describe, stack_policy(0, :keep_last_message));
+        _: boolean <- send_point(d, 3, 4);
+        _: int64 <- churn(50, 0);
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

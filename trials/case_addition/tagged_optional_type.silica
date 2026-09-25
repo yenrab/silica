@@ -1,0 +1,48 @@
+// Parser defect (2026-09-18; fixed in defect batch 2, 2026-09-19: a tagged-tuple variant of an
+// inline sum type is one type-head option, parser_tuples@extract_atom_option_tail_from_slots, and
+// the checker and SIR lowering pick the variant a tuple literal or pattern builds), found while
+// writing the dense matrix graph (stdlib/data_structures/graph_dense_core.silica header deviation 1).
+//
+// Defect: an inline sum type whose variant is a tagged tuple — `:none | (:some, int64)` — is not
+// accepted in a type position (parameter, return, let annotation): E1040 at the `|`. The same
+// failure for `(:some, int64) | :none`. silica-specification §15.4.11.2 writes this kind of type
+// (`:normal | ... | (:explicit, atom) | :unknown`), and dense_matrix_graph.md §4 /
+// csr_dense_representation_contract.md CSR-D6 store attributed dense cells as
+// `:none | (:some, EdgeDataType)`.
+// Expected: compiles and prints 0, 7, exit 0.
+// Before the fix: E1040 "expected ';' after this statement" at 36:10 (the let annotation); a lone
+// `fn f(c: :none | (:some, int64)) -> int64` fails the same way at its parameter.
+//
+// To run by hand:
+//   mkdir -p /tmp/tot && cp defect_tagged_optional_type.silica /tmp/tot/ && cd /tmp/tot
+//   echo defect_tagged_optional_type.silica > silica.config && /Volumes/2T/silica/binaries/silica-compiler
+
+fn cell_value(c: :none | (:some, int64)) -> int64 {
+    case c of {
+        :none -> 0;
+        (:some, v: int64) -> v
+    }
+}
+
+fn present(v: int64) -> :none | (:some, int64) {
+    (:some, v)
+}
+
+fn absent() -> :none | (:some, int64) {
+    :none
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        a: :none | (:some, int64) <- absent();
+        b: :none | (:some, int64) <- present(7);
+        x: int64 <- cell_value(a);
+        y: int64 <- cell_value(b);
+        print_int64(x);
+        println("");
+        print_int64(y);
+        println("")
+    produces
+        pure 0
+    end
+}

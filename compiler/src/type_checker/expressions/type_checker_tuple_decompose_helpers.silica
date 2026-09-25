@@ -25,7 +25,6 @@ use type_checker_lists;
 use type_checker_record_types;
 use type_checker_expressions_actors;
 use type_checker_builtin_signatures;
-use type_sum_alternatives;
 
 export infer_expr_type/2;
 export infer_literal_type/1;
@@ -52,6 +51,9 @@ export case_bool_coverage_ok/1;
 export case_scan_bool_coverage/2;
 export infer_case_first_rhs_type/3;
 export case_parse_record_field_subpat/2;
+export case_sum_bar_depth0/3;
+export case_is_tuple_pattern_form/1;
+export case_tuple_variant_for_pattern/2;
 
 fn tuple_needs_parens(type_str: string) -> boolean {
     length_bytes(type_str) >= 2 and substring(type_str, 0, 1) == "("
@@ -1418,8 +1420,7 @@ fn case_tuple_elems_match_scrutinee(p_inner: string, s_inner: string, idx: int64
 }
 
 fn case_tuple_pat_matches_full(pat_str: string, scrutinee_type: string) -> boolean {
-    // A sum scrutinee `:none | (:some, T)` is matched through the tuple alternative the pattern's tag names.
-    st: string <- strip_spaces(type_sum_alternatives@tuple_alternative_or_self(scrutinee_type, type_sum_alternatives@tuple_head_atom(pat_str)));
+    st: string <- strip_spaces(scrutinee_type);
     case case_is_tuple_pattern_form(pat_str) and case_is_tuple_pattern_form(st) of {
         false -> false;
         true -> {
@@ -1627,7 +1628,7 @@ fn case_pattern_matches_scrutinee(pi: { is_valid: boolean, pattern_kind: int64, 
             6 -> case_list_cons_matches(pi, scrutinee_type);
             7 -> types_equal_surface(scrutinee_type, "atom") or types_equal_surface(scrutinee_type, "failure_reason") or case_atom_union_contains(scrutinee_type, pi.str_lit) or (type_checker_recursive_tuples@is_ref_optional_type(scrutinee_type) and pi.str_lit == "none");
             8 -> case_record_pat_matches_full(pi.bind_type, scrutinee_type);
-            9 -> case_tuple_pat_matches_full(pi.bind_type, scrutinee_type);
+            9 -> case_tuple_pat_matches_full(pi.bind_type, case_tuple_variant_for_pattern(pi.bind_type, scrutinee_type));
             10 -> types_equal_surface(scrutinee_type, "char");
             _: int64 -> false
         }
@@ -1752,8 +1753,11 @@ fn case_pattern_has_named_binding(pi: { is_valid: boolean, pattern_kind: int64, 
             8 -> case_record_pattern_has_nonwildcard_bind_loop(type_checker_record_types@record_case_inner_body(pi.bind_type), scrutinee_type);
             9 -> {
                 p_inner: string <- substring(pi.bind_type, 1, length_bytes(pi.bind_type) - 1);
-                st: string <- strip_spaces(type_sum_alternatives@tuple_alternative_or_self(scrutinee_type, type_sum_alternatives@tuple_head_atom(pi.bind_type)));
-                case_tuple_pattern_has_named_binding(p_inner, substring(st, 1, length_bytes(st) - 1), 0, case_count_tuple_elems(p_inner))
+                st: string <- case_tuple_variant_for_pattern(pi.bind_type, scrutinee_type);
+                case length_bytes(st) >= 2 of {
+                    false -> false;
+                    true -> case_tuple_pattern_has_named_binding(p_inner, substring(st, 1, length_bytes(st) - 1), 0, case_count_tuple_elems(p_inner))
+                }
             };
             _: int64 -> false
         }
@@ -1815,7 +1819,7 @@ fn case_extend_context_for_pattern(context: { env: List[{ name: string, type_id:
                 false -> context;
                 true -> {
                     p_inner: string <- substring(pi.bind_type, 1, length_bytes(pi.bind_type) - 1);
-                    st: string <- strip_spaces(type_sum_alternatives@tuple_alternative_or_self(scrutinee_type, type_sum_alternatives@tuple_head_atom(pi.bind_type)));
+                    st: string <- case_tuple_variant_for_pattern(pi.bind_type, scrutinee_type);
                     s_inner: string <- substring(st, 1, length_bytes(st) - 1);
                     case_extend_tuple_pattern_elems(context, p_inner, s_inner, 0, case_count_tuple_elems(p_inner))
                 }
@@ -1921,6 +1925,51 @@ fn infer_case_first_rhs_type(branches: { nodes: List[{ kind: int64, value: strin
                 }
             };
             false -> ""
+        }
+    }
+}
+
+// The tuple type a tuple case pattern is checked against. A tuple scrutinee is itself; an inline
+// sum type with tagged-tuple variants (`:none | (:some, int64)`, silica-specification §15.4.11.2,
+// §20.1.1) contributes the first variant the pattern matches; "" when none does.
+fn case_tuple_variant_for_pattern(pat_str: string, scrutinee_type: string) -> string {
+    st: string <- strip_spaces(scrutinee_type);
+    case case_sum_bar_depth0(st, 0, 0) < 0 of {
+        true -> st;
+        false -> case_sum_variant_scan(pat_str, st)
+    }
+}
+
+fn case_sum_variant_scan(pat_str: string, rest: string) -> string {
+    bar: int64 <- case_sum_bar_depth0(rest, 0, 0);
+    head: string <- case bar < 0 of {
+        true -> strip_spaces(rest);
+        false -> strip_spaces(substring(rest, 0, bar))
+    };
+    case case_is_tuple_pattern_form(head) and case_tuple_pat_matches_full(pat_str, head) of {
+        true -> head;
+        false -> case bar < 0 of {
+            true -> "";
+            false -> case_sum_variant_scan(pat_str, substring(rest, bar + 1, length_bytes(rest)))
+        }
+    }
+}
+
+fn case_sum_bar_depth0(s: string, i: int64, depth: int64) -> int64 {
+    case i >= length_bytes(s) of {
+        true -> -1;
+        false -> {
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "[" or c == "{" of {
+                true -> case_sum_bar_depth0(s, i + 1, depth + 1);
+                false -> case c == ")" or c == "]" or c == "}" of {
+                    true -> case_sum_bar_depth0(s, i + 1, depth - 1);
+                    false -> case c == "|" and depth == 0 of {
+                        true -> i;
+                        false -> case_sum_bar_depth0(s, i + 1, depth)
+                    }
+                }
+            }
         }
     }
 }

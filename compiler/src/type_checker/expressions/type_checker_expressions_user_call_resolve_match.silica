@@ -24,6 +24,7 @@ use type_checker_traits;
 use instantiated_fn_name;
 use type_checker_expressions_user_call_helpers;
 use type_checker_expressions_user_call_resolve_fit;
+use type_interner;
 
 export find_function_decl_by_name_arity_call/3;
 export find_tag0_decl_for_qualified_call/6;
@@ -88,7 +89,14 @@ fn qualified_call_return_matches_expected(expected_ty: string, decl: { tag: int6
                     true -> true;
                     false -> case type_checker_lists@formal_type_accepts_actual(exp, ret, world) of {
                         true -> true;
-                        false -> type_checker_lists@types_equal_strip(ret, exp)
+                        false -> case type_checker_lists@types_equal_strip(ret, exp) of {
+                            true -> true;
+                            // A result naming a placeholder (List[ValueType, ...], ItemType, a
+                            // { status, value: ItemType } record) is a schema the expected type
+                            // instantiates; demanding equality sent every placeholder-result method
+                            // to the fallback that picks the last implementation.
+                            false -> contains(ret, "Type") and type_interner@surface_matches_schema(exp, ret)
+                        }
                     }
                 }
             }
@@ -151,11 +159,30 @@ fn find_tag0_decl_for_qualified_call_compatible(decls: List[{ tag: int64, name: 
 fn find_tag0_decl_for_qualified_call(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], fn_name: string, arity: int64, recv_ty: string, expected_ty: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> (boolean, { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) {
     case length_bytes(recv_ty) == 0 of {
         true -> find_tag0_decl_for_qualified_call_compatible(decls, fn_name, arity, recv_ty, expected_ty, world);
-        false -> {
-            (ef: boolean, ed: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) <- find_tag0_decl_for_qualified_call_exact(decls, fn_name, arity, recv_ty, expected_ty, world);
-            case ef of {
-                true -> (true, ed);
-                false -> find_tag0_decl_for_qualified_call_compatible(decls, fn_name, arity, recv_ty, expected_ty, world)
+        false -> case receiver_is_trait_self(decls, recv_ty) of {
+            // A trait-typed receiver (a provided body's parameter, a function parameter typed with
+            // the trait) has no selected implementation: the required signature applies
+            // (silica-specification §3.4.12). trait_specialization makes the per-implementation
+            // copies before code generation, where the receiver is concrete.
+            true -> (false, parser_ast@dummy_decl());
+            false -> {
+                (ef: boolean, ed: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) <- find_tag0_decl_for_qualified_call_exact(decls, fn_name, arity, recv_ty, expected_ty, world);
+                case ef of {
+                    true -> (true, ed);
+                    false -> case count_tag0_candidates(decls, fn_name, arity) > 1 of {
+                        false -> find_tag0_decl_for_qualified_call_compatible(decls, fn_name, arity, recv_ty, expected_ty, world);
+                        // Several implementations: select by the receiver's representation (its
+                        // shape once placeholders bind; a bracket type's constructor record) before
+                        // the loose fit, which picked by declaration order.
+                        true -> {
+                            (sf: boolean, sd: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) <- find_tag0_decl_for_qualified_call_schema(decls, fn_name, arity, recv_ty, world);
+                            case sf of {
+                                true -> (true, sd);
+                                false -> find_tag0_decl_for_qualified_call_compatible(decls, fn_name, arity, recv_ty, expected_ty, world)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -216,6 +243,42 @@ fn find_tag7_decl_for_qualified_call(decls: List[{ tag: int64, name: string, par
             case ef of {
                 true -> (true, ed);
                 false -> find_tag7_decl_for_qualified_call_compatible(decls, fn_name, arity, recv_ty, expected_ty, world)
+            }
+        }
+    }
+}
+
+fn receiver_is_trait_self(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], recv_ty: string) -> boolean {
+    trait_self: string <- type_checker_expressions_user_call_resolve_fit@trait_self_name_from_decls(decls);
+    length_bytes(trait_self) > 0 and type_checker_traits@trim_type_text(recv_ty) == trait_self
+}
+
+fn count_tag0_candidates(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], fn_name: string, arity: int64) -> int64 {
+    case decls.is_nil of {
+        true -> 0;
+        false -> case decls.head.tag == 0 and instantiated_fn_name@decl_name_matches(decls.head.name, fn_name) and type_checker_expressions_user_call_helpers@list_param_length_call(decls.head.parameters) == arity of {
+            true -> 1 + count_tag0_candidates(decls.tail, fn_name, arity);
+            false -> count_tag0_candidates(decls.tail, fn_name, arity)
+        }
+    }
+}
+
+fn first_param_schema_fits(rep: string, decl: { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> boolean {
+    source_params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- parser_ast@list_param_reverse_with_acc(decl.parameters, parser_ast@nil_list_param());
+    case source_params.is_nil of {
+        true -> false;
+        false -> type_checker_expressions_user_call_resolve_fit@actual_schema_fits_formal_in_world(rep, source_params.head.type_name, world)
+    }
+}
+
+fn find_tag0_decl_for_qualified_call_schema(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], fn_name: string, arity: int64, rep: string, world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)]) -> (boolean, { tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case decls.head.tag == 0 and instantiated_fn_name@decl_name_matches(decls.head.name, fn_name) and type_checker_expressions_user_call_helpers@list_param_length_call(decls.head.parameters) == arity of {
+            false -> find_tag0_decl_for_qualified_call_schema(decls.tail, fn_name, arity, rep, world);
+            true -> case first_param_schema_fits(rep, decls.head, world) of {
+                true -> (true, decls.head);
+                false -> find_tag0_decl_for_qualified_call_schema(decls.tail, fn_name, arity, rep, world)
             }
         }
     }

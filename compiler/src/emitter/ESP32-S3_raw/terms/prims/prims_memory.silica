@@ -34,7 +34,6 @@
 // a growth stay valid. Each block records its own span at [24:32] and the next block at [16:24],
 // which is what lets ref_in_region still answer for a ref allocated from an earlier block.
 
-use var;
 use prims_tuple;
 use atom_table;
 use xt_isa;
@@ -294,9 +293,13 @@ fn elem_size_bytes_from_buf_type(buf_type: string) -> int64 {
     }
 }
 
+// Layout (spec §12.3.3, §15.4.5.5): one length word, then the elements. The buffer value points at
+// element 0 and the element count sits in the word just below it, so every buf_load / buf_store
+// checks its index against [buf, #-8] in constant time whatever scope the buffer came from (a
+// parameter's type may name its size N by an identifier that is not in scope there). The whole
+// block is rounded up to 8 bytes so the next allocation in the region stays word-aligned.
 fn emit_alloc_buf(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
     elem_bytes: int64 <- elem_size_bytes_from_buf_type(sir_term_root_node(term).type_name);
-    shift: int64 <- elem_size_shift_from_buf_type(sir_term_root_node(term).type_name);
     eb: string <- int64_to_str(elem_bytes);
     neg_check: string <- xt_isa@xt_cmp_branch("LT", "X2", "#0", "L_buf_invalid");
     ldr_bump: string <- xt_mem@xt_ldr("X3", "[X1]");
@@ -304,17 +307,20 @@ fn emit_alloc_buf(term: { nodes: List[{ kind: int64, type_name: string, value: s
     mov_elem: string <- xt_isa@xt_mov("X8", concat("#", eb));
     mul_bytes: string <- xt_isa@xt_mul("X7", "X2", "X8");
     mul_ov: string <- concat(xt_isa@xt_sdiv("X9", "X7", "X8"), xt_isa@xt_cmp_branch("NE", "X9", "X2", "L_buf_invalid"));
+    // X7 = element bytes + 8 (the length word), rounded up to a multiple of 8.
+    with_len: string <- concat(xt_isa@xt_add("X7", "X7", "#15"), concat(xt_isa@xt_lsr("X7", "X7", "#3"), xt_isa@xt_lsl("X7", "X7", "#3")));
     add_new: string <- xt_isa@xt_add("X5", "X3", "X7");
     mov_buf: string <- xt_isa@xt_mov("X4", "X3");
     add_bump: string <- xt_isa@xt_add("X3", "X3", "X7");
     str_bump: string <- xt_mem@xt_str("X3", "[X1]");
+    store_len: string <- concat(xt_mem@xt_str("X2", "[X4]"), xt_isa@xt_add("X4", "X4", "#8"));
     mov_dest: string <- xt_isa@xt_mov(dest, "X4");
     // Element count validation and the byte count in X7 happen once; only the bump math repeats.
     size_calc1: string <- concat(neg_check, mov_elem);
-    size_calc: string <- concat(size_calc1, concat(mul_bytes, mul_ov));
+    size_calc: string <- concat(size_calc1, concat(mul_bytes, concat(mul_ov, with_len)));
     bump_math: string <- concat(concat(ldr_bump, ldr_end), add_new);
     check: string <- concat(size_calc, emit_region_bump_check(bump_math));
-    alloc1: string <- concat(concat(mov_buf, add_bump), str_bump);
+    alloc1: string <- concat(concat(mov_buf, add_bump), concat(str_bump, store_len));
     alloc: string <- concat(alloc1, mov_dest);
     concat(check, alloc)
 }
@@ -331,55 +337,12 @@ fn int64_to_str(n: int64) -> string {
     }
 }
 
-fn bounds_len_from_prim_value(value: string) -> string {
-    marker: string <- "|bounds:";
-    case length_bytes(value) >= length_bytes(marker) of {
-        true -> case substring(value, 0, length_bytes(marker)) == marker of {
-            true -> {
-                // seed miscompiles length_bytes(<other var>) inline as substring's START arg (yields ""); bind it first.
-                m: int64 <- length_bytes(marker);
-                substring(value, m, length_bytes(value))
-            };
-            false -> ""
-        };
-        false -> ""
-    }
-}
-
-fn is_decimal_literal(s: string, i: int64) -> boolean {
-    case i >= length_bytes(s) of {
-        true -> length_bytes(s) > 0;
-        false -> case substring(s, i, i + 1) of {
-            "0" -> is_decimal_literal(s, i + 1);
-            "1" -> is_decimal_literal(s, i + 1);
-            "2" -> is_decimal_literal(s, i + 1);
-            "3" -> is_decimal_literal(s, i + 1);
-            "4" -> is_decimal_literal(s, i + 1);
-            "5" -> is_decimal_literal(s, i + 1);
-            "6" -> is_decimal_literal(s, i + 1);
-            "7" -> is_decimal_literal(s, i + 1);
-            "8" -> is_decimal_literal(s, i + 1);
-            "9" -> is_decimal_literal(s, i + 1);
-            _: string -> false
-        }
-    }
-}
-
-fn emit_buf_bounds_check(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, outer_reg: string, _label_sfx: string) -> string {
-    len_param: string <- bounds_len_from_prim_value(sir_term_root_node(term).value);
-    case length_bytes(len_param) == 0 of {
-        true -> "";
-        false -> case is_decimal_literal(len_param, 0) of {
-            true -> xt_isa@xt_cmp_branch("GE", "X2", concat("#", len_param), "L_buf_bounds");
-            false -> {
-                binding: string <- var@find_sp_binding(outer_reg, len_param);
-                case length_bytes(binding) == 0 of {
-                    true -> "";
-                    false -> xt_isa@xt_cmp_branch("GE", "X2", binding, "L_buf_bounds")
-                }
-            }
-        }
-    }
+// Bounds check before every buf_load / buf_store (spec §12.3.3): X1 = buffer, X2 = index. The
+// element count is the word below element 0 (emit_alloc_buf). One unsigned compare rejects both an
+// index at or past the length and a negative index. X17 is scratch here: nothing is live in it
+// across a buffer access.
+fn emit_buf_bounds_check(_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, _outer_reg: string, _label_sfx: string) -> string {
+    concat(xt_mem@xt_ldr("X17", "[X1, #-8]"), xt_isa@xt_cmp_branch("HS", "X2", "X17", "L_buf_bounds"))
 }
 
 fn memory_type_contains_from(h: string, needle: string, i: int64) -> boolean {
@@ -513,6 +476,12 @@ fn emit_alloc_rec(term: { nodes: List[{ kind: int64, type_name: string, value: s
     concat(concat(concat(concat(concat(concat(bounds, retain_ref), payload), copy), publish_bump), mov_dest), "")
 }
 
+// A buffer access branches to L_buf_bounds (emit_buf_bounds_check), which emit_region_helpers
+// defines, so a module whose only buffer use is reading a buffer it was passed needs the helpers too.
+fn is_buf_access_prim(name: string) -> boolean {
+    name == "buf_load" or name == "read_buf" or name == "buf_store" or name == "write_buf"
+}
+
 // Descends into the children of every kind rather than a list of the kinds that were expected to
 // have any. It used to name kinds 2..6 and so never looked inside a case branch (kinds 7 and 8): a
 // program whose only allocation sat in a case arm reported no region use, the helpers were left
@@ -521,7 +490,7 @@ fn emit_alloc_rec(term: { nodes: List[{ kind: int64, type_name: string, value: s
 fn term_has_region_allocation(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     case term.root < 0 of {
         true -> false;
-        false -> case sir_term_root_node(term).kind == 6 and (sir_term_root_node(term).name == "alloc_ref" or sir_term_root_node(term).name == "alloc_buf" or sir_term_root_node(term).name == "alloc_rec") of {
+        false -> case sir_term_root_node(term).kind == 6 and (sir_term_root_node(term).name == "alloc_ref" or sir_term_root_node(term).name == "alloc_buf" or sir_term_root_node(term).name == "alloc_rec" or is_buf_access_prim(sir_term_root_node(term).name)) of {
             true -> true;
             false -> case term_has_region_allocation(sir_term_at(term, sir_term_root_node(term).inner)) of {
                 true -> true;

@@ -10,27 +10,19 @@ directory. This directory holds only this README (it has no Makefile, so it is n
 
 Open:
 
-- From book-verification (2026-09-19, open): `compile_defects_list_tuple_literal_addition` (a list literal of tuple literals is
-  E1040 at the second element), `compile_defects_ordered_set_field_annotation_addition` and
-  `compile_defects_ordered_set_field_projection_addition` (a bracket collection type nested inside
-  a record field, or read back through a `.field` projection, is not recognized as its own
-  concrete representation, E2003), `compile_defects_ordered_map_field_annotation_addition` /
-  `compile_defects_tree_field_annotation_addition` / `compile_defects_graph_field_annotation_addition`
-  (the same defect against `OrderedMap`/`Tree`/`UndirectedGraph`),
-  `compile_defects_priority_queue_supervisor_addition` (a supervisor child spec's `initial_state`
-  typed `PriorityQueue[...]` is E2003 "type mismatch: children", a third shape of the same
-  bracket-representation family), `compile_defects_binary_tree_bracket_addition`
-  (`BinaryTree[...]` is missing from `type_checker_collections.silica`'s
-  `representation_id_from_module`, so it is E1040 wherever used).
+- From book-verification (2026-09-19, open): `compile_defects_priority_queue_supervisor_addition` (a supervisor
+  child spec's `initial_state` typed `PriorityQueue[...]` is E2003 "type mismatch: children"); the field-annotation
+  and field-projection half of the same bracket-representation family was fixed on 2026-09-19 (see below).
 
-- From the graph work (open): `compile_defects_trait_nested_placeholder_addition` (an impl cannot bind a
-  placeholder nested inside `List[...]` to a record, E2092), `compile_defects_graph_bracket_receiver_addition` (a
-  `DirectedGraph[...]`/`WeightedGraph[...]` value is rejected by trait calls, E2003),
-  `compile_defects_bracket_receiver_arguments_addition` (an `UndirectedGraph[...]` value with two fitting impls is
-  rejected by a method with a placeholder argument, E2003), `compile_defects_trait_placeholder_return_addition` (a
-  placeholder-result trait method cannot be called on a trait-typed parameter, E2003),
-  `compile_defects_trait_placeholder_result_dispatch_addition` (a placeholder-result trait method is resolved
-  against the last implementation, E2003).
+- From the effect checker (2026-09-19, open): `compile_defects_effect_propagation_addition` (a sequence that calls a
+  function whose own sequence declares `proc[mem(normal)]` must declare that effect, spec §9.3.1 rule 4; the checker
+  reports the declaration as unused, E3010, because effects never propagate through a user call. The fix was
+  deliberately left out of the 2026-09-25 merge.)
+
+- From defect batch 2 (2026-09-19, open): `compile_defects_float_literal_pattern_addition` (a float
+  literal is not accepted as a case pattern -- on its own or as a tuple element -- because
+  `case_parse_pattern` classifies numeric literals with `case_string_is_signed_int_literal`, E2005;
+  the emitter matches a float tuple element already).
 
 Resolved 2026-09-24: the float64 literal pool did not walk case nodes (`case x > 2.0 of` emitted `L_f64_-1`);
 fixed in both float literal pools and the trial moved to `float64_addition/float_literal_case_scrutinee`.
@@ -48,24 +40,50 @@ Fixed 2026-09-24 (front end: lexer, parser, type checker, SIR generator) and mov
   the callee's) -> `memory_region_addition/lifetime_parameter_name`: ref/ref?/region/buf/atomic_ref
   arguments are compared modulo the lifetime binder (spec §12.1.4) at the identifier-argument site.
 - `compile_defects_tagged_optional_type_addition` (`:none | (:some, T)` was E1040 in every type position)
-  -> `tuples_addition/emitter_defect_tagged_optional_type`: the parser accepts a tuple alternative after
-  `|`, the OR-return-type validator accepts a tagged tuple, and `type_checker/type_sum_alternatives.silica`
-  picks the tuple alternative by tag for tuple literals, tuple case patterns and their SIR lowering. Still
-  fails at run time on the open emitter defect `case_addition/emitter_defect_tuple_pattern_atom_element`
-  (a tuple pattern with an atom-literal or named element never matches), so it keeps the emitter_defect
-  prefix and has no .ascomp.
+  -> `case_addition/tagged_optional_type`: the parser accepts a tuple variant after `|`
+  (parser_tuples@extract_atom_option_tail_from_slots), the OR-return-type validator accepts a tagged tuple, the
+  type checker checks a tuple literal or tuple case pattern against the variant it builds or matches
+  (type_checker_expressions_tuples@check_tuple_literal_against_sum,
+  type_checker_tuple_decompose_helpers@case_tuple_variant_for_pattern), and the SIR lowering gives the tuple
+  literal and the case branch that variant's type. Two lanes fixed this the same day; the 2026-09-25 merge kept
+  one implementation. The emitter half (a tuple pattern with atom-literal or named elements) is
+  `case_addition/tuple_pattern_atom_and_named_elements`, fixed with it, so no emitter_defect prefix.
 - `compile_defects_nested_list_literal_addition` (created by the DIAGNOSTICS lane once its list-closer fix let
   `[[1], [2, 3]]` parse; the type checker then rejected the inner literal, E2001 "literal requires integer or
   float return type, got List[int64, normal]") -> `list_addition/nested_list_literal`: list spine pairs carry
   name ",", so a kind-20 node without it in the tail slot is one element for the type checker and the SIR
   lowering (its old second_len ran `length[...]` outside a sequence block and its golden miscounted).
 
+Fixed 2026-09-19 (defect batch 2 and the parked September lanes, landed by the 2026-09-25 merge) and moved:
+
+- `compile_defects_list_tuple_literal_addition` (a list literal of tuple literals, E1040) ->
+  `list_addition/list_of_tuple_literals_length`.
+- `compile_defects_ordered_set_field_annotation_addition` / `compile_defects_ordered_set_field_projection_addition`
+  -> `ordered_data_structures/search_tree_collections/ordered_set_field_annotation` and
+  `.../ordered_set_field_projection`; `compile_defects_ordered_map_field_annotation_addition` ->
+  `ordered_data_structures/ordered_collections/ordered_map_field_annotation`;
+  `compile_defects_tree_field_annotation_addition` -> `ordered_data_structures/tree_collections/tree_field_annotation`;
+  `compile_defects_graph_field_annotation_addition` ->
+  `ordered_data_structures/graph_collections/graph_field_annotation` (a bracket collection type nested inside a
+  record field, or read back through a `.field` projection, is now recognized:
+  type_checker_collections@collection_aware_types_compatible).
+- `compile_defects_binary_tree_bracket_addition` (`BinaryTree[...]` missing from the representation table) ->
+  `ordered_data_structures/binary_tree_core/binary_tree_bracket`.
+- `compile_defects_graph_bracket_receiver_addition` -> `ordered_data_structures/graph_collections/graph_bracket_receiver`
+  (+ `lib/ProbeDirected.silica`, `lib/StubGraphDirected.silica`); `compile_defects_bracket_receiver_arguments_addition`
+  -> `ordered_data_structures/graph_collections/bracket_receiver_arguments` (+ `lib/PlusGraph.silica`,
+  `lib/StubGraphUndirected.silica`).
+- `compile_defects_trait_nested_placeholder_addition` -> `traits_addition/trait_nested_placeholder`;
+  `compile_defects_trait_placeholder_return_addition` -> `traits_addition/trait_placeholder_return`;
+  `compile_defects_trait_placeholder_result_dispatch_addition` -> `traits_addition/trait_placeholder_result_dispatch`
+  (their trait and impl units under `traits_addition/traits/`).
+
 Fixed 2026-09-18 (front end: parser and type checker) and moved:
 
 - `defect_tuple_pattern_named_binding` (`(:ok, n: int64)` was E2002) ->
-  `supervisors_addition/emitter_defect_tuple_pattern_named_binding`: now accepted, but the emitter never matches a
-  tuple pattern with atom or named elements (open emitter defect; also isolated as
-  `case_addition/emitter_defect_tuple_pattern_atom_element`). No `.ascomp` until the emitter is fixed.
+  `supervisors_addition/tuple_pattern_named_binding_in_behaviour`. The emitter half (every element kind
+  of a tuple pattern, and a frame slot for each named element) was fixed on 2026-09-19; the isolated
+  case is `case_addition/tuple_pattern_atom_and_named_elements`.
 - `compile_defects_priority_type_addition` (PriorityType never substituted in composite types, E2003) ->
   `ordered_data_structures/heap_collections/pq_priority_type_composite_result` (+ `lib/StubPriorityQueue.silica`).
 - `compile_defects_item_type_addition` (ItemType resolved to the first PriorityQueue bracket parameter, E2001) ->

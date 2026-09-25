@@ -838,8 +838,22 @@ silica_rt_region_destroy:
 # region header. Blocks come from silica_rt_raw_alloc, so each malloc base is
 # payload-16. Null handle is a no-op so a moved-out region is safe to skip.
 # frame: [rbp-8] region (X19), [rbp-16] block (X20), [rbp-24] next block (X21)
+# A canonical arena (silica_rt_canonical_arena_lookup) is process-shared and belongs to the
+# canonical arena table, which hands the same base out to every lookup of its key for the life of
+# the process. A function that received one as a parameter owns the handle (spec 4.4.2) and
+# destroys it when it does not move on, exactly as for any region; the arena itself must survive
+# that, so the table is consulted first and a registered base is left untouched (LBBrd_canonical).
+# Freeing it here used to hand a non-malloc block to free (allocator abort).
 	test	rdi, rdi
 	jz	LBBrd_ret
+	lea	rax, [rip + silica_rt_canonical_arena_table]
+	mov	ecx, 512
+LBBrd_cscan:
+	cmp	QWORD PTR [rax + 8], rdi
+	je	LBBrd_canonical
+	add	rax, 16
+	dec	ecx
+	jnz	LBBrd_cscan
 	push	rbp
 	mov	rbp, rsp
 	sub	rsp, 80
@@ -863,6 +877,9 @@ LBBrd_hdr:
 	call	free
 	leave
 LBBrd_ret:
+	ret
+LBBrd_canonical:
+# Deliberate no-op: the canonical arena stays registered and usable by its key.
 	ret
 	.globl	silica_rt_region_mark
 silica_rt_region_mark:

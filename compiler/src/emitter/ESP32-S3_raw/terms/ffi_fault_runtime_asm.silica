@@ -60,6 +60,8 @@ Lrta_r_exit_queue_full:
 	.asciz	\"supervisor ingress queue is full (exit delivery)\"
 Lrta_r_stack_commit:
 	.asciz	\"cannot commit memory for a growing actor stack\"
+Lrta_r_stack_reserve:
+	.asciz	\"stack reservation failed\"
 	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_abort_with
 	.p2align	2
@@ -188,6 +190,12 @@ _silica_rt_abort_exit_queue_full:
 	adrp	x0, Lrta_r_exit_queue_full@PAGE
 	add	x0, x0, Lrta_r_exit_queue_full@PAGEOFF
 	b	_silica_rt_abort_with
+	.globl	_silica_rt_abort_stack_reserve
+	.p2align	2
+_silica_rt_abort_stack_reserve:
+	adrp	x0, Lrta_r_stack_reserve@PAGE
+	add	x0, x0, Lrta_r_stack_reserve@PAGEOFF
+	b	_silica_rt_abort_with
 "
 }
 
@@ -267,7 +275,10 @@ Lloh_h1:
 	add	x8, x8, _silica_rt_sync_fault_handler@PAGEOFF
 	str	x8, [sp, #32]
 	str	wzr, [sp, #40]
-	mov	w9, #65
+; SA_SIGINFO (0x40) | SA_ONSTACK (0x1) | SA_NODEFER (0x10). SA_NODEFER keeps the signal deliverable
+; while its handler runs: a fault inside the handler must reach _silica_rt_fault_last_resort, and a
+; synchronous fault on a blocked signal is the default action (status 139) instead (spec §15.4.5.5).
+	mov	w9, #81
 	str	w9, [sp, #44]
 	mov	w0, #11
 	add	x1, sp, #32
@@ -294,6 +305,15 @@ L_ifh_done:
 	.loh AdrpAdd	Lloh_asf0, Lloh_asf1
 	.loh AdrpAdd	Lloh_h0, Lloh_h1
 	.cfi_endproc
+; The startup code installs the handlers before main runs (spec §15.4.5.5): dyld calls every
+; __mod_init_func entry before main, so a fault in main's prologue, or in anything else that runs
+; before main's body, is reported like any other. The calls from spawn and from main's prologue remain
+; and return at once (the installed flag); spawn's call is also what gives an actor thread its handler
+; state on hosts where that differs.
+	.section	__DATA,__mod_init_func,mod_init_funcs
+	.p2align	3
+	.quad	_silica_rt_install_sync_fault_handlers
+	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_ffi_fault_altstack_probed
 	.p2align	2
 _silica_rt_ffi_fault_altstack_probed:
@@ -339,6 +359,11 @@ _silica_rt_sync_fault_handler:
 	mov	x22, x0
 	mov	x23, x1
 	mov	x24, x2
+; A fault raised while a handler runs on this thread (the handler itself, or the runtime code it calls)
+; takes the last-resort path and never re-enters the decision below (spec §15.4.5.5).
+	mov	x0, x24
+	bl	_silica_rt_fault_in_handler
+	cbnz	w0, L_sfh_last_resort
 	adrp	x8, _silica_rt_fault_pc@PAGE
 	add	x8, x8, _silica_rt_fault_pc@PAGEOFF
 	cbz	x24, Lsfh_pc_done
@@ -439,9 +464,15 @@ L_sfh_unrecoverable:
 	ldr	x1, [x1]
 	b	_silica_rt_abort_with_pc
 L_sfh_crash:
+; Process-fatal: the report line, then C _exit (Darwin __exit; `_exit` in Darwin assembly is C exit(),
+; which would run atexit handlers and flush stdio from inside the signal handler). Spec §15.4.5.5.
 	bl	_silica_rt_print_fault_site
 	mov	w0, #70
-	bl	_exit
+	bl	__exit
+L_sfh_last_resort:
+	mov	x0, x23
+	mov	x1, x24
+	b	_silica_rt_fault_last_resort
 L_sfh_done:
 	ldp	x29, x30, [sp, #48]
 	ldp	x20, x19, [sp, #32]
@@ -605,23 +636,14 @@ L_gff_thread_exit:
 	bl	_pthread_exit
 	b	L_gff_thread_exit
 L_gff_process:
-	mov	w0, #2
-Lloh_gff_msg0:
-	adrp	x1, L_silica_foreign_fault_msg@PAGE
-Lloh_gff_msg1:
-	add	x1, x1, L_silica_foreign_fault_msg@PAGEOFF
-	mov	w2, #14
-	bl	_write
-	mov	w0, #1
-	bl	_exit
+; A guarded foreign fault with no current actor has no supervisor to deliver it to: a fatal fault
+; (spec §15.4.5.5), reported from the fields the handler recorded before it jumped back here.
+	bl	_silica_rt_print_fault_site
+	mov	w0, #70
+	bl	__exit
 	b	L_gff_process
 	.loh AdrpAdd	Lloh_gff0, Lloh_gff1
-	.loh AdrpAdd	Lloh_gff_msg0, Lloh_gff_msg1
 	.cfi_endproc
-	.section	__TEXT,__cstring,cstring_literals
-L_silica_foreign_fault_msg:
-	.asciz	\"foreign_fault\\n\"
-	.section	__TEXT,__text,regular,pure_instructions
 	.section	__TEXT,__cstring,cstring_literals
 	.p2align	2
 Lpfs_pre:
@@ -775,6 +797,82 @@ Lpfs_done:
 	ldp	x19, x20, [sp, #16]
 	ldp	x29, x30, [sp], #48
 	ret
+; X0 = ucontext -> W0 = 1 when the fault interrupted code running on this thread's alternate signal
+; stack. Only the signal handler, and the runtime code it calls or leaves the thread in, runs there, so
+; that is a fault inside the handler. The test keeps no state: a per-thread in-handler flag would stay
+; set after the handler leaves by siglongjmp (guarded FFI recovery, an actor failing) and would need
+; TLS, whose first use can allocate. sigaltstack(NULL, &ss) is a plain system call. A thread without an
+; alternate stack (SS_DISABLE) answers 0; every thread the runtime creates has one. The bounds are strict at both
+; ends: an actor's execution stack can be mapped directly below the alternate stack, so its top is
+; the alternate stack's base, and the growth fault of the first push of a behavior interrupts code
+; whose SP is exactly that base (a whole trial of idle actors reported a fault instead of running).
+	.p2align	2
+_silica_rt_fault_in_handler:
+	stp	x29, x30, [sp, #-48]!
+	mov	x29, sp
+	str	x19, [sp, #16]
+	cbz	x0, Lfih_no
+; Darwin: uc_mcontext pointer at +48; __ss.__sp at mcontext +264 (__ss.__pc is +272).
+	ldr	x9, [x0, #48]
+	cbz	x9, Lfih_no
+	ldr	x19, [x9, #264]
+; Darwin stack_t at sp+24: ss_sp @0, ss_size @8, ss_flags (int) @16.
+	mov	x0, xzr
+	add	x1, sp, #24
+	bl	_sigaltstack
+	cbnz	w0, Lfih_no
+	ldr	w9, [sp, #40]
+	tbnz	w9, #2, Lfih_no
+	ldr	x9, [sp, #24]
+	ldr	x10, [sp, #32]
+	cmp	x19, x9
+	b.ls	Lfih_no
+	add	x10, x9, x10
+	cmp	x19, x10
+	b.hs	Lfih_no
+	mov	w0, #1
+	b	Lfih_ret
+Lfih_no:
+	mov	w0, #0
+Lfih_ret:
+	ldr	x19, [sp, #16]
+	ldp	x29, x30, [sp], #48
+	ret
+; Last-resort fault report (spec §15.4.5.5): X0 = siginfo, X1 = ucontext of the fault raised inside the
+; handler. Writes the line [silica] fault at 0x<pc>  addr=0x<fault address> and ends with _exit(70). It uses
+; only write(2) and _exit: no dladdr (it takes the loader's lock, which the faulting handler may hold,
+; and it may be what faulted), no TLS, no actor fields. The first handler may have written part of its
+; own line; the report tools fold everything after the first fault banner on a line. Never returns.
+	.p2align	2
+_silica_rt_fault_last_resort:
+	mov	x19, x0
+	mov	x20, xzr
+	mov	x21, xzr
+	cbz	x1, Llr_addr
+	ldr	x9, [x1, #48]
+	cbz	x9, Llr_addr
+	ldr	x20, [x9, #272]
+Llr_addr:
+	cbz	x19, Llr_write
+	ldr	x21, [x19, #24]
+Llr_write:
+	adrp	x0, Lpfs_pre@PAGE
+	add	x0, x0, Lpfs_pre@PAGEOFF
+	bl	_silica_rt_fault_puts
+	mov	x0, x20
+	bl	_silica_rt_fault_puthex
+	adrp	x0, Lpfs_ad@PAGE
+	add	x0, x0, Lpfs_ad@PAGEOFF
+	bl	_silica_rt_fault_puts
+	mov	x0, x21
+	bl	_silica_rt_fault_puthex
+	adrp	x0, Lpfs_eol@PAGE
+	add	x0, x0, Lpfs_eol@PAGEOFF
+	bl	_silica_rt_fault_puts
+	mov	w0, #70
+	bl	__exit
+Llr_hang:
+	b	Llr_hang
 	.p2align	2
 _silica_rt_fault_bufcat:
 	mov	x4, x2

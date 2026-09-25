@@ -437,6 +437,42 @@ fn spawn_promote_init_x11(term: { nodes: List[{ kind: int64, type_name: string, 
     }
 }
 
+// Spec §15.4.7.3 / §16.3.5: a message is copied at send time. A tuple or record message travels
+// as a pointer, and a literal (or a let-bound value) points into the sending function's frame
+// region: two literal sends in a row shared one region, so both mailbox entries read the second
+// literal, and a message sent from a behaviour or helper pointed into a frame that was popped
+// before the receiver read it. The message's words are copied into the sender's region before
+// the runtime enqueues the pointer. Nested aggregates are already region pointers (record and
+// tuple makes promote them), so one level is enough. Size: one word per tuple element or
+// record field (boxed layout); the exact size, so a heap source is never read past its end.
+fn aggregate_message_type_bytes(type_name: string) -> int64 {
+    case reg_conventions@is_tuple_type(type_name) and prims_tuple@count_type_elements(type_name) >= 2 of {
+        true -> prims_tuple@count_type_elements(type_name) * 8;
+        false -> case reg_conventions@is_inline_struct_type(type_name) of {
+            true -> prims_record@record_type_value_flat_byte_size(type_name);
+            false -> 0
+        }
+    }
+}
+
+fn actor_message_copy_bytes(msg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> int64 {
+    n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(msg);
+    case n.kind == 6 and n.name == "tuple_make" of {
+        true -> prims_tuple@count_flat_elements(msg) * 8;
+        false -> aggregate_message_type_bytes(n.type_name)
+    }
+}
+
+// The message is in X10 and the target (actor ref or registry atom) in X11. The copy clobbers
+// the caller-saved registers, so X11 is parked on the stack around it.
+fn actor_message_copy_x10(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
+    nb: int64 <- actor_message_copy_bytes(sir_term_at(term, sir_term_root_node(term).right_expr));
+    case nb > 0 of {
+        true -> concat(concat(concat(x86_mem@x86_str("X11", "[SP, #-16]!"), x86_isa@x86_mov("X0", "X10")), heap_promote_stack_aggregate_x0(nb)), concat(x86_isa@x86_mov("X10", "X0"), x86_mem@x86_ldr("X11", "[SP], #16")));
+        false -> ""
+    }
+}
+
 // spawn / spawn_dangerous: X0 init, X1 beh, W2 core (0 default), X3 supervisor trampoline, X4 stack_policy.
 fn emit_spawn(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
     e3b_pfx: string <- e3b_trampoline_x3_prefix(sir_term_root_node(term).value);
@@ -508,28 +544,28 @@ fn emit_stack_policy(dest: string, term: { nodes: List[{ kind: int64, type_name:
 }
 
 fn emit_send(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
-    concat(concat(stage_x0_x1("X11", "X10"), asm_bl("silica_rt_actor_send")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+    concat(actor_message_copy_x10(term), concat(concat(stage_x0_x1("X11", "X10"), asm_bl("silica_rt_actor_send")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name)))
 }
 
 fn emit_actor_call(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
-    concat(concat(stage_x0_x1("X11", "X10"), asm_bl("silica_rt_actor_call")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+    concat(actor_message_copy_x10(term), concat(concat(stage_x0_x1("X11", "X10"), asm_bl("silica_rt_actor_call")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name)))
 }
 
 fn emit_actor_call_registered(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
-    concat(concat(stage_x0_x1("X11", "X10"), asm_bl("silica_rt_actor_call_registered")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+    concat(actor_message_copy_x10(term), concat(concat(stage_x0_x1("X11", "X10"), asm_bl("silica_rt_actor_call_registered")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name)))
 }
 
 fn emit_actor_cast(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
     // bool in W0 per AAPCS; widen to X for dest
-    concat(concat(stage_x0_x1("X11", "X10"), asm_bl("silica_rt_actor_cast")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+    concat(actor_message_copy_x10(term), concat(concat(stage_x0_x1("X11", "X10"), asm_bl("silica_rt_actor_cast")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name)))
 }
 
 fn emit_actor_cast_registered(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
-    concat(concat(stage_x0_x1("X11", "X10"), asm_bl("silica_rt_actor_cast_registered")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+    concat(actor_message_copy_x10(term), concat(concat(stage_x0_x1("X11", "X10"), asm_bl("silica_rt_actor_cast_registered")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name)))
 }
 
 fn emit_actor_cast_dangerous_registered(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
-    concat(concat(stage_x0_x1("X11", "X10"), asm_bl("silica_rt_actor_cast_dangerous_registered")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name))
+    concat(actor_message_copy_x10(term), concat(concat(stage_x0_x1("X11", "X10"), asm_bl("silica_rt_actor_cast_dangerous_registered")), mov_dest_from_x0_for_type(dest, sir_term_root_node(term).type_name)))
 }
 
 fn emit_supervisor_add_child(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {

@@ -78,8 +78,6 @@ silica_rt_stack_reserve_failed_atom:
 	.quad	");
     concat(concat(p1, reserve_failed_idx), "
 	.section .rodata
-L_srt_reserve_failed_msg:
-	.asciz	\"stack_reserve_failed\\n\"
 ")
 }
 
@@ -821,8 +819,9 @@ Lafc_thread_exit:
 	.p2align	2
 silica_rt_spawn_reserve_failed:
 # A spawn could not make its reservation. The spawning actor fails with
-# (:explicit, :stack_reserve_failed); `main` is not an actor, so there it is reported and the
-# program exits, as for any failure in non-actor code. Never returns.
+# (:explicit, :stack_reserve_failed). `main` is not an actor and has no supervisor, so there the
+# process ends with a runtime abort, reason stack reservation failed, status 71 (spec 15.1.2.2,
+# 15.4.5.5), reported at the spawn routine's call to this function. Never returns.
 	push	rbp
 	mov	rbp, rsp
 	call	silica_rt_tls_current_actor_get
@@ -832,13 +831,8 @@ silica_rt_spawn_reserve_failed:
 	mov	rsi, QWORD PTR [rax]
 	call	silica_rt_actor_fail_current
 Lsrf_main:
-	mov	edi, 2
-	lea	rsi, [rip + L_srt_reserve_failed_msg]
-	mov	edx, 21
-	call	write
-	mov	edi, 1
-	call	exit
-	jmp	Lsrf_main
+	pop	rbp
+	jmp	silica_rt_abort_stack_reserve
 	.globl	silica_rt_get_actor_memory_usage
 	.p2align	2
 silica_rt_get_actor_memory_usage:

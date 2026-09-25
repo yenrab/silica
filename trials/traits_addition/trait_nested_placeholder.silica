@@ -1,0 +1,55 @@
+// Type-checker defect (2026-09-18; fixed in defect batch 2, 2026-09-19: a placeholder nested in a
+// required result may resolve to a record, type_checker_trait_placeholders), found while writing the
+// DirectedGraph trait over the weighted directed live graph (stdlib/data_structures/graph_weighted.silica,
+// header deviation 9). main declares mem(normal) because its list literal allocates.
+//
+// Defect: a trait implementation matches a required placeholder only at the top level of a type.
+// NestedBox's required `items` returns List[ValueType, mem(normal)]; the implementation returns
+// List[{ to: KeyType, data: ValueType }, mem(normal)], i.e. ValueType := { to: KeyType, data:
+// ValueType } of its own record. common_contract.md §1 lets every placeholder resolve to any valid
+// type, and directed_graph_trait.md §1/§3 needs exactly this: a weighted directed graph's
+// EdgePayloadType is the generated {to, data} view, so its neighbors return List[{to, data}].
+// Expected: compiles and prints 7, x, exit 0.
+// Before the fix: E2092 "impl fn items does not match required signature for trait NestedBox (spec 3.4.8)".
+//
+// To run by hand:
+//   mkdir -p /tmp/tnp && cp NestedBox.silica defect_trait_nested_placeholder.silica /tmp/tnp/ && cd /tmp/tnp
+//   printf 'NestedBox.silica\ndefect_trait_nested_placeholder.silica\n' > silica.config
+//   /Volumes/2T/silica/binaries/silica-compiler
+
+use NestedBox;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn cmp_str(a: string, b: string) -> :less | :equal | :greater {
+    case a == b of {
+        true -> :equal;
+        false -> :less
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[device_io, mem(normal)]
+        e: List[{ to: int64, data: string }, mem(normal)] <- [{ to: 7, data: "x" }];
+        b: {
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(string, string) -> :less | :equal | :greater,
+            entries: List[{ to: int64, data: string }, mem(normal)]
+        } <- { compare_key: cmp_i64, compare_value: cmp_str, entries: e };
+        xs: List[{ to: int64, data: string }, mem(normal)] <- NestedBox@items(b);
+        w: { to: int64, data: string } <- xs.head;
+        print_int64(w.to);
+        println("");
+        println(w.data)
+    produces
+        pure 0
+    end
+}

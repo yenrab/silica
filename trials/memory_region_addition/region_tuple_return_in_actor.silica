@@ -1,0 +1,38 @@
+// A function that returns a tuple holding a region handle, (region(L, normal), T), called on an
+// actor thread. This used to end the process (exit 70 with no report, or a fault whose pc was the
+// function's own address) while the same call from main worked. Kept as a regression trial under a
+// plain name (was sd20_region_tuple_return_in_actor).
+// Expected: 11 23, exit 0.
+
+fn mk(r: region(L, normal), n: int64) -> (region(L, normal), ref(L, normal, (int64, ref?(L, normal, rec)))) {
+    sequence proc[mem(normal)]
+        c: ref(L, normal, (int64, ref?(L, normal, rec))) <- alloc_rec(r, (n, :none))
+    produces pure (r, c) end
+}
+fn val(x: ref(L, normal, (int64, ref?(L, normal, rec)))) -> int64 {
+    sequence proc[mem(normal)]
+        node: (int64, ref?(L, normal, rec)) <- read_ref(x);
+        (n: int64, _: ref?(L, normal, rec)) <- node
+    produces pure n end
+}
+fn beh(msg: int64, state: (region(L, normal), int64)) -> (:reply, int64, (region(L, normal), int64)) {
+    sequence
+        (r0: region(L, normal), k: int64) <- state;
+        (r1: region(L, normal), a: ref(L, normal, (int64, ref?(L, normal, rec)))) <- mk(r0, msg);
+        (r2: region(L, normal), b: ref(L, normal, (int64, ref?(L, normal, rec)))) <- mk(r1, msg * 10);
+        sum: int64 <- val(a) + val(b) + k
+    produces pure (:reply, sum, (r2, k + 1)) end
+}
+fn main() -> int64 {
+    sequence proc[concurrency, device_io, mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        r: region(L, normal) <- alloc_region(normal);
+        a: actor_ref <- spawn((r, 0), beh, stack_policy(0, :keep_last_message));
+        v1: int64 <- call(a, 1 impl ActorMessage {});
+        v2: int64 <- call(a, 2 impl ActorMessage {});
+        _: atom <- print_int64(v1);
+        print_string(" ");
+        _: atom <- print_int64(v2);
+        println("")
+    produces pure 0 end
+}

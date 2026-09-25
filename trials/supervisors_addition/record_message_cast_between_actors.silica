@@ -1,0 +1,134 @@
+// A record message cast from inside running code rather than from main (book-verification repro
+// r_cb, defect D11): `asker` casts a record to `doubler` from a helper it calls, and `doubler` casts
+// its answer back directly from its own behaviour. Each record lived in the sending function's frame
+// region, which was popped (and reused) before the receiver ran, so the doubler read value 0 and the
+// answer arrived with an unknown kind (every run). Spec §15.4.7.3 / §16.3.5: a message is copied at
+// send time -- the emitter now copies a tuple or record message into the sender's region before the
+// runtime enqueues it.
+// Expected: 21 arrives at the doubler; it replies with 42.
+//   Question sent. Getting on with other things.
+//   21 arrived at the doubler
+//   The answer came back: 42
+//   done
+//   0
+
+use Supervisor;
+
+impl BookSupervisor for Supervisor;
+
+fn asker(msg: { kind: atom, reply_to: atom, value: int64 }, state: int64) -> (:no_reply, int64) {
+    sequence
+        _: atom <- case msg.kind of {
+            :start -> ask_doubler(msg.value);
+            :answer -> hear_answer(msg.value);
+            :request -> hear_answer(1000 + msg.value);
+            :asker -> hear_answer(2000 + msg.value);
+            :doubler -> hear_answer(3000 + msg.value);
+            _: atom -> hear_answer(9000 + msg.value)
+        }
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn ask_doubler(number: int64) -> atom {
+    sequence proc[concurrency, device_io]
+        request: { kind: atom, reply_to: atom, value: int64 } <- { kind: :request, reply_to: :asker, value: number };
+        _: boolean <- cast_registered(:doubler, request impl ActorMessage {});  // send the question, and do not wait
+        println("Question sent. Getting on with other things.")
+    produces
+        pure :ok
+    end
+}
+
+fn hear_answer(answer: int64) -> atom {
+    sequence proc[device_io]
+        print_string("The answer came back: ");
+        _: atom <- print_int64(answer);
+        println("");
+        println("done")
+    produces
+        pure :ok
+    end
+}
+
+fn doubler(msg: { kind: atom, reply_to: atom, value: int64 }, state: int64) -> (:no_reply, int64) {
+    sequence proc[concurrency, device_io]
+        _: atom <- print_int64(msg.value);
+        println(" arrived at the doubler");
+        _: boolean <- cast_registered(:asker, { kind: :answer, reply_to: :doubler, value: msg.value * 2 } impl ActorMessage {})  // cast the answer back to whoever asked
+    produces
+        pure (:no_reply, state)
+    end
+}
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: { kind: atom, reply_to: atom, value: int64 }, state: int64) -> (:no_reply, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+        {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: { kind: atom, reply_to: atom, value: int64 }, state: int64) -> (:no_reply, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :asker,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: asker,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            },
+            {
+                id: :doubler,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: doubler,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :plain
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        _: supervisor_ref <- spawn_registered_supervisor(BookSupervisor, 0, :book_supervisor, stack_policy(0, :keep_last_message));
+        start: { kind: atom, reply_to: atom, value: int64 } <- { kind: :start, reply_to: :asker, value: 21 };
+        _: boolean <- cast_registered(:asker, start impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

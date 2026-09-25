@@ -410,7 +410,7 @@ fn main() -> int64 {
 }
 ```
 
-Both print `60`. Unpack the pair with a binding and branch on the atom, as above. Do not match the pair with a tuple pattern that has an atom or a named element, such as `(:ok, n: int64) -> ...`: the checker accepts it, but the emitter does not yet match it at run time (open defect, `trials/case_addition/emitter_defect_tuple_pattern_atom_element.silica`).
+Both print `60`. You can also match the pair with a tuple pattern that has an atom and a named element, `(:ok, n: int64) -> ...`; that form matches and binds since 2026-09-19 (`trials/case_addition/tuple_pattern_atom_and_named_elements.silica`).
 
 ---
 
