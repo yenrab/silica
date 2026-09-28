@@ -182,10 +182,32 @@ fn is_inline_struct_type(type_name: string) -> boolean {
     }
 }
 
+// A tagged sum whose selected alternative is a tuple, `:none | (:some, int64)`, returns an
+// aggregate even though is_tuple_type excludes atom-option types: that exclusion was written when
+// such a type could only be a bare atom, which is a scalar. Without this the callee built the tuple
+// in its own frame and returned a pointer into it, which the caller read after the frame had died
+// (case_addition/tagged_optional_type printed a stack address on linux_x86_64, and survived on
+// AArch64 only because nothing had overwritten the bytes yet).
+fn atom_option_carries_tuple_regcv(s: string, i: int64) -> boolean {
+    case i >= length_bytes(s) of {
+        true -> false;
+        false -> case substring(s, i, i + 1) == "(" of {
+            true -> true;
+            false -> atom_option_carries_tuple_regcv(s, i + 1)
+        }
+    }
+}
+
 fn is_aggregate_struct_or_tuple_return_type(type_name: string) -> boolean {
     case is_tuple_type(type_name) of {
         true -> true;
-        false -> is_inline_struct_type(type_name)
+        false -> case is_inline_struct_type(type_name) of {
+            true -> true;
+            false -> case is_atom_option_type_regcv(type_name) of {
+                false -> false;
+                true -> atom_option_carries_tuple_regcv(type_name, 0)
+            }
+        }
     }
 }
 

@@ -64,6 +64,12 @@ objects: assembly
 		base=$${sams%.sams}; \
 		echo "Assembling: $$sams -> $$base.o"; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o; \
+	done; \
+	for line in $$(grep '^\.\./\.\./compiler/stdlib/' silica.config 2>/dev/null); do \
+		src=$${line%.silica}; base=$$(basename "$$src"); \
+		[ -f "$$src.sams" ] || continue; \
+		echo "Assembling: $$base.sams (stdlib) -> $$base.o"; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$src.sams" -o "$$base.o"; \
 	done
 
 # Stage 3: Link .o -> executable
@@ -72,6 +78,10 @@ executables: objects
 		[ -f "$$h" ] || continue; hb=$${h%.sams}; \
 		[ "$$hb" = "__silica_runtime" ] && continue; \
 		grep -qE '^\.global main$$' "$$h" || helper_objs="$$helper_objs $$hb.o"; \
+	done; \
+	for line in $$(grep '^\.\./\.\./compiler/stdlib/' silica.config 2>/dev/null); do \
+		hb=$$(basename "$${line%.silica}"); \
+		[ -f "$$hb.o" ] && helper_objs="$$helper_objs $$hb.o"; \
 	done; \
 	for o in *.o; do \
 		[ -f "$$o" ] || continue; \
@@ -139,10 +149,21 @@ integrate-run:
 		ko=$$((ko + 1)); failed=1; break; \
 	fi; \
 	done; \
+	for line in $$(grep '^\.\./\.\./compiler/stdlib/' silica.config 2>/dev/null); do \
+		src=$${line%.silica}; base=$$(basename "$$src"); \
+		[ -f "$$src.sams" ] || continue; \
+		echo "Assembling $$base.sams (stdlib)..."; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$src.sams" -o "$$base.o" || { \
+			echo "❌❌ $(MSG_PREFIX)$$base assemble failed"; $(INTEGRATE_DOT_FAIL); ko=$$((ko + 1)); failed=1; }; \
+	done; \
 	helper_objs=""; for h in *.sams; do \
 		[ -f "$$h" ] || continue; hb=$${h%.sams}; \
 		[ "$$hb" = "__silica_runtime" ] && continue; \
 		grep -qE '^\.global main$$' "$$h" || helper_objs="$$helper_objs $$hb.o"; \
+	done; \
+	for line in $$(grep '^\.\./\.\./compiler/stdlib/' silica.config 2>/dev/null); do \
+		hb=$$(basename "$${line%.silica}"); \
+		[ -f "$$hb.o" ] && helper_objs="$$helper_objs $$hb.o"; \
 	done; \
 	for o in *.o; do \
 		[ -f "$$o" ] || continue; \

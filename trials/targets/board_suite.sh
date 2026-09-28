@@ -147,7 +147,7 @@ skip_reason() {
     awk -F'\t' -v s="$1" '$1 == s { print $2; exit }' "$work/.skip_trials" 2>/dev/null
 }
 
-programs=() failtrials=() staged=0
+programs=() modules=() failtrials=() staged=0
 while IFS= read -r f; do
     [ -n "$f" ] || continue
     in_subsuite "$f" && continue
@@ -172,6 +172,16 @@ while IFS= read -r f; do
     if [ -f "$src/$stem.no_golden_fail" ] && [ ! -f "$src/$stem.scout" ]; then
         continue            # not a trial (as on the host)
     fi
+    # A top-level source with no expected output is a support module, not a program: it has no main,
+    # and the programs in the suite link against it. Stage it so they can, but never build an image
+    # from it, which is what produced "undefined reference to `main'" for every such module, and
+    # "undefined reference to <Module>_<fn>" for the programs that needed one.
+    if [ ! -f "$src/$stem.scout" ] && [ ! -f "$src/$stem.$target.scout" ]; then
+        modules+=("$stem")
+        ln -s "$src/$f" "src/$f"
+        staged=$((staged + 1))
+        continue
+    fi
     programs+=("$stem")
     ln -s "$src/$f" "src/$f"
     staged=$((staged + 1))
@@ -190,6 +200,11 @@ if [ "${#programs[@]}" -gt 0 ]; then
         extra=()
         while IFS= read -r m; do [ -n "$m" ] && extra+=("src/$m"); done < <(cd src && find . -mindepth 2 -name '*.sams' | sed 's|^\./||' | LC_ALL=C sort)
         [ -f src/__silica_runtime.sams ] && extra+=("src/__silica_runtime.sams")
+        # Top-level support modules: the find above only reaches subdirectories, so without this a
+        # program that calls one links against nothing and the loader reports its functions missing.
+        for m in ${modules[@]+"${modules[@]}"}; do
+            [ -f "src/$m.sams" ] && extra+=("src/$m.sams")
+        done
         left=${#programs[@]}
         for stem in "${programs[@]}"; do
             if [ -f "$MARK_ROOT/.board_lost" ]; then

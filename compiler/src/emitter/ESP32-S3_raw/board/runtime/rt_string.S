@@ -28,7 +28,8 @@
 // only uses the low word of a pointer or count; a negative index (high word < 0) clamps to 0.
 //
 //   silica_rt_string_length_bytes(s)            -> int64
-//   silica_rt_string_length_chars(s)            -> int64   UTF-8 scalar count (non-continuation bytes)
+//   silica_rt_string_length_chars(s)            -> int64   UTF-8 scalar count; a byte outside a
+//                                                  well-formed sequence counts as one character (spec §5.3.1)
 //   silica_rt_string_concat(a, b)               -> string  an empty operand returns the other
 //   silica_rt_string_eq(a, b)                   -> 0/1
 //   silica_rt_string_cmp(a, b)                  -> -1/0/1  unsigned bytewise, shorter prefix first
@@ -151,18 +152,34 @@ silica_rt_string_length_chars:
     movi    a3, 0
     beqz    a2, 9f
     CHECK_TAG a2, a8
-    l32i    a4, a2, 8             // p
+    l32i    a4, a2, 8             // p (cursor)
     l32i    a5, a2, 16
     add     a5, a4, a5            // end
-    movi    a2, 0
-    movi    a6, 0x80
-    movi    a7, 0xC0
+    movi    a2, 0                 // char count
 1:  bgeu    a4, a5, 9f
     l8ui    a8, a4, 0
-    and     a8, a8, a7
-    addi    a4, a4, 1
-    beq     a8, a6, 1b            // continuation byte
     addi    a2, a2, 1
+    addi    a4, a4, 1
+    movi    a10, 0x80
+    bltu    a8, a10, 1b           // < 0x80: single byte, already advanced
+    movi    a9, 0xE0
+    and     a10, a8, a9
+    movi    a9, 0xC0
+    beq     a10, a9, 2f           // 110xxxxx: 2-byte lead
+    movi    a9, 0xF0
+    and     a10, a8, a9
+    movi    a9, 0xE0
+    beq     a10, a9, 3f           // 1110xxxx: 3-byte lead
+    movi    a9, 0xF8
+    and     a10, a8, a9
+    movi    a9, 0xF0
+    beq     a10, a9, 4f           // 11110xxx: 4-byte lead
+    j       1b                    // stray continuation or invalid lead byte: one character
+2:  addi    a4, a4, 1
+    j       1b
+3:  addi    a4, a4, 2
+    j       1b
+4:  addi    a4, a4, 3
     j       1b
 9:  retw
     .size   silica_rt_string_length_chars, . - silica_rt_string_length_chars

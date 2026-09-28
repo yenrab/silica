@@ -28,6 +28,7 @@ use prims_record;
 use instantiated_fn_name;
 use xt_isa;
 use xt_mem;
+use control;
 
 export asm_symbol_for_definition/2;
 export split_qualified_callee/1;
@@ -380,17 +381,36 @@ fn supervisor_init_sret_alloc_bytes(return_type_name: string) -> int64 {
 // keeps the link graph complete and lets integration tests observe its presence.
 // Phase E e3b: trampoline invoked once at first schedule (actor_thread_main hook).
 // X0 in = ACB pointer. Load initial state from [ACB], call init with X8 = sret buffer, pass (ACB, tuple_ptr) to materialize.
+//
+// Xtensa: the trampoline is a windowed function laid out exactly like emitter_core lays out a
+// compiled function. Its frame symbols are published ahead of the label (the body references one
+// frame home, SVR_X19, which keeps the ACB pointer across the two CALL8s; X0/X1 are a10-a13, X8 and
+// SP live in the global block and the aux VR stack, so nothing else needs frame space), the label is
+// 4-byte aligned and opens with ENTRY, the ACB pointer arrives as X0 through
+// control@function_prologue's a2-a7 -> a10-a15 moves, and the result goes back through
+// control@function_epilogue_with_frame (RETW). The sret buffer for init is reserved on the aux VR
+// stack the way term_emit_kind_call reserves it for every tuple-returning user call (SUB SP; MOV X8,
+// SP; ... ADD SP). Symbols go through xt_sym like every other reference on this target, so the
+// leading underscore is dropped from the trampoline's own label and from the runtime entry it calls
+// (board/runtime/rt_actors_stub.S defines silica_rt_supervisor_materialize_init_children until the
+// actor runtime is ported).
+fn supervisor_trampoline_frame_header() -> string {
+    // emitter_core@xt_frame_header arithmetic for one 8-byte home and no spill slots:
+    // homes [0, 8), SFP = align16(8) = 16, SFRAME = align16(SFP + 32) = 48.
+    ".set SFRAME, 48\n.set SFP, 16\n.set SVR_X19, 0\n"
+}
+
 fn format_one_supervisor_trampoline(module_name: string, actor_type: string, sret_bytes: int64) -> string {
-    sym: string <- concat("_silica_supervisor_start_", actor_type);
-    header: string <- concat(concat(concat(".globl ", sym), "\n.p2align 2\n"), concat(sym, ":\n"));
-    prologue: string <- concat(xt_mem@xt_stp("X20", "X19", "[SP, #-32]!"), concat(xt_mem@xt_stp("X29", "X30", "[SP, #16]"), concat(xt_isa@xt_add("X29", "SP", "#16"), xt_isa@xt_mov("X19", "X0"))));
+    sym: string <- xt_isa@xt_sym(concat("_silica_supervisor_start_", actor_type));
+    header: string <- concat(supervisor_trampoline_frame_header(), concat("    .globl ", concat(sym, "\n")));
+    prologue: string <- concat(control@function_prologue(sym), xt_isa@xt_mov("X19", "X0"));
     init_sym: string <- asm_symbol_for_definition(module_name, "init");
     init_call: string <- concat(xt_mem@xt_ldr("X0", "[X19]"), xt_isa@xt_call(init_sym));
     mid: string <- concat(xt_isa@xt_mov("X1", "X0"), concat(xt_isa@xt_mov("X0", "X19"), xt_isa@xt_call("_silica_rt_supervisor_materialize_init_children")));
-    epilogue: string <- "    LDP X29, X30, [SP, #16]\n    LDP X20, X19, [SP], #32\n    RET\n";
+    epilogue: string <- control@function_epilogue_with_frame();
     szs: string <- atom_table@int64_to_decimal_string(sret_bytes);
     body: string <- case sret_bytes > 0 of {
-        true -> concat(prologue, concat(xt_isa@xt_sub("SP", "SP", concat("#", szs)), concat(xt_isa@xt_mov("X8", "SP"), concat("\n", concat(init_call, concat(mid, concat(xt_isa@xt_add("SP", "SP", concat("#", szs)), epilogue)))))));
+        true -> concat(prologue, concat(xt_isa@xt_sub("SP", "SP", concat("#", szs)), concat(xt_isa@xt_mov("X8", "SP"), concat(init_call, concat(mid, concat(xt_isa@xt_add("SP", "SP", concat("#", szs)), epilogue))))));
         false -> concat(concat(concat(prologue, init_call), mid), epilogue)
     };
     concat(header, body)

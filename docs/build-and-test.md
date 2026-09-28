@@ -39,7 +39,10 @@ A platform is an **emit target**: the directory under [compiler/src/emitter/](ht
 
 An **OS-hosted** platform can run a compiler, so it builds its own and reaches its own fixed point on its own machine. A **raw** platform cannot run a compiler at all, so the compiler that emits its code is built elsewhere and published as `binaries/silica-compiler-<emit target>`.
 
-## The three build scripts
+## The scripts
+
+> **Every tool in `programmer_tools/` is described in its own reference: [programmer_tools/README.md](https://github.com/yenrab/silica/blob/main/programmer_tools/README.md).** It covers what each script is for, the machine file they share, the key-based ssh they require, and the two scripts this page does not cover, the golden refresher and the rebuild-and-verify run.
+
 
 | Script | What it does |
 | ------ | ------------ |
@@ -77,6 +80,135 @@ ssh -o BatchMode=yes user@host true
 ```
 
 If that last command succeeds without prompting, the scripts can use the machine.
+
+## A change, end to end
+
+This is the order to work in when you are fixing a defect or adding a feature to the compiler.
+
+### The short version
+
+```
+# 1. make your code modifications in compiler/src/ (all four emitters for a codegen change)
+
+# 2. build, and re-run your scratch repro against the new compiler
+make -C compiler/src clean SILICA_TARGET_PROMPT=0
+make -C compiler/src build  SILICA_TARGET_PROMPT=0
+
+# 3. run the suite your trial lives in
+cd trials/<suite> && make integrate SILICA_TARGET_PROMPT=0 TRIAL_TARGET=host && cd ../..
+
+# 4. add or rename the trial that proves the change
+
+# 5. whole tree on this machine, goldens recorded, tree run again
+bash programmer_tools/rebuild_refresh_verify.sh --targets apple_silicon_mac
+
+# 6. the other platforms (asks which, if you leave --targets off)
+bash programmer_tools/rebuild_refresh_verify.sh --targets "linux_aarch64 linux_x86_64"
+bash programmer_tools/rebuild_refresh_verify.sh --targets ESP32-S3_raw    # board attached
+
+# 7. the fixed point, last, on a green tree
+bash programmer_tools/build_all_platforms.sh
+```
+
+Each step below says why it exists and what its output means.
+
+### 1. Make your code modifications
+
+Compiler sources are in [`compiler/src/`](https://github.com/yenrab/silica/tree/main/compiler/src/).
+Two rules save the most time:
+
+- **Reproduce before you edit.** Put a `silica.config` in a scratch directory with the one program
+  that shows the problem and run the existing compiler on it. That takes milliseconds, where a build
+  takes twenty minutes and a trial run takes hours.
+- **A code-generation change belongs in every emitter it applies to**, `apple_silicon_mac`,
+  `linux_aarch64`, `linux_x86_64` and `ESP32-S3_raw`. Apple Silicon leads and Linux is required to
+  stay in lock-step, so a fix in one backend is not finished.
+
+Do not use a builtin you have just added anywhere in the compiler's own sources. The compiler is
+built by an existing compiler, which does not know it yet, and the build fails before your change can
+prove anything. It becomes usable one generation later.
+
+### 2. Build and prove the one program
+
+```
+make -C compiler/src clean SILICA_TARGET_PROMPT=0
+make -C compiler/src build SILICA_TARGET_PROMPT=0
+```
+
+Then run your scratch repro again with the compiler that just came out. Clean first every time: the
+up-to-date check does not know which target produced the existing output, so a build after one for a
+different target silently mixes them.
+
+### 3. Prove the suite
+
+```
+cd trials/<the suite your trial lives in>
+make integrate SILICA_TARGET_PROMPT=0 TRIAL_TARGET=host
+```
+
+Read `.integrate_report`. Failures come in three kinds and they mean different things: `.sout differs`
+is a real behaviour difference, `.sams differs` is a recorded assembly expectation that no longer
+matches, and `has no .ascomp` is a golden that was never recorded.
+
+### 4. Give the change a trial
+
+A defect trial is named for the defect; once it passes, rename it for the behaviour it proves. A gap
+you found and did not fix still gets a trial, so the next person meets it as a red line rather than a
+surprise. If your change makes an existing trial's program illegal, rewrite the program and
+regenerate its golden from real output; never widen a golden to make a difference disappear.
+
+### 5. One platform, whole tree, with goldens
+
+```
+bash programmer_tools/rebuild_refresh_verify.sh --targets apple_silicon_mac
+```
+
+It builds, runs the whole tree, records the assembly goldens for trials whose output already matched,
+and runs the tree again. **The second run is the one that matters**: everything still failing there is
+a behaviour difference rather than a stale expectation.
+
+Read the goldens it changed before you commit them. An assembly golden that moves is a change in
+emitted code, and blessing one in bulk can bless a defect as easily as a fix.
+
+### 6. The other platforms
+
+```
+bash programmer_tools/rebuild_refresh_verify.sh --targets "linux_aarch64 linux_x86_64"
+```
+
+Each machine gets the sources, builds there, runs its own tree and records its own goldens, because
+Linux assembly goldens can only be made on Linux. With no `--targets` the script asks which platforms
+to do and, for any machine it does not know, for a `user@host` over key-based ssh.
+
+A board is different: it has no assembly goldens at all, so it is built here as a cross compiler and
+only its programs' output is compared.
+
+```
+bash programmer_tools/rebuild_refresh_verify.sh --targets ESP32-S3_raw     # the board must be attached
+```
+
+### 7. The fixed point
+
+```
+bash programmer_tools/build_all_platforms.sh
+```
+
+Each hosted machine builds gen1, gen2 and gen3 and compares: a fixed point is reached when gen3 is
+byte-identical to gen2, which is what proves the compiler reproduces itself. Raw paths have no fixed
+point, because the board cannot host a compiler; their milestone is a green board release.
+
+Do this last, on a tree whose trials are green. The chain takes hours per machine and will happily
+reach a fixed point on a compiler that emits wrong code.
+
+### Which steps for which change
+
+| Your change | Steps |
+| --- | --- |
+| A fix in the lexer, parser, type checker or effect checker | 1-5 on this machine, then 6 for the other platforms, then 7. The front end is shared, so one fix serves every backend. |
+| A code-generation fix | The same, but write it in all four emitters in step 1, and expect step 5 to change many goldens. |
+| A change in one backend only | 1-5 on that platform. If it is a Linux backend, step 5 runs there rather than here. |
+| A board-only change | 1, 2 with `TARGET=ESP32-S3_raw`, then step 6's board form. No goldens, no fixed point. |
+| A trial, golden or harness change | 3 and 5. No fixed point is needed: the compiler did not change. |
 
 ## Build for every platform
 

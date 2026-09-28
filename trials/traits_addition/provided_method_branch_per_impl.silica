@@ -1,0 +1,39 @@
+// silica-specification §3.4.8: a trait's PROVIDED method is inherited by every implementation. Silica
+// has no runtime vtables, so the provided body is copied once per implementation (trait_specialization
+// emit_specialized_copies, the same clone mechanism §3.4.12 uses for a trait-typed parameter) and each
+// call site picks its copy by the argument's type.
+// The emitter names a case expression's labels (L_case_..._br_N / _fb / _done) and a short-circuited
+// and/or's skip label (L_sc_..._done) from the expression's SOURCE BYTE OFFSET, so two verbatim copies
+// of one branching body in one assembled unit emitted the same labels twice and the assembler rejected
+// them. Every earlier provided-method trial had a single non-branching expression as its body, so this
+// path was never exercised; the fix tags each copy (c0, c1, ...) into the offset-derived label id.
+// classify's body nests a case inside a guarded case and uses both `and` and `or`, and main calls it
+// through BOTH implementations so both copies land in this unit.
+// traits/Bucket.silica holds the trait and its two implementations.
+// Expected: 2 (3 x 4 = 12: > 10, not > 100), 0 (grams -4: <= 0), 3 (50 x 5 = 250: 100 < w < 1000),
+// 1 (grams 7: 1..10), exit 0.
+
+use Bucket;
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        r1: { count: int64, each: int64 } <- { count: 3, each: 4 };
+        c2: { tag: int64, pad: int64, grams: int64 } <- { tag: 0, pad: 0, grams: -4 };
+        r2: { count: int64, each: int64 } <- { count: 50, each: 5 };
+        c1: { tag: int64, pad: int64, grams: int64 } <- { tag: 0, pad: 0, grams: 7 };
+        a: int64 <- Bucket@classify(r1);
+        b: int64 <- Bucket@classify(c2);
+        c: int64 <- Bucket@classify(r2);
+        d: int64 <- Bucket@classify(c1);
+        print_int64(a);
+        println("");
+        print_int64(b);
+        println("");
+        print_int64(c);
+        println("");
+        print_int64(d);
+        println("")
+    produces
+        pure 0
+    end
+}

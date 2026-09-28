@@ -142,11 +142,17 @@ fn value_looks_like_float(value: string) -> boolean {
     value_has_dot_from(value, 0, length_bytes(value))
 }
 
+// Only the widths this pool serves. const_dispatcher sends every "float64" constant to
+// const_float64 (the L_f64_ pool) whatever its destination register, so a float64 literal
+// pooled here is dead text, and `.single 1.0e100` does not assemble under GNU as
+// (trials/negation_addition/negate_float64_variable on ESP32-S3_raw). A constant of a
+// non-float type (an "int64"-typed literal with a dot) is routed by its S/D destination,
+// so those stay in both pools.
 fn is_float_const(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     node: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
-    case node.type_name == "float16" or node.type_name == "float32" or node.type_name == "float" or node.type_name == "float64" of {
+    case node.type_name == "float16" or node.type_name == "float32" or node.type_name == "float" of {
         true -> true;
-        false -> node.type_name != "string" and node.type_name != "fn_ptr" and value_looks_like_float(node.value)
+        false -> node.type_name != "float64" and node.type_name != "string" and node.type_name != "fn_ptr" and value_looks_like_float(node.value)
     }
 }
 

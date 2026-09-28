@@ -30,6 +30,7 @@ use type_checker_tuple_decompose_helpers;
 
 export case_expr_to_sir/8;
 export if_expr_to_sir/8;
+export label_copy_suffix/1;
 
 fn trim_leading_ws(s: string) -> string {
     case length_bytes(s) == 0 of {
@@ -303,6 +304,18 @@ fn case_branches_to_sir_list(e: { nodes: List[{ kind: int64, value: string, name
     }
 }
 
+// Per-implementation copies of one function (trait_specialization) lower the same source expression
+// once per copy, so an offset-derived label id alone would repeat in the unit. The copy pass stores
+// the copy's tag in the otherwise empty `name` of case / if / and / or nodes; this appends it. Empty
+// for every ordinary function, whose labels are unchanged.
+fn label_copy_suffix(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> string {
+    tag: string <- type_checker_expressions_helpers@expr_name(expr);
+    case length_bytes(tag) == 0 of {
+        true -> "";
+        false -> concat("_", tag)
+    }
+}
+
 fn case_expr_to_sir(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, expected_type: string, bound_name: string, bound_type: string, in_body: boolean, lower_expected: fn({ env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, lower_in_body: fn({ env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, string, string, string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     scrut_ast_t: string <- terms_helpers@sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
     scrut_sir_t: string <- types@type_name_to_sir(scrut_ast_t);
@@ -311,7 +324,7 @@ fn case_expr_to_sir(context: { env: List[{ name: string, type_name: string, decl
         false -> lower_expected(context, type_checker_expressions_helpers@expr_child_inner(expr), scrut_ast_t);
     };
     branches: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- case_branches_to_sir_list(type_checker_expressions_helpers@expr_child_right(expr), context, scrut_ast_t, case_branch_opts(expected_type, bound_name, bound_type, in_body), lower_expected, lower_in_body);
-    case_emit_suffix: string <- concat("o", literals@int64_to_decimal_string(type_checker_expressions_helpers@expr_loc(expr).offset));
+    case_emit_suffix: string <- concat(concat("o", literals@int64_to_decimal_string(type_checker_expressions_helpers@expr_loc(expr).offset)), label_copy_suffix(expr));
     sir_ast@make_sir_term(3, types@type_name_to_sir(expected_type), scrut_sir_t, case_emit_suffix, scrut, branches)
 }
 
@@ -327,7 +340,7 @@ fn if_expr_to_sir(context: { env: List[{ name: string, type_name: string, declar
     rest_dummy: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@dummy_expr();
     list_inner: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@make_expr(17, "", "", loc, false_br, rest_dummy, parser_ast@nil_tuple_decompose_bindings(), parser_ast@empty_effect_name_list());
     list_head: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@make_expr(17, "", "", loc, true_br, list_inner, parser_ast@nil_tuple_decompose_bindings(), parser_ast@empty_effect_name_list());
-    case_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@make_expr(13, "", "", loc, type_checker_expressions_helpers@expr_child_inner(expr), list_head, parser_ast@nil_tuple_decompose_bindings(), parser_ast@empty_effect_name_list());
+    case_e: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- parser_ast@make_expr(13, "", type_checker_expressions_helpers@expr_name(expr), loc, type_checker_expressions_helpers@expr_child_inner(expr), list_head, parser_ast@nil_tuple_decompose_bindings(), parser_ast@empty_effect_name_list());
     case_expr_to_sir(context, case_e, expected_type, bound_name, bound_type, in_body, lower_expected, lower_in_body)
 }
 

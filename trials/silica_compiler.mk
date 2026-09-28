@@ -115,7 +115,12 @@ $(SILICA_COMPILER):
 #   $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)")
 # Per-unit compile timeout. Without it a compiler hang blocks the suite indefinitely --
 # an orphaned resume loop once spun for 14 hours overnight. Exit 142 = alarm fired.
-SILICA_COMPILE_TIMEOUT ?= 300
+# Raised 300 -> 900 (2026-09-28): the graph_collections suite alone takes ~200s on the fastest
+# machine in the fleet (a known, unfixed compiler perf defect -- type-checker trait-dispatch
+# re-scanning type surfaces with no memo, see compiler/design_documents perf notes), so 300s was
+# already tight on Apple Silicon and genuinely insufficient on a Raspberry Pi. This is a stopgap
+# for the slow machine, not a fix for the underlying slowness; lower it again once that's fixed.
+SILICA_COMPILE_TIMEOUT ?= 900
 define RUN_SILICA_COMPILER_WITH
 	while true; do \
 		perl -e 'alarm shift @ARGV; exec @ARGV' $(SILICA_COMPILE_TIMEOUT) $(1); \
@@ -378,8 +383,11 @@ integrate-report:
 # followed by the context the recipe printed after it (the diff), capped at
 # INTEGRATE_DETAIL_LINES lines. Deepest logs first, so the copy with the diff wins
 # and the bare copies echoed by enclosing directories are dropped as duplicates.
+# The board target mirrors the tree under trials/.target/<target>/ and its logs carry that target's
+# label. A host run must not walk into it: doing so put board failures in the host report, where they
+# looked like this machine's and drowned the real ones.
 define INTEGRATE_FAILURE_DETAILS
-logs=$$(find "$(INTEGRATE_DIR)" -name .integrate_log -print 2>/dev/null | awk '{ n = gsub("/", "/"); print n "\t" $$0 }' | sort -rn | cut -f2-); \
+logs=$$(find "$(INTEGRATE_DIR)" -name '.target' -prune -o -name .integrate_log -print 2>/dev/null | awk '{ n = gsub("/", "/"); print n "\t" $$0 }' | sort -rn | cut -f2-); \
 [ -n "$$logs" ] && awk -v cap="$(INTEGRATE_DETAIL_LINES)" ' \
 	function flush() { if (blk != "") print blk; blk = "" } \
 	FNR == 1 { flush(); skip = 1 } \

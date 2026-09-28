@@ -7,6 +7,8 @@ compiles them again until the two agree byte for byte — the **fixed point**. A
 its fixed point becomes the next `seed-compiler`.
 
 ## Building it
+
+The scripts are documented in [../../programmer_tools/README.md](../../programmer_tools/README.md).
 Building this tree is only needed when you change the compiler itself or port it to a new platform.
 Writing Silica programs needs nothing here: use the compiler in [`../../binaries/`](../../binaries/)
 or a released one.

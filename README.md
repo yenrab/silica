@@ -94,7 +94,15 @@ A platform is an **emit target**: the directory under [compiler/src/emitter/](co
 
 An OS-hosted platform can run a compiler, so it builds its own and reaches its own fixed point on its own machine. A raw platform cannot run a compiler at all, so the compiler that emits its code is built elsewhere and published as `binaries/silica-compiler-<emit target>`.
 
-### The three build scripts
+### Changing the compiler
+
+The order to work in, from your first edit to a new fixed point, is in
+[A change, end to end](https://yenrab.github.io/silica/build-and-test/#a-change-end-to-end).
+
+### The scripts
+
+> **All of them are documented in [programmer_tools/README.md](programmer_tools/README.md)**, including the machine file they share, the key-based ssh they need, and the tools not listed here: the golden refresher and the rebuild-and-verify run.
+
 
 | Script | What it does |
 | ------ | ------------ |

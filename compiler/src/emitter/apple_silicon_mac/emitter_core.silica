@@ -1662,7 +1662,28 @@ fn tco_tail_self_calls(term: { nodes: List[{ kind: int64, type_name: string, val
         false -> {
             n: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(term);
             case n.kind of {
-                2 -> tco_tail_self_calls(sir_term_at(term, n.right_expr), fname);
+                2 -> {
+                    // The body of a let is in tail position, and so is the let's VALUE when the body
+                    // is nothing but a reference to the name just bound: `r <- case ...; produces r`
+                    // returns the case's value directly. Without this the self-call in
+                    // recursive_function_addition/tail_recursion_in_let_body_and_case kept its frame
+                    // and ten million iterations overflowed the stack on Linux.
+                    body_t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- sir_term_at(term, n.right_expr);
+                    from_body: string <- tco_tail_self_calls(body_t, fname);
+                    case body_t.root < 0 of {
+                        true -> from_body;
+                        false -> {
+                            b: { kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 } <- sir_term_root_node(body_t);
+                            case b.kind == 1 of {
+                                false -> from_body;
+                                true -> case b.name == n.name of {
+                                    false -> from_body;
+                                    true -> concat(tco_tail_self_calls(sir_term_at(term, n.inner), fname), from_body)
+                                }
+                            }
+                        }
+                    }
+                };
                 3 -> tco_tail_self_calls(sir_term_at(term, n.right_expr), fname);
                 7 -> concat(tco_tail_self_calls(sir_term_at(term, n.inner), fname), tco_tail_self_calls(sir_term_at(term, n.right_expr), fname));
                 8 -> tco_tail_self_calls(sir_term_at(term, n.right_expr), fname);
@@ -2513,6 +2534,27 @@ fn module_emits_region_runtime(sir_module: { module_name: string, used_modules: 
     module_needs_actor_runtime(sir_module) or prims_memory@module_uses_alloc_region(sir_module) or prims_memory@module_uses_region_allocation(sir_module) or module_needs_region_alloc_for_aggregate_copy(sir_module)
 }
 
+// A tagged sum whose selected alternative is a tuple -- `:none | (:some, int64)` -- is an aggregate
+// return (reg_conventions@atom_option_carries_tuple_regcv) but is neither is_tuple_type nor
+// is_inline_struct_type, so neither epilogue path below ever saw it: `fn present(v) { (:some, v) }`
+// built its tuple_make in the frame region and returned SUB X0, X29, #16, a pointer into its own dead
+// frame (case_addition/tagged_optional_type printed a stack address on linux_x86_64 and survived on
+// AArch64 only because nothing had overwritten the bytes yet). Callers treat the sum like a record
+// return -- user_call_aggregate_return_alloc_bytes is 0, so no sret slab and no pass-through X8 -- so,
+// exactly as record_callee_skips_ret_promote_dealloc does for a bare record_make, the epilogue owns the
+// promote only when the body root itself is the tuple_make. Every other tail already holds a heap
+// pointer (a let-spine or case-arm make is promoted where it is built, by let_tail_aggregate_promote_bytes
+// / aggregate_callee_return_promote_bytes keyed on the variant's own tuple type; a call tail by its
+// callee) or holds the bare atom alternative -- a kind-0 literal or a variable carrying `:none` -- which
+// is not an address and must never be copied from.
+fn sum_variant_tuple_return_promotes_in_epilogue(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> boolean {
+    reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type)
+        and reg_conventions@is_tuple_type(fn_val.return_type) == false
+        and reg_conventions@is_inline_struct_type(fn_val.return_type) == false
+        and sir_term_root_node(fn_val.body).kind == 6
+        and sir_term_root_node(fn_val.body).name == "tuple_make"
+}
+
 fn esf_tuple_ret_promote(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, kind5_tail_returns_directly: boolean) -> string {
     case kind5_tail_returns_directly of {
             true -> "";
@@ -2539,7 +2581,12 @@ fn esf_tuple_ret_promote(fn_val: { name: string, return_type: string, effects: s
                             }
                         }
                     };
-                    false -> ""
+                    false -> case sum_variant_tuple_return_promotes_in_epilogue(fn_val) of {
+                        // Copy the shell this make built in its frame region. The sum type's own element
+                        // count is useless here (count_type_elements of `:none | (:some, int64)` is 1).
+                        true -> term_aggregate_helpers@aggregate_return_heap_promote_x0(term_aggregate_helpers@agg_shell_bytes(fn_val.body));
+                        false -> ""
+                    }
                 }
             }
         }
@@ -2583,7 +2630,18 @@ fn esf_tuple_ret_dealloc(fn_val: { name: string, return_type: string, effects: s
                             }
                         }
                     };
-                    false -> ""
+                    false -> case sum_variant_tuple_return_promotes_in_epilogue(fn_val) of {
+                        true -> {
+                            // A make lives in a frame region, so this is 0 today (flat_tuple_dealloc_size);
+                            // asked the same way as the tuple path above so the two stay in lockstep.
+                            ts_sum: int64 <- term_aggregate_helpers@flat_tuple_dealloc_size(fn_val.body);
+                            case ts_sum > 0 of {
+                                true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(ts_sum), "\n"));
+                                false -> ""
+                            }
+                        };
+                        false -> ""
+                    }
                 }
             }
         }

@@ -41,6 +41,9 @@ header for that file type (see the appendix in `LICENSE`).
 
 ## Development workflow (summary)
 
+The full sequence for a compiler change, from your first edit to a new fixed point, is
+[A change, end to end](https://yenrab.github.io/silica/build-and-test/#a-change-end-to-end).
+
 - **The compiler (Silica):** [`compiler/src/`](compiler/src/). Silica is
   self-hosted: the compiler is written in Silica and is built by an earlier
   Silica compiler. There is no bootstrap compiler to build and nothing in the
@@ -48,7 +51,8 @@ header for that file type (see the appendix in `LICENSE`).
 - **Building it:** only needed when you change the compiler itself or port it
   to a new platform; writing Silica programs uses the compiler already in
   [`binaries/`](binaries/) or a released one. The scripts are in
-  [`programmer_tools/`](programmer_tools/) —
+  [`programmer_tools/`](programmer_tools/), each described in
+  [`programmer_tools/README.md`](programmer_tools/README.md) —
   `build_all_platforms.sh` (every platform, some of them with `--targets`, or
   just this machine with `--local-only`), `run_trials_all_platforms.sh`, and
   `build_and_trial_all_platforms.sh` for both. Each takes `-h` and `--list`.

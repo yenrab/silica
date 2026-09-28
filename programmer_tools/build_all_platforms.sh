@@ -197,10 +197,49 @@ elif [ "$REFRESH" = 1 ]; then
     SAVE_FILE=1
 elif read_hosts_file; then
     BUILD_TARGETS="$FILE_TARGETS"
-    echo "using $HOSTS_FILE"
+    if [ -t 0 ]; then
+        echo; echo "Remembered in $HOSTS_FILE:"
+        for t in $FILE_TARGETS; do
+            if [ "$t" = "$HOST_TARGET" ]; then echo "  $t   this machine"
+            elif is_raw "$t"; then            echo "  $t   a board, cross compiler built here"
+            elif c=$(conn_of "$t"); then      echo "  $t   $c"
+            else                              echo "  $t   no machine recorded"
+            fi
+        done
+        printf '\nuse these? [Y/n]: '; read -r keep
+        case "$keep" in [Nn]*) BUILD_TARGETS=""; PICK_DEFAULT="$FILE_TARGETS"; SAVE_FILE=1 ;; esac
+    else
+        echo "using $HOSTS_FILE"
+    fi
 else
-    BUILD_TARGETS="$ALL_TARGETS"; SAVE_FILE=1
+    BUILD_TARGETS=""; PICK_DEFAULT=all; SAVE_FILE=1
 fi
+
+# Nothing settled yet and someone is watching: ask which platforms, rather than assuming all of them.
+if [ -z "$BUILD_TARGETS" ] && [ -t 0 ]; then
+    echo; echo "Which platforms? Enter numbers separated by spaces, or 'all'."
+    i=0; CHOICES=""
+    for t in $ALL_TARGETS; do
+        i=$((i+1)); CHOICES="$CHOICES $t"
+        if [ "$t" = "$HOST_TARGET" ]; then echo "  $i) $t   this machine, built natively"
+        elif is_raw "$t"; then            echo "  $i) $t   a board: its cross compiler is built here"
+        else                              echo "  $i) $t   another machine, built there over ssh"
+        fi
+    done
+    printf '\nplatforms [%s]: ' "${PICK_DEFAULT:-all}"
+    read -r picks
+    if [ -z "$picks" ]; then
+        [ "${PICK_DEFAULT:-all}" = all ] && BUILD_TARGETS="$ALL_TARGETS" || BUILD_TARGETS="$PICK_DEFAULT"
+    elif [ "$picks" = all ]; then
+        BUILD_TARGETS="$ALL_TARGETS"
+    else
+        for n in $picks; do
+            sel=$(echo $CHOICES | awk -v k="$n" '{print $k}')
+            [ -n "$sel" ] && BUILD_TARGETS="$BUILD_TARGETS $sel" || echo "  ignoring '$n'"
+        done
+    fi
+fi
+[ -n "$BUILD_TARGETS" ] || BUILD_TARGETS="$ALL_TARGETS"
 
 HOSTED_TARGETS=""; RAW_TARGETS=""
 for t in $BUILD_TARGETS; do
@@ -328,7 +367,19 @@ local_fixpoint() {
 
 RSYNC_EX=( --exclude '*.o' --exclude '*.sout' --exclude '.integrate*' --exclude '.stdlib_cache'
            --exclude '__pycache__' --exclude '.git' --exclude 'silica.target'
-           --exclude '.silica.config.units' --exclude 'silica.config' )
+           --exclude '.silica.config.units' --exclude 'silica.config' --exclude '*.tmp'
+           # *.tmp: write-then-rename Makefile artifacts (silica.config.compiler.tmp,
+           # .silica.config.units.tmp); if a build is running here mid-sync, rsync can catch one
+           # existing and then find it gone by the time it reads it (exit 23, "open (2): No such
+           # file or directory") -- excluded so the race can't happen, not just tolerated.
+           # Local-only working state. .claude/worktrees in particular holds a full checkout per
+           # agent and reached 5.3 GB on a machine with 5.4 GB free, which filled its disk.
+           --exclude '.claude' --exclude '.claude-memory' --exclude '.codex_artifacts'
+           --exclude '.cursor' --exclude '.vscode' --exclude '.scratch'
+           --exclude 'board_backups' --exclude '*.pptx' --exclude '*.ndjson'
+           # trials/.target is the board mirror: build output only, large, and rewritten by any
+           # board run, so rsync trips over files that vanish while it reads them.
+           --exclude '.target' --exclude '*.elf' --exclude '*.map' --exclude '*.image.log' )
 
 remote_sh() { ssh -o BatchMode=yes "$1" "$2"; }
 

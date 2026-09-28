@@ -41,3 +41,17 @@ silica_dangerous_pid_registry_init:
     movi    a3, 0
     retw
     .size   silica_dangerous_pid_registry_init, . - silica_dangerous_pid_registry_init
+
+// Called by the per-supervisor start trampoline (module_linkage format_one_supervisor_trampoline)
+// with (ACB, init tuple pointer). A module that declares `impl T for Supervisor` carries that
+// trampoline in its .text, so any program that links the module needs this symbol even though
+// nothing spawns a supervisor before the actor runtime exists.
+    .align  4
+    .global silica_rt_supervisor_materialize_init_children
+    .type   silica_rt_supervisor_materialize_init_children, @function
+silica_rt_supervisor_materialize_init_children:
+    entry   a1, 32
+    movi    a2, 0
+    movi    a3, 0
+    retw
+    .size   silica_rt_supervisor_materialize_init_children, . - silica_rt_supervisor_materialize_init_children
