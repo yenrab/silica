@@ -14,24 +14,70 @@
    limitations under the License.
 */
 
-// Heap for the bare-metal ESP32-S3 runtime: a bump allocator over [_silica_heap_start,
-// _silica_heap_end), which rt_start zeroes before main runs.
+// Heap for the bare-metal ESP32-S3 runtime over [_silica_heap_start, _silica_heap_end), which
+// rt_start zeroes before main runs.
 //
-// This is bring-up scaffolding with a known limit, not the region allocator the language needs:
-// free is a no-op, so a long-running program eventually exhausts the heap. Exhaustion is a runtime
-// abort ("[silica] abort: heap exhausted at 0x...", status 71) rather than a NULL the caller might
-// not check.
+// Every block carries an 8-byte header just below the address handed out: [-8] the block's total
+// size in bytes (header included, a multiple of 8, at least 16) and [-4] a tag, HEAP_USED while the
+// block is allocated and the next free block's base while it sits on the free list (heap addresses
+// never equal the tag). Allocation is first fit over an address-sorted free list, splitting a block
+// whose remainder can hold another header, and falls back to bumping the top of the heap. Freeing
+// puts the block back in address order and merges it with free neighbours; a block that ends at the
+// top lowers the bump pointer instead (and pulls down any free blocks left at the new top). The
+// payload is zeroed on every allocation, because reused memory is dirty and the emitted code reads
+// the high words of fresh slots as zero.
 //
-//   silica_rt_heap_init()          reset the bump pointer (called once by rt_start)
-//   silica_rt_alloc(size) -> ptr   8-byte aligned, zeroed; size is a 32-bit byte count
-//   silica_rt_free(ptr)            accepted and ignored (also silica_rt_region_free / _destroy)
-//   silica_rt_heap_used() -> bytes
+// Regions hand back their memory here (silica_rt_region_destroy, called by the emitter's scope-exit
+// release like the host's malloc/free helpers), which is what lets a loop that allocates and drops
+// a region every iteration run indefinitely; before, free was a no-op and such loops exhausted the
+// heap. Exhaustion is still a runtime abort ("[silica] abort: heap exhausted at 0x...", status 71)
+// rather than a NULL the caller might not check.
+//
+// Both LX7 cores allocate (rt_actors.S runs actors on both): the free list and the bump pointer are
+// guarded by one spin lock (S32C1I, the shape of rt_actors.S's FREE_LOCK). It is a leaf lock: nothing
+// is called while it is held, so holding the scheduler or free-list lock around an allocation is fine.
+// Free lists on top of this heap (actor stacks, ACBs, message nodes) keep their own lock in rt_actors.S.
+//
+//   silica_rt_heap_init()          reset the bump pointer and the free list (called once by rt_start)
+//   silica_rt_alloc(size) -> ptr   8-byte aligned, zeroed; size is a 32-bit byte count; aborts when
+//                                  the heap is exhausted (also silica_rt_region_alloc / _raw_alloc)
+//   silica_rt_alloc_or_null(size)  the same, returning 0 instead of aborting
+//   silica_rt_free(ptr)            return a block; 0, a pointer outside the heap and a block that is
+//                                  not allocated (a double free) are ignored
+//   silica_rt_region_destroy(r)    free a region's extension chain and its handle (also
+//                                  silica_rt_region_free); a canonical arena is left alone, as on the host
+//   silica_rt_heap_used() -> bytes below the bump pointer (headers and free blocks included)
 //   silica_rt_region_grow / silica_rt_region_contains   region blocks, see below
+
+#define HEAP_USED 0x5A11CA1D
 
     .section .bss.silica_rt_heap, "aw", @nobits
     .align  4
 silica_rt_heap_next:
     .space  4
+silica_rt_heap_free_head:
+    .space  4
+silica_rt_heap_lock:
+    .space  4
+
+// The heap lock, the shape of rt_actors.S's FREE_LOCK. The macro's own local label is 9, so the
+// routines below never use 9 for theirs.
+.macro HEAP_LOCK ra, rb
+    movi    \ra, silica_rt_heap_lock
+9:  movi    \rb, 0
+    wsr     \rb, scompare1
+    movi    \rb, 1
+    s32c1i  \rb, \ra, 0
+    bnez    \rb, 9b
+.endm
+
+.macro HEAP_UNLOCK ra, rb
+    memw
+    movi    \ra, silica_rt_heap_lock
+    movi    \rb, 0
+    s32i    \rb, \ra, 0
+    memw
+.endm
 
     .section .text.silica_rt_heap, "ax"
     .literal_position
@@ -44,8 +90,79 @@ silica_rt_heap_init:
     movi    a3, silica_rt_heap_next
     movi    a4, _silica_heap_start
     s32i    a4, a3, 0
+    movi    a3, silica_rt_heap_free_head
+    movi    a4, 0
+    s32i    a4, a3, 0
+    movi    a3, silica_rt_heap_lock
+    s32i    a4, a3, 0
     retw
     .size   silica_rt_heap_init, . - silica_rt_heap_init
+
+// silica_rt_heap_take(size) -> zeroed payload, or 0 when no block can be found. Leaf: calls nothing.
+// a2 = request, then the block size; a3 = the link being followed; a4 = block base; a5-a7 scratch.
+    .align  4
+    .type   silica_rt_heap_take, @function
+silica_rt_heap_take:
+    entry   a1, 32
+    movi    a7, -256
+    bgeu    a2, a7, 12f           // a request this large is an overflow, not a size
+    addi    a2, a2, 15            // header, rounded up to 8
+    movi    a5, -8
+    and     a2, a2, a5
+    movi    a7, 16
+    bgeu    a2, a7, 1f
+    mov     a2, a7                // at least a header and one slot
+1:  HEAP_LOCK a8, a9
+    movi    a3, silica_rt_heap_free_head
+2:  l32i    a4, a3, 0             // first fit over the address-sorted free list
+    beqz    a4, 6f
+    l32i    a5, a4, 0
+    bgeu    a5, a2, 3f
+    addi    a3, a4, 4
+    j       2b
+3:  sub     a6, a5, a2            // remainder after the request
+    movi    a7, 16
+    bltu    a6, a7, 4f            // too small to stand alone: hand out the whole block
+    add     a7, a4, a2            // split: the remainder stays in the list in the block's place
+    s32i    a6, a7, 0
+    l32i    a6, a4, 4
+    s32i    a6, a7, 4
+    s32i    a7, a3, 0
+    s32i    a2, a4, 0
+    j       5f
+4:  l32i    a6, a4, 4             // unlink the whole block
+    s32i    a6, a3, 0
+    mov     a2, a5
+5:  movi    a6, HEAP_USED
+    s32i    a6, a4, 4
+    j       7f
+6:  movi    a3, silica_rt_heap_next    // nothing fits: bump the top
+    l32i    a4, a3, 0
+    add     a6, a4, a2
+    bltu    a6, a4, 11f           // wrapped
+    movi    a7, _silica_heap_end
+    bltu    a7, a6, 11f           // past the end
+    s32i    a6, a3, 0
+    s32i    a2, a4, 0
+    movi    a6, HEAP_USED
+    s32i    a6, a4, 4
+7:  HEAP_UNLOCK a8, a9
+    addi    a5, a4, 8             // zero the payload [base + 8, base + size)
+    add     a6, a4, a2
+    movi    a7, 0
+    mov     a4, a5
+8:  bgeu    a4, a6, 10f
+    s32i    a7, a4, 0
+    addi    a4, a4, 4
+    j       8b
+10: mov     a2, a5
+    movi    a3, 0
+    retw
+11: HEAP_UNLOCK a8, a9
+12: movi    a2, 0
+    movi    a3, 0
+    retw
+    .size   silica_rt_heap_take, . - silica_rt_heap_take
 
     .align  4
     .global silica_rt_alloc
@@ -56,33 +173,102 @@ silica_rt_heap_init:
     .type   silica_rt_alloc, @function
 silica_rt_alloc:
     entry   a1, 32
-    addi    a2, a2, 7
-    movi    a5, -8
-    and     a2, a2, a5            // round size up to 8
-    movi    a3, silica_rt_heap_next
-    l32i    a4, a3, 0             // a4 = result
-    add     a6, a4, a2            // a6 = new next
-    bltu    a6, a4, 1f            // wrapped
-    movi    a7, _silica_heap_end
-    bltu    a7, a6, 1f            // past the end
-    s32i    a6, a3, 0
-    mov     a2, a4
+    mov     a10, a2
+    call8   silica_rt_heap_take
+    beqz    a10, 1f
+    mov     a2, a10
     movi    a3, 0                 // the high word of the pair the emitter reads as X0
     retw
 1:  call8   silica_rt_abort_heap_exhausted   // runtime abort, status 71; allocates nothing
     retw
     .size   silica_rt_alloc, . - silica_rt_alloc
 
+// silica_rt_alloc_or_null(size) -> ptr or 0: the same allocation without the exhaustion abort, for
+// the actor stack reservation, whose failure has its own rule (spec §15.1.2.2; rt_actors.S).
+    .align  4
+    .global silica_rt_alloc_or_null
+    .type   silica_rt_alloc_or_null, @function
+silica_rt_alloc_or_null:
+    entry   a1, 32
+    mov     a10, a2
+    call8   silica_rt_heap_take
+    mov     a2, a10
+    movi    a3, 0
+    retw
+    .size   silica_rt_alloc_or_null, . - silica_rt_alloc_or_null
+
+// silica_rt_free(ptr). a4 = block base, a5 = its size; a3 = the link being followed, a6/a7 scratch.
     .align  4
     .global silica_rt_free
     .global silica_rt_region_free
-    .global silica_rt_region_destroy
-    .set    silica_rt_region_free, silica_rt_free       // region release: nothing to give back yet
-    .set    silica_rt_region_destroy, silica_rt_free
+    .set    silica_rt_region_free, silica_rt_region_destroy   // region release: the whole chain
     .type   silica_rt_free, @function
 silica_rt_free:
     entry   a1, 32
-    retw
+    beqz    a2, 8f
+    movi    a8, _silica_heap_start
+    bltu    a2, a8, 8f            // not a heap block: ignored, where free() would crash on the host
+    movi    a8, _silica_heap_end
+    bgeu    a2, a8, 8f
+    addi    a4, a2, -8
+    l32i    a5, a4, 4
+    movi    a6, HEAP_USED
+    bne     a5, a6, 8f            // not allocated (a double free, or a stale pointer): ignored
+    l32i    a5, a4, 0
+    HEAP_LOCK a8, a9
+    movi    a3, silica_rt_heap_next
+    l32i    a6, a3, 0
+    add     a7, a4, a5
+    bne     a7, a6, 4f
+    s32i    a4, a3, 0             // the block ends at the top: lower the bump pointer instead
+    movi    a6, 0
+    s32i    a6, a4, 4             // and drop its tag, so a double free of it is ignored above
+1:  movi    a3, silica_rt_heap_free_head   // ... and pull down free blocks now at the top
+    l32i    a4, a3, 0
+    beqz    a4, 7f
+2:  l32i    a5, a4, 4             // walk to the last (highest) free block
+    beqz    a5, 3f
+    addi    a3, a4, 4
+    mov     a4, a5
+    j       2b
+3:  l32i    a5, a4, 0
+    add     a5, a4, a5
+    movi    a6, silica_rt_heap_next
+    l32i    a7, a6, 0
+    bne     a5, a7, 7f            // it does not touch the top: done
+    s32i    a4, a6, 0
+    movi    a5, 0
+    s32i    a5, a3, 0             // unlink it
+    j       1b
+4:  movi    a3, silica_rt_heap_free_head   // insert in address order
+5:  l32i    a6, a3, 0
+    beqz    a6, 6f
+    bltu    a4, a6, 6f
+    addi    a3, a6, 4
+    j       5b
+6:  // a3 = the link that will point at the block, a6 = the free block after it (or 0)
+    beqz    a6, 61f
+    add     a7, a4, a5
+    bne     a7, a6, 61f
+    l32i    a7, a6, 0             // adjacent: absorb the next block
+    add     a5, a5, a7
+    l32i    a6, a6, 4
+61: s32i    a5, a4, 0
+    s32i    a6, a4, 4
+    s32i    a4, a3, 0
+    movi    a7, silica_rt_heap_free_head
+    beq     a3, a7, 7f            // no previous block
+    addi    a7, a3, -4            // the previous block's base
+    l32i    a6, a7, 0
+    add     a6, a7, a6
+    bne     a6, a4, 7f
+    l32i    a6, a7, 0             // adjacent: the previous block absorbs this one
+    add     a6, a6, a5
+    s32i    a6, a7, 0
+    l32i    a6, a4, 4
+    s32i    a6, a7, 4
+7:  HEAP_UNLOCK a8, a9
+8:  retw
     .size   silica_rt_free, . - silica_rt_free
 
 // Regions (terms/prims/prims_memory.silica): a region is a chain of blocks, each with a 32-byte
@@ -90,9 +276,40 @@ silica_rt_free:
 // the handle), [16] next extension block, [24] this block's own data end; data from +32. Fields
 // are 8-byte slots with the high word 0, as the emitted code reads them.
 //
+// silica_rt_region_destroy(region): free every extension block on the [region + 16] chain, then the
+// handle. A null handle is a no-op, so a moved-out region is safe to skip. A canonical arena
+// (rt_ordering.S: silica_rt_canonical_arena_lookup) is process-shared and belongs to the arena table,
+// which hands the same block to every lookup of its key; a function that received one as a parameter
+// destroys it like any region at scope exit, so a block registered in the table is left untouched,
+// as the host's helper does.
+    .align  4
+    .global silica_rt_region_destroy
+    .type   silica_rt_region_destroy, @function
+silica_rt_region_destroy:
+    entry   a1, 32
+    beqz    a2, 4f
+    movi    a3, silica_rt_canonical_arena_table   // 512 x (key: 8, region: 8)
+    movi    a4, 512
+1:  l32i    a5, a3, 8
+    beq     a5, a2, 4f
+    addi    a3, a3, 16
+    addi    a4, a4, -1
+    bnez    a4, 1b
+    l32i    a3, a2, 16
+2:  beqz    a3, 3f
+    l32i    a4, a3, 16
+    mov     a10, a3
+    call8   silica_rt_free
+    mov     a3, a4
+    j       2b
+3:  mov     a10, a2
+    call8   silica_rt_free
+4:  retw
+    .size   silica_rt_region_destroy, . - silica_rt_region_destroy
+
 // silica_rt_region_grow: called from the middle of an emitted allocation sequence when the current
 // block is full. Convention inherited from the AArch64 helper: the region is X1 (here a4), the
-// request is X5 - X3 (both live in the global block silica_rt_vrg, at 16 and 0); every register the
+// request is X5 - X3 (both live in this core's register block, THREADPTR + 16 and + 0); every register the
 // caller holds is preserved (a2-a7 untouched, a8-a15 are the caller's own scratch). A block holds at
 // least 4096 data bytes, or the 16-byte-rounded request when that is larger.
     .align  4
@@ -100,7 +317,7 @@ silica_rt_free:
     .type   silica_rt_region_grow, @function
 silica_rt_region_grow:
     entry   a1, 48
-    movi    a8, silica_rt_vrg
+    rur     a8, threadptr
     l32i    a9, a8, 16            // X5 = bump + request
     l32i    a8, a8, 0             // X3 = bump
     sub     a9, a9, a8
@@ -125,7 +342,7 @@ silica_rt_region_grow:
     retw
     .size   silica_rt_region_grow, . - silica_rt_region_grow
 
-// silica_rt_region_contains: ref X1 (a4), region X2 (a6) -> X5 (silica_rt_vrg + 16) = 1 when the ref
+// silica_rt_region_contains: ref X1 (a4), region X2 (a6) -> X5 (register block + 16) = 1 when the ref
 // lies in the region's first block or any extension block; everything else preserved.
     .align  4
     .global silica_rt_region_contains
@@ -147,7 +364,7 @@ silica_rt_region_contains:
 3:  movi    a8, 1
     j       6f
 4:  movi    a8, 0
-6:  movi    a9, silica_rt_vrg
+6:  rur     a9, threadptr
     s32i    a8, a9, 16
     movi    a8, 0
     s32i    a8, a9, 20
@@ -165,4 +382,3 @@ silica_rt_heap_used:
     sub     a2, a2, a4
     retw
     .size   silica_rt_heap_used, . - silica_rt_heap_used
-

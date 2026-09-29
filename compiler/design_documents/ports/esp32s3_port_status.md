@@ -1,7 +1,8 @@
 # `ESP32-S3_raw` port status — behaviours verified, differences from Apple Silicon, and gaps
 
-State as of 2026-09-13, for `binaries/silica-compiler-ESP32-S3_raw` = `silica-999998-ESP32_S3_raw-macos-applesilicon`
-and the board pack in `src/emitter/ESP32-S3_raw/board/`. The reference behaviour is the Apple
+State as of 2026-09-28: the board pack in `src/emitter/ESP32-S3_raw/board/` and the ESP32-S3 compiler built
+from the current tree (the actor runtime rows below were run with a scratch build of it; `binaries/`
+publishing is a separate step). The reference behaviour is the Apple
 Silicon path's first fixed point (the current `trials/` tree, [ROADMAP.md](../../../../ROADMAP.md)); this
 document says how much of it the ESP32-S3 path has, how each part was verified, where an app author sees a
 different behaviour on the board, and what is missing — ordered so the next addition to port is easy to pick.
@@ -32,6 +33,14 @@ same `.scout` goldens the host uses (behaviour only: there are no Xtensa `.ascom
 | `traits_addition` | 20 / 20 programs (the other 18 units are trait modules, compiled with them) | 2026-09-13 |
 | `deep_frame_spill_addition` | 8 / 8 | 2026-09-13 |
 | `error_enforcement_addition` | a 40-trial sample of `.golden_fail` diagnostics, 40 / 40 | 2026-09-13 |
+| `asm_12_actors` (the actor runtime driven from assembly) | matches its expected lines | 2026-09-28 |
+| `actors_addition` | 297 / 298 through the driver, 14 m 52 s for the three actor suites; the one miss (`train_actors_atomproto_10026`, no console output within 300 s) passed 3 / 3 when its image was re-run by hand, so it was a RAM-load glitch, not the program; `string_concat_cast_stress` and `aggregate_return_in_actor_keeps_stack` are skipped (§2: they exhaust the 300 KB heap) | 2026-09-28 |
+| `actor_registration_addition` | 3 / 3 | 2026-09-28 |
+| `scheduler_policy_addition` (new, `set_scheduler_policy`: the four dispatch-order policies of [esp32s3_xtensa_port.md §8.10](esp32s3_xtensa_port.md), the strict dispatch orders `H H H H N N N N L L L L` / `L N H L N H ...` / `H H H H N N L N N L L L` observed on core 0) | 6 / 6; afterwards `actors_addition` 300 / 300 (2 skipped), `actor_registration_addition` 3 / 3, `supervisors_addition` 115 / 115 unchanged under the default `:priority_fifo` (9 m 59 s) | 2026-09-28 |
+| `supervisors_addition` | 114 / 114 programs plus `stack_policy_registered_forms` against its board golden (§2: a 2 MB reserve cannot be made on the board, the spec's abort) | 2026-09-28 |
+| Two cores: `actors_addition` (300, with the new `actor_cross_core_call_reply` and `actor_cross_core_cast_stress`), `actor_registration_addition` (3), `supervisors_addition` (115, `stack_policy_registered_forms` against its board golden) | 418 / 418 through the driver in 10 m 07 s with both LX7 cores running actors ([esp32s3_xtensa_port.md §8.9](esp32s3_xtensa_port.md)); actors spawned with core 0 are round-robin over the two cores, so most of these trials ran their actors on the APP cpu. One earlier run (417 / 418) showed a core-1 actor's output inside `main`'s `println` (`record_message_cast_between_actors`); the console line hold of §8.9 closed it. | 2026-09-28 |
+| `asm_12_actors` with two cores, and an assembly probe: an actor pinned to core 1 answers with PRID core 1, 0 after `migrate_actor(ref, 0)`, `:invalid_target` for core 5, `silica_rt_ncores` 2 | matches | 2026-09-28 |
+| `cpu_discovery_and_spawn_pinning` | the suite is `INTEGRATE_PENDING` on every target (skipped by both drivers). By hand, with two cores (2026-09-28): `cpu_spawn_third_arg_affinity` matches (its spawn to core 1 now runs on the APP cpu; core 2 is runtime-assigned), a probe of `get_performance_cores` / `get_cpu_topology` reports 2 cores and `get_core_capabilities(1)` gives `id: 1` (`2` the `-1` sentinel), and an assembly probe pinned to core 1 answers with PRID core 1, then 0 after `migrate_actor(ref, 0)`, and `migrate_actor(ref, 5)` is `:invalid_target`. Earlier by hand: `cpu_spawn_third_nonliteral_affinity` prints its `1` but exits 2 where the golden says 1 (the golden predates the atom seed, under which `:ok` is 2; the host gives 2 as well); `cpu_topology_runtime_queries` and `cpu_topology_phase_h_verify` do not compile on any target (E2015, the pre-`mem(normal)` list syntax) | 2026-09-28 |
 
 Not yet run on the board (§4.3) is the larger part of the tree; nothing there is known to fail, but nothing
 there is known to pass either.
@@ -62,6 +71,13 @@ the two apart.
 | Tail calls | self tail calls are jumps | self tail calls are jumps; a tail call to another function still grows the stack | Mutual recursion depth is bounded by the 128 KB stack. |
 | Timing | — | `silica_rt_delay_us`, `silica_rt_cycles` (board only) | Board-only surface, used by the `asm_*` apps; not reachable from Silica yet (§4.2). |
 | Compile time | — | the ESP32 emitter is about 9× slower on very large functions (deep_frame_spill: 88.7 s vs 9.6 s per trial); small trials compile in the same time | A whole-tree board run is dominated by board time, not compile time, except for that suite. |
+| Actors: scheduling | one pthread per actor, preemptive, all cores | one cooperative scheduler per core ([esp32s3_xtensa_port.md §8](esp32s3_xtensa_port.md)); switches only at a dispatch boundary or where an actor suspends (`call`, an empty mailbox, `wait_for_exit`); one core runs today | Output from several actors is in dispatch order instead of racing; the goldens that depend on interleaving are compared as multisets on both targets (`.scout.multiset`). |
+| Actors: `wait_for_exit()` | blocks on stdin until the harness sends `exit` (`.wait_for_exit` marker files), returns 0 | suspends `main` until every actor is parked and no core has work, returns 0 | Same for the trials: the marker approximates "everything has been handled". |
+| Actors: stacks | reserved address space, grown by page faults, released by the stack policy's algorithm | fixed heap blocks: 8 KB machine + 2 KB auxiliary for reserve 0, else the reserve split 3/4 : 1/4; `get_actor_memory_usage` reports the block sizes and a measured high-water mark | A reserve the heap cannot give fails the spawn as the spec says (abort `stack reservation failed`, 71, from `main`); `stack_policy_registered_forms` asks for 2 MB and cannot run on the board. |
+| Actors: a fault or trap inside an actor | signal handler: the actor fails, the process continues | the fault vector hands the fault to the scheduler: the actor fails (`:memory_fault`, or `:stack_exhausted` for a stack-guard hit), the process continues | Same. `badarith` / `case_clause` in an actor: same as the host (reason tag 1). |
+| Actors: the failure report's frame #0 | `dladdr` names the behaviour | the emitter's function-name records name it | Same text. |
+| Actors: `kill_abnormal` / `remove_actor` of a parked actor | the victim's thread ends it shortly after | ended synchronously in the caller's context | The report and the root-exit note appear before the caller's next output instead of racing it. |
+| Actors: cores | `get_cpu_topology()` from `sysctl` (6 E + 4 P cores on the reference Mac); pinning is a thread affinity hint | two cores (both LX7 cores run actors since 2026-09-28, [esp32s3_xtensa_port.md §8.9](esp32s3_xtensa_port.md)), both `:performance`, no efficiency cores, no NUMA nodes, no cache levels; frequency 0 as on the host; pinning is exclusive: an actor pinned to core 1 runs on the APP cpu and nowhere else, `0` is runtime-assigned (round robin) | Core counts in printed topology differ from the Mac's (2 against 10); `get_core_capabilities(2)` is the `id: -1` sentinel on the board. A program that never touches actors never starts core 1. |
 
 ## 3. Behaviours the emitter refuses
 
@@ -70,7 +86,6 @@ instead of Xtensa text, so the failure is immediate and legible.
 
 | Construct | `.error` text | Why |
 | --- | --- | --- |
-| Actors: `spawn`, `send`, `recv`, `call`, `cast`, `link`, `monitor`, registration, supervisors | `ESP32-S3: actors are not supported yet (<prim> -> <reg>)` | No actor runtime on the board (`rt_actors_stub.S` only initialises the registries). The host runtime is pthreads, `os_unfair_lock`, `__ulock`; the board needs a cooperative single-core scheduler (design pending). |
 | Foreign calls (`ffi`) | `ESP32-S3: foreign (C) calls are not supported on this target` | No C runtime; the host's guarded FFI is setjmp / signal based. **Planned, not implemented:** Fifi on OS-free targets per [porting_for_os_free_targets.md §9.1](../porting_for_os_free_targets.md), with archives built against the board pack and faults caught by the trap vector. |
 | File io | `ESP32-S3: file io is not supported on this target (<prim> -> <reg>)` | No filesystem. |
 | A frame ENTRY cannot allocate | `frame larger than ENTRY can allocate (32760 bytes)` | Xtensa windowed-ABI limit; not hit by any trial so far. |
@@ -81,12 +96,12 @@ instead of Xtensa text, so the failure is immediate and legible.
 
 | Gap | What it blocks in `trials/` | What closing it needs |
 | --- | --- | --- |
-| Actor runtime (spawn / send / recv / call / cast / link / monitor, mailboxes, the pid registry, `remove_actor`, exit reporting) | `actors_addition` (294), `actor_registration_addition` (3), `supervisors_addition` (106) | A cooperative scheduler on one core: per-actor stacks in SRAM, mailboxes, `recv` as a yield point, the failure / unwind reports the host prints, then the supervisor trampolines in `module_linkage.silica` and `prims_actors.silica` re-targeted from `.error` to `silica_rt_actor_*` routines (the AArch64 dispatcher is kept as `emit_prim_op_aarch64` for reference). Chunk 1's growable actor stacks apply here too. |
-| CPU topology and core placement | `cpu_discovery_and_spawn_pinning` (4) | Follows the actor runtime; the ESP32-S3 has two LX7 cores (roadmap chunk 2). Today the port is single core with interrupts off. |
+| Actor stacks that grow (spec §15.1.2.2) | `actor_stacks_addition` (13; skipped on the board, `ESP32-S3_raw.skip`) | No demand paging: actor stacks are fixed heap blocks (8 KB + 2 KB by default, or the reserve given), guarded by the data breakpoints; the release algorithms have nothing to release. The suite measures page-granular growth and release, so it does not apply. |
+| `link` / `monitor` / `demonitor` | none: the host runtime's Phase G surface returns benign values, and so does the board's | The same work on both targets. |
 | Foreign calls | `ffi_addition` (16 apps), `warning_enforcement_addition` (its fixtures build C archives) | **Planned:** Fifi on OS-free targets, per [porting_for_os_free_targets.md §9.1](../porting_for_os_free_targets.md). That needs a board-pack C runtime for wrapper archives, and a trap-vector path that ends only the faulting FFI worker. It also needs the actor runtime above. Until then, record these suites as not applicable on the board. |
 | File io | no dedicated suite; used inside some trials | Not applicable without a filesystem. |
 | Host fault semantics (status 70 and the `[silica] fault at …` line) | any trial whose golden encodes a host fault | Done 2026-09-19: `rt_console.S` prints the same report line and status (spec §15.4.5.5); goldens are folded, so no per-target `.scout` is needed. Not yet run on the board. |
-| Memory release | none directly; long-running allocation loops | A free list or region release in `rt_heap.S` (the host's release entry points are the model). |
+| Memory release | none directly; long-running allocation loops | Done 2026-09-28: `rt_heap.S` is now a real first-fit, coalescing allocator (`silica_rt_free` / `silica_rt_region_destroy` actually return memory) instead of the old no-op free; `memory_region_addition/region_local_release` is expected to pass. Not yet run on the board. Five sibling trials and one `compiler_addition` trial still cannot fit the board's real heap capacity regardless (1.6 MB / ~940 KB workloads against a ~170 KB heap) and are skipped, not failing; see [esp32s3_memory_budget_plan.md](esp32s3_memory_budget_plan.md). |
 
 ### 4.2 ESP32-S3 FP1 items beyond Apple Silicon FP1
 

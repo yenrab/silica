@@ -1,0 +1,55 @@
+// Two cores under load (spec §15.1.2, §23.1.1): a ring of casts whose hops alternate direction, so
+// message nodes, the free lists, the heap bump and the console are used by both cores at the same
+// time. main (core 0) casts 400 messages to `echo_a`, pinned to core 1; each is cast on to `echo_b`,
+// held on core 0, and from there to `counter`, pinned to core 1, which prints "done" when its 400th
+// message arrives. Once the ring fills, core 1 -> core 0 and core 0 -> core 1 traffic flows at once.
+// A lock missed in the runtime shows up as a lost or duplicated message (no "done", or two), a
+// corrupted node (a fault), or a garbled line. Only the counter prints, so the output is the same
+// however the cores interleave.
+
+fn echo(msg: int64, peer: actor_ref) -> (:no_reply, actor_ref) {
+    sequence proc[concurrency]
+        _: boolean <- cast(peer, msg impl ActorMessage {})
+    produces
+        pure (:no_reply, peer)
+    end
+}
+
+fn counter(msg: int64, seen: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        _: boolean <- case seen + msg == 400 of {
+            true -> {
+                println("done");
+                true
+            };
+            false -> true
+        }
+    produces
+        pure (:no_reply, seen + msg)
+    end
+}
+
+fn send_n(target: actor_ref, n: int64) -> int64 {
+    sequence proc[concurrency]
+        _: boolean <- cast(target, 1 impl ActorMessage {});
+        left: int64 <- case n == 1 of {
+            true -> 0;
+            false -> send_n(target, n - 1)
+        }
+    produces
+        pure left
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        c: actor_ref <- spawn(0, counter, stack_policy(0, :keep_last_message), 1);
+        echo_b: actor_ref <- spawn(c, echo, stack_policy(0, :keep_last_message));
+        _: atom <- migrate_actor(echo_b, 0);
+        echo_a: actor_ref <- spawn(echo_b, echo, stack_policy(0, :keep_last_message), 1);
+        _: int64 <- send_n(echo_a, 400);
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

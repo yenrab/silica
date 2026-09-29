@@ -15,6 +15,15 @@ Use the entries below for **quick navigation**. Each item links to a file in thi
 
 ---
 
+## [actor_scheduler_policy_tutorial.md](./actor_scheduler_policy_tutorial.md)
+
+**Choosing a per-core dispatch-order policy** with `set_scheduler_policy` (`ESP32-S3_raw` only):
+`:priority_fifo` (default, strict tiers, can starve), `:round_robin` (flat, simplest, no tiers),
+`:weighted_fair` (deficit round robin, proportional, no starvation), `:lottery` (weighted random draw,
+same proportions, no fixed order). Selection table, examples, and a comparison table.
+
+---
+
 ## [why_no_named_types.md](./why_no_named_types.md)
 
 Explains **why Silica avoids classic named recursive type definitions**, what problems that style hides (allocation, layout, reclamation), and how **regions** and **recursive tuples** aim to replace linked structures with explicit memory and typing discipline.

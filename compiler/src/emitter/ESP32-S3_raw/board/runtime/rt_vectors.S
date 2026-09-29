@@ -243,9 +243,20 @@ silica_rt_fatal_trampoline:
     s32i    a4, a2, 0
     bnez    a3, 2f                // a report was already running: last resort
     movi    a1, _silica_fault_stack_top
-    rsr     a2, excsave1
-    rsr     a3, epc1
-    rsr     a4, excvaddr
+    rsr     a5, excsave1          // cause, pc and address before the hook: its own window
+    rsr     a6, epc1              // exceptions overwrite EPC1
+    rsr     a7, excvaddr
+    // A fault raised while an actor was running on this core ends that actor only (rt_actors.S
+    // silica_rt_actor_fault_hook does not return then: it resumes the core's scheduler).
+    movi    a0, 0
+    mov     a10, a5
+    call8   silica_rt_actor_fault_hook
+    // The process ends: on core 0 the other core is stalled and the console lock cleared, on core 1
+    // this core's own hold is released (rt_console.S), so the report below can print.
+    call8   silica_rt_console_fatal_reset
+    mov     a2, a5
+    mov     a3, a6
+    mov     a4, a7
     movi    a0, 0
     call0   silica_rt_fatal_report_c0
 1:  j       1b
@@ -305,6 +316,7 @@ silica_rt_abort_trampoline:
     bnez    a5, 2f
     movi    a1, _silica_fault_stack_top
     movi    a0, 0
+    call8   silica_rt_console_fatal_reset // as in the fatal trampoline; a2/a3 survive a call8
     call0   silica_rt_abort_report_c0
 1:  j       1b
 2:  mov     a2, a3                // report the abort site's call as the pc

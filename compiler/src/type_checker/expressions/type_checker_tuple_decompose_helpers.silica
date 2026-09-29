@@ -317,6 +317,7 @@ fn infer_actor_runtime_return(name: string) -> string {
         "unpin_actor" -> "atom";
         "register_actor" -> "atom";
         "set_actor_priority" -> "atom";
+        "set_scheduler_policy" -> "atom";
         "get_cpu_topology" -> "{ cores: List[{ id: int64, core_type: atom, capabilities: List[string,normal], frequency_mhz: int64 },normal], numa_nodes: List[{ id: int64, cores: List[int64,normal], memory_ranges: List[{ start_address: int64, size: int64, latency: int64 },normal] },normal], cache_hierarchy: { levels: List[{ level: int64, size_kb: int64, line_size: int64, associativity: int64, shared_cores: List[int64,normal] },normal] } }";
         "get_efficiency_cores" -> "List[int64,normal]";
         "get_performance_cores" -> "List[int64,normal]";
@@ -1232,6 +1233,60 @@ fn case_string_is_signed_int_literal(s: string) -> boolean {
     }
 }
 
+// Float literal pattern text: digit+ "." digit+ [("e"|"E") ["+"|"-"] digit+], optional leading "-"
+// (lexer_float_literals.silica's decimal_float / scientific_float grammar; no float32/float16 suffix,
+// matching plain literal syntax). case_pattern_matches_scrutinee's pattern_kind 4 arm already accepts
+// any is_primitive_numeric_type_name scrutinee, so recognizing the literal text is all a float pattern
+// needs here.
+fn case_float_scan_exponent(s: string, i: int64) -> boolean {
+    case i >= length_bytes(s) of {
+        true -> false;
+        false -> case substring(s, i, i + 1) == "+" or substring(s, i, i + 1) == "-" of {
+            true -> case i + 1 >= length_bytes(s) of { true -> false; false -> case_all_digits_from(s, i + 1) };
+            false -> case_all_digits_from(s, i)
+        }
+    }
+}
+
+fn case_float_scan_frac_part(s: string, i: int64, start: int64) -> boolean {
+    case i >= length_bytes(s) of {
+        true -> i > start;
+        false -> {
+            c: string <- substring(s, i, i + 1);
+            case c == "e" or c == "E" of {
+                true -> case i > start of { true -> case_float_scan_exponent(s, i + 1); false -> false };
+                false -> case case_char_is_digit(c) of {
+                    true -> case_float_scan_frac_part(s, i + 1, start);
+                    false -> false
+                }
+            }
+        }
+    }
+}
+
+fn case_float_scan_int_part(s: string, i: int64, start: int64) -> boolean {
+    case i >= length_bytes(s) of {
+        true -> false;
+        false -> case substring(s, i, i + 1) == "." of {
+            true -> case i > start of { true -> case_float_scan_frac_part(s, i + 1, i + 1); false -> false };
+            false -> case case_char_is_digit(substring(s, i, i + 1)) of {
+                true -> case_float_scan_int_part(s, i + 1, start);
+                false -> false
+            }
+        }
+    }
+}
+
+fn case_string_is_signed_float_literal(s: string) -> boolean {
+    case length_bytes(s) == 0 of {
+        true -> false;
+        false -> case substring(s, 0, 1) == "-" of {
+            true -> case length_bytes(s) < 2 of { true -> false; false -> case_float_scan_int_part(s, 1, 1) };
+            false -> case_float_scan_int_part(s, 0, 0)
+        }
+    }
+}
+
 fn case_char_is_ident_letter_or_underscore(c: string) -> boolean {
     c == "a" or c == "b" or c == "c" or c == "d" or c == "e" or c == "f" or c == "g" or c == "h" or c == "i" or c == "j" or c == "k" or c == "l" or c == "m" or c == "n" or c == "o" or c == "p" or c == "q" or c == "r" or c == "s" or c == "t" or c == "u" or c == "v" or c == "w" or c == "x" or c == "y" or c == "z" or c == "A" or c == "B" or c == "C" or c == "D" or c == "E" or c == "F" or c == "G" or c == "H" or c == "I" or c == "J" or c == "K" or c == "L" or c == "M" or c == "N" or c == "O" or c == "P" or c == "Q" or c == "R" or c == "S" or c == "T" or c == "U" or c == "V" or c == "W" or c == "X" or c == "Y" or c == "Z" or c == "_"
 }
@@ -1488,7 +1543,7 @@ fn case_parse_pattern(pat_str: string) -> { is_valid: boolean, pattern_kind: int
                                                                                 }
                                                                             }
                                                                         };
-                                                                        false -> case case_string_is_signed_int_literal(t) of {
+                                                                        false -> case case_string_is_signed_int_literal(t) or case_string_is_signed_float_literal(t) of {
                                                                             true -> { is_valid: true, pattern_kind: 4, bool_lit: false, str_lit: "", int_lit_str: t, bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
                                                                             false -> { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" }
                                                                         }

@@ -29,7 +29,8 @@
 #   - compile-failure trials: a top-level <stem>.silica with <stem>.golden_fail, compiled alone
 #     (a one-line silica.config), the compiler output compared with the golden, as on the host.
 #   - a top-level <stem>.no_golden_fail marks a file that is not a trial (as on the host).
-#   - subdirectories with their own Makefile are sub-suites; they are skipped and reported.
+#   - subdirectories with their own Makefile are sub-suites; they are skipped and reported;
+#     hidden directories (.pid_registry_impl) hold no trials, as for the host's `*.silica` globs.
 # A golden named <stem>.<target>.scout / <stem>.<target>.golden_fail, when present, is used instead
 # of the shared one. Such overrides are for real target differences and are written by hand after
 # review, never generated.
@@ -48,18 +49,25 @@ COMPILE_TIMEOUT="${SILICA_COMPILE_TIMEOUT:-300}"
 mark_ok()   { { printf P >> "$MARK_ROOT/.integrate_pass_marks"; } 2>/dev/null || true; }
 mark_fail() { { printf F >> "$MARK_ROOT/.integrate_fail_marks"; } 2>/dev/null || true; }
 
-# Program output against its golden: through the suite's compare_scout_normalized.sh when it has one (the
-# host Makefile's convention; it folds the addresses in the process-fatal report lines of spec §15.4.5.5,
-# which differ between the board and the host), otherwise diff -Bw.
+# Program output against its golden, the host Makefiles' way: a trial marked <stem>.scout.multiset is
+# compared with the suite's compare_scout_multiset.sh (actor failure reports as a set, pointers folded:
+# the order of concurrent actors' output is not fixed); otherwise through the suite's
+# compare_scout_normalized.sh when it has one (it folds the addresses in the process-fatal report lines
+# of spec §15.4.5.5, which differ between the board and the host); otherwise diff -Bw.
+# $3 is the trial stem.
 scout_matches() {
-    if [ -f "$src/compare_scout_normalized.sh" ]; then
+    if [ -n "${3:-}" ] && [ -f "$src/$3.scout.multiset" ] && [ -f "$src/compare_scout_multiset.sh" ]; then
+        bash "$src/compare_scout_multiset.sh" "$1" "$2" > /dev/null 2>&1
+    elif [ -f "$src/compare_scout_normalized.sh" ]; then
         bash "$src/compare_scout_normalized.sh" "$1" "$2" > /dev/null 2>&1
     else
         diff -Bw -q "$1" "$2" > /dev/null 2>&1
     fi
 }
 scout_diff() {
-    if [ -f "$src/compare_scout_normalized.sh" ]; then
+    if [ -n "${3:-}" ] && [ -f "$src/$3.scout.multiset" ] && [ -f "$src/compare_scout_multiset.sh" ]; then
+        bash "$src/compare_scout_multiset.sh" "$1" "$2"
+    elif [ -f "$src/compare_scout_normalized.sh" ]; then
         bash "$src/compare_scout_normalized.sh" "$1" "$2"
     else
         diff -Bw "$1" "$2"
@@ -185,11 +193,28 @@ while IFS= read -r f; do
     programs+=("$stem")
     ln -s "$src/$f" "src/$f"
     staged=$((staged + 1))
-done < <(cd "$src" && find . -name '*.silica' | sed 's|^\./||' | LC_ALL=C sort)
+done < <(cd "$src" && find . -type f -name '*.silica' -not -path './.*' | sed 's|^\./||' | LC_ALL=C sort)
+# -type f, as the host Makefiles' `find "$PWD" -type f -name '*.silica'`: a suite's lib/ may hold
+# symlinks to the stdlib modules its Makefile also names by path (compile_defects_priority_queue_
+# supervisor_addition). Staging those too compiled every such module twice, and the two objects
+# defined every function of the module again (ld: multiple definition of `brodal_okasaki_...`).
+
+# Standard-library modules the suite's Makefile adds to its silica.config (echo "../../compiler/stdlib/
+# <Module>.silica"): compiled with the programs as support modules, the way the host does.
+while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    f="$src/$m"
+    [ -f "$f" ] || continue
+    b=$(basename "$f" .silica)
+    [ -e "src/$b.silica" ] && continue
+    ln -s "$f" "src/$b.silica"
+    modules+=("$b")
+    staged=$((staged + 1))
+done < <(sed -n 's|.*echo *"\(\.\./\.\./compiler/stdlib/[^"]*\.silica\)".*|\1|p' "$src/Makefile" 2>/dev/null | LC_ALL=C sort -u)
 
 # --- program trials: one compile, then image + board run + golden per program -------------------
 if [ "${#programs[@]}" -gt 0 ]; then
-    ( cd src && find . -name '*.silica' | sed 's|^\./||' | LC_ALL=C sort > silica.config )
+    ( cd src && find . -name '*.silica' -not -path './.*' | sed 's|^\./||' | LC_ALL=C sort > silica.config )
     echo "Compiling ${#programs[@]} programs with $(basename "$BOARD_SILICA_COMPILER")..."
     if ! ( cd src && run_compiler ) > build/compile.log 2>&1; then
         mark_fail
@@ -266,13 +291,13 @@ if [ "${#programs[@]}" -gt 0 ]; then
             [ -f "$src/$stem.$target.scout" ] && golden="$src/$stem.$target.scout"
             if [ ! -f "$golden" ]; then
                 mark_fail; printf '❌❌ %s%s has no .scout file\n' "$prefix" "$stem"; ko=$((ko + 1))
-            elif scout_matches "build/$stem.sout" "$golden"; then
+            elif scout_matches "build/$stem.sout" "$golden" "$stem"; then
                 mark_ok; printf '✅✅ %s%s output matches %s\n' "$prefix" "$stem" "$(basename "$golden")"; ok=$((ok + 1))
                 rm -rf "build/$stem" "build/$stem".*        # keep the artefacts of failures only
             else
                 mark_fail
                 printf '❌❌ %s%s .sout differs from %s\n' "$prefix" "$stem" "$(basename "$golden")"
-                scout_diff "build/$stem.sout" "$golden" || true
+                scout_diff "build/$stem.sout" "$golden" "$stem" || true
                 if [ -s "build/$stem.run.err" ]; then printf '   (board diagnostic: %s)\n' "$(head -n 1 "build/$stem.run.err")"; fi
                 ko=$((ko + 1))
             fi

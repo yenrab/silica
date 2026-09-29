@@ -289,16 +289,23 @@ assembly: check-seed silica.config record-compile-start
 
 # `objects` normally re-emits stale units first. The Pi bootstrap (below) runs it with
 # OBJECTS_PREREQ empty, because no compiler exists there yet to re-emit anything.
+#
+# emitter/<target>/ trees are parallel implementations of the same function names (one per
+# backend), so only the active TARGET's tree may contribute .sams/.o to this build: a leftover
+# .sams/.o from a target built earlier in this same checkout (switching TARGET does not clean)
+# duplicate-symbols the link. FIND_UNIT_FILES prunes every other emitter/<other>/ subtree; nothing
+# outside emitter/ is target-specific, so it is left alone.
+FIND_UNIT_FILES = find . \( -path './emitter/*' -a ! -path './emitter/$(TARGET)' -a ! -path './emitter/$(TARGET)/*' \) -prune -o -type f -name '$(1)' ! -path './_wd_probe/*' -print
 OBJECTS_PREREQ ?= assembly
 objects: $(OBJECTS_PREREQ)
 	@cd "$(THIS_DIR)" && \
-	obj_targets=$$(find . -type f -name '*.sams' ! -path './_wd_probe/*' \
+	obj_targets=$$($(call FIND_UNIT_FILES,*.sams) \
 		| sed 's|^\./||' | sed 's|\.sams$$|.o|' | LC_ALL=C sort | tr '\n' ' '); \
 	if [ -z "$$obj_targets" ]; then \
 		echo "FAIL: no .sams files found after assembly"; \
 		$(REPORT_COMPILE_TIME); exit 1; \
 	fi; \
-	nobj=$$(find . -type f -name '*.sams' ! -path './_wd_probe/*' | wc -l | tr -d ' '); \
+	nobj=$$($(call FIND_UNIT_FILES,*.sams) | wc -l | tr -d ' '); \
 	echo "Assembling $$nobj .sams file(s) with -j$(JOBS)..."; \
 	if ! $(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" -j$(JOBS) $$obj_targets; then \
 		$(REPORT_COMPILE_TIME); exit 1; \
@@ -316,7 +323,7 @@ executables: objects
 	for s in $(HOST_RT_ASM); do \
 		$(ASSEMBLER) $(ASFLAGS_host) -c "$$s" -o "$${s%.s}.o" || { $(REPORT_COMPILE_TIME); exit 1; }; \
 	done; \
-	objs=$$(find . -type f -name '*.o' ! -path './_wd_probe/*' | sed 's|^\./||' | sort | tr '\n' ' '); \
+	objs=$$($(call FIND_UNIT_FILES,*.o) | sed 's|^\./||' | sort | tr '\n' ' '); \
 	link_archives=""; \
 	if [ -x "$(SILICA_LINK_SH)" ]; then link_archives=$$("$(SILICA_LINK_SH)" .); fi; \
 	echo "Linking: $(EXECUTABLE)"; \

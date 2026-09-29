@@ -99,12 +99,6 @@ Draft extension for **mode- and protocol-typed actor capabilities**: `actor_ref 
 
 ---
 
-## [actor_placement_and_balancing_design.md](./actor_placement_and_balancing_design.md)
-
-**Proposal (2026-09-19, not implemented)** for named actor **striping** and **moving** options on hosted and raw targets: five striping options (`:round_robin`, `:least_loaded`, `:with_spawner`, `:by_key`, `:fill_in_order`) and five moving options (`:never`, `:steal_when_idle`, `:balance_periodically`, `:compact_when_quiet`, `:follow_messages`), chosen explicitly with no defaults in the `init` of the application's one `Placement` implementation. That implementation runs as a supervisor-like placement actor registered under the claimed atom `:placement`, started once from `main`. Spawn is unchanged: actors are handed to it by `cast_placement` after they are spawned. Its behaviour comes from the hosted runtime (after chunk 12 carriers) or from a `PlacementProvider` library on raw targets. Revised 2026-09-19 after Lee's review. Includes a survey of BEAM, Go, Tokio, Seastar, Akka, Orleans, Pony, CAF and Linux scheduling, a per-option cost comparison with the BEAM, a benchmark plan, a trial plan and proposed specification changes.
-
----
-
 ## [Phase1_TODOs/cpu_topology_implementation_plan.md](./Phase1_TODOs/cpu_topology_implementation_plan.md)
 
 Apple Silicon + macOS **CPU topology implementation record**: sysctl-backed `get_cpu_topology`, `get_core_capabilities`, core lists, cache/NUMA layout caveats, and remaining portability/frequency-reporting work.

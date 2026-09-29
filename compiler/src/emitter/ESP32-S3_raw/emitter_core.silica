@@ -59,7 +59,6 @@ use prims_tuple;
 use prims_record;
 use reg_conventions;
 use prims_actors;
-use prims_actors_runtime_asm;
 use recursion_support;
 use module_linkage;
 use var;
@@ -191,12 +190,11 @@ fn module_needs_actor_runtime(sir_module: { module_name: string, used_modules: L
     }
 }
 
-// The AArch64 actor/supervisor runtime (pthreads, os_unfair_lock, ulock) has no counterpart on the
-// bare-metal ESP32-S3 yet, so the runtime module the build links once per executable carries only a
-// marker. The entry points every program needs (_silica_pid_registry_init, ...) come from
-// board/runtime/rt_actors_stub.S until the cooperative scheduler lands.
+// The actor runtime of this target is the board pack's (board/runtime/rt_actors.S, rt_supervisors.S:
+// the cooperative per-core scheduler), assembled and linked by tools/build_image.sh, not emitted
+// text, so the runtime module the build links once per executable carries only a marker.
 fn xt_runtime_module_text() -> string {
-    "    .text\n# Silica ESP32-S3 runtime module: the actor runtime is not ported yet; see board/runtime.\n"
+    "    .text\n# Silica ESP32-S3 runtime module: the actor runtime is board/runtime/rt_actors.S (linked by build_image.sh).\n"
 }
 
 fn emit_actor_runtime_module(sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> string {
@@ -2772,8 +2770,8 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
         kind5_no_tail: boolean <- main_kind5_no_tail or kind5_frame_blocks_tail or sir_term_root_node(fn_val.body).kind == 5;
         kind5_tail_returns_directly: boolean <- sir_term_root_node(fn_val.body).kind == 5 and kind5_no_tail == false;
         // Inject _silica_pid_registry_init at the start of every program entry-point. The routine
-        // (prims_actors_runtime_asm.silica) spawns the global primitive PID registry behavior and
-        // stores the actor_ref in _silica_pid_registry_ref.
+        // (board/runtime/rt_actors.S) sets the actor runtime up, spawns the global PID registry actor
+        // and stores the actor_ref in silica_pid_registry_ref.
         is_program_main: boolean <- fn_val.name == "main" or fn_val.name == "main.main" or fn_val.name == "main.m";
         registry_init_inject: string <- case is_program_main of {
             true -> concat(xt_isa@xt_call("_silica_pid_registry_init"), xt_isa@xt_call("_silica_dangerous_pid_registry_init"));
@@ -2954,7 +2952,13 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
             false -> ""
         };
         fn_text: string <- concat(concat(concat(concat(concat(concat(concat(fpb_comment, ra_comment), prologue_full), rgn_save), region_mark_push), arena_mark_push), "\n"), concat(registry_init_inject, concat(concat(concat(concat(tco_body_label, body), "\n"), float_to_exit), concat(arena_release_pop, concat(region_release_pop, concat(epilogue, tco_stub))))));
-        concat(concat(eff_comment, "\n"), concat(xt_frame_header(fn_text, frame_spill_nbytes), fn_text))
+        // A {address, name} record per function, followed by the name's bytes, in
+        // .rodata.silica_fnames (kept between _silica_fnames_start and _end by the board linker
+        // script; rt_actors.S silica_rt_behaviour_name walks records of this exact shape): the actor
+        // runtime names the failing behaviour in its failure report with it, as the host does
+        // through dladdr.
+        fname_record: string <- concat("    .section .rodata.silica_fnames, \"a\"\n    .p2align 2\n    .word ", concat(entry_label, concat("\n    .word L_fname_", concat(entry_label, concat("\nL_fname_", concat(entry_label, concat(":\n    .asciz \"", concat(entry_label, "\"\n    .text\n"))))))));
+        concat(concat(eff_comment, "\n"), concat(xt_frame_header(fn_text, frame_spill_nbytes), concat(fn_text, fname_record)))
 }
 
 // --- Xtensa frame layout ---------------------------------------------------------------------

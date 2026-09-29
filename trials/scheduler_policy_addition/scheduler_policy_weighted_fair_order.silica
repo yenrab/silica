@@ -1,0 +1,49 @@
+// set_scheduler_policy(:weighted_fair): deficit round robin over the priority tiers with a unit cost
+// per dispatch and quanta high 4, normal 2, low 1, FIFO within a tier. A round starts at the high
+// tier: H runs 4 times (then has no mail and parks), N twice, L once; the high tier is empty, so N
+// runs twice more (its last two), L once; then only L is left and it runs its last two, one per round:
+// H H H H N N L N N L L L. Same setup as scheduler_policy_priority_fifo_order (all twelve messages
+// queued on core 0 before anything runs). Shared golden compared as a multiset (hosted targets define
+// no order), board golden in order.
+// One behaviour for the three actors: the state is the actor's tag (0 low, 1 normal, 2 high) and
+// every message prints one line, so the sequence of lines is the sequence of dispatches.
+fn turn(msg: int64, tag: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        name: string <- case tag of { 0 -> "L"; 1 -> "N"; _: int64 -> "H" };
+        println(concat("turn ", name))
+    produces
+        pure (:no_reply, tag)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        l: actor_ref <- spawn(0, turn, stack_policy(0, :keep_last_message));
+        n: actor_ref <- spawn(1, turn, stack_policy(0, :keep_last_message));
+        h: actor_ref <- spawn(2, turn, stack_policy(0, :keep_last_message));
+        _: atom <- migrate_actor(l, 0);
+        _: atom <- migrate_actor(n, 0);
+        _: atom <- migrate_actor(h, 0);
+        _: atom <- set_actor_priority(l, :low);
+        _: atom <- set_actor_priority(n, :normal);
+        _: atom <- set_actor_priority(h, :high);
+        p: atom <- set_scheduler_policy(:weighted_fair);
+        print_atom(p);
+        println("");
+        _: boolean <- cast(l, 1 impl ActorMessage {});
+        _: boolean <- cast(n, 1 impl ActorMessage {});
+        _: boolean <- cast(h, 1 impl ActorMessage {});
+        _: boolean <- cast(l, 2 impl ActorMessage {});
+        _: boolean <- cast(n, 2 impl ActorMessage {});
+        _: boolean <- cast(h, 2 impl ActorMessage {});
+        _: boolean <- cast(l, 3 impl ActorMessage {});
+        _: boolean <- cast(n, 3 impl ActorMessage {});
+        _: boolean <- cast(h, 3 impl ActorMessage {});
+        _: boolean <- cast(l, 4 impl ActorMessage {});
+        _: boolean <- cast(n, 4 impl ActorMessage {});
+        _: boolean <- cast(h, 4 impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

@@ -78,6 +78,7 @@ fn actor_runtime_builtin_return_type(name: string) -> string {
         "get_actor_memory_usage" -> "{ reserved: int64, committed: int64, retained: int64, high_water: int64 }";
         "migrate_actor" -> "atom";
         "move" -> "atom";
+        "set_scheduler_policy" -> "atom";
         "register_failure_reporter" -> "atom";
         _: string -> ""
     }
@@ -111,7 +112,18 @@ fn check_actor_runtime_helper_call(expr: { nodes: List[{ kind: int64, value: str
     eff: string <- type_checker_core@user_call_base_function_name(type_checker_expressions_helpers@expr_name(expr));
     inferred: string <- actor_runtime_builtin_return_type(eff);
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
-    case eff == "get_cpu_topology" of {
+    case eff == "set_scheduler_policy" of {
+        true -> case ac == 1 of {
+            false -> type_checker_core@type_check_err("E2005", type_checker_expressions_helpers@expr_loc(expr), "set_scheduler_policy expects 1 argument: (policy: atom)", "sect15");
+            true -> {
+                (r0, _) <- check_surface(type_checker_expressions_helpers@expr_child_inner(expr), "atom", context, world);
+                case r0.is_ok of {
+                    false -> r0;
+                    true -> check_runtime_builtin_return(expr, inferred, expected_type, context)
+                }
+            }
+        };
+        false -> case eff == "get_cpu_topology" of {
         true -> case ac == 0 of {
             false -> type_checker_core@type_check_err("E2005", type_checker_expressions_helpers@expr_loc(expr), "get_cpu_topology expects 0 arguments", "sect15");
             true -> check_runtime_builtin_return(expr, inferred, expected_type, context)
@@ -351,6 +363,7 @@ fn check_actor_runtime_helper_call(expr: { nodes: List[{ kind: int64, value: str
                 }
             }
         }
+    }
     }
 }
 

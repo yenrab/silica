@@ -33,8 +33,11 @@ normalize_pointer_lines() {
       next
     }
     { print }
-  ' "$1"
+  ' "$1" | awk -f "$(dirname "$0")/../normalize_fatal_reports.awk"
 }
+# The second awk folds the process-fatal report lines of spec §15.4.5.5 (`[silica] fault at <PTR>`,
+# `[silica] abort: <reason> at <PTR>`) the way every other suite does: their addresses differ between
+# the host and the ESP32-S3 board (stack_policy_registered_forms has a board golden with one).
 
 tmp_actual="$(mktemp)"
 tmp_golden="$(mktemp)"

@@ -1,0 +1,62 @@
+// set_scheduler_policy(:weighted_fair) with eighteen casts queued to three actors of the three
+// priority tiers on core 0 before any of them runs (main never yields while it casts; core 0
+// dispatches when main suspends in wait_for_exit): the program completes and every actor has seen
+// exactly its five counted casts when it handles its report. The dispatch order under this policy is
+// shown by scheduler_policy_weighted_fair_order; this trial asserts completion and the counts only,
+// so its lines are compared as a multiset on every target (compare_scout_multiset.sh).
+
+// A cast-only counter: the state starts at 0 (low), 100 (normal) or 200 (high) and every message
+// adds one; message 0 is the report, cast after the five counted messages and so handled after them
+// (one mailbox, FIFO): it prints one line naming the actor and its count, whatever order the three
+// actors were dispatched in. Any other count prints a line the golden does not have.
+fn counter(msg: int64, count: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        next: int64 <- case msg of {
+            0 -> {
+                println(case count of { 5 -> "L seen 5"; 105 -> "N seen 5"; 205 -> "H seen 5"; _: int64 -> "unexpected count" });
+                count
+            }
+            _: int64 -> count + 1
+        }
+    produces
+        pure (:no_reply, next)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        l: actor_ref <- spawn(0, counter, stack_policy(0, :keep_last_message));
+        n: actor_ref <- spawn(100, counter, stack_policy(0, :keep_last_message));
+        h: actor_ref <- spawn(200, counter, stack_policy(0, :keep_last_message));
+        _: atom <- migrate_actor(l, 0);
+        _: atom <- migrate_actor(n, 0);
+        _: atom <- migrate_actor(h, 0);
+        _: atom <- set_actor_priority(l, :low);
+        _: atom <- set_actor_priority(n, :normal);
+        _: atom <- set_actor_priority(h, :high);
+        p: atom <- set_scheduler_policy(:weighted_fair);
+        print_atom(p);
+        println("");
+        _: boolean <- cast(l, 1 impl ActorMessage {});
+        _: boolean <- cast(n, 1 impl ActorMessage {});
+        _: boolean <- cast(h, 1 impl ActorMessage {});
+        _: boolean <- cast(l, 2 impl ActorMessage {});
+        _: boolean <- cast(n, 2 impl ActorMessage {});
+        _: boolean <- cast(h, 2 impl ActorMessage {});
+        _: boolean <- cast(l, 3 impl ActorMessage {});
+        _: boolean <- cast(n, 3 impl ActorMessage {});
+        _: boolean <- cast(h, 3 impl ActorMessage {});
+        _: boolean <- cast(l, 4 impl ActorMessage {});
+        _: boolean <- cast(n, 4 impl ActorMessage {});
+        _: boolean <- cast(h, 4 impl ActorMessage {});
+        _: boolean <- cast(l, 5 impl ActorMessage {});
+        _: boolean <- cast(n, 5 impl ActorMessage {});
+        _: boolean <- cast(h, 5 impl ActorMessage {});
+        _: boolean <- cast(l, 0 impl ActorMessage {});
+        _: boolean <- cast(n, 0 impl ActorMessage {});
+        _: boolean <- cast(h, 0 impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

@@ -1,0 +1,42 @@
+// set_scheduler_policy(policy: atom) -> :ok | :invalid_policy (proc[concurrency]; the runtime's
+// dispatch-order policy for actors sharing a core, design_documents/ports/esp32s3_xtensa_port.md
+// §8.10). The four policies are accepted, an atom that names none of them is rejected and leaves the
+// policy as it was, the policy may be changed at any time (here after an actor exists and again after
+// the rejection), and a program keeps running under whichever policy is in force.
+// Hosted targets have no ready queue of their own to order, so there the call is a no-op that
+// answers :ok for every atom: the shared golden shows that, the board golden the rejection.
+
+fn counter(msg: int64, count: int64) -> (:reply, int64, int64) {
+    (:reply, count, count + 1)
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        c: actor_ref <- spawn(0, counter, stack_policy(0, :keep_last_message));
+        a: atom <- set_scheduler_policy(:priority_fifo);
+        print_atom(a);
+        println("");
+        b: atom <- set_scheduler_policy(:round_robin);
+        print_atom(b);
+        println("");
+        d: atom <- set_scheduler_policy(:weighted_fair);
+        print_atom(d);
+        println("");
+        e: atom <- set_scheduler_policy(:lottery);
+        print_atom(e);
+        println("");
+        f: atom <- set_scheduler_policy(:first_come_first_served);
+        print_atom(f);
+        println("");
+        verdict: string <- case f of { :invalid_policy -> "rejected"; _: atom -> "accepted" };
+        println(verdict);
+        g: atom <- set_scheduler_policy(:priority_fifo);
+        print_atom(g);
+        println("");
+        seen: int64 <- call(c, 7 impl ActorMessage {});
+        print_int64(seen);
+        println("")
+    produces
+        pure 0
+    end
+}

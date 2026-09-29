@@ -62,10 +62,15 @@ Then, for each suite, [board_suite.sh](board_suite.sh):
 2. for each program trial, builds an image with the board runtime (`board/tools/build_image.sh`),
    loads it into the board's RAM and runs it (`board/tools/run_on_board.py`; nothing is written
    to flash), and compares its output and exit status with the trial's `.scout`, as the host does
-   (`diff -Bw`, through the suite's `compare_scout_normalized.sh` when it has one: that folds the
+   (`diff -Bw`; through the suite's `compare_scout_multiset.sh` for a trial marked
+   `<stem>.scout.multiset`, whose actor failure reports are compared as a set with their pointers
+   folded; through the suite's `compare_scout_normalized.sh` when it has one: that folds the
    addresses in a process-fatal report line, `[silica] fault at <PTR>` / `[silica] abort: <reason> at
    <PTR>`, which differ between the board and the host; see
-   [runtime_failure_reporting.md](../../compiler/design_documents/runtime_failure_reporting.md));
+   [runtime_failure_reporting.md](../../compiler/design_documents/runtime_failure_reporting.md)).
+   A standard-library module the suite's Makefile adds to its `silica.config`
+   (`echo "../../compiler/stdlib/<Module>.silica"`, as `supervisors_addition` does for
+   `Supervisor`) is compiled with the programs too;
 3. compiles each compile-failure trial (`.golden_fail`) alone and compares the diagnostics.
 
 Suites run in parallel, so compiles overlap; the board runs one trial at a time. A board trial takes

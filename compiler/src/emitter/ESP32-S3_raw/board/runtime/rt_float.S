@@ -57,16 +57,14 @@ silica_rt_print_f64:
     call8   silica_rt_putc
     movi    a8, 0x80000000
     xor     a3, a3, a8
-1:  mov     a10, a2               // integer part
+1:  mov     a10, a2               // integer part (saturates on overflow, like the host's FCVTZS)
     mov     a11, a3
     call8   __fixdfdi
-    mov     a4, a10
-    mov     a5, a11
     call8   silica_rt_print_i64
-    mov     a10, a4               // frac = v - (double) i
-    mov     a11, a5
-    call8   __floatdidf
-    mov     a12, a10
+    mov     a10, a2               // frac = v - trunc(v), truncated as a float (the host's FRINTZ),
+    mov     a11, a3               // not through the int: for |v| >= 2^63 the int saturates and
+    call8   silica_rt_trunc_f64   // v - (double) i would be v itself, so every digit overflowed
+    mov     a12, a10              // (1e100 printed 15 '/' where the host prints one '0')
     mov     a13, a11
     mov     a10, a2
     mov     a11, a3

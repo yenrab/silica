@@ -17,7 +17,8 @@
 // Bring-up app 06: the heap. Allocates 2000 24-byte nodes, checks each comes back zeroed and
 // 8-byte aligned, links them into a list (word 0 = value, word 1 = next), walks the list and
 // sums the values. Checks rt_heap and that .bss/heap zeroing in rt_start happened.
-// Expected console: "heap used 48000", "list sum 1999000", status 0 (1 on a bad allocation).
+// Expected console: "heap used 64000" (2000 x (24 + the 8-byte block header of rt_heap.S)),
+// "list sum 1999000", status 0 (1 on a bad allocation).
 
 #define NODES 2000
 

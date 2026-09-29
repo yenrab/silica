@@ -40,6 +40,7 @@
     .balign 8
 silica_rt_ordering_env_next:
     .space  8
+    .global silica_rt_canonical_arena_table   // read by rt_heap.S: region_destroy leaves an arena alone
 silica_rt_canonical_arena_table:        // 512 x (key: 8, region: 8)
     .space  8192
 silica_rt_canonical_arena_count:

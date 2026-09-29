@@ -17,9 +17,10 @@
 // Reset entry for the bare-metal ESP32-S3 runtime (no ESP-IDF, no FreeRTOS).
 //
 // The image is flashed at offset 0x0 in place of the second-stage bootloader, so the ROM loads
-// its segments into internal SRAM and calls _start as an ordinary windowed function. _start never
-// returns to the ROM:
-//   1. mask interrupts, move VECBASE to rt_vectors, drop every older register window;
+// its segments into internal SRAM and calls _start as an ordinary windowed function on the PRO cpu
+// (core 0). _start never returns to the ROM:
+//   1. mask interrupts, move VECBASE to rt_vectors, drop every older register window, and point
+//      THREADPTR at core 0's register block (silica_rt_core_regs, below);
 //   2. switch to our own stack (the ROM's is a few KB, Silica recursion needs far more);
 //   3. disable the RTC and timer-group watchdogs the ROM leaves armed, and set the super
 //      watchdog to auto-feed (as the IDF bootloader does);
@@ -33,6 +34,14 @@
 // Stack budget: the machine stack (128 KB, silica_esp32s3.ld) holds the windowed frames; the auxiliary
 // stack (64 KB, below) holds the emitter's AArch64-style pushes and slabs. A recursion of depth 2000
 // with one 16-byte push per level and 48-byte frames uses 96 KB + 32 KB.
+//
+// The APP cpu (core 1) is held in reset by the ROM. The actor runtime starts it when it initialises
+// (rt_actors.S silica_rt_actors_init -> silica_rt_start_app_cpu, below): the ESP-IDF sequence for the
+// chip -- clear the RTC software stall, enable the core's clock, pulse its reset, then hand the ROM its
+// boot address with the ROM function ets_set_appcpu_boot_addr. Core 1 lands in silica_rt_start_core1,
+// which does steps 1 and 2 for that core (its own THREADPTR, block 1; a small boot stack), leaves the
+// watchdogs, .bss and the guards to core 0, and enters its scheduler (silica_rt_core1_main). A program
+// that never touches actors never starts core 1.
 //
 // Console protocol (read by board/tools/run_on_board.py):
 //   \x02SILICA:START\x03            printed before main runs
@@ -51,6 +60,26 @@
 #define WDT_WKEY_VALUE            0x50D83AA1
 #define SWD_WKEY_VALUE            0x8F1D312A
 #define SWD_AUTO_FEED_EN          0x80000000
+
+// The APP cpu (esp-idf components/soc/esp32s3/register/soc/{system_reg,rtc_cntl_reg}.h and
+// components/hal/esp32s3/include/hal/cpu_utility_ll.h: cpu_utility_ll_unstall_cpu,
+// cpu_utility_ll_enable_clock_and_reset_app_cpu; the ROM entry from esp_rom/esp32s3/ld/esp32s3.rom.ld).
+#define SYSTEM_CORE_1_CONTROL_0_REG 0x600C0000
+#define SYSTEM_CORE_1_RUNSTALL      0x1
+#define SYSTEM_CORE_1_CLKGATE_EN    0x2
+#define SYSTEM_CORE_1_RESETING      0x4
+#define RTC_CNTL_OPTIONS0_REG       0x60008000
+#define RTC_CNTL_SW_STALL_APPCPU_C0 0x00000003      // bits 1:0
+#define RTC_CNTL_SW_CPU_STALL_REG   0x600080BC
+#define RTC_CNTL_SW_STALL_APPCPU_C1 0x03F00000      // bits 25:20
+#define ETS_SET_APPCPU_BOOT_ADDR    0x40000720      // ROM: ets_set_appcpu_boot_addr(uint32_t)
+
+// The per-core register block the emitted code keeps its virtual registers in (design doc §2, §8.2):
+// X3-X8 at 0..47, D0-D7 at 48..111, the auxiliary stack pointer at 112. THREADPTR of each core
+// points at its block. The emitter (shared/xt_vr.silica vr_vsp_off) and rt_actors.S / rt_heap.S use
+// the same offsets.
+#define VRG_BLOCK_SIZE 128
+#define VRG_VSP        112
 
     .section .text.silica_rt_start, "ax"
     .literal_position
@@ -74,6 +103,8 @@ _start:
     movi    a2, 0x40020            // PS: WOE=1, UM=1, INTLEVEL=0, EXCM=0
     wsr     a2, ps
     rsync
+    movi    a2, silica_rt_core_regs // core 0's register block
+    wur     a2, threadptr
 
     // 2. Our stack. a0 = 0 terminates backtraces; a1 must be 16-byte aligned.
     movi    a0, 0
@@ -147,26 +178,127 @@ silica_rt_zero_words_c0:
     .type   silica_rt_start_windowed, @function
 silica_rt_start_windowed:
     entry   a1, 32
-    movi    a2, silica_rt_vsp
+    rur     a2, threadptr
     movi    a3, silica_rt_aux_stack_top
-    s32i    a3, a2, 0
+    s32i    a3, a2, VRG_VSP
     call8   silica_rt_heap_init
     movi    a10, silica_rt_start_marker
     call8   silica_rt_puts
+    call8   silica_rt_console_release_if_mine   // the marker has no newline: drop the line hold
     call8   main                   // int64 result in a10:a11
     call8   silica_rt_exit         // a10 = low word = status
 1:  j       1b
     .size   silica_rt_start_windowed, . - silica_rt_start_windowed
 
+// ---------------------------------------------------------------------------------------------
+// The APP cpu (core 1)
+
+// silica_rt_start_app_cpu(): release core 1 from reset and give the ROM its entry (esp-idf
+// start_other_core for the ESP32-S3, in the same order). Called once, from core 0, by
+// silica_rt_actors_init after the core blocks and core 1's scheduler context exist.
+    .align  4
+    .global silica_rt_start_app_cpu
+    .type   silica_rt_start_app_cpu, @function
+silica_rt_start_app_cpu:
+    entry   a1, 32
+    // no software stall on the APP cpu (RTC_CNTL "c0" and "c1" fields)
+    movi    a2, RTC_CNTL_OPTIONS0_REG
+    l32i    a3, a2, 0
+    movi    a4, ~RTC_CNTL_SW_STALL_APPCPU_C0
+    and     a3, a3, a4
+    s32i    a3, a2, 0
+    movi    a2, RTC_CNTL_SW_CPU_STALL_REG
+    l32i    a3, a2, 0
+    movi    a4, ~RTC_CNTL_SW_STALL_APPCPU_C1
+    and     a3, a3, a4
+    s32i    a3, a2, 0
+    // clock on, run stall off, reset pulsed
+    movi    a2, SYSTEM_CORE_1_CONTROL_0_REG
+    l32i    a3, a2, 0
+    movi    a4, SYSTEM_CORE_1_CLKGATE_EN
+    or      a3, a3, a4
+    s32i    a3, a2, 0
+    movi    a4, ~SYSTEM_CORE_1_RUNSTALL
+    and     a3, a3, a4
+    s32i    a3, a2, 0
+    movi    a4, SYSTEM_CORE_1_RESETING
+    or      a3, a3, a4
+    s32i    a3, a2, 0
+    movi    a4, ~SYSTEM_CORE_1_RESETING
+    and     a3, a3, a4
+    s32i    a3, a2, 0
+    memw
+    // the ROM's APP cpu loop jumps to this address once it is set
+    movi    a10, silica_rt_start_core1
+    movi    a8, ETS_SET_APPCPU_BOOT_ADDR
+    callx8  a8
+    retw
+    .size   silica_rt_start_app_cpu, . - silica_rt_start_app_cpu
+
+// silica_rt_stall_app_cpu(): freeze core 1 where it stands (RunStall). The program's end
+// (rt_console.S silica_rt_halt) and a process-fatal report on core 0 (rt_vectors.S) use it so nothing
+// prints after the exit marker; the chip reset before the next load clears it. Harmless when core 1
+// was never started.
+    .align  4
+    .global silica_rt_stall_app_cpu
+    .type   silica_rt_stall_app_cpu, @function
+silica_rt_stall_app_cpu:
+    entry   a1, 32
+    movi    a2, SYSTEM_CORE_1_CONTROL_0_REG
+    l32i    a3, a2, 0
+    movi    a4, SYSTEM_CORE_1_RUNSTALL
+    or      a3, a3, a4
+    s32i    a3, a2, 0
+    memw
+    retw
+    .size   silica_rt_stall_app_cpu, . - silica_rt_stall_app_cpu
+
+// Core 1's entry, reached from the ROM. Nothing is assumed about the ROM's window or PS state: the
+// same reset as _start step 1, THREADPTR = block 1, a boot stack of its own, the stack-guard
+// breakpoints of this core disarmed (the scheduler runs with them off; a switch arms them), then
+// silica_rt_core1_main (rt_actors.S) switches into this core's scheduler and never returns.
+    .align  4
+    .global silica_rt_start_core1
+    .type   silica_rt_start_core1, @function
+silica_rt_start_core1:
+    movi    a2, 0
+    wsr     a2, intenable
+    movi    a2, _silica_vecbase
+    wsr     a2, vecbase
+    rsr     a2, windowbase
+    movi    a3, 1
+    ssl     a2
+    sll     a3, a3
+    wsr     a3, windowstart
+    rsync
+    movi    a2, 0x40020            // PS: WOE=1, UM=1, INTLEVEL=0, EXCM=0
+    wsr     a2, ps
+    rsync
+    movi    a2, 0
+    wsr     a2, dbreakc0
+    wsr     a2, dbreakc1
+    movi    a2, silica_rt_core_regs + VRG_BLOCK_SIZE
+    wur     a2, threadptr
+    isync
+    movi    a0, 0
+    movi    a1, silica_rt_core1_stack_top
+    call8   silica_rt_core1_main
+1:  j       1b
+    .size   silica_rt_start_core1, . - silica_rt_start_core1
+
 // Machine state the emitted code keeps in memory (design_documents/ports/esp32s3_xtensa_port.md §2):
-//   silica_rt_vrg  the global transfer block holding the emitter's virtual registers X3-X8 (0..47) and
-//                  D0-D7 (48..111). They are caller-saved, so one block shared by every frame is exact.
-//   silica_rt_vsp  the auxiliary data stack pointer: the emitter's SP, which AArch64-style pushes and
-//                  stack slabs move. The machine stack pointer a1 cannot move inside a windowed frame.
+//   silica_rt_core_regs  one register block per core (VRG_BLOCK_SIZE bytes each): the emitter's
+//                  virtual registers X3-X8 (0..47) and D0-D7 (48..111), caller-saved, so one block
+//                  per core shared by every frame on that core is exact; and at VRG_VSP the auxiliary
+//                  data stack pointer, the emitter's SP, which AArch64-style pushes and stack slabs
+//                  move (the machine stack pointer a1 cannot move inside a windowed frame). A core
+//                  reaches its block through THREADPTR; a context switch saves and loads the SP word.
 #define AUX_STACK_SIZE 0x10000
+#define CORE1_STACK_SIZE 0x800
 
     .section .bss.silica_rt_aux_stack, "aw", @nobits
     .balign 64
+    .global silica_rt_aux_stack_bottom
 silica_rt_aux_stack_bottom:                // the lowest 64 bytes are the guard (watchpoint 1)
     .space  AUX_STACK_SIZE
     .global silica_rt_aux_stack_top
@@ -174,12 +306,15 @@ silica_rt_aux_stack_top:
 
     .section .bss.silica_rt_regs, "aw", @nobits
     .balign 16
-    .global silica_rt_vrg
-silica_rt_vrg:
-    .space  112
-    .global silica_rt_vsp
-silica_rt_vsp:
-    .space  4
+    .global silica_rt_core_regs
+silica_rt_core_regs:
+    .space  VRG_BLOCK_SIZE * 2
+
+    .section .bss.silica_rt_core1_stack, "aw", @nobits
+    .balign 16
+silica_rt_core1_stack_bottom:              // core 1's boot stack: silica_rt_core1_main and the first switch
+    .space  CORE1_STACK_SIZE
+silica_rt_core1_stack_top:
 
     .section .rodata.silica_rt_start, "a"
 silica_rt_start_marker:

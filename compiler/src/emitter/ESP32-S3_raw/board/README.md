@@ -25,9 +25,11 @@ netlist; the supplied pin sheet has the RGB red pin wrong (1 instead of 2).
 | `runtime/rt_list.S` | List routines (`silica_rt_list_*`): length, tail, at, prepend over the emitter's chunked lists |
 | `runtime/rt_float.S` | Float printing (host digit algorithm, including the host's `FCVTZS` behaviour on nan/inf; float64 via libgcc, float32 on the FPU), half conversions, truncation, float16 → int32 for a float16 exit code |
 | `runtime/rt_ordering.S` | Ordering identity tokens, canonical arenas (stdlib data structures), checked int64 add/mul |
-| `runtime/rt_heap.S` | Bump allocator (free is a no-op; exhaustion is a runtime abort) |
+| `runtime/rt_heap.S` | Heap: first-fit free list with coalescing over a bump top (8-byte block headers); `silica_rt_free` and region release (`silica_rt_region_destroy`, the extension chain too) give memory back; exhaustion is a runtime abort |
 | `runtime/rt_board.S` | GPIO output/input/read/write, `delay_us`, cycle counter |
-| `runtime/silica_esp32s3.ld` | Linker script: code from IRAM 0x40378000, data after it on the D-bus, heap, 128 KB machine stack below 0x3FCE9700 (the 64 KB auxiliary stack is in `.bss`) |
+| `runtime/rt_actors.S` | The actor runtime on both cores: cooperative per-core scheduler with the four dispatch-order policies of `set_scheduler_policy` (priority FIFO, round robin, weighted fair, lottery), control blocks, mailboxes, spawn/send/cast/call/self, the PID registry actor, remove/kill, the failure report, migrate_actor and the topology queries, wait_for_exit, core 1's entry into its scheduler ([design §8](../../../../design_documents/ports/esp32s3_xtensa_port.md)) |
+| `runtime/rt_supervisors.S` | The supervisor child table: start trampoline materialisation, restart policies and strategies, the `call_supervisor` helpers |
+| `runtime/silica_esp32s3.ld` | Linker script: code from IRAM 0x40378000, data after it on the D-bus (the emitter's function-name records first), heap, 128 KB machine stack below 0x3FCE9700 (the 64 KB auxiliary stack is in `.bss`) |
 | `tools/build_image.sh` | Assemble sources + runtime, link, `esptool elf2image` → `.elf`, `.map`, `.bin` (`-r <dir>` caches the assembled runtime) |
 | `tools/run_on_board.py` | Load `.bin` into RAM and run it (or `--flash` it at 0x0), capture UART0 between markers, print `.sout`-style text; `--probe` checks the board |
 | `tools/host_reference.sh` | Writes an app's `expected.sout` by building and running it with the macOS compiler (fatal-report lines folded) |
@@ -74,9 +76,11 @@ reports it the way every Silica target does (spec §15.4.5.5; the mechanism on e
 | `case_clause` / `badarith` in `main` | the atom name | 1 |
 
 The report is program output here because the board has one console; on a hosted target the same line
-goes to stderr, which the trial harness captures with stdout. The board has no symbol table and no actor
-runtime, so the host's ` in <symbol>+0x<offset>` and `actor=`/`sbase=`/`ssize=` fields are omitted,
-never invented. The board-only details of a fault (the cause code, both registers, the stack-guard note)
+goes to stderr, which the trial harness captures with stdout. The board has no symbol table, so the
+host's ` in <symbol>+0x<offset>` and `actor=`/`sbase=`/`ssize=` fields are omitted, never invented. A
+fault inside an actor is not a process fault: it ends that actor with the actor failure report of the
+host (`=== Silica Actor Failure ===` ... , frame #0 named from the emitter's function-name records) and
+the program goes on. The board-only details of a fault (the cause code, both registers, the stack-guard note)
 follow the exit marker, and `run_on_board.py` sends them to stderr. `run_on_board.py` turns the rest into
 `<program output><status>\n`, the same text the trial harness writes to a `.sout`. The addresses in a
 report differ by run and target: compare a run with an app's `expected.sout` using
@@ -109,9 +113,11 @@ The trial tree can run on the board too: `make integrate TRIAL_TARGET=ESP32-S3_r
 
 ## Not supported on this target
 
-Actors (the runtime is not written yet), foreign C calls (no C runtime on bare metal) and file io
-(no filesystem) make a module fail to assemble with one `.error` line naming the feature, e.g.
-`.error "ESP32-S3: actors are not supported yet (spawn -> X0)"`, instead of emitting AArch64 text.
+Foreign C calls (no C runtime on bare metal) and file io (no filesystem) make a module fail to
+assemble with one `.error` line naming the feature instead of emitting AArch64 text. Actors run on both
+LX7 cores (`get_cpu_topology()` reports two `:performance` cores; an actor pinned to core 1 runs on the
+APP cpu, which the runtime starts at its first actor entry point --
+[design §8.9](../../../../design_documents/ports/esp32s3_xtensa_port.md)).
 
 ## Stack budget
 
@@ -136,12 +142,13 @@ target has not been decided.
 | `asm_03_buttons` | Inputs; prints raw levels for 30 s | ✓ all six directional/A/B buttons, active high |
 | `asm_04_buzzer` | Buzzer (GPIO48) at 440 / 880 / 2730 Hz, CCOUNT per tone | ✓ once the RV1 trimmer is turned up (counter-clockwise); CPU at ~20 MHz |
 | `asm_05_recursion` | Window overflow/underflow, int64 add-with-carry | ✓ `sum 500500`, `sum64 hi 999 lo 4294966296`, `windows ok` |
-| `asm_06_heap` | Allocator alignment/zeroing | ✓ `heap used 48000`, `list sum 1999000` |
+| `asm_06_heap` | Allocator alignment/zeroing | ✓ `heap used 48000`, `list sum 1999000` (with the block headers of 2026-09-28 the expected figure is `heap used 64000`; not yet re-run on the board) |
 | `asm_07_fault` | Fault vector -> fatal fault report + status 70 + details | ✓ status 139, `exccause=28` (before 2026-09-19; now expected: `[silica] fault at 0x4037....  addr=0x00000000`, status 70, `exccause=28` after the marker; not yet run on the board) |
 | `asm_08_gpio_diag` | Register read-back of the GPIO setup | diagnostic |
 | `asm_09_pin_readback` | Each output pin's real pad level at 1 and 0 | ✓ all listed pins toggle |
 | `asm_10_pin_hunt` | Square wave on every pin in `pins.inc` | diagnostic (used to rule out pin-map errors) |
 | `asm_11_addressable_leds` | 24 x WS2813B on GPIO7, bit-banged | ✓ red, green, blue, running white dot |
+| `asm_12_actors` | The actor runtime from assembly: spawn, call (context switch), cast, wait_for_exit (which ends the program, so the registry and kill_abnormal code after it in the source does not run) | ✓ matches the expected lines in its source, status 0 (2026-09-28, again with two cores) |
 | `silica_00_return42` | Prologue/epilogue, int64 constant, exit status | ✓ 42 |
 | `silica_01_arith` | let bindings, int64 mul/div/rem (libgcc `__divdi3`) | ✓ 100 |
 | `silica_02_calls` | User calls, arguments in `a10`–`a15`, results | ✓ 85 |

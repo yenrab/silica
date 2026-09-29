@@ -1,0 +1,39 @@
+// Two cores (spec §15.1.2 Actor Pinning Policy, §22.10 migrate_actor): an actor pinned to core 1
+// answers calls that cross cores in both directions -- from main (core 0) and from an actor held on
+// core 0 that relays through it -- and every reply is read back on core 0. On the ESP32-S3 core 1 is
+// the APP cpu, which ran no emitted code before 2026-09-28: a runtime that never starts core 1 leaves
+// every call to `w` unanswered (the trial hangs), and one that lets the two cores share a register
+// home or the auxiliary stack pointer corrupts the relay's frame while `w` runs. The worker keeps
+// the running total of the messages it has seen, so the third answer proves its state survived
+// the switches: 21 (2*10+0, +1), 210 (2*100+10), 121 (2*5+110, +1).
+
+fn worker(msg: int64, total: int64) -> (:reply, int64, int64) {
+    (:reply, msg * 2 + total, total + msg)
+}
+
+fn relay(msg: int64, w: actor_ref) -> (:reply, int64, actor_ref) {
+    sequence proc[concurrency]
+        r: int64 <- call(w, msg impl ActorMessage {})
+    produces
+        pure (:reply, r + 1, w)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        w: actor_ref <- spawn(0, worker, stack_policy(0, :keep_last_message), 1);
+        r: actor_ref <- spawn(w, relay, stack_policy(0, :keep_last_message));
+        _: atom <- migrate_actor(r, 0);
+        a: int64 <- call(r, 10 impl ActorMessage {});
+        print_int64(a);
+        println("");
+        b: int64 <- call(w, 100 impl ActorMessage {});
+        print_int64(b);
+        println("");
+        c: int64 <- call(r, 5 impl ActorMessage {});
+        print_int64(c);
+        println("")
+    produces
+        pure 0
+    end
+}

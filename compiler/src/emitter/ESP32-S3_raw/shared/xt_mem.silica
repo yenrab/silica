@@ -25,7 +25,8 @@
 // Bases:
 //   X29  -> the frame: [X29, #-N] is a1 + SFP - N, accessed through the XL*/XS* macros the module
 //           prelude defines, because SFP is only known after the body (range chosen by the assembler)
-//   SP   -> the auxiliary data stack (silica_rt_vsp); pre-/post-index update the global pointer
+//   SP   -> the auxiliary data stack: its pointer is the word at THREADPTR + 112 (xt_vr vr_vsp_off), one
+//           per core; pre-/post-index update that word
 //   other X VRs -> the VR's low word
 // Width comes from the register: X/D 8 bytes (two words), W/S 4, H 2; the byte/half helpers are separate.
 //
@@ -225,12 +226,13 @@ fn base_reg(base: string) -> string {
     xt_vr@vr_lo_reg(base, "a9")
 }
 
-// SP pre-index: silica_rt_vsp += off before the access.
+// SP pre-index: the core's auxiliary stack pointer += off before the access.
 fn vsp_adjust(off: int64) -> string {
+    vsp: string <- xt_vr@xt_itos(xt_vr@vr_vsp_off());
     case off == 0 of {
         true -> "";
-        // a8 is add_imm_into's temp for large offsets, so the pointer's address is reloaded to store.
-        false -> concat(concat(xt_vr@xt_ins("movi", "a8, silica_rt_vsp"), xt_vr@xt_ins("l32i", "a9, a8, 0")), concat(add_imm_into("a9", "a9", off), concat(xt_vr@xt_ins("movi", "a8, silica_rt_vsp"), xt_vr@xt_ins("s32i", "a9, a8, 0"))))
+        // a8 is add_imm_into's temp for large offsets, so the block's base is reloaded to store.
+        false -> concat(concat(xt_vr@tp_load("a8"), xt_vr@xt_ins("l32i", concat("a9, a8, ", vsp))), concat(add_imm_into("a9", "a9", off), concat(xt_vr@tp_load("a8"), xt_vr@xt_ins("s32i", concat("a9, a8, ", vsp)))))
     }
 }
 

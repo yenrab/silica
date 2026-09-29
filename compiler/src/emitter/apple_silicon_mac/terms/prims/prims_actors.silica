@@ -207,7 +207,7 @@ fn is_actor_prim(name: string) -> bool {
         or name == "supervisor_get_child_id" or name == "supervisor_get_child_agent_type" or name == "supervisor_get_child_restart"
         or name == "pin_actor_to_core" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
         or name == "pin_actor_realtime" or name == "remove_actor" or name == "register_actor" or name == "get_registry_actor" or name == "get_pid_registry" or name == "pin_actor_to_numa_node"
-        or name == "unpin_actor" or name == "set_actor_priority"
+        or name == "unpin_actor" or name == "set_actor_priority" or name == "set_scheduler_policy"
         or name == "get_cpu_topology" or name == "get_efficiency_cores" or name == "get_performance_cores"
         or name == "get_core_capabilities"
         or name == "get_actor_memory_usage"
@@ -230,7 +230,7 @@ fn actor_prim_is_unary(name: string) -> bool {
         or name == "failure_reason_tag" or name == "failure_reason_atom" or name == "failure_agent_type" or name == "failure_release"
         or name == "start_child" or name == "kill_abnormal" or name == "child_table_row_ref"
         or name == "supervisor_which_children" or name == "supervisor_count_children"
-        or name == "register_failure_reporter"
+        or name == "register_failure_reporter" or name == "set_scheduler_policy"
 }
 
 fn actor_prim_is_ternary(name: string) -> bool {
@@ -521,6 +521,15 @@ fn release_algorithm_index(lexeme: string) -> int64 {
     }
 }
 
+// set_scheduler_policy(policy) -> :ok. A hosted runtime has no ready queue of its own to order
+// (actors are threads the OS schedules), so the per-core dispatch-order policy of the ESP32-S3_raw
+// runtime has nothing to select here: the call is accepted and answers :ok (index 2 of the fixed atom
+// prefix, atoms/atom_table.silica), as pin_actor_to_efficiency_core is a no-op on a board whose cores
+// are alike. The argument (X9) is not read.
+fn emit_set_scheduler_policy_noop(dest: string) -> string {
+    concat(concat("    MOV ", gpr_x_view(dest)), ", #2\n")
+}
+
 fn emit_stack_policy(dest: string, term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> string {
     alg: int64 <- release_algorithm_index(sir_term_root_node(sir_term_at(term, sir_term_root_node(term).right_expr)).value);
     pack: string <- concat(concat("    ADD X9, X9, #15\n    AND X9, X9, #0xfffffffffffffff0\n    MOV X10, #", atom_table@int64_to_decimal_string(alg)), "\n    ORR X9, X9, X10\n");
@@ -691,6 +700,7 @@ fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: str
         "pin_actor_to_numa_node" -> emit_runtime_binary(dest, term);
         "unpin_actor" -> emit_runtime_unary(dest, term);
         "set_actor_priority" -> emit_runtime_binary(dest, term);
+        "set_scheduler_policy" -> emit_set_scheduler_policy_noop(dest);
         "get_actor_memory_usage" -> emit_runtime_unary(dest, term);
         "migrate_actor" -> emit_runtime_binary(dest, term);
         "move" -> emit_runtime_ternary(dest, term);

@@ -76,6 +76,12 @@ SECTIONS
   .dram0.rodata (_silica_iram_end - _silica_iram_dram_offset) :
   {
     _silica_rodata_start = ABSOLUTE(.);
+    /* {function address, name} records the emitter writes for every function (the actor failure
+       report names the failing behaviour with them); kept before the general pattern below. */
+    . = ALIGN(4);
+    _silica_fnames_start = ABSOLUTE(.);
+    KEEP(*(.rodata.silica_fnames))
+    _silica_fnames_end = ABSOLUTE(.);
     *(.rodata .rodata.* .srodata .srodata.*)
     . = ALIGN(8);
   } > dram
