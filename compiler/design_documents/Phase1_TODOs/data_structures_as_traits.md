@@ -840,5 +840,5 @@ The CSR/dense decision is closed:
 | [silica-specification.md](../silica-specification.md)                                  | §8.2.4 standard generated structures              |
 | [data_structure_designs/persistent_binary_tree.md](data_structure_designs/persistent_binary_tree.md) | BinaryTree core, zipper, sharing, validation |
 | [data_structure_designs/binary_tree_trait.md](data_structure_designs/binary_tree_trait.md) | Public BinaryTree trait/module contract |
-| [bootstrap_retirement_and_self_host_plan.md](bootstrap_retirement_and_self_host_plan.md) | Downstream compiler AST adoption; not BinaryTree acceptance |
+| [bootstrap_retirement_and_self_host_plan.md](bootstrap_retirement_and_self_host_plan.md) | The compiler's emitter pools on `wbt_map`; further compiler adoption withdrawn 2026-09-29 |
 | [data_structures_implementation_command.md](data_structures_implementation_command.md) | Acceptance trials and phase order                 |

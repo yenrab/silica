@@ -512,4 +512,4 @@ The result is a three-node tree. `left` and `right` remain independently usable.
 - a public named zipper type; or
 - compiler-AST-specific node-kind or arity validation.
 
-Compiler-wide AST adoption is a downstream consumer migration governed by `bootstrap_retirement_and_self_host_plan.md`. It is not an acceptance prerequisite for the standard `BinaryTree`.
+The compiler's own syntax tree is not a consumer of `BinaryTree`: that migration was withdrawn on 2026-09-29.

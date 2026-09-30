@@ -104,7 +104,7 @@ Their trait declarations may be parsed earlier as compiler fixtures, but their c
 
 Sections §6–§41 define one direct implementation sequence. Do not begin section *n* until every predecessor §*m* (*m* < *n*) has passed its exit gate.
 
-Bootstrap compiler retirement (§11–§13) runs after the minimal WBT public backends (§9–§10) and before the remaining representation cores (§15 onward). This is a **safe dual-path transition**: `silica-bootstrap-compiler` and the current compiler tree `compiler/src/` stay **untouched** as the production default until cutover; self-host edits land only in a parallel tree (`src/`). That parallel tree becomes alias-free and BST-free, then builds via `build-selfhost`, then fixed-point integrate gates promotion and bootstrap retirement. Detailed step lists for §11–§13 and optional §38 live in [bootstrap_retirement_and_self_host_plan.md](bootstrap_retirement_and_self_host_plan.md).
+Bootstrap compiler retirement (§11–§13) runs after the minimal WBT public backends (§9–§10) and before the remaining representation cores (§15 onward). This is a **safe dual-path transition**: `silica-bootstrap-compiler` and the current compiler tree `compiler/src/` stay **untouched** as the production default until cutover; self-host edits land only in a parallel tree (`src/`). That parallel tree becomes alias-free and BST-free, then builds via `build-selfhost`, then fixed-point integrate gates promotion and bootstrap retirement. Detailed step lists for §11–§13 live in [bootstrap_retirement_and_self_host_plan.md](bootstrap_retirement_and_self_host_plan.md).
 
 ## 4. Dependency graph
 
@@ -1459,7 +1459,7 @@ This is the **first** self-host source change after the parallel tree exists. Ke
 | ---- | ---- | ------------ |
 | **A** | Custom `ListX` cons-cell structs (~36) | `List[<inline element>, mem(normal)]`; `[]` / prepend / list patterns |
 | **B** | Non-recursive records (`SourceLocation`, `Token`, `Param`, `SymbolEntry`, tables, results, `token_kinds()` payload, …) | Inline `{ field: Type, … }` types; `{ … }` values; factory fns instead of `export TypeName/0` |
-| **C** | Recursive trees `Expr`, `SIRTerm` (and any other self-typed nodes) | Seed-legal encoding: **index-arena** `{ nodes: List[<inline node>, mem(normal)], root: int64 }` with `-1` = none (replaces cyclic `kind=-1` dummies). Long-term Phase 7 may replace the arena with `BinaryTree[<inline payload>, mem(normal)]` without reopening named structs. |
+| **C** | Recursive trees `Expr`, `SIRTerm` (and any other self-typed nodes) | Seed-legal encoding: **index-arena** `{ nodes: List[<inline node>, mem(normal)], root: int64 }` with `-1` = none (replaces cyclic `kind=-1` dummies). |
 | **D** | Residual class-A W-ids | Keyword binding renames (`required`/`provided` as idents), comment/`sequence` token quirks, E3009 residuals, string/ABI W-ids as needed for batch green |
 
 **Grep gates before claiming §12:**
@@ -1484,21 +1484,20 @@ This is the **first** self-host source change after the parallel tree exists. Ke
 
 **§12 open:** none for the exit gate. Housekeeping carried into §13: delete the orphan `src/btree_set_nodeid.silica` (excluded from the build by `topo_silica_config.sh`), reclassify the residual workaround comments, and either wire or delete `HOST_COMPILER` in `src/Makefile`.
 
-## 13. Remaining keyed lookups + cutover / fixed-point / bootstrap retirement
+## 13. Cutover / fixed-point / bootstrap retirement
 
-**Authority:** [bootstrap_retirement_and_self_host_plan.md](bootstrap_retirement_and_self_host_plan.md) Phases 4 and 6 (Phase 5.1 already required by §11 on the parallel tree).
+**Authority:** [bootstrap_retirement_and_self_host_plan.md](bootstrap_retirement_and_self_host_plan.md) Phase 6 (Phase 5.1 already required by §11 on the parallel tree). The keyed-lookup migration this section once carried (former Phase 4) was withdrawn 2026-09-29: the compiler keeps its lists.
 
 **Dependencies:** §12 exit gate.
 
 **Scope:**
 
-- **Phase 4 (in `src/` only):** replace linear-scan association lists (symbol/effect tables, module/FFI keyed lookups) with WBT-backed maps; keep cons-cell lists where order and immutability are the model. Still **no `type` aliases**.
 - **Phase 6:** self-host integrate suite (`trials/self_host_addition/`), fixed-point (`host_n` compiles `host_{n+1}` from `src/`).
 - **Cutover (only after fixed-point green):** promote `src/` over production `src/` (or swap trees per authority plan), make self-host the default build, then retire `silica-bootstrap-compiler` from the default path. Until that moment the freeze in §11 still holds.
 
 **§13 exit gate:** Phase 6.1 fixed-point integrate passes on the parallel tree; `make integrate` includes the self-host trial; after cutover, production compiler source has zero `type` aliases, no `bst` dependency, and builds/maintains itself without `silica-bootstrap-compiler` on the default path. Blocks §14 onward until this gate passes.
 
-**§13 status:** In progress (2026-09-08). Self-host integrate is de facto in place (all trials run on the selfhost binary), but: Phase 4 keyed-lookup migration is not started (symbol, effect, module and FFI environments are still `List[<inline record>, mem(normal)]`); there is no `trials/self_host_addition/`; the selfhost has not been shown to compile 100 % of `src/` (`emitter_core.silica` outstanding; `list_nth` landed in both trees to break its memory wall, confirming build pending); no generation-2 build, differential or fixpoint exists; cutover and bootstrap removal not done. The step order is the seven-step ladder recorded in the bootstrap-retirement plan's status snapshot (liveness → memory → probe harness → per-unit sweep → gen 2 [pause] → differential → fixpoint). Also on this path: `src/fix_seed_emission.py` must be retired before any fixpoint claim, and defect A5 in `../HIGH_PRIORITY_compiler_defects_and_diagnostic_gaps_2026-09-08.md` (provided trait methods across the exit-75 restart) affects the compiler's own build.
+**§13 status:** In progress (2026-09-08). Self-host integrate is de facto in place (all trials run on the selfhost binary), but: there is no `trials/self_host_addition/`; the selfhost has not been shown to compile 100 % of `src/` (`emitter_core.silica` outstanding; `list_nth` landed in both trees to break its memory wall, confirming build pending); no generation-2 build, differential or fixpoint exists; cutover and bootstrap removal not done. The step order is the seven-step ladder recorded in the bootstrap-retirement plan's status snapshot (liveness → memory → probe harness → per-unit sweep → gen 2 [pause] → differential → fixpoint). Also on this path: `src/fix_seed_emission.py` must be retired before any fixpoint claim, and defect A5 in `../HIGH_PRIORITY_compiler_defects_and_diagnostic_gaps_2026-09-08.md` (provided trait methods across the exit-75 restart) affects the compiler's own build.
 
 ## 14. WBT join/split/concat reopen (from §8A.9)
 
@@ -2135,18 +2134,10 @@ Phase 1 is complete only when:
 - all invariants and compatibility failures are covered;
 - no source, build entry, documentation link, or trial depends on the removed implementation;
 - the requirements-to-trials ledger has no unexplained gaps;
-- standard BinaryTree is accepted independently of whether the compiler-wide parser AST migration has begun.
-## 38. Compiler parser AST → BinaryTree (optional)
 
-**Authority:** [bootstrap_retirement_and_self_host_plan.md](bootstrap_retirement_and_self_host_plan.md) Phase 7.
+## 38. Compiler parser AST → BinaryTree (withdrawn)
 
-**Dependencies:** §20; §13 (bootstrap removal gate).
-
-**Scope:** Migrate parser `Expr` and all compiler consumers to standard `BinaryTree`. Not a Phase 1 completion gate.
-
-**§38 exit gate:** compiler-wide AST migration trials pass per the authority plan.
-
-**§38 status:** Planned — blocked on §20 and §13.
+Withdrawn 2026-09-29. The compiler's `Expr` stays an index arena; no migration to `BinaryTree` is planned. The number is kept so later references stay valid.
 
 ## 39. Concrete execution queue
 
@@ -2159,7 +2150,7 @@ Sections §6–§37 are the authoritative serial queue. Complete each section in
 5. `wbt_set` and `OrderedSet` (§10). **(complete)**
 6. Self-host source prerequisites on `src/` only: crafted BST → WBT, then alias ban (§11). **(complete)**
 7. Additive build-selfhost / ABI hardening on the parallel tree (§12). **(exit gate met 2026-09-02; the selfhost binary runs all trials; bootstrap now builds only the seed)**
-8. Remaining keyed lookups + fixed-point + cutover / bootstrap retirement (§13). **(in progress — selfhost self-compile of `emitter_core.silica`, then gen 2 → differential → fixpoint; Phase 4 lookups not started)**
+8. Fixed-point + cutover / bootstrap retirement (§13). **(in progress — selfhost self-compile of `emitter_core.silica`, then gen 2 → differential → fixpoint)**
 9. Join/split reopen checkpoint (§14).
 10. Skew binary random-access-list core (§15). **(implemented 2026-09-08 ahead of §13 at Lee's direction; see §15 status)**
 11. Brodal–Okasaki core (§16).
@@ -2180,7 +2171,6 @@ Sections §6–§37 are the authoritative serial queue. Complete each section in
 26. Full integration and hardening (§31–§37).
 27. Phase 1 complete at §37 exit gate.
 
-Optional after §20: compiler parser AST → BinaryTree (§38); not a Phase 1 gate.
 
 ## 40. Definition of done by structure
 

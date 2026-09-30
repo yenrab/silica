@@ -61,7 +61,7 @@ All Silica snippets are normative as interface shape but may use `TypeName` plac
 | Corrected Adams-family WBT | [`weight_balanced_tree.md`](weight_balanced_tree.md) | set, map, search tree, live graph, dense/CSR indexes |
 | Skew binary random-access list | [`skew_binary_random_access_list.md`](skew_binary_random_access_list.md) | dense graph, rose-tree children |
 | Brodal–Okasaki queue | [`brodal_okasaki_queue.md`](brodal_okasaki_queue.md) | heap, priority queue |
-| Persistent fixed-arity binary tree | [`persistent_binary_tree.md`](persistent_binary_tree.md) | `BinaryTree`, downstream compiler AST bridge |
+| Persistent fixed-arity binary tree | [`persistent_binary_tree.md`](persistent_binary_tree.md) | `BinaryTree` |
 | Live WBT graph | [`live_wbt_graph.md`](live_wbt_graph.md) | directed, undirected, weighted graphs |
 | CSR graph snapshot | [`csr_graph_snapshot.md`](csr_graph_snapshot.md) | frozen directed/undirected/weighted graphs |
 | Dense matrix graph | [`dense_matrix_graph.md`](dense_matrix_graph.md) | fixed-vertex directed/undirected/weighted graphs |

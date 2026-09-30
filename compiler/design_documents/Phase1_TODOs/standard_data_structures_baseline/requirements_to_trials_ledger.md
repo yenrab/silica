@@ -423,7 +423,7 @@ Genericity: `ral_generic_payloads` (string and tuple items through build/head/lo
 | 16 | Persistence and memory effects | T | `binary_tree/` → `binary_tree_persistence` (planned) |
 | 17 | Complexity | I | Design §17; operation counters in `binary_tree_complexity_observations` (planned) |
 | 18 | Example | T | `binary_tree/` → `binary_tree_string_example` (planned) |
-| 19 | Exclusions; AST migration is downstream | O | Design §19 exclusion list; bootstrap plan Phase 7 |
+| 19 | Exclusions | O | Design §19 exclusion list |
 
 ---
 
