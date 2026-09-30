@@ -20,7 +20,7 @@
 
 This specification defines the rules for outbound calls from Silica to external libraries through C-compatible wrapper functions.
 
-This specification applies only to calls from Silica to C libraries and to other language libraries that expose a C-compatible interface. Underlying external libraries may be provided as dynamically linked shared libraries or as statically linked archive/object libraries. Calls from C or other languages into Silica are out of scope and are specified in a separate inbound-interop specification.
+This specification applies only to calls from Silica to C libraries and to other language libraries that expose a C-compatible interface. Underlying external libraries may be provided as dynamically linked shared libraries or as statically linked archive/object libraries. Calls from C or other languages into Silica are not part of the language and are not planned; there is no inbound-interop specification.
 
 Silica does not call arbitrary external APIs directly. Every external operation callable from Silica must be exposed through a Silica-compatible C wrapper function. The wrapper function adapts the original external API into a stable, explicit ABI boundary that the Silica compiler can type-check and effect-check. In the initial implementation, the toolchain validates wrapper **archive presence** when emitting the link manifest at compile time and validates wrapper **symbol presence** at link time only; it does not parse C headers.
 
@@ -876,7 +876,7 @@ int64_t silica_log_i64(const uint8_t *message_ptr, uint64_t message_len, int64_t
 
 This specification does not define callbacks, function pointers, trampolines, exported Silica functions, or any mechanism for external code to call into Silica.
 
-Calls from C or from another language into Silica are out of scope and must be specified in a separate document.
+Calls from C or from another language into Silica are not part of the language and are not planned.
 
 ---
 
@@ -2216,7 +2216,7 @@ The following decisions are fixed by this specification version:
 | Region values from FFI result casts | Re-creation builds the value in a fresh region owned by the caller (§7.7). That region, not the worker's, becomes actor state. |
 | Foreign call scheduling | Architecturally non-blocking via cast-only client and FFI worker actors; no `blocking` sidecar field. |
 
-Questions about external languages calling into Silica are intentionally excluded from this specification and belong in a separate inbound-interop specification.
+External languages calling into Silica is not a planned capability, so no inbound-interop specification exists or is expected.
 
 ---
 

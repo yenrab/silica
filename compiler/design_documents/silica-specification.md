@@ -15230,15 +15230,14 @@ Outbound calls to C-compatible wrapper libraries are specified in [silica_ffi_wr
 - Two-layer string marshaling (Silica `string` in adapters; pointer-plus-length at the raw ABI boundary)
 - Prebuilt wrapper static libraries under `dangerous_exposure_source/`
 
-Compiler rollout is tracked in [ffi_wrapper_implementation_plan.md](ffi_wrapper_implementation_plan.md). Inbound interop (C calling into Silica) remains out of scope.
+Compiler rollout is tracked in [ffi_wrapper_implementation_plan.md](ffi_wrapper_implementation_plan.md). Inbound interop (C or another language calling into Silica) is not part of the language and is not planned: Silica programs call out through Fifi, and nothing outside calls in.
 
 Crash/fault handling for guarded FFI is platform-specific. For Apple Silicon and other macOS-hosted execution, see [macos_crash_handling_for_silica.md](macos_crash_handling_for_silica.md). That document explains why same-process recovery from arbitrary C faults is not guaranteed, and how a recognized guarded-FFI fault may be converted into actor failure only after control returns to a safe runtime boundary. Equivalent notes for Linux, Windows, bare-metal, and other runtimes will be added as Silica expands to support those platforms.
 
-#### 26.3.1 C Interoperability (Future — inbound and dynamic linking)
+#### 26.3.1 C Interoperability (Future — dynamic linking)
 
 The following remain future work beyond [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md):
 
-- **Inbound callbacks**: C or other languages calling into Silica
 - **Dynamic linking**: Runtime compilation and loading of wrapper sources (spec §14.3)
 - **Error Propagation**: Additional standardized C error-code to Silica result conventions at the language level
 
