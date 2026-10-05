@@ -1,0 +1,29 @@
+// A float64 message cast to a behaviour. Expected: the behaviour prints "float64 got 2.5".
+// Observed (2026-10-02, every host emitter): the program does not assemble. The cast prim stages
+// the message word from the let's D register with an integer MOV (`MOV X10, D8`, not an AArch64
+// instruction), and the runtime hands every message to the behaviour in X0 (dispatch:
+// `ldr x0, [x20, #8]`) while a float64 first parameter is read from D0 (AAPCS), so even an
+// assembled program would print the wrong value. Topic suite: actors_addition (next to
+// behaviour_uint32_message_survives_call and its narrow, atom and boolean siblings).
+
+fn show(v: float64, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        _: atom <- print_string("float64 got ");
+        _: atom <- print_float64(v);
+        println("");
+        println("done")
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        w: actor_ref <- spawn(0, show, stack_policy(0, :keep_last_message));
+        m: float64 <- 2.5;
+        _: boolean <- cast(w, m impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

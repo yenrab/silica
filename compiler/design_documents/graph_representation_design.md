@@ -150,7 +150,7 @@ Complexity: **O(V + E)**. Prior WBT graph unchanged.
 
 ```silica
 {
-    region: region(R, S),
+    r: region(R, S),
     node_count: int64,
     edge_count: int64,
     node_ids: buf(R, S, int64, N),

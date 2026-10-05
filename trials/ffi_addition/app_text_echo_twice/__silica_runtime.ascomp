@@ -970,6 +970,35 @@ LBB3dr_not_found:
 	ret
 	.cfi_endproc
                                         ; -- End function
+	.globl	_silica_rt_actor_cast_device_registered ; -- Begin function silica_rt_actor_cast_device_registered
+	.p2align	2
+_silica_rt_actor_cast_device_registered:       ; @silica_rt_actor_cast_device_registered
+	.cfi_startproc
+; X0=atom registry key, X1=message. Resolve through the device PID registry, then tail-call actor_cast.
+	mov	x11, x0
+	mov	x12, x1
+	adrp	x8, _silica_device_pid_registry_ref@PAGE
+	ldr	x8, [x8, _silica_device_pid_registry_ref@PAGEOFF]
+	cbz	x8, LBB3dv_not_found
+	ldr	x9, [x8]
+	cbz	x9, LBB3dv_not_found
+	cmp	x11, #0
+	b.lt	LBB3dv_not_found
+	cmp	x11, #240
+	b.ge	LBB3dv_not_found
+	ldr	x10, [x9, x11, lsl #3]
+	cmp	x10, #1
+	b.ne	LBB3dv_not_found
+	add	x9, x9, #1920
+	ldr	x0, [x9, x11, lsl #3]
+	cbz	x0, LBB3dv_not_found
+	mov	x1, x12
+	b	_silica_rt_actor_cast
+LBB3dv_not_found:
+	mov	x0, #0
+	ret
+	.cfi_endproc
+                                        ; -- End function
 	.globl	_silica_rt_actor_self           ; -- Begin function silica_rt_actor_self
 	.p2align	2
 _silica_rt_actor_self:                  ; @silica_rt_actor_self
@@ -1031,20 +1060,23 @@ _silica_rt_get_cpu_topology:
 	b.lt	L_topo_after_cores
 L_topo_core_loop:
 	mov	w10, w9
-	mov	x0, #32
+	mov	x0, #40
 	bl	_malloc
 	cbz	x0, L_topo_fail_zero
 	mov	x23, x0
+	movz	x11, #1, lsl #16
+	movk	x11, #1
+	str	x11, [x23]
 	uxtw	x10, w10
-	str	x10, [x23]
+	str	x10, [x23, #8]
 	cmp	w10, w19
 	mov	w11, #1
 	mov	w12, #0
 	csel	w11, w11, w12, lt
 	uxtw	x11, w11
-	str	x11, [x23, #8]
-	str	x26, [x23, #16]
-	str	xzr, [x23, #24]
+	str	x11, [x23, #16]
+	str	x26, [x23, #24]
+	str	xzr, [x23, #32]
 	mov	x0, #16
 	bl	_malloc
 	cbz	x0, L_topo_fail_zero
@@ -1066,15 +1098,18 @@ L_topo_after_cores:
 	bl	_silica_rt_sysctl_u64
 	cbz	x0, L_topo_fail_zero
 	mov	x27, x0
-	mov	x0, #24
+	mov	x0, #32
 	bl	_malloc
 	cbz	x0, L_topo_fail_zero
 ; memory_range: one NUMA node (Apple Silicon has no multi-domain sysctl matrix). start=0 = domain origin in this layout;
 ; macOS sysctl does not expose physical DRAM base per node — size is real (hw.memsize bytes). latency=0 = local self-
 ; distance (ACPI SLIT-style relative units: same node as itself), not an OS picoseconds value.
-	str	xzr, [x0]
-	str	x27, [x0, #8]
-	str	xzr, [x0, #16]
+	movz	x9, #1, lsl #16
+	movk	x9, #4
+	str	x9, [x0]
+	str	xzr, [x0, #8]
+	str	x27, [x0, #16]
+	str	xzr, [x0, #24]
 	mov	x23, x0
 	mov	x0, #16
 	bl	_malloc
@@ -1082,12 +1117,15 @@ L_topo_after_cores:
 	str	x23, [x0]
 	str	xzr, [x0, #8]
 	mov	x23, x0
-	mov	x0, #24
+	mov	x0, #32
 	bl	_malloc
 	cbz	x0, L_topo_fail_zero
-	str	xzr, [x0]
-	str	x28, [x0, #8]
-	str	x23, [x0, #16]
+	movz	x9, #1, lsl #16
+	movk	x9, #3
+	str	x9, [x0]
+	str	xzr, [x0, #8]
+	str	x28, [x0, #16]
+	str	x23, [x0, #24]
 	mov	x23, x0
 	mov	x0, #16
 	bl	_malloc
@@ -1101,23 +1139,29 @@ L_topo_after_cores:
 	mov	x3, x28
 	bl	_silica_rt_apple_build_cache_levels
 	mov	x25, x0
-	mov	x0, #24
+	mov	x0, #32
 	bl	_malloc
 	cbz	x0, L_topo_fail_zero
-	str	x22, [x0]
-	str	x26, [x0, #8]
-	str	x25, [x0, #16]
+	movz	x9, #1, lsl #16
+	movk	x9, #2
+	str	x9, [x0]
+	str	x22, [x0, #8]
+	str	x26, [x0, #16]
+	str	x25, [x0, #24]
 	b	L_topo_epilogue
 L_topo_sysctl_fail:
 	add	sp, sp, #16
 L_topo_fail_zero:
-; OOM / sysctl / zero-core failure: still return a non-NULL 24-byte record (cores, numa_nodes, cache_hierarchy
+; OOM / sysctl / zero-core failure: still return a non-NULL 32-byte record (shape word; cores, numa_nodes, cache_hierarchy
 ; pointers all nil) so Silica callers can field-load and length(empty) without SIGSEGV. If malloc fails, return NULL.
-	mov	x0, #24
+	mov	x0, #32
 	bl	_malloc
 	cbz	x0, L_topo_null_ret
-	stp	xzr, xzr, [x0]
-	str	xzr, [x0, #16]
+	movz	x9, #1, lsl #16
+	movk	x9, #2
+	str	x9, [x0]
+	str	xzr, [x0, #8]
+	stp	xzr, xzr, [x0, #16]
 	b	L_topo_epilogue
 L_topo_null_ret:
 	mov	x0, xzr
@@ -1173,21 +1217,24 @@ _silica_rt_get_core_capabilities:
 	uxtw	x8, w21
 	cmp	x28, x8
 	b.hs	L_cap_emit_sentinel
-	mov	x0, #32
+	mov	x0, #40
 	bl	_malloc
 	cbz	x0, L_cap_emit_sentinel
 	mov	x23, x0
-	str	x28, [x23]
+	movz	x9, #1, lsl #16
+	movk	x9, #1
+	str	x9, [x23]
+	str	x28, [x23, #8]
 	uxtw	x9, w19
 	cmp	x28, x9
 	mov	w11, #1
 	mov	w12, #0
 	csel	w11, w11, w12, lt
 	uxtw	x11, w11
-	str	x11, [x23, #8]
+	str	x11, [x23, #16]
 	bl	_silica_rt_apple_hw_optional_caps_list
-	str	x0, [x23, #16]
-	str	xzr, [x23, #24]
+	str	x0, [x23, #24]
+	str	xzr, [x23, #32]
 	mov	x0, x23
 	b	L_cap_epilogue
 L_cap_sysctl_fail:
@@ -1195,14 +1242,17 @@ L_cap_sysctl_fail:
 	b	L_cap_emit_sentinel
 ; Failure / OOM: heap core_info with id=-1 (sentinel); core_type=0 (:efficiency); caps/freq zero — distinguish from valid id>=0.
 L_cap_emit_sentinel:
-	mov	x0, #32
+	mov	x0, #40
 	bl	_malloc
 	cbz	x0, L_cap_sentinel_oom
+	movz	x9, #1, lsl #16
+	movk	x9, #1
+	str	x9, [x0]
 	mvn	x1, xzr
-	str	x1, [x0]
-	str	xzr, [x0, #8]
+	str	x1, [x0, #8]
 	str	xzr, [x0, #16]
 	str	xzr, [x0, #24]
+	str	xzr, [x0, #32]
 	b	L_cap_epilogue
 L_cap_sentinel_oom:
 	mov	x0, xzr
@@ -1511,6 +1561,41 @@ _silica_rt_register_dangerous_actor_named:        ; @silica_rt_register_dangerou
 	add	x9, x9, #1920
 	str	x19, [x9, x20, lsl #3]
 Lreg_danger_named_done:
+	mov	x0, #0
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_register_device_actor_named ; -- Begin function silica_rt_register_device_actor_named
+	.p2align	2
+_silica_rt_register_device_actor_named:        ; @silica_rt_register_device_actor_named
+	.cfi_startproc
+; X0=actor_ref, X1=atom registry key. Insert directly into the device PID registry table.
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x0
+	mov	x20, x1
+	adrp	x8, _silica_device_pid_registry_ref@PAGE
+	ldr	x8, [x8, _silica_device_pid_registry_ref@PAGEOFF]
+	cbz	x8, Lreg_device_named_done
+	ldr	x9, [x8]
+	cbz	x9, Lreg_device_named_done
+	cmp	x20, #0
+	b.lt	Lreg_device_named_done
+	cmp	x20, #240
+	b.ge	Lreg_device_named_done
+	mov	x10, #1
+	str	x10, [x9, x20, lsl #3]
+	add	x9, x9, #1920
+	str	x19, [x9, x20, lsl #3]
+Lreg_device_named_done:
 	mov	x0, #0
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
@@ -2141,7 +2226,14 @@ L_bc_d_skip_el1:
 	bl	L_bc_push
 	mov	x22, x0
 L_bc_done:
-	mov	x0, x22
+	mov	x0, #16
+	bl	_malloc
+	cbz	x0, L_bc_wrapped
+	movz	x9, #1, lsl #16
+	movk	x9, #5
+	str	x9, [x0]
+	str	x22, [x0, #8]
+L_bc_wrapped:
 	add	sp, sp, #48
 	ldp	x27, x28, [sp, #80]
 	ldp	x25, x26, [sp, #64]
@@ -2159,14 +2251,17 @@ L_bc_push:
 	mov	x19, x22
 	mov	x20, x1
 	mov	x21, x2
-	mov	x0, #40
+	mov	x0, #48
 	bl	_malloc
 	cbz	x0, L_bcp_fail
-	str	x20, [x0]
-	str	x21, [x0, #8]
-	str	x3, [x0, #16]
-	str	x4, [x0, #24]
-	str	x5, [x0, #32]
+	movz	x9, #1, lsl #16
+	movk	x9, #6
+	str	x9, [x0]
+	str	x20, [x0, #8]
+	str	x21, [x0, #16]
+	str	x3, [x0, #24]
+	str	x4, [x0, #32]
+	str	x5, [x0, #40]
 	mov	x1, x0
 	mov	x2, x19
 	mov	x0, #16
@@ -2292,16 +2387,39 @@ _silica_rt_actor_dealloc_region:        ; release every arena block of an actor
 	stp	x19, x20, [sp, #16]
 	str	x21, [sp, #32]
 	mov	x20, x0
+	str	xzr, [x29, #40]
 	ldr	x19, [x20, #160]
 LBBdr_loop:
 	cbz	x19, LBBdr_done
 	ldr	x21, [x19]
 	ldr	x1, [x19, #8]
+	ldr	x9, [x29, #40]
+	add	x9, x9, x1
+	sub	x9, x9, #16
+	str	x9, [x29, #40]
 	mov	x0, x19
 	bl	_munmap
 	mov	x19, x21
 	b	LBBdr_loop
 LBBdr_done:
+; the newest block's untouched tail was never handed out
+	ldr	x9, [x20, #176]
+	cbz	x9, LBBdr_acc
+	ldr	x10, [x20, #184]
+	sub	x10, x10, x9
+	ldr	x9, [x29, #40]
+	sub	x9, x9, x10
+	str	x9, [x29, #40]
+LBBdr_acc:
+	ldr	x9, [x29, #40]
+	neg	x9, x9
+	adrp	x11, _silica_rt_heap_in_use@PAGE
+	add	x11, x11, _silica_rt_heap_in_use@PAGEOFF
+LBBdr_acc_loop:
+	ldaxr	x12, [x11]
+	add	x12, x12, x9
+	stlxr	w13, x12, [x11]
+	cbnz	w13, LBBdr_acc_loop
 	str	xzr, [x20, #160]
 	str	xzr, [x20, #168]
 	str	xzr, [x20, #176]
@@ -2409,13 +2527,32 @@ _silica_rt_region_alloc:                ; @silica_rt_region_alloc
 	cmp	x10, x9
 	b.hi	LBBra_grow
 	str	x10, [x20, #176]
+	adrp	x11, _silica_rt_heap_in_use@PAGE
+	add	x11, x11, _silica_rt_heap_in_use@PAGEOFF
+LBBra_acc_bump:
+	ldaxr	x12, [x11]
+	add	x12, x12, x19
+	stlxr	w13, x12, [x11]
+	cbnz	w13, LBBra_acc_bump
 	mov	x0, x8
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
 	ret
 LBBra_grow:
 ; New block: 64 MB, or the request plus its header when larger. Anonymous RW mappings cost
-; nothing until touched, so an idle actor still holds no arena memory.
+; nothing until touched, so an idle actor still holds no arena memory. The old block's tail is
+; wasted from here on, so the in-use count takes it now and dealloc_region subtracts it.
+	cbz	x8, LBBra_grow_map
+	ldr	x9, [x20, #184]
+	sub	x9, x9, x8
+	adrp	x11, _silica_rt_heap_in_use@PAGE
+	add	x11, x11, _silica_rt_heap_in_use@PAGEOFF
+LBBra_acc_waste:
+	ldaxr	x12, [x11]
+	add	x12, x12, x9
+	stlxr	w13, x12, [x11]
+	cbnz	w13, LBBra_acc_waste
+LBBra_grow_map:
 	add	x9, x19, #32
 	movz	x10, #0x400, lsl #16
 	cmp	x9, x10
@@ -2442,6 +2579,13 @@ LBBra_grow:
 	add	x8, x0, #16
 	add	x10, x8, x19
 	str	x10, [x20, #176]
+	adrp	x11, _silica_rt_heap_in_use@PAGE
+	add	x11, x11, _silica_rt_heap_in_use@PAGEOFF
+LBBra_acc_grow:
+	ldaxr	x12, [x11]
+	add	x12, x12, x19
+	stlxr	w13, x12, [x11]
+	cbnz	w13, LBBra_acc_grow
 	mov	x0, x8
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
@@ -2461,12 +2605,29 @@ LBBra_fallback:
 	str	x9, [x0]
 	str	x19, [x0, #8]
 	str	x0, [x8]
+	adrp	x11, _silica_rt_heap_in_use@PAGE
+	add	x11, x11, _silica_rt_heap_in_use@PAGEOFF
+LBBra_acc_fallback:
+	ldaxr	x12, [x11]
+	add	x12, x12, x19
+	stlxr	w13, x12, [x11]
+	cbnz	w13, LBBra_acc_fallback
 	add	x0, x0, #16
 LBBra_oom:
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
 	ret
 	.cfi_endproc
+	.globl	_silica_rt_heap_used
+_silica_rt_heap_used:
+; -> X0 = bytes handed out by _silica_rt_region_alloc and not yet released: every arena bump an actor
+; made (its blocks go back together when it ends, in _silica_rt_actor_dealloc_region) plus every
+; fallback allocation made outside an actor, which is never released. Requests, not resident
+; pages: a block is mapped lazily. The heap_used() builtin.
+	adrp	x8, _silica_rt_heap_in_use@PAGE
+	add	x8, x8, _silica_rt_heap_in_use@PAGEOFF
+	ldar	x0, [x8]
+	ret
 	.globl	_silica_rt_raw_alloc
 _silica_rt_raw_alloc:
 ; X0=size. malloc with a [next][size] header, NOT linked into the global region
@@ -2567,6 +2728,8 @@ Lrrt_done:
 	ret
 	.globl	_silica_rt_region_list
 	.comm	_silica_rt_region_list,8,3
+	.globl	_silica_rt_heap_in_use
+	.comm	_silica_rt_heap_in_use,8,3
                                         ; -- End function
 	.globl	_silica_rt_actor_supervision_ingress_enqueue ; Phase B — synthetic exit / trial hook; bounded queue
 	.p2align	2
@@ -2954,11 +3117,11 @@ _silica_rt_supervisor_materialize_init_children:
 	cmp	x8, #4096
 	b.lo	Lmat_pre_flags_flat
 	mov	x15, #8
-	ldr	x9, [x8]
-	str	x9, [x0, #296]
 	ldr	x9, [x8, #8]
-	str	x9, [x0, #304]
+	str	x9, [x0, #296]
 	ldr	x9, [x8, #16]
+	str	x9, [x0, #304]
+	ldr	x9, [x8, #24]
 	str	x9, [x0, #312]
 	b	Lmat_pre_flags_done
 Lmat_pre_flags_flat:
@@ -2999,12 +3162,12 @@ Lmat_loop:
 	cbz	x20, Lmat_done
 	cbz	x21, Lmat_done
 	add	x15, x21, x14
-	ldr	x22, [x15, #16]
-	ldr	x23, [x15, #24]
-	ldr	x24, [x15, #8]
-	ldr	x25, [x15]
-	ldr	x26, [x15, #32]
-	ldr	x27, [x15, #40]
+	ldr	x22, [x15, #24]
+	ldr	x23, [x15, #32]
+	ldr	x24, [x15, #16]
+	ldr	x25, [x15, #8]
+	ldr	x26, [x15, #40]
+	ldr	x27, [x15, #48]
 ; Phase E e4f + Option B: ensure one more list node, then walk `len` links from head for stable row ptr (no realloc).
 	mov	x0, x19
 	ldr	x1, [x19, #264]
@@ -3028,9 +3191,9 @@ Lmat_walk_row_done:
     str x26, [x28, #40]
     str x27, [x28, #48]
     str xzr, [x28, #56]
-    ldr x9, [x15, #48]
-    str x9, [x28, #64]
     ldr x9, [x15, #56]
+    str x9, [x28, #64]
+    ldr x9, [x15, #64]
     str x9, [x28, #72]
     ldr x9, [x28, #64]
     cmp x9, #22
@@ -3056,7 +3219,7 @@ Lmat_row_spawn_done:
 	ldr	x9, [x19, #264]
 	add	x9, x9, #1
 	str	x9, [x19, #264]
-	ldr	x21, [x21, #64]
+	ldr	x21, [x21, #72]
 	mov	x14, #0
 	sub	x20, x20, #1
 	b	Lmat_loop
@@ -3094,12 +3257,12 @@ _silica_rt_supervisor_start_child:
 	.cfi_offset w27, -88
 	.cfi_offset w28, -80
 	mov	x20, x0
-	ldr	x21, [x20]
-	ldr	x22, [x20, #8]
-	ldr	x23, [x20, #16]
-	ldr	x24, [x20, #24]
-	ldr	x25, [x20, #32]
-	ldr	x26, [x20, #40]
+	ldr	x21, [x20, #8]
+	ldr	x22, [x20, #16]
+	ldr	x23, [x20, #24]
+	ldr	x24, [x20, #32]
+	ldr	x25, [x20, #40]
+	ldr	x26, [x20, #48]
 Lsc_tls_prep:
 	bl	_silica_rt_tls_current_actor_get
 	mov	x19, x0
@@ -3143,9 +3306,9 @@ Lsc_append_at_row:
 Lsc_use_reuse_row:
 	mov	x28, xzr
 Lsc_post_row:
-	ldr	x4, [x20, #56]
+	ldr	x4, [x20, #64]
 	str	x4, [x27, #72]
-    ldr x9, [x20, #48]
+    ldr x9, [x20, #56]
     str xzr, [x27]
     str x21, [x27, #8]
     str x22, [x27, #16]
@@ -3764,26 +3927,29 @@ Lsgetinfo_next:
 	b	Lsgetinfo_loop
 Lsgetinfo_found:
 	mov	x19, x9
-	mov	x0, #32
+	mov	x0, #40
 	bl	_silica_rt_region_alloc
 	mov	x21, x0
-	str	x20, [x21]
+	movz	x8, #1, lsl #16
+	movk	x8, #0
+	str	x8, [x21]
+	str	x20, [x21, #8]
 	ldr	x11, [x19, #16]
 	mov	x12, #7
 	cmp	x11, x12
 	b.ne	Lsgetinfo_agent_done
 	ldr	x11, [x19, #8]
 Lsgetinfo_agent_done:
-	str	x11, [x21, #8]
+	str	x11, [x21, #16]
 	ldr	x8, [x19]
-	str	x8, [x21, #16]
+	str	x8, [x21, #24]
 	ldr	x8, [x19, #40]
 	cbz	x8, Lsgetinfo_restart_default
 	b	Lsgetinfo_restart_done
 Lsgetinfo_restart_default:
 	mov	x8, #9
 Lsgetinfo_restart_done:
-	str	x8, [x21, #24]
+	str	x8, [x21, #32]
 	mov	x0, x21
 	b	Lsgetinfo_done
 Lsgetinfo_none:
@@ -3795,13 +3961,16 @@ Lsgetinfo_fallback_scan:
 	ldr	x9, [x9, #80]
 	b	Lsgetinfo_fallback_scan
 Lsgetinfo_zero:
-	mov	x0, #32
+	mov	x0, #40
 	bl	_silica_rt_region_alloc
 	mov	x21, x0
-	str	xzr, [x21]
+	movz	x8, #1, lsl #16
+	movk	x8, #0
+	str	x8, [x21]
 	str	xzr, [x21, #8]
 	str	xzr, [x21, #16]
 	str	xzr, [x21, #24]
+	str	xzr, [x21, #32]
 	mov	x0, x21
 Lsgetinfo_done:
 	ldr	x30, [sp, #32]
@@ -3921,17 +4090,20 @@ Lswhich_scan:
 	cbz	x20, Lswhich_done
 	ldr	x22, [x20]
 	cbz	x22, Lswhich_next
-	mov	x0, #32
+	mov	x0, #40
 	bl	_silica_rt_region_alloc
 	mov	x23, x0
 	ldr	x24, [x20, #8]
 	ldr	x25, [x20, #16]
 	ldr	x26, [x20, #40]
-	str	x24, [x23]
-	str	x25, [x23, #8]
-	str	x22, [x23, #16]
-	str	x26, [x23, #24]
-	mov	x0, #40
+	movz	x8, #1, lsl #16
+	movk	x8, #0
+	str	x8, [x23]
+	str	x24, [x23, #8]
+	str	x25, [x23, #16]
+	str	x22, [x23, #24]
+	str	x26, [x23, #32]
+	mov	x0, #56
 	bl	_silica_rt_region_alloc
 	mov	x24, x0
 	ldr	x8, [x23]
@@ -3942,12 +4114,14 @@ Lswhich_scan:
 	str	x8, [x24, #16]
 	ldr	x8, [x23, #24]
 	str	x8, [x24, #24]
+	ldr	x8, [x23, #32]
+	str	x8, [x24, #32]
 	cbz	x21, Lswhich_chunk_nil
 	ldr	x8, [x21, #8]
-	str	x8, [x24, #32]
+	str	x8, [x24, #48]
 	b	Lswhich_chunk_ready
 Lswhich_chunk_nil:
-	str	xzr, [x24, #32]
+	str	xzr, [x24, #48]
 Lswhich_chunk_ready:
 	mov	x0, #24
 	bl	_silica_rt_region_alloc
@@ -4145,11 +4319,14 @@ Lsrestart_done:
 ; Global slot for the dangerous PID registry actor_ref (written by _silica_rt_register_dangerous_actor_named).
 .globl	_silica_dangerous_pid_registry_ref
 .comm	_silica_dangerous_pid_registry_ref,8,3
+; Global slot for the device PID registry actor_ref (written by _silica_rt_register_device_actor_named).
+.globl	_silica_device_pid_registry_ref
+.comm	_silica_device_pid_registry_ref,8,3
 	.section	__TEXT,__text,regular,pure_instructions
 
 ; PID registry primitive actor.
 ; State layout: 3840 B calloc block, occ[240] at +0, actor_ref words[240] at +1920.
-; Message record layout follows value-flat record emission: op@0, name@8, pid@16.
+; Message record layout follows record emission: shape word@0, op@8, name@16, pid@24.
 ; Behavior return layout follows actor runtime convention: tag@0, reply@8, next_state@16.
 	.globl	_silica_rt_pid_registry_beh
 	.p2align	2
@@ -4161,9 +4338,9 @@ _silica_rt_pid_registry_beh:
 	mov	x29, sp
 	mov	x19, x0
 	mov	x20, x1
-	ldr	x21, [x19]       ; op atom index
-	ldr	x22, [x19, #8]   ; name atom index
-	ldr	x23, [x19, #16]  ; pid actor_ref
+	ldr	x21, [x19, #8]       ; op atom index
+	ldr	x22, [x19, #16]   ; name atom index
+	ldr	x23, [x19, #24]  ; pid actor_ref
 	mov	x0, #1
 	mov	x1, #24
 	bl	_calloc
@@ -4308,6 +4485,42 @@ _silica_dangerous_pid_registry_init:
 	bl	_silica_rt_dangerous_pid_registry_init_spawn
 	adrp	x1, _silica_dangerous_pid_registry_ref@PAGE
 	str	x0, [x1, _silica_dangerous_pid_registry_ref@PAGEOFF]
+	mov	x0, #0
+	ldp	x29, x30, [sp], #16
+	ret
+; Spawn path for the global device PID registry primitive actor.
+	.globl	_silica_rt_device_pid_registry_init_spawn
+	.p2align	2
+_silica_rt_device_pid_registry_init_spawn:
+	stp	x29, x30, [sp, #-16]!
+	stp	x19, x20, [sp, #-16]!
+	mov	x0, #1
+	mov	x1, #3840
+	bl	_calloc
+	mov	x19, x0
+	mov	x9, x19
+	adrp	x10, _silica_rt_pid_registry_beh@PAGE
+	add	x10, x10, _silica_rt_pid_registry_beh@PAGEOFF
+	mov	x3, xzr
+	mov	x0, x9
+	mov	x1, x10
+	mov	w2, wzr
+	bl	_silica_rt_actor_spawn
+	mov	x20, x0
+	mov	x0, x20
+	ldp	x19, x20, [sp], #16
+	ldp	x29, x30, [sp], #16
+	ret
+; _silica_device_pid_registry_init: called once at program start from emitter-injected main prologue.
+; Stores the spawned device registry actor_ref in _silica_device_pid_registry_ref.
+	.globl	_silica_device_pid_registry_init
+	.p2align	2
+_silica_device_pid_registry_init:
+	stp	x29, x30, [sp, #-16]!
+	mov	x29, sp
+	bl	_silica_rt_device_pid_registry_init_spawn
+	adrp	x1, _silica_device_pid_registry_ref@PAGE
+	str	x0, [x1, _silica_device_pid_registry_ref@PAGEOFF]
 	mov	x0, #0
 	ldp	x29, x30, [sp], #16
 	ret
@@ -7304,27 +7517,30 @@ _silica_rt_get_actor_memory_usage:
 	mov	x29, sp
 	str	x19, [sp, #16]
 	mov	x19, x0
-	mov	x0, #32
+	mov	x0, #40
 	bl	_malloc
 	cbz	x0, Lgmu_ret
+	movz	x8, #1, lsl #16
+	movk	x8, #7
+	str	x8, [x0]
 	cmp	x19, #4096
 	b.lo	Lgmu_zero
 	ldr	x8, [x19, #384]
 	cbz	x8, Lgmu_zero
 	ldr	x8, [x19, #392]
-	str	x8, [x0]
-	ldr	x8, [x19, #400]
 	str	x8, [x0, #8]
-	ldr	x8, [x19, #432]
+	ldr	x8, [x19, #400]
 	str	x8, [x0, #16]
-	ldr	x8, [x19, #408]
+	ldr	x8, [x19, #432]
 	str	x8, [x0, #24]
+	ldr	x8, [x19, #408]
+	str	x8, [x0, #32]
 	b	Lgmu_ret
 Lgmu_zero:
-	str	xzr, [x0]
 	str	xzr, [x0, #8]
 	str	xzr, [x0, #16]
 	str	xzr, [x0, #24]
+	str	xzr, [x0, #32]
 Lgmu_ret:
 	ldr	x19, [sp, #16]
 	ldp	x29, x30, [sp], #32

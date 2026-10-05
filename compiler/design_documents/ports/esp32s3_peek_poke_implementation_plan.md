@@ -441,7 +441,7 @@ Board release 1's peek-and-poke half is delivered when all of the following hold
 - **Documentation updated** as in work item 20, and [esp32s3_port_status.md](esp32s3_port_status.md) §3 no longer
   lists an `.error`-line refusal for foreign calls or file io.
 
-Related: [esp32s3_memory_budget_plan.md](esp32s3_memory_budget_plan.md) (the third registry actor costs another
+Related: [esp32s3_memory_budget_plan.md](../esp32s3_memory_budget_plan.md) (the third registry actor costs another
 ~2 KB reserve plus a 240-slot table on a board where 55% of SRAM is claimed before the program starts),
 [esp32s3_xtensa_port.md](esp32s3_xtensa_port.md) §2, §4, §8.7, §8.9 (virtual registers, the call convention the
 runtime routines use, the registries, two cores), [runtime_failure_reporting.md](../runtime_failure_reporting.md)

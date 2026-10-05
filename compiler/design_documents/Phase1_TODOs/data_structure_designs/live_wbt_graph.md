@@ -35,7 +35,7 @@ Conceptually:
 
 ```text
 {
-    region: region(R, SpaceType),
+    r: region(R, SpaceType),
     vertices_root: OptionalOuterWbtRoot,
     node_count: int64,
     edge_count: int64,

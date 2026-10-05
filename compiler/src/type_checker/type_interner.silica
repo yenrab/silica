@@ -160,6 +160,7 @@ fn kind_supervisor_flags() -> int64 { 44 }
 fn kind_failure_reason() -> int64 { 45 }
 fn kind_child_spec() -> int64 { 46 }
 fn kind_stack_policy() -> int64 { 47 }
+fn kind_device_actor_ref() -> int64 { 48 }
 fn kind_cpu_topology() -> int64 { 50 }
 fn kind_core_info() -> int64 { 51 }
 fn kind_numa_info() -> int64 { 52 }
@@ -202,6 +203,7 @@ fn kind_atomic_ref() -> int64 { 110 }
 fn kind_type_sum() -> int64 { 111 }
 fn kind_atom_lit() -> int64 { 112 }
 fn kind_atom_union() -> int64 { 113 }
+fn kind_device_window() -> int64 { 114 }
 fn kind_ordered_set() -> int64 { 120 }
 fn kind_ordered_map() -> int64 { 121 }
 fn kind_heap() -> int64 { 122 }
@@ -2972,6 +2974,56 @@ fn mk_region(interner: {
     intern_key(interner, 108, rgn_id, space, 0, false)
 }
 
+fn mk_device_window(interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, rgn_id: int64, space: int64) -> { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64 } {
+    intern_key(interner, 114, rgn_id, space, 0, false)
+}
+
 fn mk_buf(interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
@@ -4291,13 +4343,6 @@ fn parse_ok(interner: {
     { interner: interner, id: id, ok: true }
 }
 
-fn starts_with(s: string, prefix: string) -> boolean {
-    case length_bytes(s) < length_bytes(prefix) of {
-        true -> false;
-        false -> substring(s, 0, length_bytes(prefix)) == prefix
-    }
-}
-
 fn trim_left(s: string) -> string {
     case length_bytes(s) == 0 of {
         true -> s;
@@ -4956,7 +5001,7 @@ fn parse_type_inner(interner: {
                                     true -> parse_ordered_set(interner, t);
                                     false -> case starts_with(t, "mem(") of {
                                     true -> parse_mem_type(interner, t);
-                                    false -> case starts_with(t, "ref") or starts_with(t, "region(") or starts_with(t, "buf(") or starts_with(t, "atomic_ref(") of {
+                                    false -> case starts_with(t, "ref") or starts_with(t, "region(") or starts_with(t, "buf(") or starts_with(t, "atomic_ref(") or starts_with(t, "device_window(") of {
                                         true -> parse_ref_family(interner, t);
                                         false -> case starts_with(t, "Heap") or starts_with(t, "Tree") or starts_with(t, "SearchTree") or starts_with(t, "DirectedGraph") or starts_with(t, "UndirectedGraph") or starts_with(t, "WeightedGraph") or starts_with(t, "PriorityQueue") or starts_with(t, "BinaryTree") of {
                                             true -> parse_collection(interner, t);
@@ -5018,6 +5063,7 @@ fn base_kind_of(name: string) -> int64 {
         "ActorMessage" -> kind_actor_message();
         "actor_ref" -> kind_actor_ref();
         "dangerous_actor_ref" -> kind_dangerous_actor_ref();
+        "device_actor_ref" -> kind_device_actor_ref();
         "supervisor_ref" -> kind_supervisor_ref();
         "monitor_ref" -> kind_monitor_ref();
         "supervisor_flags" -> kind_supervisor_flags();
@@ -8614,7 +8660,10 @@ fn parse_ref_family(interner: {
                     true -> parse_ref_like(interner, t, "atomic_ref(", 2);
                     false -> case starts_with(t, "buf(") of {
                         true -> parse_buf_like(interner, t);
-                        false -> parse_fail(interner)
+                        false -> case starts_with(t, "device_window(") of {
+                            true -> parse_device_window_like(interner, t);
+                            false -> parse_fail(interner)
+                        }
                     }
                 }
             }
@@ -8936,6 +8985,147 @@ fn parse_region_like(interner: {
     next_id: int64,
     seq_nil_id: int64
 }, id: int64 } <- mk_region(spr.interner, nr.id, spr.id);
+                            parse_ok(r.interner, r.id)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// device_window(R, D): a lifetime name and the device tag type (device spec §4.7).
+fn parse_device_window_like(interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, t: string) -> { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } {
+    close: int64 <- find_matching_parens(t, 13, 0);
+    case close < 0 of {
+        true -> parse_fail(interner);
+        false -> {
+            inner: string <- substring(t, 14, close);
+            c1: int64 <- find_top_comma(inner, 0, 0, 0, 0);
+            case c1 < 0 of {
+                true -> parse_fail(interner);
+                false -> {
+                    nr: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64 } <- mk_name(interner, trim_type(substring(inner, 0, c1)));
+                    spr: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64, ok: boolean } <- parse_type(nr.interner, substring(inner, c1 + 1, length_bytes(inner)));
+                    case spr.ok of {
+                        false -> spr;
+                        true -> {
+                            r: { interner: {
+    nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
+    by_key: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    names: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(string, string) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    name_lexemes: List[string, mem(normal)],
+    next_id: int64,
+    seq_nil_id: int64
+}, id: int64 } <- mk_device_window(spr.interner, nr.id, spr.id);
                             parse_ok(r.interner, r.id)
                         }
                     }
@@ -9571,6 +9761,14 @@ fn print_weighted(interner: {
     concat("WeightedGraph[", concat(print_type_node(interner, n0), concat(", ", concat(print_type_node(interner, n1), concat(", ", concat(print_type_node(interner, n2), concat(", ", concat(print_space_mem(interner, space), ch_rbracket())))))))
 }
 
+// A device tag is a one-atom tuple; the interner keeps the atom itself, so its text gets the parens back.
+fn device_tag_text(s: string) -> string {
+    case length_bytes(s) > 0 and substring(s, 0, 1) == "(" of {
+        true -> s;
+        false -> concat("(", concat(s, ")"))
+    }
+}
+
 fn print_type_node(interner: {
     nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)],
     by_key: {
@@ -9620,6 +9818,7 @@ fn print_type_node(interner: {
         30 -> "ActorMessage";
         40 -> "actor_ref";
         41 -> "dangerous_actor_ref";
+        48 -> "device_actor_ref";
         42 -> "supervisor_ref";
         43 -> "monitor_ref";
         44 -> "supervisor_flags";
@@ -9678,6 +9877,7 @@ fn print_type_node(interner: {
         106 -> concat("ref(", concat(print_name_from_name_node(interner, node_a(interner, id)), concat(", ", concat(print_space(interner, node_b(interner, id)), concat(", ", concat(print_type_node(interner, node_c(interner, id)), ")"))))));
         107 -> concat("ref?(", concat(print_name_from_name_node(interner, node_a(interner, id)), concat(", ", concat(print_space(interner, node_b(interner, id)), concat(", ", concat(print_type_node(interner, node_c(interner, id)), ")"))))));
         108 -> concat("region(", concat(print_name_from_name_node(interner, node_a(interner, id)), concat(", ", concat(print_space(interner, node_b(interner, id)), ")"))));
+        114 -> concat("device_window(", concat(print_name_from_name_node(interner, node_a(interner, id)), concat(", ", concat(device_tag_text(print_type_node(interner, node_b(interner, id))), ")"))));
         109 -> print_buf(interner, id);
         110 -> concat("atomic_ref(", concat(print_name_from_name_node(interner, node_a(interner, id)), concat(", ", concat(print_space(interner, node_b(interner, id)), concat(", ", concat(print_type_node(interner, node_c(interner, id)), ")"))))));
         111 -> print_seq(interner, node_a(interner, id), " | ");

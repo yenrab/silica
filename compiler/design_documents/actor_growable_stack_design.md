@@ -193,14 +193,14 @@ All regions are allocated within the actor's stack:
 // Example: Actor behavior function
 fn process_message(msg: Message, state: ActorState) -> ActorState {
     // Allocate region within this actor's stack
-    region: region(R1, normal) <- alloc_region(normal);  // Stack allocation
+    r: region(R1, normal) <- alloc_region(normal);  // Stack allocation
 
     // Allocate references within the region
-    ref1: ref(R1, normal, int64) <- alloc_ref(region, 42);
-    ref2: ref(R1, normal, int64) <- alloc_ref(region, 100);
+    ref1: ref(R1, normal, int64) <- alloc_ref(r, 42);
+    ref2: ref(R1, normal, int64) <- alloc_ref(r, 100);
 
     // Allocate buffer within the region
-    buffer: buf(R1, normal, int64, 1000) <- alloc_buf(region, 1000);
+    buffer: buf(R1, normal, int64, 1000) <- alloc_buf(r, 1000);
 
     // Use references and buffers
     value: int64 <- read_ref(ref1);
@@ -239,13 +239,13 @@ fn process_message(msg: Message, state: ActorState) -> ActorState {
 // All of these are stack-allocated within the actor:
 
 // Single reference
-ref1: ref(R1, normal, int64) <- alloc_ref(region, 42);
+ref1: ref(R1, normal, int64) <- alloc_ref(r, 42);
 
 // Buffer
-buf1: buf(R1, normal, int64, 100) <- alloc_buf(region, 100);
+buf1: buf(R1, normal, int64, 100) <- alloc_buf(r, 100);
 
 // Atomic reference
-atomic1: ref(R1, atomic, int64) <- alloc_atomic(region, 99);
+atomic1: ref(R1, atomic, int64) <- alloc_atomic(r, 99);
 
 // All live on the actor's stack
 // All become inaccessible when actor terminates
@@ -966,7 +966,7 @@ The previous break-even analysis needs important clarification: **not all memory
 ```
 // These are just stack pointer adjustments, essentially free:
 alloc_region(normal)        // SP adjustment, no data access
-alloc_ref(region, value)    // Bump allocate (SP + store)
+alloc_ref(r, value)    // Bump allocate (SP + store)
 function_call()             // Push return address (SP + store)
 return value                // Pop return address (SP + load)
 ```
@@ -983,8 +983,8 @@ process_value(variable)     // LDR instructions inside function
 **Page Fault Triggering**:
 ```
 // Page faults only happen on FIRST access to unmapped page:
-region: region(R, normal) <- alloc_region(normal);  // No fault (just SP)
-ref1: ref(R, normal, int64) <- alloc_ref(region, 42);  // First touch of page
+r: region(R, normal) <- alloc_region(normal);  // No fault (just SP)
+ref1: ref(R, normal, int64) <- alloc_ref(r, 42);  // First touch of page
 read_ref(ref1);  // ~1-10 μs fault (if page not migrated yet)
 
 read_ref(ref1);  // No fault (page already migrated)
@@ -1520,7 +1520,7 @@ fn process_large_message(msg: LargeMessage, state: State) -> State {
     // If compiler predicts ~10 MB allocation:
     // hint_stack_usage(10_MB);  // Optional, for runtime optimization
 
-    buffer: buf(R, normal, int64, 1_000_000) <- alloc_buf(region, 1_000_000);
+    buffer: buf(R, normal, int64, 1_000_000) <- alloc_buf(r, 1_000_000);
     // ... use buffer ...
 }
 ```
@@ -1694,11 +1694,11 @@ struct CounterState {
 fn counter_behavior(msg: CounterMessage, state: CounterState) -> CounterState {
     sequence proc[mem(normal)]
         // Allocate region within actor's stack
-        region: region(R, normal) <- alloc_region(normal);
+        r: region(R, normal) <- alloc_region(normal);
 
         // Store result in reference
         new_total_ref: ref(R, normal, int64) <-
-            alloc_ref(region, state.total + msg.value);
+            alloc_ref(r, state.total + msg.value);
 
         // Read back value
         new_total: int64 <- read_ref(new_total_ref);
@@ -1741,12 +1741,12 @@ struct DataProcessingMessage {
 fn data_processor(msg: DataProcessingMessage, state: State) -> State {
     sequence proc[mem(normal)]
         // Allocate region for large data
-        region: region(R, normal) <- alloc_region(normal);
+        r: region(R, normal) <- alloc_region(normal);
 
         // Allocate large buffer within stack
         // If size exceeds available stack: page fault -> growth
         buffer: buf(R, normal, int64, msg.size) <-
-            alloc_buf(region, msg.size);
+            alloc_buf(r, msg.size);
 
         // Process buffer (all operations on local stack)
         processed: int64 <- process_buffer(buffer, msg.size);
@@ -1856,7 +1856,7 @@ memory_used: int64 <- get_actor_memory_usage(actor);
 
 ```
 1. Virtual memory allocation
-   - Per-actor 1 GB virtual region
+   - Per-actor 1 GB virtual r
    - Initial 8 MB physical mapping
 
 2. Page fault handler
@@ -1913,7 +1913,7 @@ memory_used: int64 <- get_actor_memory_usage(actor);
    - Growth checks before large allocs
 
 2. Type system enforcement
-   - No inter-actor region passing
+   - No inter-actor r passing
    - ActorBoundary constraints
 
 3. Error handling

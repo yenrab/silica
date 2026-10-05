@@ -250,6 +250,8 @@ silica_rt_fatal_trampoline:
     // silica_rt_actor_fault_hook does not return then: it resumes the core's scheduler).
     movi    a0, 0
     mov     a10, a5
+    mov     a11, a6               // EPC1 and EXCVADDR go to the hook for the ACB's fault fields
+    mov     a12, a7
     call8   silica_rt_actor_fault_hook
     // The process ends: on core 0 the other core is stalled and the console lock cleared, on core 1
     // this core's own hold is released (rt_console.S), so the report below can print.

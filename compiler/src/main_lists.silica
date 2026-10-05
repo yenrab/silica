@@ -20,6 +20,11 @@
 use module_checker_core;
 
 export compile_order_path/0;
+export atom_file_path/0;
+export read_atom_file/0;
+export shape_file_path/0;
+export read_shape_file/0;
+export reset_atoms_if_fresh/1;
 export needs_runtime_marker_path/0;
 export continue_exit_code/0;
 export list_string_contains_hygiene/2;
@@ -223,6 +228,88 @@ fn validate_config_files(files: List[string, mem(normal)]) -> int64 {
                         1
                     }
                 }
+            }
+        }
+    produces
+        pure result
+    end
+}
+
+// The build-wide atom table: one atom lexeme per line, in index order (runtime prefix first).
+fn atom_file_path() -> string {
+    "silica.atoms"
+}
+
+fn read_atom_file() -> List[string, mem(normal)] {
+    sequence proc[DeviceIO]
+        present: boolean <- file_exists(atom_file_path());
+        content: string <- case present of {
+            true -> read_lines(atom_file_path());
+            false -> ""
+        };
+        empty: List[string, mem(normal)] <- module_checker_core@empty_list_string();
+        result: List[string, mem(normal)] <- reverse_list_string(parse_config_lines(content, 0, empty))
+    produces
+        pure result
+    end
+}
+
+// The build-wide record shapes (emitter record_shape.silica), one canonical type per line, in
+// shape-number order: numbered beside the atoms but in their own index space.
+fn shape_file_path() -> string {
+    "silica.shapes"
+}
+
+fn read_shape_file() -> List[string, mem(normal)] {
+    sequence proc[DeviceIO]
+        present: boolean <- file_exists(shape_file_path());
+        content: string <- case present of {
+            true -> read_lines(shape_file_path());
+            false -> ""
+        };
+        empty: List[string, mem(normal)] <- module_checker_core@empty_list_string();
+        result: List[string, mem(normal)] <- reverse_list_string(parse_config_lines(content, 0, empty))
+    produces
+        pure result
+    end
+}
+
+fn unit_sams_path(path: string) -> string {
+    n: int64 <- length_bytes(path);
+    base: string <- case n > 7 and substring(path, n - 7, n) == ".silica" of {
+        true -> substring(path, 0, n - 7);
+        false -> path
+    };
+    concat(base, ".sams")
+}
+
+fn any_unit_assembled(units: List[string, mem(normal)]) -> boolean {
+    sequence proc[DeviceIO]
+        result: boolean <- case units.is_nil of {
+            true -> false;
+            false -> {
+                assembled: boolean <- file_exists(unit_sams_path(units.head));
+                case assembled of {
+                    true -> true;
+                    false -> any_unit_assembled(units.tail)
+                }
+            }
+        }
+    produces
+        pure result
+    end
+}
+
+// A batch in which no unit has been assembled yet starts its atom numbering afresh, so a fresh build
+// numbers atoms the same way whatever an earlier, unrelated build in this directory left behind.
+fn reset_atoms_if_fresh(units: List[string, mem(normal)]) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- case any_unit_assembled(units) of {
+            true -> 0;
+            false -> {
+                delete_file(atom_file_path());
+                delete_file(shape_file_path());
+                0
             }
         }
     produces

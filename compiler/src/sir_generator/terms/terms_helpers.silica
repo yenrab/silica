@@ -50,10 +50,12 @@ use uint8_binary_ops;
 use user_calls;
 
 export arg_expected_type/2;
-export build_bnot_from_sir/1;
+export build_bnot_from_sir/2;
 export build_not_from_sir/1;
-export build_unary_keyword_from_sir/2;
+export build_unary_keyword_from_sir/3;
 export unary_keyword_operand_type/1;
+export unary_keyword_operand_type_in/2;
+export sir_shift_amount_type/2;
 export build_float_predicate_from_sir/2;
 export build_float_special_const/1;
 export build_prim_for_type/5;
@@ -73,6 +75,7 @@ export sir_actor_ref_const/1;
 export sir_atom_const/1;
 export sir_int64_const/1;
 export sir_lookup_symbol_found/2;
+export sir_lookup_behavior_found/2;
 export sir_term_with_root_value/2;
 export sir_var/2;
 export add_bindings_to_context/2;
@@ -165,8 +168,8 @@ fn build_float_predicate_from_sir(name: string, arg: { nodes: List[{ kind: int64
     sir_ast@make_sir_term(6, "bool", "", float_predicate_prim_name(name), arg, sir_ast@dummy_sir_term())
 }
 
-fn build_bnot_from_sir(arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
-    sir_ast@make_sir_term(6, "uint64", "", "bnot", arg, sir_ast@dummy_sir_term())
+fn build_bnot_from_sir(arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, op_type: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+    sir_ast@make_sir_term(6, sir_unsigned_or_uint64(op_type), "", "bnot", arg, sir_ast@dummy_sir_term())
 }
 
 // Logical negation `not p` (spec §3.3.1, §3.9): p is boolean, so `not p` is exactly `p == false`; lowered as the
@@ -184,10 +187,39 @@ fn unary_keyword_operand_type(call_base: string) -> string {
     }
 }
 
-fn build_unary_keyword_from_sir(call_base: string, arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
+// `bnot` takes the unsigned width the context expects; `not` stays boolean.
+fn unary_keyword_operand_type_in(call_base: string, expected: string) -> string {
+    case call_base == "not" of {
+        true -> "boolean";
+        false -> sir_unsigned_or_uint64(expected)
+    }
+}
+
+fn sir_is_unsigned_type(t: string) -> bool {
+    t == "uint64" or t == "uint32" or t == "uint16" or t == "uint8"
+}
+
+fn sir_unsigned_or_uint64(t: string) -> string {
+    case sir_is_unsigned_type(t) of {
+        true -> t;
+        false -> "uint64"
+    }
+}
+
+fn sir_register_marker_value_type(v: string) -> string {
+    case v of {
+        "R8" -> "uint8";
+        "R16" -> "uint16";
+        "R32" -> "uint32";
+        "R64" -> "uint64";
+        _: string -> ""
+    }
+}
+
+fn build_unary_keyword_from_sir(call_base: string, arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, op_type: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     case call_base == "not" of {
         true -> build_not_from_sir(arg);
-        false -> build_bnot_from_sir(arg)
+        false -> build_bnot_from_sir(arg, op_type)
     }
 }
 
@@ -205,6 +237,31 @@ fn sir_actor_ref_const(value: string) -> { nodes: List[{ kind: int64, type_name:
 
 fn sir_var(name: string, ty: string) -> { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } {
     sir_ast@make_sir_term(1, ty, "", name, sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term())
+}
+
+// A behaviour named in a spawn: a local name, or module@fn for a function of a used module.
+fn sir_lookup_behavior_found(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], name: string) -> (boolean, string) {
+    (mod_part: string, fn_part: string) <- type_checker_core@split_module_qualified_call_name(name);
+    case length_bytes(mod_part) == 0 of {
+        true -> sir_lookup_symbol_found(env, name);
+        false -> {
+            (found: boolean, ty: string) <- sir_lookup_symbol_found_in_module(env, fn_part, mod_part);
+            case found of {
+                true -> (true, ty);
+                false -> sir_lookup_symbol_found(env, fn_part)
+            }
+        }
+    }
+}
+
+fn sir_lookup_symbol_found_in_module(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], name: string, mod: string) -> (boolean, string) {
+    case env.is_nil of {
+        true -> (false, "");
+        false -> case env.head.name == name and env.head.source_module == mod of {
+            true -> (true, env.head.type_name);
+            false -> sir_lookup_symbol_found_in_module(env.tail, name, mod)
+        }
+    }
 }
 
 fn sir_lookup_symbol_found(env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], name: string) -> (boolean, string) {
@@ -440,7 +497,10 @@ fn sir_is_cmp_op(op: string) -> boolean {
 
 fn sir_infer_call_return(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> string {
     name: string <- type_checker_expressions_helpers@expr_name(expr);
-    call_base: string <- type_checker_core@user_call_base_function_name(name);
+    call_base: string <- case type_checker_core@call_name_is_module_qualified(name) of {
+        true -> "";
+        false -> name
+    };
     neg_ty: string <- negate_builtins@negate_arg_type(call_base);
     case length_bytes(neg_ty) > 0 of {
         true -> neg_ty;
@@ -450,8 +510,8 @@ fn sir_infer_call_return(context: { env: List[{ name: string, type_name: string,
         true -> "uint64";
         false -> case call_base == "spawn" or call_base == "spawn_registered" of {
         true -> "actor_ref";
-        false -> case call_base == "spawn_dangerous" or call_base == "spawn_dangerous_registered" of {
-            true -> "dangerous_actor_ref";
+        false -> case call_base == "spawn_dangerous" or call_base == "spawn_dangerous_registered" or call_base == "spawn_device" or call_base == "spawn_device_registered" of {
+            true -> spawn_ref_type_for_base(call_base);
             false -> case call_base == "spawn_registered_supervisor" of {
                 true -> "supervisor_ref";
                 false -> case call_base == "call_supervisor" of {
@@ -559,7 +619,10 @@ fn sir_infer_expr_type(context: { env: List[{ name: string, type_name: string, d
                 }
             }
         };
-        2 -> sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
+        2 -> case sir_register_marker_value_type(type_checker_expressions_helpers@expr_value(expr)) == "" of {
+            true -> sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_inner(expr));
+            false -> sir_register_marker_value_type(type_checker_expressions_helpers@expr_value(expr))
+        };
         3 -> {
             op: string <- type_checker_expressions_helpers@expr_value(expr);
             case sir_is_cmp_op(op) of {
@@ -681,10 +744,22 @@ fn sir_infer_binop_left_preferred(expr: { nodes: List[{ kind: int64, value: stri
     }
 }
 
+// A shift amount is int64, or the operand's own unsigned type when that is what it has.
+fn sir_shift_amount_type(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }) -> string {
+    rt: string <- sir_infer_expr_type(context, type_checker_expressions_helpers@expr_child_right(expr));
+    case sir_is_unsigned_type(rt) of {
+        true -> rt;
+        false -> "int64"
+    }
+}
+
 fn sir_infer_binop_operand_type_for_sir(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, enclosing_expected: string) -> string {
     op: string <- type_checker_expressions_helpers@expr_value(expr);
     case sir_is_bitwise_op(op) of {
-        true -> "uint64";
+        true -> case sir_is_unsigned_type(enclosing_expected) of {
+            true -> enclosing_expected;
+            false -> sir_unsigned_or_uint64(sir_infer_binop_left_preferred(expr, context))
+        };
         false -> case sir_is_arith_op(op) of {
             true -> case sir_is_floatish_type(enclosing_expected) of {
                 true -> enclosing_expected;
@@ -777,6 +852,14 @@ fn user_call_expects_single_tuple_param(context: { env: List[{ name: string, typ
                 }
             }
         }
+    }
+}
+
+fn spawn_ref_type_for_base(call_base: string) -> string {
+    case call_base of {
+        "spawn_device" -> "device_actor_ref";
+        "spawn_device_registered" -> "device_actor_ref";
+        _: string -> "dangerous_actor_ref"
     }
 }
 

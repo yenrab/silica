@@ -954,13 +954,23 @@ fn emit_var_reg_core(term: { nodes: List[{ kind: int64, type_name: string, value
                     }
                 };
                 false -> {
-                    op: string <- case first == "D" or first == "S" of {
+                    // A float binding read into a GPR (an actor message or spawn state word) is a bit copy:
+                    // FMOV into the GPR view of the float's width. `MOV X10, D8` is not an instruction.
+                    // See trials/compile_defects_float64_actor_message_addition.
+                    gpr_from_fp: boolean <- (first == "X" or first == "W") and (reg_first == "D" or reg_first == "S" or reg_first == "H");
+                    op: string <- case first == "D" or first == "S" or gpr_from_fp of {
                         true -> "FMOV";
                         false -> "MOV"
                     };
+                    dest_view: string <- case concat(first, reg_first) of {
+                        "WD" -> concat("X", substring(dest, 1, length_bytes(dest)));
+                        "XS" -> concat("W", substring(dest, 1, length_bytes(dest)));
+                        "XH" -> concat("W", substring(dest, 1, length_bytes(dest)));
+                        _: string -> dest
+                    };
                     case dest == matched_reg of {
                         true -> "";
-                        false -> concat(concat(concat(concat("    ", op), " "), concat(dest, ", ")), matched_reg)
+                        false -> concat(concat(concat(concat("    ", op), " "), concat(dest_view, ", ")), matched_reg)
                     }
                 }
             }

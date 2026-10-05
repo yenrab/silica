@@ -46,7 +46,7 @@ type            ::= ... | "rec" | "ref?" "(" region_id "," space "," type ")"
 ### 2.3 Construction
 
 ```
-alloc_rec(region, (value, ...))
+alloc_rec(r, (value, ...))
 ```
 
 - Allocates a recursive tuple in the given region.

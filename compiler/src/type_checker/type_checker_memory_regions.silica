@@ -37,6 +37,7 @@ export get_space_from_ref_type/1;
 export is_region_builtin_call/1;
 export check_sequence_return_lifetime/2;
 export ref_types_equal_modulo_lifetime/2;
+export device_window_types_equal_modulo_lifetime/2;
 export carrier_lifetime_ident/1;
 export is_valid_memory_space/1;
 
@@ -786,6 +787,44 @@ fn union_list_string(a: List[string, mem(normal)], b: List[string, mem(normal)])
 // for polymorphism") is a binder local to that signature, not a name the caller has to spell the same way.
 // True when both surfaces are the same lifetime carrier (ref, ref?, region, buf, atomic_ref) and agree on
 // everything except the lifetime identifier in the first parameter slot.
+// Two surfaces equal once every device_window's lifetime name is erased, anywhere in the text (a
+// window alone, or windows inside a tuple / record / function type). A window's lifetime is a fresh
+// binder per map, so windows are compared by tag; false when neither surface names a window.
+fn device_window_types_equal_modulo_lifetime(a: string, b: string) -> boolean {
+    an: string <- erase_window_lifetimes_lm(strip_spaces_lm(a, 0, ""), 0, "");
+    bn: string <- erase_window_lifetimes_lm(strip_spaces_lm(b, 0, ""), 0, "");
+    case starts_with_anywhere_lm(an, "device_window(", 0) of {
+        false -> false;
+        true -> an == bn
+    }
+}
+
+fn starts_with_anywhere_lm(s: string, pat: string, i: int64) -> boolean {
+    case i + length_bytes(pat) > length_bytes(s) of {
+        true -> false;
+        false -> case substring(s, i, i + length_bytes(pat)) == pat of {
+            true -> true;
+            false -> starts_with_anywhere_lm(s, pat, i + 1)
+        }
+    }
+}
+
+fn erase_window_lifetimes_lm(s: string, i: int64, acc: string) -> string {
+    case i >= length_bytes(s) of {
+        true -> acc;
+        false -> case i + 14 <= length_bytes(s) and substring(s, i, i + 14) == "device_window(" of {
+            false -> erase_window_lifetimes_lm(s, i + 1, concat(acc, substring(s, i, i + 1)));
+            true -> {
+                c: int64 <- first_comma_from_lm(s, i + 14);
+                case c < 0 of {
+                    true -> concat(acc, substring(s, i, length_bytes(s)));
+                    false -> erase_window_lifetimes_lm(s, c, concat(acc, "device_window(_"))
+                }
+            }
+        }
+    }
+}
+
 fn ref_types_equal_modulo_lifetime(a: string, b: string) -> boolean {
     an: string <- strip_spaces_lm(a, 0, "");
     bn: string <- strip_spaces_lm(b, 0, "");
@@ -833,7 +872,10 @@ fn lifetime_carrier_prefix_lm(s: string) -> string {
                     true -> "region(";
                     false -> case starts_with_lm(s, "buf(") of {
                         true -> "buf(";
-                        false -> ""
+                        false -> case starts_with_lm(s, "device_window(") of {
+                            true -> "device_window(";
+                            false -> ""
+                        }
                     }
                 }
             }

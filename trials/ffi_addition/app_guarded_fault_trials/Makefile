@@ -57,7 +57,7 @@ altstack_check: dangerous_guarded_null_deref_fault
 integrate-run: fixtures unguarded_probe
 	@ln -sfn "$(FIXTURES_DIR)/dangerous_exposure_source" "$(APP_TRIAL_DIR)/dangerous_exposure_source"
 	@test -f "$(FFI_LEGACY_ARCHIVE)" || { echo "  ❌ $(APP_LABEL): missing legacy archive"; exit 1; }
-	@cd "$(APP_TRIAL_DIR)" && rm -f *.sams *.o *.iface $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime
+	@cd "$(APP_TRIAL_DIR)" && rm -f *.sams *.o *.iface $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime silica.atoms
 	@cd "$(APP_TRIAL_DIR)" && find "$(APP_TRIAL_DIR)" -maxdepth 1 -name '*.silica' ! -name 'dangerous_unguarded_null_deref_abort.silica' | sed "s|^$(APP_TRIAL_DIR)/||" | sort > silica.config
 	@$(ENSURE_SILICA_COMPILER)
 	@cd "$(APP_TRIAL_DIR)" && if ! { $(RUN_SILICA_COMPILER); }; then echo "❌❌ $(APP_LABEL): compilation failed"; $(INTEGRATE_DOT_FAIL); printf '%d %d\n' 0 1 > .integrate_counts; exit 1; fi
@@ -180,4 +180,4 @@ integrate-run: fixtures unguarded_probe
 	exit $$failed
 
 clean:
-	@cd "$(THIS_DIR)" && rm -f *.sams *.o *.iface $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime *.sout dangerous_exposure_source $(UNGUARDED_PROBE) silica_ffi_fault.o unguarded_sigill_probe
+	@cd "$(THIS_DIR)" && rm -f *.sams *.o *.iface $(APP_EXECUTABLES) silica.config silica.link .integrate_counts silica.compile.order silica.needs_runtime silica.atoms *.sout dangerous_exposure_source $(UNGUARDED_PROBE) silica_ffi_fault.o unguarded_sigill_probe

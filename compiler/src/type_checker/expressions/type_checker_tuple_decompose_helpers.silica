@@ -20,11 +20,13 @@
 
 use parser_ast;
 use type_checker_core;
+use type_checker_memory_regions;
 use type_checker_recursive_tuples;
 use type_checker_lists;
 use type_checker_record_types;
 use type_checker_expressions_actors;
 use type_checker_builtin_signatures;
+use string_parse;
 
 export infer_expr_type/2;
 export infer_literal_type/1;
@@ -54,6 +56,9 @@ export case_parse_record_field_subpat/2;
 export case_sum_bar_depth0/3;
 export case_is_tuple_pattern_form/1;
 export case_tuple_variant_for_pattern/2;
+export case_record_variant_for_pattern/2;
+export struct_literal_sum_variant/2;
+export validate_sum_record_variants/2;
 
 fn tuple_needs_parens(type_str: string) -> boolean {
     length_bytes(type_str) >= 2 and substring(type_str, 0, 1) == "("
@@ -181,6 +186,27 @@ fn is_arithmetic_op_infer(op: string) -> boolean {
     op == "+" or op == "-" or op == "*" or op == "/" or op == "%"
 }
 
+fn is_unsigned_infer(t: string) -> boolean {
+    t == "uint64" or t == "uint32" or t == "uint16" or t == "uint8"
+}
+
+fn unsigned_or_uint64(t: string) -> string {
+    case is_unsigned_infer(t) of {
+        true -> t;
+        false -> "uint64"
+    }
+}
+
+fn register_marker_value_type(v: string) -> string {
+    case v of {
+        "R8" -> "uint8";
+        "R16" -> "uint16";
+        "R32" -> "uint32";
+        "R64" -> "uint64";
+        _: string -> ""
+    }
+}
+
 fn is_bitwise_op_infer(op: string) -> boolean {
     op == "bor" or op == "band" or op == "shl" or op == "shr"
 }
@@ -209,11 +235,18 @@ fn negate_builtin_operand_type(name: string) -> string {
 
 // SIR lowering for kind-3 binary: when enclosing context fixes the numeric type (float* or narrow int),
 // use it so literals don't default to int64 and get int64 prims with a W/S/D/H dest from the caller.
+fn bitwise_operand_type_infer(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, enclosing_expected: string) -> string {
+    case is_unsigned_infer(enclosing_expected) of {
+        true -> enclosing_expected;
+        false -> unsigned_or_uint64(infer_binop_left_preferred_operand_type(expr, context))
+    }
+}
+
 fn infer_binop_operand_type_for_sir(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }, enclosing_expected: string) -> string {
     node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
     op: string <- node.value;
     case is_bitwise_op_infer(op) of {
-        true -> "uint64";
+        true -> bitwise_operand_type_infer(expr, context, enclosing_expected);
         false -> case is_arithmetic_op_infer(op) of {
             true -> case is_floatish_type_infer(enclosing_expected) of {
                 true -> enclosing_expected;
@@ -291,7 +324,7 @@ fn infer_binary_expr_type(expr: { nodes: List[{ kind: int64, value: string, name
             }
         };
         false -> case is_bitwise_op_infer(op) of {
-            true -> "uint64";
+            true -> unsigned_or_uint64(infer_binop_left_preferred_operand_type(expr, context));
             false -> case is_comparison_op_infer(op) of {
             true -> "boolean";
             false -> case is_logical_op_infer(op) of {
@@ -322,6 +355,7 @@ fn infer_actor_runtime_return(name: string) -> string {
         "get_efficiency_cores" -> "List[int64,normal]";
         "get_performance_cores" -> "List[int64,normal]";
         "get_core_capabilities" -> "{ id: int64, core_type: atom, capabilities: List[string,normal], frequency_mhz: int64 }";
+        "heap_used" -> "int64";
         _: string -> ""
     }
 }
@@ -398,7 +432,10 @@ fn infer_string_builtin_return(name: string) -> string {
 
 fn infer_call_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, context: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } }) -> string {
     node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
-    call_base: string <- type_checker_core@user_call_base_function_name(node.name);
+    call_base: string <- case type_checker_core@call_name_is_module_qualified(node.name) of {
+        true -> "";
+        false -> node.name
+    };
     bt: string <- type_checker_builtin_signatures@builtin_return_type(call_base);
     case length_bytes(bt) > 0 of {
         true -> bt;
@@ -446,7 +483,10 @@ fn infer_expr_type(expr: { nodes: List[{ kind: int64, value: string, name: strin
                 }
             }
         };
-        2 -> infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
+        2 -> case register_marker_value_type(node.value) == "" of {
+            true -> infer_expr_type(parser_ast@expr_at(expr, node.inner), context);
+            false -> register_marker_value_type(node.value)
+        };
         3 -> infer_binary_expr_type(expr, context);
         4 -> infer_call_expr_type(expr, context);
         5 -> "atom";
@@ -776,7 +816,7 @@ fn pattern_types_match_rhs(bindings: List[{ name: string, path: string, type_str
     pattern_type: string <- build_pattern_type_from_bindings(bindings);
     rhs_trimmed: string <- tuple_trim(rhs_type);
     pattern_trimmed: string <- tuple_trim(pattern_type);
-    case types_equal_surface(rhs_trimmed, pattern_trimmed) of {
+    case types_equal_surface(rhs_trimmed, pattern_trimmed) or type_checker_memory_regions@device_window_types_equal_modulo_lifetime(rhs_trimmed, pattern_trimmed) of {
         true -> type_checker_core@type_check_ok();
         false -> type_checker_core@type_check_err("E2005", location, concat(concat("tuple decomposition pattern type ", concat(pattern_trimmed, " does not match RHS type ")), rhs_trimmed), "sect4")
     }
@@ -1223,16 +1263,6 @@ fn case_all_digits_from(s: string, i: int64) -> boolean {
     }
 }
 
-fn case_string_is_signed_int_literal(s: string) -> boolean {
-    case length_bytes(s) == 0 of {
-        true -> false;
-        false -> case substring(s, 0, 1) == "-" of {
-            true -> case length_bytes(s) < 2 of { true -> false; false -> case_all_digits_from(s, 1) };
-            false -> case_all_digits_from(s, 0)
-        }
-    }
-}
-
 // Float literal pattern text: digit+ "." digit+ [("e"|"E") ["+"|"-"] digit+], optional leading "-"
 // (lexer_float_literals.silica's decimal_float / scientific_float grammar; no float32/float16 suffix,
 // matching plain literal syntax). case_pattern_matches_scrutinee's pattern_kind 4 arm already accepts
@@ -1543,7 +1573,7 @@ fn case_parse_pattern(pat_str: string) -> { is_valid: boolean, pattern_kind: int
                                                                                 }
                                                                             }
                                                                         };
-                                                                        false -> case case_string_is_signed_int_literal(t) or case_string_is_signed_float_literal(t) of {
+                                                                        false -> case string_parse@is_integer_literal_text(t) or case_string_is_signed_float_literal(t) of {
                                                                             true -> { is_valid: true, pattern_kind: 4, bool_lit: false, str_lit: "", int_lit_str: t, bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
                                                                             false -> { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" }
                                                                         }
@@ -1566,6 +1596,12 @@ fn case_parse_pattern(pat_str: string) -> { is_valid: boolean, pattern_kind: int
     }
 }
 
+// A field binding in a record pattern is a bare name (`{ x: n }`); `{ x: n: int64 }` and
+// `{ x: _: int64 }` are not record patterns.
+fn record_field_subpat_is_typed_binding(pi: { is_valid: boolean, pattern_kind: int64, bool_lit: boolean, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string }) -> boolean {
+    pi.pattern_kind == 2 or (pi.pattern_kind == 3 and length_bytes(pi.bind_type) > 0)
+}
+
 fn case_parse_record_field_subpat(sub: string, field_ty: string) -> { is_valid: boolean, pattern_kind: int64, bool_lit: boolean, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } {
     inv: { is_valid: boolean, pattern_kind: int64, bool_lit: boolean, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } <- { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
     s: string <- strip_spaces(sub);
@@ -1575,7 +1611,7 @@ fn case_parse_record_field_subpat(sub: string, field_ty: string) -> { is_valid: 
             true -> { is_valid: true, pattern_kind: 3, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "_", bind_type: field_ty, list_tail_name: "", list_tail_type: "" };
             false -> {
                 base: { is_valid: boolean, pattern_kind: int64, bool_lit: boolean, str_lit: string, int_lit_str: string, bind_name: string, bind_type: string, list_tail_name: string, list_tail_type: string } <- case_parse_pattern(s);
-                case base.is_valid of {
+                case base.is_valid and record_field_subpat_is_typed_binding(base) == false of {
                     true -> base;
                     false -> case case_simple_ident_token(s) of {
                         true -> { is_valid: true, pattern_kind: 2, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: s, bind_type: field_ty, list_tail_name: "", list_tail_type: "" };
@@ -1682,7 +1718,7 @@ fn case_pattern_matches_scrutinee(pi: { is_valid: boolean, pattern_kind: int64, 
             5 -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
             6 -> case_list_cons_matches(pi, scrutinee_type);
             7 -> types_equal_surface(scrutinee_type, "atom") or types_equal_surface(scrutinee_type, "failure_reason") or case_atom_union_contains(scrutinee_type, pi.str_lit) or (type_checker_recursive_tuples@is_ref_optional_type(scrutinee_type) and pi.str_lit == "none");
-            8 -> case_record_pat_matches_full(pi.bind_type, scrutinee_type);
+            8 -> case_record_pat_matches_full(pi.bind_type, case_record_variant_for_pattern(pi.bind_type, scrutinee_type));
             9 -> case_tuple_pat_matches_full(pi.bind_type, case_tuple_variant_for_pattern(pi.bind_type, scrutinee_type));
             10 -> types_equal_surface(scrutinee_type, "char");
             _: int64 -> false
@@ -1753,7 +1789,7 @@ fn case_record_pattern_has_nonwildcard_bind_loop(rem: string, scrutinee_type: st
                                 false -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type);
                                 true -> case spi.pattern_kind of {
                                     2 -> case length_bytes(spi.bind_name) > 0 and spi.bind_name != "_" of { true -> true; false -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type) };
-                                    8 -> case case_record_pattern_has_nonwildcard_bind_loop(type_checker_record_types@record_case_inner_body(spi.bind_type), fty) of { true -> true; false -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type) };
+                                    8 -> case case_record_pattern_has_nonwildcard_bind_loop(type_checker_record_types@record_case_inner_body(spi.bind_type), case_record_variant_for_pattern(spi.bind_type, fty)) of { true -> true; false -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type) };
                                     _: int64 -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type)
                                 }
                             }
@@ -1785,7 +1821,7 @@ fn case_extend_record_fields_rem(context: { env: List[{ name: string, type_id: i
                                 true -> {
                                     ctx2: { env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], interner: { nodes: List[{ kind: int64, arg_a: int64, arg_b: int64, arg_c: int64, buf_size_is_name: boolean }, mem(normal)], by_key: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, name_lexemes: List[string, mem(normal)], next_id: int64, seq_nil_id: int64 } } <- case spi.pattern_kind of {
                                         2 -> type_checker_core@context_add_symbol_surface(context, spi.bind_name, spi.bind_type, parser_ast@empty_effect_name_list(), "");
-                                        8 -> case_extend_record_fields_rem(context, type_checker_record_types@record_case_inner_body(spi.bind_type), fty);
+                                        8 -> case_extend_record_fields_rem(context, type_checker_record_types@record_case_inner_body(spi.bind_type), case_record_variant_for_pattern(spi.bind_type, fty));
                                         _: int64 -> context
                                     };
                                     case_extend_record_fields_rem(ctx2, rest, scrutinee_type)
@@ -1805,7 +1841,7 @@ fn case_pattern_has_named_binding(pi: { is_valid: boolean, pattern_kind: int64, 
         true -> case pi.pattern_kind of {
             2 -> length_bytes(pi.bind_name) > 0;
             6 -> (length_bytes(pi.bind_name) > 0 and pi.bind_name != "_") or (length_bytes(pi.list_tail_name) > 0 and pi.list_tail_name != "_");
-            8 -> case_record_pattern_has_nonwildcard_bind_loop(type_checker_record_types@record_case_inner_body(pi.bind_type), scrutinee_type);
+            8 -> case_record_pattern_has_nonwildcard_bind_loop(type_checker_record_types@record_case_inner_body(pi.bind_type), case_record_variant_for_pattern(pi.bind_type, scrutinee_type));
             9 -> {
                 p_inner: string <- substring(pi.bind_type, 1, length_bytes(pi.bind_type) - 1);
                 st: string <- case_tuple_variant_for_pattern(pi.bind_type, scrutinee_type);
@@ -1866,7 +1902,7 @@ fn case_extend_context_for_pattern(context: { env: List[{ name: string, type_id:
             };
             8 -> case case_pattern_matches_scrutinee(pi, scrutinee_type) of {
                 false -> context;
-                true -> case_extend_record_fields_rem(context, type_checker_record_types@record_case_inner_body(pi.bind_type), scrutinee_type)
+                true -> case_extend_record_fields_rem(context, type_checker_record_types@record_case_inner_body(pi.bind_type), case_record_variant_for_pattern(pi.bind_type, scrutinee_type))
             };
             // Tuple pattern `(:ok, n: int64)`: each named element binds its declared type (§3.5
             // tuple_pattern, §4.1.7 tagged tuples); literal and wildcard elements bind nothing.
@@ -2007,6 +2043,254 @@ fn case_sum_variant_scan(pat_str: string, rest: string) -> string {
             true -> "";
             false -> case_sum_variant_scan(pat_str, substring(rest, bar + 1, length_bytes(rest)))
         }
+    }
+}
+
+// The record type a record case pattern is checked against. A record scrutinee is itself; an inline
+// sum type with record variants (`:none | { id: uint32 }`, silica-specification §3.4.2, §15.4.8)
+// contributes the first record variant the pattern matches; "" when none does.
+fn case_record_variant_for_pattern(pat_str: string, scrutinee_type: string) -> string {
+    st: string <- strip_spaces(scrutinee_type);
+    case case_sum_bar_depth0(st, 0, 0) < 0 of {
+        true -> st;
+        false -> case_sum_record_variant_scan(pat_str, st)
+    }
+}
+
+fn case_sum_record_variant_scan(pat_str: string, rest: string) -> string {
+    head: string <- sum_variant_head(rest);
+    case type_checker_record_types@record_type_starts(head) and case_record_pat_matches_full(pat_str, head) of {
+        true -> head;
+        false -> case case_sum_bar_depth0(rest, 0, 0) < 0 of {
+            true -> "";
+            false -> case_sum_record_variant_scan(pat_str, sum_variant_rest(rest))
+        }
+    }
+}
+
+// The record variant of an inline sum type a struct literal builds: the first record variant whose
+// fields are exactly the literal's; "" when none is.
+fn struct_literal_sum_variant(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, rest: string) -> string {
+    head: string <- sum_variant_head(rest);
+    case type_checker_record_types@record_type_starts(head) and struct_literal_fits_record(expr, head, 0) of {
+        true -> head;
+        false -> case case_sum_bar_depth0(rest, 0, 0) < 0 of {
+            true -> "";
+            false -> struct_literal_sum_variant(expr, sum_variant_rest(rest))
+        }
+    }
+}
+
+fn struct_literal_fits_record(expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, rec_t: string, seen: int64) -> boolean {
+    node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] } <- parser_ast@expr_root_node(expr);
+    case node.kind == -1 or node.kind == 999 of {
+        true -> type_checker_record_types@count_record_fields(rec_t) == seen;
+        false -> case node.kind == 21 and struct_literal_field_fits(parser_ast@expr_root_node(parser_ast@expr_at(expr, node.inner)), type_checker_record_types@find_field_type_in_record(rec_t, node.name)) of {
+            true -> struct_literal_fits_record(parser_ast@expr_at(expr, node.right_expr), rec_t, seen + 1);
+            false -> false
+        }
+    }
+}
+
+// A literal field fits a variant's field when the field exists and, for an atom literal against an
+// atom-typed field (`op: :neg` against `op: :add`), the atom is one of the field's atoms.
+fn struct_literal_field_fits(value_node: { kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, ft: string) -> boolean {
+    fts: string <- strip_spaces(ft);
+    case length_bytes(fts) == 0 of {
+        true -> false;
+        false -> case value_node.kind == 5 and substring(fts, 0, 1) == ":" of {
+            true -> case_atom_union_contains(fts, substring(value_node.value, 1, length_bytes(value_node.value)));
+            false -> true
+        }
+    }
+}
+
+// E2009 (silica-specification §3.4.2): the record variants of one sum type may not share a field
+// name with different types; a shared name with the same type is legal, and a record pattern then
+// matches the first variant whose fields it names. Every sum written inside the type is checked:
+// a record field, a tuple element, a bracketed element.
+fn validate_sum_record_variants(type_str: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    t: string <- strip_spaces(type_str);
+    case contains(t, "}|") and contains(t, "|{") of {
+        false -> type_checker_core@type_check_ok();
+        true -> sum_record_variants_check(t, location)
+    }
+}
+
+fn sum_record_variants_check(t: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    case case_sum_bar_depth0(t, 0, 0) >= 0 of {
+        true -> {
+            conflict: string <- sum_record_variants_conflict(t, t);
+            case length_bytes(conflict) == 0 of {
+                true -> sum_variants_check_each(t, location);
+                false -> type_checker_core@type_check_err("E2009", location, conflict, "sect3.4.2")
+            }
+        };
+        false -> case type_checker_record_types@record_type_starts(t) of {
+            true -> record_fields_check(type_checker_record_types@record_case_inner_body(t), location);
+            false -> case length_bytes(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, length_bytes(t) - 1, length_bytes(t)) == ")" of {
+                true -> type_elems_check(substring(t, 1, length_bytes(t) - 1), location);
+                false -> {
+                    open: int64 <- byte_index_from(t, "[", 0);
+                    case open > 0 and substring(t, length_bytes(t) - 1, length_bytes(t)) == "]" of {
+                        true -> type_elems_check(substring(t, open + 1, length_bytes(t) - 1), location);
+                        false -> type_checker_core@type_check_ok()
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn byte_index_from(t: string, needle: string, i: int64) -> int64 {
+    case i >= length_bytes(t) of {
+        true -> -1;
+        false -> case substring(t, i, i + 1) == needle of {
+            true -> i;
+            false -> byte_index_from(t, needle, i + 1)
+        }
+    }
+}
+
+fn sum_variants_check_each(rest: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    here: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- sum_record_variants_check(sum_variant_head(rest), location);
+    case here.is_ok of {
+        false -> here;
+        true -> case case_sum_bar_depth0(rest, 0, 0) < 0 of {
+            true -> type_checker_core@type_check_ok();
+            false -> sum_variants_check_each(sum_variant_rest(rest), location)
+        }
+    }
+}
+
+fn record_fields_check(rem: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    r: string <- strip_spaces(rem);
+    case length_bytes(r) == 0 of {
+        true -> type_checker_core@type_check_ok();
+        false -> {
+            (seg: string, rest: string) <- type_checker_record_types@record_case_field_step(r);
+            (fname: string, fty: string) <- type_checker_record_types@record_field_segment_name_sub(seg);
+            here: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- case length_bytes(fname) == 0 of {
+                true -> type_checker_core@type_check_ok();
+                false -> sum_record_variants_check(fty, location)
+            };
+            case here.is_ok of {
+                false -> here;
+                true -> record_fields_check(rest, location)
+            }
+        }
+    }
+}
+
+fn type_elems_check(rem: string, location: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+    r: string <- strip_spaces(rem);
+    case length_bytes(r) == 0 of {
+        true -> type_checker_core@type_check_ok();
+        false -> {
+            (seg: string, rest: string) <- type_checker_record_types@record_case_field_step(r);
+            here: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- sum_record_variants_check(seg, location);
+            case here.is_ok of {
+                false -> here;
+                true -> type_elems_check(rest, location)
+            }
+        }
+    }
+}
+
+// The first field two record variants of sum_t type differently, as the E2009 message; "" when none.
+fn sum_record_variants_conflict(sum_t: string, rest: string) -> string {
+    head: string <- sum_variant_head(rest);
+    tail: string <- sum_variant_rest(rest);
+    here: string <- case type_checker_record_types@record_type_starts(head) of {
+        true -> record_fields_conflict(sum_t, type_checker_record_types@record_case_inner_body(head), tail);
+        false -> ""
+    };
+    case length_bytes(here) > 0 or length_bytes(tail) == 0 of {
+        true -> here;
+        false -> sum_record_variants_conflict(sum_t, tail)
+    }
+}
+
+fn record_fields_conflict(sum_t: string, rem: string, rest: string) -> string {
+    r: string <- strip_spaces(rem);
+    case length_bytes(r) == 0 of {
+        true -> "";
+        false -> {
+            (seg: string, tail: string) <- type_checker_record_types@record_case_field_step(r);
+            (fname: string, fty: string) <- type_checker_record_types@record_field_segment_name_sub(seg);
+            here: string <- case length_bytes(fname) == 0 of {
+                true -> "";
+                false -> field_conflict_in_variants(sum_t, fname, fty, rest)
+            };
+            case length_bytes(here) > 0 of {
+                true -> here;
+                false -> record_fields_conflict(sum_t, tail, rest)
+            }
+        }
+    }
+}
+
+fn field_conflict_in_variants(sum_t: string, fname: string, fty: string, rest: string) -> string {
+    case length_bytes(rest) == 0 of {
+        true -> "";
+        false -> {
+            head: string <- sum_variant_head(rest);
+            other: string <- case type_checker_record_types@record_type_starts(head) of {
+                true -> type_checker_record_types@find_field_type_in_record(head, fname);
+                false -> ""
+            };
+            case length_bytes(other) > 0 and variant_field_types_equal(fty, other) == false of {
+                true -> concat(concat(concat(concat(concat(concat(concat("record variants of the sum type ", sum_t), " give the field "), fname), " different types: "), fty), " and "), other);
+                false -> field_conflict_in_variants(sum_t, fname, fty, sum_variant_rest(rest))
+            }
+        }
+    }
+}
+
+// A field holding an atom literal or a sum of atom literals has the type atom (spec §15.4.8:
+// `{ op: :add, n: int64 } | { op: :neg, n: int64 }`), so two variants may give it different atoms.
+fn variant_field_types_equal(a: string, b: string) -> boolean {
+    case field_type_is_atom(a) and field_type_is_atom(b) of {
+        true -> true;
+        false -> types_equal_surface(a, b)
+    }
+}
+
+fn field_type_is_atom(t: string) -> boolean {
+    parts: string <- case_unwrap_atom_union_parens(t);
+    case parts == "atom" of {
+        true -> true;
+        false -> length_bytes(parts) > 0 and substring(parts, 0, 1) == ":" and atom_union_all_atoms(parts)
+    }
+}
+
+fn atom_union_all_atoms(parts: string) -> boolean {
+    bar: int64 <- case_find_union_bar(parts, 0);
+    case bar < 0 of {
+        true -> length_bytes(strip_spaces(parts)) > 1 and substring(strip_spaces(parts), 0, 1) == ":";
+        false -> {
+            head: string <- strip_spaces(substring(parts, 0, bar));
+            case length_bytes(head) > 1 and substring(head, 0, 1) == ":" of {
+                true -> atom_union_all_atoms(substring(parts, bar + 1, length_bytes(parts)));
+                false -> false
+            }
+        }
+    }
+}
+
+fn sum_variant_head(rest: string) -> string {
+    bar: int64 <- case_sum_bar_depth0(rest, 0, 0);
+    case bar < 0 of {
+        true -> strip_spaces(rest);
+        false -> strip_spaces(substring(rest, 0, bar))
+    }
+}
+
+fn sum_variant_rest(rest: string) -> string {
+    bar: int64 <- case_sum_bar_depth0(rest, 0, 0);
+    case bar < 0 of {
+        true -> "";
+        false -> substring(rest, bar + 1, length_bytes(rest))
     }
 }
 

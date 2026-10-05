@@ -1,0 +1,56 @@
+// A supervised child whose initial state is a tuple, restarted three times through
+// call_supervisor :restart_child. Every spawn of the row hands the child its own copy of the
+// spec's init (rt_supervisors.S ROW_INIT_BYTES; on the host the init lives in the supervisor's
+// arena), so each restarted child answers 31 then 32 from (10, 20) again, and the previous
+// child's changed state never leaks into the next.
+
+impl CompositeInitRestartSup for Supervisor;
+
+fn worker(msg: int64, state: (int64, int64)) -> (:reply, int64, (int64, int64)) {
+    (a: int64, b: int64) <- state;
+    (:reply, a + b + msg, (a + msg, b))
+}
+
+fn init(initial_state: (int64, int64)) -> (
+    { strategy: :one_for_one | :one_for_all | :rest_for_one, allowed_restart_count: int64, restarts_time_frame: int64 },
+    List[{ id: atom, agent_type: :worker | :supervisor, initial_state: (int64, int64), behavior: fn(msg: int64, state: (int64, int64)) -> (:reply, int64, (int64, int64)), restart: :permanent | :temporary | :transient, shutdown: int64, flavor: :plain | :dangerous }, mem(normal)]
+) {
+    sequence proc[mem(normal)]
+        flags: { strategy: :one_for_one | :one_for_all | :rest_for_one, allowed_restart_count: int64, restarts_time_frame: int64 } <- { strategy: :one_for_one, allowed_restart_count: 20, restarts_time_frame: 10 };
+        children: List[{ id: atom, agent_type: :worker | :supervisor, initial_state: (int64, int64), behavior: fn(msg: int64, state: (int64, int64)) -> (:reply, int64, (int64, int64)), restart: :permanent | :temporary | :transient, shutdown: int64, flavor: :plain | :dangerous }, mem(normal)] <- [
+            { id: :composite_init_worker, agent_type: :worker, initial_state: initial_state, behavior: worker, restart: :permanent, shutdown: 0, flavor: :plain }
+        ]
+    produces pure (flags, children) end
+}
+
+fn restart_n(sup: supervisor_ref, n: int64) -> int64 {
+    sequence proc[concurrency]
+        r: { tag: :child_started | :ok | :children | :count | :child_info | :error, child: actor_ref, status: atom, children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)], count: int64, child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, error: atom } <- call_supervisor(sup, { op: :restart_child, id: :composite_init_worker } impl SupervisorMessage {});
+        v1: int64 <- call(r.child, 1 impl ActorMessage {});
+        v2: int64 <- call(r.child, 1 impl ActorMessage {});
+        bad: int64 <- case v1 == 31 and v2 == 32 of {
+            true -> 0;
+            false -> 1
+        };
+        left: int64 <- case n == 1 of {
+            true -> bad;
+            false -> bad + restart_n(sup, n - 1)
+        }
+    produces
+        pure left
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sup: supervisor_ref <- spawn_registered_supervisor(CompositeInitRestartSup, (10, 20), :composite_init_restart_sup, stack_policy(0, :keep_last_message));
+        got: { tag: :child_started | :ok | :children | :count | :child_info | :error, child: actor_ref, status: atom, children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)], count: int64, child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, error: atom } <- call_supervisor(sup, { op: :get_child, id: :composite_init_worker } impl SupervisorMessage {});
+        first: int64 <- call(got.child, 5 impl ActorMessage {});
+        bad: int64 <- restart_n(sup, 3);
+        _: atom <- print_int64(first);
+        println("");
+        _: atom <- print_int64(bad);
+        println("");
+        println("done")
+    produces pure 0 end
+}

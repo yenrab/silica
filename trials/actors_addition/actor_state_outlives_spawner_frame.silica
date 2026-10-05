@@ -1,0 +1,51 @@
+// Item B (esp32s3_memory_budget_plan.md §2): a composite initial state is moved from the spawner into
+// the new actor. The spawner is itself an actor whose behaviour builds the (a, b) state, spawns the
+// child and returns; its frame is then reused by its own next dispatches before the child is asked
+// to read the state. Expected: 7 11 18, status 0.
+
+fn child(msg: atom, state: (int64, int64)) -> (:reply, int64, (int64, int64)) {
+    case state of {
+        (a: int64, b: int64) -> case msg of {
+            :first -> (:reply, a, state);
+            :second -> (:reply, b, state);
+            _: atom -> (:reply, a + b, state)
+        }
+    }
+}
+
+fn scratch(n: int64, acc: int64) -> int64 {
+    case n <= 0 of {
+        true -> acc;
+        false -> scratch(n - 1, acc + n)
+    }
+}
+
+fn spawner(msg: int64, state: int64) -> (:reply, actor_ref, int64) {
+    sequence proc[concurrency]
+        pair: (int64, int64) <- (msg, msg + 4);
+        c: actor_ref <- spawn(pair, child, stack_policy(0, :keep_last_message));
+        churn: int64 <- scratch(30, 0)
+    produces
+        pure (:reply, c, state + churn)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        s: actor_ref <- spawn(0, spawner, stack_policy(0, :keep_last_message));
+        c: actor_ref <- call(s, 7 impl ActorMessage {});
+        _: actor_ref <- call(s, 100 impl ActorMessage {});
+        _: actor_ref <- call(s, 200 impl ActorMessage {});
+        a: int64 <- call(c, :first impl ActorMessage {});
+        print_int64(a);
+        println("");
+        b: int64 <- call(c, :second impl ActorMessage {});
+        print_int64(b);
+        println("");
+        t: int64 <- call(c, :sum impl ActorMessage {});
+        print_int64(t);
+        println("")
+    produces
+        pure 0
+    end
+}

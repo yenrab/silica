@@ -15,9 +15,13 @@ THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 include $(THIS_DIR)emit_target.mk
 
 BINARIES_DIR := $(abspath $(THIS_DIR)../../binaries)
-# seed-compiler, not silica-compiler: this tree must be built by a known-good seed, and
-# silica-compiler tracks the newest build, which may be a selfhost that cannot build itself.
+# ESP32-S3 cross compiler is built by the latest Mac build (binaries/silica-compiler) because the
+# seed is too old for the board pack's sum return types; every other target is built by the seed.
+ifeq ($(TARGET),ESP32-S3_raw)
+SILICA_COMPILER ?= $(BINARIES_DIR)/silica-compiler
+else
 SILICA_COMPILER ?= $(BINARIES_DIR)/seed-compiler
+endif
 SILICA_LINK_SH := $(abspath $(THIS_DIR)../../trials/silica_link.sh)
 STDLIB_DS := $(abspath $(THIS_DIR)../stdlib/data_structures)
 # POLICY: src links NO Rust libraries. The bootstrap crate's staticlib
@@ -122,9 +126,9 @@ all: clean build
 
 check-seed:
 	@if [ ! -x "$(SILICA_COMPILER)" ]; then \
-		echo "Missing seed host: $(SILICA_COMPILER)"; \
-		echo "Link it to a known-good seed, newest first (lowest NNNNNN):"; \
-		echo "  (cd $(BINARIES_DIR) && ln -sfn silica-<NNNNNN>-seed-<platform> seed-compiler)"; \
+		echo "Missing compiler host: $(SILICA_COMPILER)"; \
+		echo "Link it to a known-good compiler, newest first (lowest NNNNNN):"; \
+		echo "  (cd $(BINARIES_DIR) && ln -sfn silica-<NNNNNN>-<platform> $$(basename $(SILICA_COMPILER)))"; \
 		echo "Available seeds:"; \
 		ls "$(BINARIES_DIR)" | grep -E '^silica-[0-9]{6}-seed-[a-z0-9-]+$$' | sort | sed 's/^/  /' || true; \
 		exit 1; \

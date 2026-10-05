@@ -673,7 +673,7 @@ fn actor_rt_pid_registry_chunk(table: { is_empty: boolean, index_map: { root: re
     p0: string <- "
 # PID registry primitive actor.
 # State layout: 3840 B calloc block, occ[240] at +0, actor_ref words[240] at +1920.
-# Message record layout follows value-flat record emission: op@0, name@8, pid@16.
+# Message record layout follows record emission: shape word@0, op@8, name@16, pid@24.
 # Behavior return layout follows actor runtime convention: tag@0, reply@8, next_state@16.
 	.globl	silica_rt_pid_registry_beh
 	.p2align	2
@@ -686,11 +686,11 @@ silica_rt_pid_registry_beh:
 	sub	rsp, 80
 	mov	QWORD PTR [rbp - 8], rdi
 	mov	QWORD PTR [rbp - 16], rsi
-	mov	rax, QWORD PTR [rdi]
-	mov	QWORD PTR [rbp - 24], rax
 	mov	rax, QWORD PTR [rdi + 8]
-	mov	QWORD PTR [rbp - 32], rax
+	mov	QWORD PTR [rbp - 24], rax
 	mov	rax, QWORD PTR [rdi + 16]
+	mov	QWORD PTR [rbp - 32], rax
+	mov	rax, QWORD PTR [rdi + 24]
 	mov	QWORD PTR [rbp - 40], rax
 	mov	edi, 1
 	mov	esi, 24
@@ -804,6 +804,9 @@ fn actor_rt_asm_phase_i_chunk(table: { is_empty: boolean, index_map: { root: ref
 # Global slot for the dangerous PID registry actor_ref (written by silica_rt_register_dangerous_actor_named).
 .globl	silica_dangerous_pid_registry_ref
 .comm	silica_dangerous_pid_registry_ref,8,8
+# Global slot for the device PID registry actor_ref (written by silica_rt_register_device_actor_named).
+.globl	silica_device_pid_registry_ref
+.comm	silica_device_pid_registry_ref,8,8
 	.text
 ",
 concat(actor_rt_pid_registry_chunk(table),
@@ -865,6 +868,36 @@ silica_dangerous_pid_registry_init:
 	mov	rbp, rsp
 	call	silica_rt_dangerous_pid_registry_init_spawn
 	lea	rax, [rip + silica_dangerous_pid_registry_ref]
+	mov	QWORD PTR [rax], rdi
+	xor	edi, edi
+	leave
+	ret
+# Spawn path for the global device PID registry primitive actor.
+	.globl	silica_rt_device_pid_registry_init_spawn
+	.p2align	2
+silica_rt_device_pid_registry_init_spawn:
+	push	rbp
+	mov	rbp, rsp
+	mov	edi, 1
+	mov	esi, 3840
+	call	calloc
+	mov	rdi, rax
+	lea	rsi, [rip + silica_rt_pid_registry_beh]
+	xor	edx, edx
+	xor	ecx, ecx
+	xor	r8d, r8d
+	call	silica_rt_actor_spawn
+	leave
+	ret
+# silica_device_pid_registry_init: called once at program start from emitter-injected main prologue.
+# Stores the spawned device registry actor_ref in silica_device_pid_registry_ref.
+	.globl	silica_device_pid_registry_init
+	.p2align	2
+silica_device_pid_registry_init:
+	push	rbp
+	mov	rbp, rsp
+	call	silica_rt_device_pid_registry_init_spawn
+	lea	rax, [rip + silica_device_pid_registry_ref]
 	mov	QWORD PTR [rax], rdi
 	xor	edi, edi
 	leave

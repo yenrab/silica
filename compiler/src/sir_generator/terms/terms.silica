@@ -23,6 +23,7 @@ use boolean_terms;
 use checked_int64_calls;
 use collection_constructor_calls;
 use collection_result_calls;
+use sir_device_calls;
 use identifiers;
 use literals;
 use memory_region_calls;
@@ -61,7 +62,7 @@ fn expr_to_sir_in_let_body(context: { env: List[{ name: string, type_name: strin
             true -> sir_ast@make_sir_term(0, "fn_ptr", type_checker_expressions_helpers@expr_name(expr), "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
             false -> identifiers@expr_to_sir_with_bound(context, expr, bound_name, bound_type)
         };
-        2 -> expr_to_sir_in_let_body(context, type_checker_expressions_helpers@expr_child_inner(expr), bound_name, bound_type, expected_type);
+        2 -> expr_to_sir_in_let_body(context, type_checker_expressions_helpers@expr_child_inner(expr), bound_name, bound_type, sir_device_calls@marker_expected(expr, expected_type));
         5 -> case type_checker_expressions_helpers@expr_value(expr) == ":none" and type_checker_recursive_tuples@is_ref_optional_type(expected_type) of {
             true -> sir_ast@make_sir_term(0, "ref_none", "0", "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
             false -> atoms@expr_to_sir(context, expr)
@@ -98,13 +99,16 @@ fn expr_to_sir_in_let_body(context: { env: List[{ name: string, type_name: strin
         };
         3 -> {
             operand_type: string <- terms_helpers@sir_infer_binop_operand_type_for_sir(expr, context, expected_type);
-            right_operand_type: string <- case terms_helpers@is_shift_op_lexeme(type_checker_expressions_helpers@expr_value(expr)) of { true -> "int64"; false -> operand_type };
+            right_operand_type: string <- case terms_helpers@is_shift_op_lexeme(type_checker_expressions_helpers@expr_value(expr)) of { true -> terms_helpers@sir_shift_amount_type(context, expr); false -> operand_type };
             left: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- expr_to_sir_in_let_body(context, type_checker_expressions_helpers@expr_child_inner(expr), bound_name, bound_type, operand_type);
             right: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- expr_to_sir_in_let_body(context, type_checker_expressions_helpers@expr_child_right(expr), bound_name, bound_type, right_operand_type);
             terms_helpers@build_prim_for_type(type_checker_expressions_helpers@expr_value(expr), left, right, operand_type, short_circuit_label_id(expr))
         };
         4 -> {
-            call_base: string <- type_checker_core@user_call_base_function_name(type_checker_expressions_helpers@expr_name(expr));
+            call_base: string <- case type_checker_core@call_name_is_module_qualified(type_checker_expressions_helpers@expr_name(expr)) of {
+                true -> "";
+                false -> type_checker_expressions_helpers@expr_name(expr)
+            };
             case terms_helpers@is_float_special_const_name(call_base) of {
                 true -> terms_helpers@build_float_special_const(call_base);
                 false -> case terms_helpers@is_float_predicate_name(call_base) of {
@@ -122,6 +126,8 @@ fn expr_to_sir_in_let_body(context: { env: List[{ name: string, type_name: strin
                 true -> terms_trait_call_lowering@build_collection_result_call_in_body(context, expr, bound_name, bound_type, expected_type, expr_to_sir_with_expected, expr_to_sir_in_let_body);
                 false -> case ordering_identity_calls@is_ordering_identity_builtin(type_checker_expressions_helpers@expr_name(expr)) of {
                 true -> terms_trait_call_lowering@build_ordering_identity_call_in_body(context, expr, bound_name, bound_type, expected_type, expr_to_sir_with_expected, expr_to_sir_in_let_body);
+                false -> case sir_device_calls@is_device_prim_call(context, expr) of {
+                true -> sir_device_calls@build_device_prim(context, expr, expected_type, expr_to_sir_with_expected);
                 false -> case memory_region_calls@is_region_builtin(type_checker_expressions_helpers@expr_name(expr)) of {
                 true -> terms_region_lowering@build_region_prim_in_body(context, expr, bound_name, bound_type, expected_type, expr_to_sir_with_expected, expr_to_sir_in_let_body);
                     false -> case actor_calls@is_actor_sir_builtin(type_checker_expressions_helpers@expr_name(expr)) of {
@@ -174,8 +180,8 @@ fn expr_to_sir_in_let_body(context: { env: List[{ name: string, type_name: strin
                             };
                             false -> case call_base == "bnot" or call_base == "not" of {
                                 true -> {
-                                    arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- expr_to_sir_in_let_body(context, type_checker_expressions_helpers@expr_child_inner(expr), bound_name, bound_type, terms_helpers@unary_keyword_operand_type(call_base));
-                                    terms_helpers@build_unary_keyword_from_sir(call_base, arg)
+                                    arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- expr_to_sir_in_let_body(context, type_checker_expressions_helpers@expr_child_inner(expr), bound_name, bound_type, terms_helpers@unary_keyword_operand_type_in(call_base, expected_type));
+                                    terms_helpers@build_unary_keyword_from_sir(call_base, arg, terms_helpers@unary_keyword_operand_type_in(call_base, expected_type))
                                 };
                                 false -> case negate_builtins@is_negate_builtin(type_checker_expressions_helpers@expr_name(expr)) of {
                                 true -> {
@@ -208,6 +214,7 @@ fn expr_to_sir_in_let_body(context: { env: List[{ name: string, type_name: strin
             }
             }
             }
+            }
         };
         19 -> terms_case_lowering@if_expr_to_sir(context, expr, expected_type, bound_name, bound_type, true, expr_to_sir_with_expected, expr_to_sir_in_let_body);
         _: int64 -> sir_ast@dummy_sir_term();
@@ -233,7 +240,7 @@ fn expr_to_sir_with_expected(context: { env: List[{ name: string, type_name: str
             true -> sir_ast@make_sir_term(0, "fn_ptr", type_checker_expressions_helpers@expr_name(expr), "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
             false -> identifiers@expr_to_sir(context, expr)
         };
-        2 -> expr_to_sir_with_expected(context, type_checker_expressions_helpers@expr_child_inner(expr), expected_type);
+        2 -> expr_to_sir_with_expected(context, type_checker_expressions_helpers@expr_child_inner(expr), sir_device_calls@marker_expected(expr, expected_type));
         5 -> case type_checker_expressions_helpers@expr_value(expr) == ":none" and type_checker_recursive_tuples@is_ref_optional_type(expected_type) of {
             true -> sir_ast@make_sir_term(0, "ref_none", "0", "", sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term());
             false -> atoms@expr_to_sir(context, expr)
@@ -267,13 +274,16 @@ fn expr_to_sir_with_expected(context: { env: List[{ name: string, type_name: str
         };
         3 -> {
             operand_type: string <- terms_helpers@sir_infer_binop_operand_type_for_sir(expr, context, expected_type);
-            right_operand_type: string <- case terms_helpers@is_shift_op_lexeme(type_checker_expressions_helpers@expr_value(expr)) of { true -> "int64"; false -> operand_type };
+            right_operand_type: string <- case terms_helpers@is_shift_op_lexeme(type_checker_expressions_helpers@expr_value(expr)) of { true -> terms_helpers@sir_shift_amount_type(context, expr); false -> operand_type };
             left: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- expr_to_sir_with_expected(context, type_checker_expressions_helpers@expr_child_inner(expr), operand_type);
             right: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- expr_to_sir_with_expected(context, type_checker_expressions_helpers@expr_child_right(expr), right_operand_type);
             terms_helpers@build_prim_for_type(type_checker_expressions_helpers@expr_value(expr), left, right, operand_type, short_circuit_label_id(expr))
         };
         4 -> {
-            call_base: string <- type_checker_core@user_call_base_function_name(type_checker_expressions_helpers@expr_name(expr));
+            call_base: string <- case type_checker_core@call_name_is_module_qualified(type_checker_expressions_helpers@expr_name(expr)) of {
+                true -> "";
+                false -> type_checker_expressions_helpers@expr_name(expr)
+            };
             case terms_helpers@is_float_special_const_name(call_base) of {
                 true -> terms_helpers@build_float_special_const(call_base);
                 false -> case terms_helpers@is_float_predicate_name(call_base) of {
@@ -291,6 +301,8 @@ fn expr_to_sir_with_expected(context: { env: List[{ name: string, type_name: str
                 true -> terms_trait_call_lowering@build_collection_result_call(context, expr, expected_type, expr_to_sir_with_expected, expr_to_sir_in_let_body);
                 false -> case ordering_identity_calls@is_ordering_identity_builtin(type_checker_expressions_helpers@expr_name(expr)) of {
                 true -> terms_trait_call_lowering@build_ordering_identity_call(context, expr, expected_type, expr_to_sir_with_expected, expr_to_sir_in_let_body);
+                false -> case sir_device_calls@is_device_prim_call(context, expr) of {
+                true -> sir_device_calls@build_device_prim(context, expr, expected_type, expr_to_sir_with_expected);
                 false -> case memory_region_calls@is_region_builtin(type_checker_expressions_helpers@expr_name(expr)) of {
                 true -> terms_region_lowering@build_region_prim(context, expr, expected_type, expr_to_sir_with_expected, expr_to_sir_in_let_body);
                 false -> case actor_calls@is_actor_sir_builtin(type_checker_expressions_helpers@expr_name(expr)) of {
@@ -343,8 +355,8 @@ fn expr_to_sir_with_expected(context: { env: List[{ name: string, type_name: str
                             };
                             false -> case call_base == "bnot" or call_base == "not" of {
                                 true -> {
-                                    arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- expr_to_sir_with_expected(context, type_checker_expressions_helpers@expr_child_inner(expr), terms_helpers@unary_keyword_operand_type(call_base));
-                                    terms_helpers@build_unary_keyword_from_sir(call_base, arg)
+                                    arg: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 } <- expr_to_sir_with_expected(context, type_checker_expressions_helpers@expr_child_inner(expr), terms_helpers@unary_keyword_operand_type_in(call_base, expected_type));
+                                    terms_helpers@build_unary_keyword_from_sir(call_base, arg, terms_helpers@unary_keyword_operand_type_in(call_base, expected_type))
                                 };
                                 false -> case negate_builtins@is_negate_builtin(type_checker_expressions_helpers@expr_name(expr)) of {
                                 true -> {
@@ -375,6 +387,7 @@ fn expr_to_sir_with_expected(context: { env: List[{ name: string, type_name: str
                 }
             }
                 }
+            }
             }
             }
             }

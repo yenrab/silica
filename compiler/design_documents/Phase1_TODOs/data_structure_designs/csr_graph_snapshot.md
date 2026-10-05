@@ -31,7 +31,7 @@ The exact field order, padding, and compiler spelling are private to one compile
 
 ```text
 {
-    region: region(R, SpaceType),
+    r: region(R, SpaceType),
     node_count: int64,
     edge_count: int64,
     adjacency_entry_count: int64,

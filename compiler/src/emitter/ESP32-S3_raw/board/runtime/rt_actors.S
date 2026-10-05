@@ -61,7 +61,15 @@
 // reason (:explicit, :stack_exhausted), tag 4) instead of corrupting memory. Release algorithms have
 // nothing to release without paging; get_actor_memory_usage reports the block sizes and a measured
 // high-water mark (the blocks are zeroed when handed out). Freed stacks, ACBs and message nodes go
-// on free lists, because the heap never frees.
+// on free lists.
+//
+// Composite state (esp32s3_memory_budget_plan.md item B). The emitted behaviour epilogue moves a
+// composite reply and a changed composite state into fresh heap blocks and calls
+// silica_rt_state_adopt once the state is installed, so ACB_STATE_OWNED marks a state block the
+// actor must give back when it ends (silica_rt_actor_exit, the one exit path every end takes); the
+// previous state goes through rt_heap.S silica_rt_state_release. A record or tuple message is a
+// heap copy the sender made (MSG_PAYLOAD_OWNED, X2 of send/cast/call); the receiver drops it once
+// its behaviour returned, unless that behaviour packed it into the new state.
 //
 // Layouts (32-bit words; the two 8-byte slots the emitted code reads keep a zero high word):
 //   ACB (256 B)   0 state(8)  8 behaviour(8)  16 alive  20 core  24 target_core (-1 none)
@@ -74,8 +82,12 @@
 //                 144 time frame  148 restart count  152 window start  156 exit reason tag
 //                 160 active call node  164 exit reason atom  168 policy word  172 wait node
 //                 176 registered name+1 (0 none)  180 requested reserve  184 free-list link
+//                 188 state owned (the state block is the actor's, freed at its end)
+//                 192 device flag (1: started by spawn_device; silica_rt_actor_mark_device)
+//                 196 fault EXCCAUSE+1 (0: no CPU exception captured)  200 fault EPC1  204 fault EXCVADDR
 //   message node (48 B)  0 next  4 kind (0 cast/send, 1 call, 2 exit notice)  8 payload(8)
 //                 16 reply set  20 caller ACB  24 reply(8)  32 ingress kind (0 payload ptr, 1 inline)
+//                 36 payload owned (a record/tuple copy the sender made; dropped after dispatch)
 //   core block (64 B)  0/4/8 ready heads (high, normal, low)  12/16/20 tails  24 current context
 //                 28 scheduler pseudo-ACB  32 busy  36 id  40/44/48 queued actors per ready queue
 //                 52/56 weighted-fair tier being served and its remaining credit
@@ -136,6 +148,11 @@
 #define ACB_REG_NAME     176
 #define ACB_RESERVE      180
 #define ACB_FREE_NEXT    184
+#define ACB_STATE_OWNED  188
+#define ACB_DEVICE       192
+#define ACB_FAULT_CAUSE  196
+#define ACB_FAULT_EPC    200
+#define ACB_FAULT_VADDR  204
 #define ACB_SIZE         256
 
 #define ST_IDLE          0
@@ -158,6 +175,7 @@
 #define MSG_CALLER       20
 #define MSG_REPLY        24
 #define MSG_INGRESS_KIND 32
+#define MSG_PAYLOAD_OWNED 36
 #define MSG_SIZE         48
 
 #define CORE_RQ_HEAD     0
@@ -357,6 +375,9 @@ silica_pid_registry_ref:
     .global silica_dangerous_pid_registry_ref
 silica_dangerous_pid_registry_ref:
     .space  8
+    .global silica_device_pid_registry_ref
+silica_device_pid_registry_ref:
+    .space  8
     .global silica_rt_root_failure_reporter
 silica_rt_root_failure_reporter:
     .space  4
@@ -373,6 +394,29 @@ silica_rt_banner_agent:
     .asciz  "\nagent_type_atom: "
 silica_rt_banner_reason:
     .asciz  "\nreason_tag:      "
+silica_rt_banner_exc:
+    .asciz  "\nexccause:        "
+silica_rt_banner_epc:
+    .asciz  "\nepc:             "
+silica_rt_banner_vaddr:
+    .asciz  "\nexcvaddr:        "
+silica_rt_banner_lp:
+    .asciz  " ("
+silica_rt_banner_rp:
+    .asciz  ")"
+silica_rt_exc_n0:  .asciz "IllegalInstruction"
+silica_rt_exc_n2:  .asciz "InstructionFetchError"
+silica_rt_exc_n3:  .asciz "LoadStoreError"
+silica_rt_exc_n6:  .asciz "IntegerDivideByZero"
+silica_rt_exc_n9:  .asciz "LoadStoreAlignment"
+silica_rt_exc_n20: .asciz "InstrFetchProhibited"
+silica_rt_exc_n28: .asciz "LoadProhibited"
+silica_rt_exc_n29: .asciz "StoreProhibited"
+    .balign 4
+silica_rt_exc_names:
+    .word 0, silica_rt_exc_n0, 2, silica_rt_exc_n2, 3, silica_rt_exc_n3, 6, silica_rt_exc_n6
+    .word 9, silica_rt_exc_n9, 20, silica_rt_exc_n20, 28, silica_rt_exc_n28, 29, silica_rt_exc_n29
+    .word -1, 0
 silica_rt_banner_sup:
     .asciz  "\nsupervisor_acb:  "
 silica_rt_banner_stack:
@@ -556,6 +600,36 @@ silica_rt_free_node:
     FREE_UNLOCK a8, a9
 1:  retw
     .size   silica_rt_free_node, . - silica_rt_free_node
+
+// silica_rt_node_release_payload(node): the message copy a cast, send or call carried goes back
+// to the heap when the node is dropped without a dispatch (a dead target, an actor's exit drain, a
+// supervisor without a behaviour).
+    .align  4
+silica_rt_node_release_payload:
+    entry   a1, 32
+    l32i    a3, a2, MSG_PAYLOAD_OWNED
+    beqz    a3, 1f
+    movi    a3, 0
+    s32i    a3, a2, MSG_PAYLOAD_OWNED
+    l32i    a10, a2, MSG_PAYLOAD
+    call8   silica_rt_free
+1:  retw
+    .size   silica_rt_node_release_payload, . - silica_rt_node_release_payload
+
+// silica_rt_state_adopt(X0 acb) -> X0 acb: the state block now in ACB_STATE is the actor's own
+// (the emitted epilogue just installed a moved copy, or spawn moved the initial state), so the
+// actor's end frees it.
+    .align  4
+    .global silica_rt_state_adopt
+    .type   silica_rt_state_adopt, @function
+silica_rt_state_adopt:
+    entry   a1, 32
+    beqz    a2, 1f
+    movi    a3, 1
+    s32i    a3, a2, ACB_STATE_OWNED
+1:  movi    a3, 0
+    retw
+    .size   silica_rt_state_adopt, . - silica_rt_state_adopt
 
 // silica_rt_zero_block(base, bytes): 4-byte granularity.
     .align  4
@@ -1184,7 +1258,17 @@ silica_rt_actor_main:
     mov     a12, a1
     call8   silica_rt_run_behaviour
     l32i    a3, a1, 24
-    l32i    a4, a3, MSG_KIND
+    // the message copy is dropped now that the behaviour has read it, unless the new state packs it
+    l32i    a4, a3, MSG_PAYLOAD_OWNED
+    beqz    a4, 42f
+    movi    a4, 0
+    s32i    a4, a3, MSG_PAYLOAD_OWNED
+    l32i    a10, a3, MSG_PAYLOAD
+    l32i    a12, a2, ACB_STATE
+    movi    a14, 0
+    call8   silica_rt_state_release
+    l32i    a3, a1, 24
+42: l32i    a4, a3, MSG_KIND
     movi    a5, 0
     s32i    a5, a2, ACB_ACTIVE_CALL
     movi    a6, 1
@@ -1199,6 +1283,8 @@ silica_rt_actor_main:
 43: SCHED_UNLOCK a8, a9
     j       6f
 5:  l32i    a10, a1, 24
+    call8   silica_rt_node_release_payload
+    l32i    a10, a1, 24
     call8   silica_rt_free_node
 6:  // dispatch boundary: a pending migration takes effect, a requested stop ends the actor, and
     // the turn is given back to the scheduler (fair share of the core, §23.1.1)
@@ -1304,11 +1390,15 @@ silica_rt_actor_exit:
     movi    a4, 0
     s32i    a4, a2, ACB_ACTIVE_CALL
     mov     a10, a3
+    call8   silica_rt_node_release_payload
+    mov     a10, a3
     call8   silica_rt_complete_death_locked
 2:  l32i    a3, a2, ACB_MB_HEAD
     beqz    a3, 4f
     l32i    a4, a3, MSG_NEXT
     s32i    a4, a2, ACB_MB_HEAD
+    mov     a10, a3
+    call8   silica_rt_node_release_payload
     l32i    a4, a3, MSG_KIND
     movi    a5, 1
     bne     a4, a5, 3f
@@ -1341,7 +1431,17 @@ silica_rt_actor_exit:
     mov     a10, a2
     mov     a11, a3
     call8   silica_rt_registry_forget
-7:  mov     a10, a2
+7:  // the state block the actor owns (silica_rt_state_adopt) goes back; a state that is still a
+    // spawner's or a row's is not the actor's to free
+    l32i    a3, a2, ACB_STATE_OWNED
+    beqz    a3, 71f
+    movi    a3, 0
+    s32i    a3, a2, ACB_STATE_OWNED
+    l32i    a10, a2, ACB_STATE
+    call8   silica_rt_free
+    movi    a3, 0
+    s32i    a3, a2, ACB_STATE
+71: mov     a10, a2
     call8   silica_rt_child_table_free
     l32i    a3, a2, ACB_ROW
     beqz    a3, 8f
@@ -1391,7 +1491,7 @@ silica_rt_actor_trap:
 9:  j       9b
     .size   silica_rt_actor_trap, . - silica_rt_actor_trap
 
-// silica_rt_actor_fault_hook(cause): called by the fatal trampoline (rt_vectors.S), on the fault
+// silica_rt_actor_fault_hook(cause, epc1, excvaddr): called by the fatal trampoline (rt_vectors.S), on the fault
 // stack with a single live window, when a CPU exception was raised while an actor was running on
 // this core. Returns 0 when the fault is the process's (main, the scheduler, no actor); otherwise
 // the actor is ended -- reason (:explicit, :stack_exhausted) tag 4 for a stack-guard hit (cause
@@ -1402,6 +1502,8 @@ silica_rt_actor_trap:
     .type   silica_rt_actor_fault_hook, @function
 silica_rt_actor_fault_hook:
     entry   a1, 32
+    mov     a12, a3                     // EPC1 and EXCVADDR (arguments 1 and 2), kept for the ACB
+    mov     a13, a4
     mov     a5, a2
     movi    a2, 0
     movi    a3, 0
@@ -1418,7 +1520,15 @@ silica_rt_actor_fault_hook:
     bne     a5, a7, 1f
     movi    a8, 4
 1:  s32i    a8, a6, ACB_REASON_TAG
-    movi    a7, 0
+    // the exception registers go into the ACB for the device-actor report (EXCCAUSE+1, so 0 means
+    // none: cause 0 is IllegalInstruction); cause codes from 1001 up are the runtime's own
+    movi    a7, 64
+    bgeu    a5, a7, 2f
+    addi    a7, a5, 1
+    s32i    a7, a6, ACB_FAULT_CAUSE
+    s32i    a12, a6, ACB_FAULT_EPC
+    s32i    a13, a6, ACB_FAULT_VADDR
+2:  movi    a7, 0
     s32i    a7, a6, ACB_ALIVE
     movi    a7, ST_FAULTED
     s32i    a7, a6, ACB_STATUS
@@ -1713,18 +1823,21 @@ silica_rt_enqueue_ingress:
     retw
     .size   silica_rt_enqueue_ingress, . - silica_rt_enqueue_ingress
 
-// silica_rt_actor_send(X0 actor, X1 message) -> 0
+// silica_rt_actor_send(X0 actor, X1 message, X2 payload owned) -> 0. X2 is 1 when the emitter
+// copied a record or tuple message into a heap block of its own (MSG_PAYLOAD_OWNED).
     .align  4
     .global silica_rt_actor_send
     .type   silica_rt_actor_send, @function
 silica_rt_actor_send:
     entry   a1, 32
     beqz    a2, 9f
+    mov     a7, a6
     l32i    a6, a2, ACB_ALIVE
     beqz    a6, 9f
     call8   silica_rt_alloc_node
     s32i    a4, a10, MSG_PAYLOAD
     s32i    a5, a10, MSG_PAYLOAD + 4
+    s32i    a7, a10, MSG_PAYLOAD_OWNED
     mov     a11, a10
     mov     a10, a2
     call8   silica_rt_enqueue_message
@@ -1733,18 +1846,20 @@ silica_rt_actor_send:
     retw
     .size   silica_rt_actor_send, . - silica_rt_actor_send
 
-// silica_rt_actor_cast(X0 actor, X1 message) -> 1 enqueued, 0 no target
+// silica_rt_actor_cast(X0 actor, X1 message, X2 payload owned) -> 1 enqueued, 0 no target
     .align  4
     .global silica_rt_actor_cast
     .type   silica_rt_actor_cast, @function
 silica_rt_actor_cast:
     entry   a1, 32
     beqz    a2, 9f
+    mov     a7, a6
     l32i    a6, a2, ACB_ALIVE
     beqz    a6, 8f
     call8   silica_rt_alloc_node
     s32i    a4, a10, MSG_PAYLOAD
     s32i    a5, a10, MSG_PAYLOAD + 4
+    s32i    a7, a10, MSG_PAYLOAD_OWNED
     mov     a11, a10
     mov     a10, a2
     call8   silica_rt_enqueue_message
@@ -1756,20 +1871,24 @@ silica_rt_actor_cast:
     retw
     .size   silica_rt_actor_cast, . - silica_rt_actor_cast
 
-// silica_rt_actor_call(X0 actor, X1 message) -> X0 reply, 0 when the target is dead or dies first.
+// silica_rt_actor_call(X0 actor, X1 message, X2 payload owned) -> X0 reply, 0 when the target is
+// dead or dies first.
 // The caller suspends (a scheduler yield point) until the target's behaviour returns its reply.
     .align  4
     .global silica_rt_actor_call
     .type   silica_rt_actor_call, @function
 silica_rt_actor_call:
-    entry   a1, 32
+    entry   a1, 48
     beqz    a2, 9f
+    s32i    a6, a1, 0
     call8   silica_rt_alloc_node
     mov     a6, a10                     // a6 = node
     movi    a7, 1
     s32i    a7, a6, MSG_KIND
     s32i    a4, a6, MSG_PAYLOAD
     s32i    a5, a6, MSG_PAYLOAD + 4
+    l32i    a7, a1, 0
+    s32i    a7, a6, MSG_PAYLOAD_OWNED
     call8   silica_rt_current
     mov     a7, a10                     // a7 = me
     s32i    a7, a6, MSG_CALLER
@@ -1809,13 +1928,15 @@ silica_rt_actor_call:
     j       3b
 8:  SCHED_UNLOCK a8, a9
     mov     a10, a6
+    call8   silica_rt_node_release_payload
+    mov     a10, a6
     call8   silica_rt_free_node
 9:  movi    a2, 0
     movi    a3, 0
     retw
     .size   silica_rt_actor_call, . - silica_rt_actor_call
 
-// Registry-keyed forms: X0 = atom (registry slot), X1 = message.
+// Registry-keyed forms: X0 = atom (registry slot), X1 = message, X2 = payload owned.
     .align  4
     .global silica_rt_actor_call_registered
     .type   silica_rt_actor_call_registered, @function
@@ -1827,6 +1948,7 @@ silica_rt_actor_call_registered:
     beqz    a10, 9f
     mov     a12, a4
     mov     a13, a5
+    mov     a14, a6
     call8   silica_rt_actor_call
     mov     a2, a10
     mov     a3, a11
@@ -1847,6 +1969,7 @@ silica_rt_actor_cast_registered:
     beqz    a10, 9f
     mov     a12, a4
     mov     a13, a5
+    mov     a14, a6
     call8   silica_rt_actor_cast
     mov     a2, a10
     mov     a3, a11
@@ -1867,6 +1990,7 @@ silica_rt_actor_cast_dangerous_registered:
     beqz    a10, 9f
     mov     a12, a4
     mov     a13, a5
+    mov     a14, a6
     call8   silica_rt_actor_cast
     mov     a2, a10
     mov     a3, a11
@@ -1875,6 +1999,30 @@ silica_rt_actor_cast_dangerous_registered:
     movi    a3, 0
     retw
     .size   silica_rt_actor_cast_dangerous_registered, . - silica_rt_actor_cast_dangerous_registered
+
+// cast_device_registered resolves only the device table (device spec §1 "Split registries"): a
+// name bound in the ordinary or dangerous table is not found here, and cast_registered never
+// finds a device worker.
+    .align  4
+    .global silica_rt_actor_cast_device_registered
+    .type   silica_rt_actor_cast_device_registered, @function
+silica_rt_actor_cast_device_registered:
+    entry   a1, 32
+    movi    a10, silica_device_pid_registry_ref
+    mov     a11, a2
+    call8   silica_rt_registry_lookup
+    beqz    a10, 9f
+    mov     a12, a4
+    mov     a13, a5
+    mov     a14, a6
+    call8   silica_rt_actor_cast
+    mov     a2, a10
+    mov     a3, a11
+    retw
+9:  movi    a2, 0
+    movi    a3, 0
+    retw
+    .size   silica_rt_actor_cast_device_registered, . - silica_rt_actor_cast_device_registered
 
 // silica_rt_actor_self() -> X0 the running actor (0 in main)
     .align  4
@@ -2018,8 +2166,9 @@ silica_rt_end_actor:
     .size   silica_rt_end_actor, . - silica_rt_end_actor
 
 // ---------------------------------------------------------------------------------------------
-// Registries. Each registry is an actor whose state is a table of REGISTRY_SLOTS actor_refs indexed
-// by atom (0 = unregistered); register_actor_named writes the table directly and the keyed call /
+// Registries. Three of them -- ordinary, dangerous (FFI) and device workers -- so a keyed cast can
+// never reach a worker of another kind. Each registry is an actor whose state is a table of
+// REGISTRY_SLOTS actor_refs indexed by atom (0 = unregistered); register_actor_named writes the table directly and the keyed call /
 // cast forms read it, as in the reference; the actor itself answers {op, name, pid} messages with
 // a (status, pid) pair.
 
@@ -2134,6 +2283,40 @@ silica_rt_register_dangerous_actor_named:
     retw
     .size   silica_rt_register_dangerous_actor_named, . - silica_rt_register_dangerous_actor_named
 
+// silica_rt_actor_mark_device(X0 actor_ref) -> X0 actor_ref: marks an actor started by spawn_device so
+// its failure report carries the hardware fault details. Emitted right after the spawn, before the
+// first message is sent. Window: an actor on the other core could fault in its init before this
+// store lands; sending to it only after the mark closes that.
+    .align  4
+    .global silica_rt_actor_mark_device
+    .type   silica_rt_actor_mark_device, @function
+silica_rt_actor_mark_device:
+    entry   a1, 32
+    beqz    a2, 9f
+    movi    a4, 1
+    s32i    a4, a2, ACB_DEVICE
+9:  movi    a3, 0
+    retw
+    .size   silica_rt_actor_mark_device, . - silica_rt_actor_mark_device
+
+    .align  4
+    .global silica_rt_register_device_actor_named
+    .type   silica_rt_register_device_actor_named, @function
+silica_rt_register_device_actor_named:
+    entry   a1, 32
+    beqz    a2, 1f
+    movi    a5, 1
+    s32i    a5, a2, ACB_DEVICE
+1:
+    movi    a10, silica_device_pid_registry_ref
+    mov     a11, a4
+    mov     a12, a2
+    call8   silica_rt_registry_store
+    movi    a2, 0
+    movi    a3, 0
+    retw
+    .size   silica_rt_register_device_actor_named, . - silica_rt_register_device_actor_named
+
 // Legacy unary register_actor(actor_ref) -> 0: the global slot belongs to the registry actor.
     .align  4
     .global silica_rt_register_actor
@@ -2157,9 +2340,9 @@ silica_rt_get_registry_actor:
     retw
     .size   silica_rt_get_registry_actor, . - silica_rt_get_registry_actor
 
-// The registry behaviour, in the emitted-function ABI: X0 = message record {op, name, pid} (three
-// 8-byte slots), X1 = state (the table), X2 = the reply tuple buffer; returns X0 = that buffer with
-// [+8] = a heap pair (status atom, actor_ref) and [+16] = the state.
+// The registry behaviour, in the emitted-function ABI: X0 = message record {op, name, pid} (its
+// shape word, then three 8-byte slots), X1 = state (the table), X2 = the reply tuple buffer;
+// returns X0 = that buffer with [+8] = a heap pair (status atom, actor_ref) and [+16] = the state.
     .align  4
     .global silica_rt_pid_registry_beh
     .type   silica_rt_pid_registry_beh, @function
@@ -2169,9 +2352,9 @@ silica_rt_pid_registry_beh:
     movi    a10, 16
     call8   silica_rt_alloc
     mov     a6, a10                     // a6 = pair
-    l32i    a3, a2, 0                   // op
-    l32i    a5, a2, 8                   // name
-    l32i    a2, a2, 16                  // pid
+    l32i    a3, a2, 8                   // op
+    l32i    a5, a2, 16                  // name
+    l32i    a2, a2, 24                  // pid
     movi    a8, ATOM_INSERT
     beq     a3, a8, 1f
     movi    a8, ATOM_LOOKUP
@@ -2284,6 +2467,21 @@ silica_dangerous_pid_registry_init:
     movi    a3, 0
     retw
     .size   silica_dangerous_pid_registry_init, . - silica_dangerous_pid_registry_init
+
+// The third registry, for device workers (device spec §1): one more REGISTRY_RESERVE-stack actor
+// and a REGISTRY_SLOTS table on a board where SRAM is scarce (esp32s3_memory_budget_plan.md).
+    .align  4
+    .global silica_device_pid_registry_init
+    .type   silica_device_pid_registry_init, @function
+silica_device_pid_registry_init:
+    entry   a1, 32
+    call8   silica_rt_actors_init
+    movi    a10, silica_device_pid_registry_ref
+    call8   silica_rt_registry_spawn
+    movi    a2, 0
+    movi    a3, 0
+    retw
+    .size   silica_device_pid_registry_init, . - silica_device_pid_registry_init
 
 // ---------------------------------------------------------------------------------------------
 // Placement (spec §15.1.2 Actor Pinning Policy, §22.10)
@@ -2440,8 +2638,8 @@ silica_rt_set_scheduler_policy:
     .size   silica_rt_set_scheduler_policy, . - silica_rt_set_scheduler_policy
 
 // ---------------------------------------------------------------------------------------------
-// Topology (spec §22.10). Records and lists are built in the emitter's layouts: a record is one
-// 8-byte slot per field; a List[T, normal] is a 24-byte handle {length, first chunk, cursor} over
+// Topology (spec §22.10). Records and lists are built in the emitter's layouts: a record is its
+// shape word then one 8-byte slot per field; a List[T, normal] is a 24-byte handle {length, first chunk, cursor} over
 // 24-byte chunks {slot 0, slot 1, next} (two 8-byte slots per chunk, rt_list.S).
 
 // silica_rt_list_from_words(count, words*) -> list handle (0 = nil); words are 8-byte slots.
@@ -2490,18 +2688,27 @@ silica_rt_list_from_words:
     retw
     .size   silica_rt_list_from_words, . - silica_rt_list_from_words
 
-// silica_rt_core_info_record(id) -> { id, core_type, capabilities, frequency_mhz } (32 B)
+// Reserved shape numbers of the records this runtime builds (emitter record_shape.silica,
+// atom_table.silica seed_actor_runtime_atoms): the word every record starts with.
+#define SHAPE_CORE_INFO        65537
+#define SHAPE_CPU_TOPOLOGY     65538
+#define SHAPE_CACHE_HIERARCHY  65541
+#define SHAPE_ACTOR_MEMORY     65543
+
+// silica_rt_core_info_record(id) -> { id, core_type, capabilities, frequency_mhz } (40 B: shape word, four slots)
     .align  4
 silica_rt_core_info_record:
     entry   a1, 32
     mov     a6, a2
-    movi    a10, 32
+    movi    a10, 40
     call8   silica_rt_alloc
-    s32i    a6, a10, 0
+    movi    a8, SHAPE_CORE_INFO
+    s32i    a8, a10, 0
+    s32i    a6, a10, 8
     srai    a6, a6, 31
-    s32i    a6, a10, 4
+    s32i    a6, a10, 12
     movi    a8, ATOM_PERFORMANCE
-    s32i    a8, a10, 8
+    s32i    a8, a10, 16
     mov     a2, a10
     movi    a3, 0
     retw
@@ -2549,13 +2756,17 @@ silica_rt_get_cpu_topology:
     mov     a11, a1
     call8   silica_rt_list_from_words
     mov     a6, a10                     // cores list
-    movi    a10, 8
+    movi    a10, 16
     call8   silica_rt_alloc
+    movi    a8, SHAPE_CACHE_HIERARCHY
+    s32i    a8, a10, 0
     mov     a7, a10                     // cache_hierarchy { levels: nil }
-    movi    a10, 24
+    movi    a10, 32
     call8   silica_rt_alloc
-    s32i    a6, a10, 0
-    s32i    a7, a10, 16
+    movi    a8, SHAPE_CPU_TOPOLOGY
+    s32i    a8, a10, 0
+    s32i    a6, a10, 8
+    s32i    a7, a10, 24
     mov     a2, a10
     movi    a3, 0
     retw
@@ -2989,6 +3200,43 @@ silica_rt_report_dec:
     retw
     .size   silica_rt_report_dec, . - silica_rt_report_dec
 
+// append the device-actor fault lines (after reason_tag) when this actor is a device actor and a
+// CPU exception was captured: exccause N (Name), epc 0x.., excvaddr 0x..
+    .align  4
+silica_rt_report_device_fault:
+    entry   a1, 32
+    l32i    a4, a2, ACB_DEVICE
+    beqz    a4, 9f
+    l32i    a5, a2, ACB_FAULT_CAUSE
+    beqz    a5, 9f
+    addi    a5, a5, -1
+    movi    a10, silica_rt_banner_exc
+    call8   silica_rt_report_puts
+    mov     a10, a5
+    call8   silica_rt_report_dec
+    movi    a4, silica_rt_exc_names
+1:  l32i    a6, a4, 0
+    bltz    a6, 3f
+    beq     a6, a5, 2f
+    addi    a4, a4, 8
+    j       1b
+2:  movi    a10, silica_rt_banner_lp
+    call8   silica_rt_report_puts
+    l32i    a10, a4, 4
+    call8   silica_rt_report_puts
+    movi    a10, silica_rt_banner_rp
+    call8   silica_rt_report_puts
+3:  movi    a10, silica_rt_banner_epc
+    call8   silica_rt_report_puts
+    l32i    a10, a2, ACB_FAULT_EPC
+    call8   silica_rt_report_hex
+    movi    a10, silica_rt_banner_vaddr
+    call8   silica_rt_report_puts
+    l32i    a10, a2, ACB_FAULT_VADDR
+    call8   silica_rt_report_hex
+9:  retw
+    .size   silica_rt_report_device_fault, . - silica_rt_report_device_fault
+
 // silica_rt_actor_deliver_unwind_report(X0 dying actor) -> 0
     .align  4
     .global silica_rt_actor_deliver_unwind_report
@@ -3014,6 +3262,8 @@ silica_rt_actor_deliver_unwind_report:
     call8   silica_rt_report_puts
     l32i    a10, a2, ACB_REASON_TAG
     call8   silica_rt_report_dec
+    mov     a10, a2
+    call8   silica_rt_report_device_fault
     movi    a10, silica_rt_banner_sup
     call8   silica_rt_report_puts
     l32i    a10, a2, ACB_SUP
@@ -3043,6 +3293,7 @@ silica_rt_actor_deliver_unwind_report:
     call8   silica_rt_string_from_bytes
     mov     a11, a10
     movi    a12, 0
+    movi    a14, 0
     mov     a10, a6
     call8   silica_rt_actor_cast
     bnez    a10, 9f
@@ -3060,7 +3311,7 @@ silica_rt_actor_deliver_unwind_report:
     .size   silica_rt_actor_deliver_unwind_report, . - silica_rt_actor_deliver_unwind_report
 
 // ---------------------------------------------------------------------------------------------
-// get_actor_memory_usage(X0 actor) -> { reserved, committed, retained, high_water } (32 B).
+// get_actor_memory_usage(X0 actor) -> { reserved, committed, retained, high_water } (40 B: shape word, four slots).
 // Fixed blocks: reserved = committed = retained = the two blocks together; high_water = the deepest
 // the machine stack has been, found as the lowest non-zero word of the block (handed out zeroed).
     .align  4
@@ -3069,19 +3320,21 @@ silica_rt_actor_deliver_unwind_report:
 silica_rt_get_actor_memory_usage:
     entry   a1, 32
     mov     a6, a2
-    movi    a10, 32
+    movi    a10, 40
     call8   silica_rt_alloc
     mov     a2, a10
     movi    a3, 0
+    movi    a4, SHAPE_ACTOR_MEMORY
+    s32i    a4, a2, 0
     beqz    a6, 9f
     l32i    a4, a6, ACB_STK_BASE
     beqz    a4, 9f
     l32i    a5, a6, ACB_STK_SIZE
     l32i    a7, a6, ACB_AUX_SIZE
     add     a7, a7, a5
-    s32i    a7, a2, 0
     s32i    a7, a2, 8
     s32i    a7, a2, 16
+    s32i    a7, a2, 24
     add     a5, a4, a5                  // top
 1:  bgeu    a4, a5, 2f
     l32i    a7, a4, 0
@@ -3089,7 +3342,7 @@ silica_rt_get_actor_memory_usage:
     addi    a4, a4, 4
     j       1b
 2:  sub     a5, a5, a4
-    s32i    a5, a2, 24
+    s32i    a5, a2, 32
 9:  retw
     .size   silica_rt_get_actor_memory_usage, . - silica_rt_get_actor_memory_usage
 

@@ -1,0 +1,35 @@
+// ESP32-S3 emitter refusal: a constant map_device outside every board_pack window (0x3FC88000 is
+// internal SRAM). The shared compiler accepts the program; the ESP32-S3 emitter writes
+//   .error "ESP32-S3: map_device [0x3fc88000, 0x3fc88020) is not a board window"
+// into the .sams, so the image build fails at assembly (there is no golden_fail for this: the
+// compiler's own output is a success log). Build it by hand with the board compiler and
+// build_image.sh to see the refusal.
+use DeviceDescription;
+
+export registers/1;
+export worker/2;
+
+impl fn registers(device: (:esp32s3_uart)) -> List[{ name: atom, offset: uint64, width: uint64, access: atom }, mem(normal)] {
+    [
+        { name: :fifo,   offset: 0x00, width: 32, access: :read_write },
+        { name: :status, offset: 0x1C, width: 32, access: :read_only }
+    ]
+}
+
+fn worker(msg: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[register_rwr]
+        w: device_window(L, (:esp32s3_uart)) <- map_device((:esp32s3_uart), 0x3FC88000);
+        _: uint32 <- peek(w, :status) impl Register32 {}
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency]
+        d: device_actor_ref <- spawn_device(0, worker, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_device(d, 1 impl ActorMessage {})
+    produces
+        pure 0
+    end
+}

@@ -497,7 +497,15 @@ L_bc_d_skip_el1:
 	call	L_bc_push
 	mov	QWORD PTR [rbp - 32], rdi
 L_bc_done:
+	mov	edi, 16
+	call	malloc
 	mov	rdi, QWORD PTR [rbp - 32]
+	test	rax, rax
+	jz	L_bc_wrapped
+	mov	QWORD PTR [rax], 65541
+	mov	QWORD PTR [rax + 8], rdi
+	mov	rdi, rax
+L_bc_wrapped:
 	leave
 	ret
 # rdi=head rsi=level rdx=size_kb rcx=line r8=assoc r9=shared -> rdi=new head (malloc failure returns head)
@@ -513,20 +521,21 @@ L_bc_push:
 	mov	QWORD PTR [rbp - 32], rcx
 	mov	QWORD PTR [rbp - 40], r8
 	mov	QWORD PTR [rbp - 48], r9
-	mov	edi, 40
+	mov	edi, 48
 	call	malloc
 	test	rax, rax
 	jz	L_bcp_fail
+	mov	QWORD PTR [rax], 65542
 	mov	rcx, QWORD PTR [rbp - 16]
-	mov	QWORD PTR [rax], rcx
-	mov	rcx, QWORD PTR [rbp - 24]
 	mov	QWORD PTR [rax + 8], rcx
-	mov	rcx, QWORD PTR [rbp - 32]
+	mov	rcx, QWORD PTR [rbp - 24]
 	mov	QWORD PTR [rax + 16], rcx
-	mov	rcx, QWORD PTR [rbp - 40]
+	mov	rcx, QWORD PTR [rbp - 32]
 	mov	QWORD PTR [rax + 24], rcx
-	mov	rcx, QWORD PTR [rbp - 48]
+	mov	rcx, QWORD PTR [rbp - 40]
 	mov	QWORD PTR [rax + 32], rcx
+	mov	rcx, QWORD PTR [rbp - 48]
+	mov	QWORD PTR [rax + 40], rcx
 	mov	QWORD PTR [rbp - 56], rax
 	mov	edi, 16
 	call	malloc
@@ -641,6 +650,7 @@ silica_rt_actor_dealloc_region: # release every arena block of an actor
 	mov	rbp, rsp
 	sub	rsp, 80
 	mov	QWORD PTR [rbp - 16], rdi
+	mov	QWORD PTR [rbp - 32], 0
 	mov	rax, QWORD PTR [rdi + 160]
 	mov	QWORD PTR [rbp - 8], rax
 LBBdr_loop:
@@ -650,12 +660,24 @@ LBBdr_loop:
 	mov	rax, QWORD PTR [rdi]
 	mov	QWORD PTR [rbp - 24], rax
 	mov	rsi, QWORD PTR [rdi + 8]
+	lea	rax, [rsi - 16]
+	add	QWORD PTR [rbp - 32], rax
 	call	munmap
 	mov	rax, QWORD PTR [rbp - 24]
 	mov	QWORD PTR [rbp - 8], rax
 	jmp	LBBdr_loop
 LBBdr_done:
 	mov	rax, QWORD PTR [rbp - 16]
+# the newest block's untouched tail was never handed out
+	mov	rcx, QWORD PTR [rax + 176]
+	test	rcx, rcx
+	jz	LBBdr_acc
+	mov	rdx, QWORD PTR [rax + 184]
+	sub	rdx, rcx
+	sub	QWORD PTR [rbp - 32], rdx
+LBBdr_acc:
+	mov	rcx, QWORD PTR [rbp - 32]
+	lock sub	QWORD PTR [rip + silica_rt_heap_in_use], rcx
 	mov	QWORD PTR [rax + 160], 0
 	mov	QWORD PTR [rax + 168], 0
 	mov	QWORD PTR [rax + 176], 0
@@ -750,12 +772,21 @@ silica_rt_region_alloc:
 	cmp	r11, r10
 	ja	LBBra_grow
 	mov	QWORD PTR [rdi + 176], r11
+	mov	r10, QWORD PTR [rbp - 8]
+	lock add	QWORD PTR [rip + silica_rt_heap_in_use], r10
 	mov	rdi, rax
 	leave
 	ret
 LBBra_grow:
 # New block: 64 MB, or the request plus its header when larger. Anonymous RW mappings cost
-# nothing until touched, so an idle actor still holds no arena memory.
+# nothing until touched, so an idle actor still holds no arena memory. The old block's tail is
+# wasted from here on, so the in-use count takes it now and dealloc_region subtracts it.
+	test	rax, rax
+	jz	LBBra_grow_map
+	mov	r10, QWORD PTR [rdi + 184]
+	sub	r10, rax
+	lock add	QWORD PTR [rip + silica_rt_heap_in_use], r10
+LBBra_grow_map:
 	mov	r10, QWORD PTR [rbp - 8]
 	add	r10, 32
 	mov	r11, 67108864
@@ -786,6 +817,8 @@ LBBra_grow:
 	mov	r11, rdx
 	add	r11, QWORD PTR [rbp - 8]
 	mov	QWORD PTR [rcx + 176], r11
+	mov	r10, QWORD PTR [rbp - 8]
+	lock add	QWORD PTR [rip + silica_rt_heap_in_use], r10
 	mov	rdi, rdx
 	leave
 	ret
@@ -805,10 +838,19 @@ LBBra_fallback:
 	mov	r10, QWORD PTR [rbp - 8]
 	mov	QWORD PTR [rax + 8], r10
 	mov	QWORD PTR [rcx], rax
+	lock add	QWORD PTR [rip + silica_rt_heap_in_use], r10
 	add	rax, 16
 LBBra_oom:
 	mov	rdi, rax
 	leave
+	ret
+	.globl	silica_rt_heap_used
+silica_rt_heap_used:
+# -> rdi (X0) = bytes handed out by silica_rt_region_alloc and not yet released: every arena bump
+# an actor made (its blocks go back together when it ends, in silica_rt_actor_dealloc_region)
+# plus every fallback allocation made outside an actor, which is never released. Requests, not
+# resident pages: a block is mapped lazily. The heap_used() builtin.
+	mov	rdi, QWORD PTR [rip + silica_rt_heap_in_use]
 	ret
 	.globl	silica_rt_raw_alloc
 silica_rt_raw_alloc:
@@ -923,6 +965,8 @@ Lrrt_done:
 	ret
 	.globl	silica_rt_region_list
 	.comm	silica_rt_region_list,8,8
+	.globl	silica_rt_heap_in_use
+	.comm	silica_rt_heap_in_use,8,8
 # -- End function
 	.globl	silica_rt_actor_supervision_ingress_enqueue
 	.p2align	2

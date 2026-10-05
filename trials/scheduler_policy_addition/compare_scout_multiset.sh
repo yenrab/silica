@@ -23,5 +23,10 @@ case "$(basename "$golden" .scout)" in
     diff -Bw "$actual" "$golden"
     exit $? ;;
 esac
-diff -Bw <(grep -v '^[[:space:]]*$' "$actual" | sed 's/[[:space:]]*$//' | LC_ALL=C sort) \
-         <(grep -v '^[[:space:]]*$' "$golden" | sed 's/[[:space:]]*$//' | LC_ALL=C sort)
+# No process substitution: when make runs this as `/bin/sh script` (bash in posix mode on macOS) the
+# BASH_VERSION guard passes but <( ) is a syntax error, so sort into temp files instead.
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/scout_multiset.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+grep -v '^[[:space:]]*$' "$actual" | sed 's/[[:space:]]*$//' | LC_ALL=C sort > "$tmp/actual" || true
+grep -v '^[[:space:]]*$' "$golden" | sed 's/[[:space:]]*$//' | LC_ALL=C sort > "$tmp/golden" || true
+diff -Bw "$tmp/actual" "$tmp/golden"

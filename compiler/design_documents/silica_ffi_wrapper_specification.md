@@ -797,6 +797,8 @@ Required wrapper behavior:
 - return an explicit error result when the object contents cannot be accessed, validated, or represented as Silica-compatible values;
 - avoid exposing the object's pointer identity as the Silica value.
 
+The shape word that begins every Silica record value is not part of the C layout; the wrapper strips it from records passed to C and adds it to records returned from C at the boundary.
+
 A C object that was originally opaque to ordinary C callers may be represented in Silica only after de-opaqueification into explicit content.
 
 Example C library:

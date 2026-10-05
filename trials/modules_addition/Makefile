@@ -30,7 +30,7 @@ silica.config:
 
 all: clean silica.config
 	@cd "$(THIS_DIR)" && \
-	rm -f *.sams *.iface silica.compile.order silica.needs_runtime silica.link __silica_runtime.sams lib/*.sams && \
+	rm -f *.sams *.iface silica.compile.order silica.needs_runtime silica.atoms silica.shapes silica.link __silica_runtime.sams lib/*.sams && \
 	echo "Compiling with silica-compiler..." && \
 	if ! { $(RUN_SILICA_COMPILER); }; then \
 		echo "❌❌ $(MSG_PREFIX)compilation failed"; \
@@ -165,7 +165,7 @@ clean:
 		base=$${line%.silica}; \
 		rm -f "$$base" "$$base.o"; \
 	done && \
-	rm -f silica.config .integrate_counts silica.compile.order silica.needs_runtime silica.link && \
+	rm -f silica.config .integrate_counts silica.compile.order silica.needs_runtime silica.atoms silica.shapes silica.link && \
 	echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:

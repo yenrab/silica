@@ -46,7 +46,10 @@
 //                                  not allocated (a double free) are ignored
 //   silica_rt_region_destroy(r)    free a region's extension chain and its handle (also
 //                                  silica_rt_region_free); a canonical arena is left alone, as on the host
-//   silica_rt_heap_used() -> bytes below the bump pointer (headers and free blocks included)
+//   silica_rt_heap_used() -> bytes in allocated blocks (headers included): the span below the bump
+//                                  pointer less what sits on the free list; the heap_used() builtin
+//   silica_rt_state_release(old, new, nbytes)   free an actor's previous state block unless the
+//                                  new state still reaches it, see below
 //   silica_rt_region_grow / silica_rt_region_contains   region blocks, see below
 
 #define HEAP_USED 0x5A11CA1D
@@ -376,9 +379,114 @@ silica_rt_region_contains:
     .type   silica_rt_heap_used, @function
 silica_rt_heap_used:
     entry   a1, 32
+    HEAP_LOCK a8, a9
     movi    a3, silica_rt_heap_next
     l32i    a2, a3, 0
     movi    a4, _silica_heap_start
     sub     a2, a2, a4
+    movi    a3, silica_rt_heap_free_head
+    l32i    a4, a3, 0
+1:  beqz    a4, 2f
+    l32i    a5, a4, 0
+    sub     a2, a2, a5
+    l32i    a4, a4, 4
+    j       1b
+2:  HEAP_UNLOCK a8, a9
+    movi    a3, 0
     retw
     .size   silica_rt_heap_used, . - silica_rt_heap_used
+
+// silica_rt_heap_is_block(p) -> 1 when p is the payload of an allocated block. Leaf.
+    .align  4
+silica_rt_heap_is_block:
+    entry   a1, 32
+    movi    a4, 0
+    beqz    a2, 9f
+    movi    a3, _silica_heap_start
+    bltu    a2, a3, 9f
+    movi    a3, _silica_heap_end
+    bgeu    a2, a3, 9f
+    addi    a5, a2, -8
+    l32i    a3, a5, 4
+    movi    a6, HEAP_USED
+    bne     a3, a6, 9f
+    movi    a4, 1
+9:  mov     a2, a4
+    retw
+    .size   silica_rt_heap_is_block, . - silica_rt_heap_is_block
+
+// silica_rt_heap_reaches(target, block, nbytes, depth) -> 1 when target is one of the 8-byte
+// slots of block, or of a heap block one of those slots names, up to depth levels further down.
+// A heap block is scanned over its whole payload; anything else over nbytes (0: not at all), so
+// a word that is a scalar or an address outside the heap is never followed. Slots hold a 32-bit
+// address in the low word with the high word zero, as the emitted code lays composites out.
+    .align  4
+silica_rt_heap_reaches:
+    entry   a1, 32
+    movi    a6, 65536
+    bltu    a3, a6, 8f            // an atom index or a small scalar names nothing
+    mov     a10, a3
+    call8   silica_rt_heap_is_block
+    beqz    a10, 1f
+    addi    a6, a3, -8
+    l32i    a4, a6, 0
+    addi    a4, a4, -8            // the payload
+1:  beqz    a4, 8f
+    add     a7, a3, a4            // a7 = end
+    mov     a6, a3                // a6 = cursor
+2:  bgeu    a6, a7, 8f
+    l32i    a8, a6, 0
+    beq     a8, a2, 9f
+    beqz    a5, 3f
+    mov     a10, a2
+    mov     a11, a8
+    movi    a12, 0
+    addi    a13, a5, -1
+    call8   silica_rt_heap_reaches
+    bnez    a10, 9f
+3:  addi    a6, a6, 8
+    j       2b
+8:  movi    a2, 0
+    retw
+9:  movi    a2, 1
+    retw
+    .size   silica_rt_heap_reaches, . - silica_rt_heap_reaches
+
+// silica_rt_state_release(X0 old, X1 new, X2 nbytes): called by the emitted behaviour epilogue
+// after it installed `new` as the actor's state (nbytes = the shell size of new's type, used
+// when new is not a heap block), and by rt_actors.S for a message copy once the behaviour has
+// read it (nbytes 0). `old` goes back to the heap unless it is not an allocated block (an atom,
+// a frame-region or rodata address, a block already freed), is `new` itself, is still reachable
+// from new -- its slots, and the slots of the blocks they name, four levels down; the emitter
+// moves one level, so a state that packs its predecessor keeps it alive -- or is the spec init
+// a supervised child's row keeps for restarts (rt_supervisors.S ROW_INIT).
+#define ACB_ROW  104
+#define ROW_INIT 24
+    .align  4
+    .global silica_rt_state_release
+    .type   silica_rt_state_release, @function
+silica_rt_state_release:
+    entry   a1, 32
+    beqz    a2, 9f
+    beq     a2, a4, 9f
+    mov     a10, a2
+    call8   silica_rt_heap_is_block
+    beqz    a10, 9f
+    call8   silica_rt_current_actor
+    beqz    a10, 1f
+    l32i    a5, a10, ACB_ROW
+    beqz    a5, 1f
+    l32i    a5, a5, ROW_INIT
+    beq     a5, a2, 9f
+1:  mov     a10, a2
+    mov     a11, a4
+    mov     a12, a6
+    movi    a13, 4
+    call8   silica_rt_heap_reaches
+    bnez    a10, 9f
+    mov     a10, a2
+    call8   silica_rt_free
+9:  movi    a2, 0
+    movi    a3, 0
+    retw
+    .size   silica_rt_state_release, . - silica_rt_state_release

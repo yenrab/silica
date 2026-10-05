@@ -1,0 +1,43 @@
+// A static child whose initial state is a record `{ base: int64, step: int64 }`: the child spec
+// holds the record (its shape word and two fields) and every spawn of the row, including the
+// restart, copies it into a fresh block of the child's own. The worker replies base + step * msg and
+// advances step; after the restart the state is the spec's again. Expected: prints 103, 106, 103,
+// done; exits 0.
+
+use Supervisor;
+
+impl RecordStateRestartSup for Supervisor;
+
+fn worker(msg: int64, state: { base: int64, step: int64 }) -> (:reply, int64, { base: int64, step: int64 }) {
+    (:reply, state.base + state.step * msg, { base: state.base, step: state.step + 1 })
+}
+
+fn init(initial_state: int64) -> (
+    { strategy: :one_for_one | :one_for_all | :rest_for_one, allowed_restart_count: int64, restarts_time_frame: int64 },
+    List[{ id: atom, agent_type: :worker | :supervisor, initial_state: { base: int64, step: int64 }, behavior: fn(msg: int64, state: { base: int64, step: int64 }) -> (:reply, int64, { base: int64, step: int64 }), restart: :permanent | :temporary | :transient, shutdown: int64, flavor: :plain | :dangerous }, mem(normal)]
+) {
+    sequence proc[mem(normal)]
+        flags: { strategy: :one_for_one | :one_for_all | :rest_for_one, allowed_restart_count: int64, restarts_time_frame: int64 } <- { strategy: :one_for_one, allowed_restart_count: 5, restarts_time_frame: 10 };
+        children: List[{ id: atom, agent_type: :worker | :supervisor, initial_state: { base: int64, step: int64 }, behavior: fn(msg: int64, state: { base: int64, step: int64 }) -> (:reply, int64, { base: int64, step: int64 }), restart: :permanent | :temporary | :transient, shutdown: int64, flavor: :plain | :dangerous }, mem(normal)] <- [
+            { id: :record_state_worker, agent_type: :worker, initial_state: { base: initial_state, step: 1 }, behavior: worker, restart: :permanent, shutdown: 0, flavor: :plain }
+        ]
+    produces pure (flags, children) end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sup: supervisor_ref <- spawn_registered_supervisor(RecordStateRestartSup, 100, :record_state_restart_sup, stack_policy(0, :keep_last_message));
+        get_reply: { tag: :child_started | :ok | :children | :count | :child_info | :error, child: actor_ref, status: atom, children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)], count: int64, child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, error: atom } <- call_supervisor(sup, { op: :get_child, id: :record_state_worker } impl SupervisorMessage {});
+        v1: int64 <- call(get_reply.child, 3 impl ActorMessage {});
+        _: atom <- print_int64(v1);
+        println("");
+        v2: int64 <- call(get_reply.child, 3 impl ActorMessage {});
+        _: atom <- print_int64(v2);
+        println("");
+        restart_reply: { tag: :child_started | :ok | :children | :count | :child_info | :error, child: actor_ref, status: atom, children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)], count: int64, child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, error: atom } <- call_supervisor(sup, { op: :restart_child, id: :record_state_worker } impl SupervisorMessage {});
+        v3: int64 <- call(restart_reply.child, 3 impl ActorMessage {});
+        _: atom <- print_int64(v3);
+        println("");
+        println("done")
+    produces pure 0 end
+}

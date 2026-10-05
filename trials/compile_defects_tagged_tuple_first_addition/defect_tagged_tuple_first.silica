@@ -1,0 +1,46 @@
+// Open compile defect (2026-10-01, found while giving the ESP32-S3 board pack tagged lookups): an
+// inline sum type written with its tagged tuple first, `(:found, uint32) | :none`, is the same type
+// as `:none | (:found, uint32)` (silica-specification §16.1 writes `(:reply, Reply) | :timeout`;
+// §15.4.11.2 puts a tuple variant in the middle), but three places read only the atom-first order:
+//   - parser_tuples@extract_tuple_type_from_slots stopped at the tuple, so a parameter, return or
+//     let of this type failed (E1069 on the function, E1040 on a let);
+//   - type_checker_expressions_atoms@atom_literal_matches_type accepted an atom literal only
+//     against a sum whose text starts with `:` (E2001 "atom literal requires atom return type");
+//   - reg_conventions@is_tuple_type (every emitter) classified the sum as a plain tuple return.
+// All three are fixed in the tree on 2026-10-01; this trial moves to case_addition once a compiler
+// built from that tree accepts it and matches the golden below.
+// Expected: compiles; prints 7, 99, 3, 99; exits 0.
+// Observed before the fix: E1069 "function 'lookup' has no parsable body".
+
+fn lookup(r: (:found, uint32) | :none) -> uint32 {
+    case r of {
+        :none -> 99;
+        (:found, i: uint32) -> i
+    }
+}
+
+fn square_root_from(v: uint32, i: uint32) -> (:found, uint32) | :none {
+    case i of {
+        n: uint32 if n >= 10 -> :none;
+        n: uint32 if n * n == v -> (:found, n);
+        n: uint32 -> square_root_from(v, n + 1)
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        present: (:found, uint32) | :none <- (:found, 7);
+        a: atom <- print_uint32(lookup(present));
+        println("");
+        b: atom <- print_uint32(lookup(:none));
+        println("");
+        nine: uint32 <- 9;
+        c: atom <- print_uint32(lookup(square_root_from(nine, 0)));
+        println("");
+        eleven: uint32 <- 11;
+        d: atom <- print_uint32(lookup(square_root_from(eleven, 0)));
+        println("")
+    produces
+        pure 0
+    end
+}

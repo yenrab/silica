@@ -1,0 +1,48 @@
+// A record message is copied at send time into a block of its own, which the receiver gives back
+// once its behaviour has read it (rt_actors.S MSG_PAYLOAD_OWNED; a host arena releases it with the
+// actor). Two batches of 1,000 casts, each closed by a zero message that makes the receiver print
+// its running sum and a done marker: every message arrived once and the state survived every dispatch. heap_used()
+// is read in main before the casts.
+fn sum_rec(msg: { x: int64, y: int64 }, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        _: boolean <- case msg.x == 0 of {
+            true -> {
+                _: atom <- print_int64(state);
+                println("");
+                println("done");
+                true
+            };
+            false -> true
+        }
+    produces
+        pure (:no_reply, state + msg.x + msg.y)
+    end
+}
+
+fn cast_rec_n(target: actor_ref, n: int64) -> int64 {
+    sequence proc[concurrency]
+        _: boolean <- cast(target, { x: 1, y: 2 } impl ActorMessage {});
+        left: int64 <- case n == 1 of {
+            true -> 0;
+            false -> cast_rec_n(target, n - 1)
+        }
+    produces
+        pure left
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io, mem(normal)]
+        h: int64 <- heap_used();
+        _: atom <- print_int64(case h >= 0 of { true -> 1; false -> 0 });
+        println("");
+        r: actor_ref <- spawn(0, sum_rec, stack_policy(0, :keep_last_message));
+        _: int64 <- cast_rec_n(r, 1000);
+        _: boolean <- cast(r, { x: 0, y: 0 } impl ActorMessage {});
+        _: int64 <- cast_rec_n(r, 1000);
+        _: boolean <- cast(r, { x: 0, y: 0 } impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

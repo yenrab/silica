@@ -82,7 +82,7 @@ The generated owning value contains, conceptually:
 
 ```text
 {
-    region: region(R, SpaceType),
+    r: region(R, SpaceType),
     root: ref?(R, SpaceType, RecursiveBinaryNode),
     specialization_key: int64
 }
@@ -226,7 +226,7 @@ Conceptually, a zipper contains:
 
 ```text
 {
-    region: region(R, SpaceType),
+    r: region(R, SpaceType),
     focus: ref?(R, SpaceType, RecursiveBinaryNode),
     breadcrumbs: List[
         (:from_left, ItemType, OptionalRightSibling)

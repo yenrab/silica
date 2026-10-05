@@ -23,8 +23,10 @@ use type_checker_core;
 use type_checker_traits;
 use type_checker_tuple_decompose_helpers;
 use type_interner;
+use string_parse;
 
 export check_expr/4;
+export check_numeric_literal_against_integer_kind/4;
 
 fn literal_ok_for_kind(k: int64) -> boolean {
     case k == type_interner@kind_int64() or k == type_interner@kind_int32() or k == type_interner@kind_int16() or k == type_interner@kind_int8() or k == type_interner@kind_uint64() or k == type_interner@kind_uint32() or k == type_interner@kind_uint16() or k == type_interner@kind_uint8() or k == type_interner@kind_float64() or k == type_interner@kind_float32() or k == type_interner@kind_float16() or k == type_interner@kind_discard() of {
@@ -96,54 +98,43 @@ fn literal_text_is_float(v: string, i: int64) -> boolean {
     }
 }
 
-fn literal_digits_to_int64(v: string, i: int64, acc: int64, overflow: int64) -> (int64, int64) {
+// Magnitude of the literal's digits from `i` in `radix`, with 1 when the magnitude exceeds the
+// int64 accumulator (2^63 - 1); a character that is not a digit of the radix ends the digits.
+fn literal_digits_to_int64(v: string, i: int64, radix: int64, acc: int64) -> (int64, int64) {
     case i >= length_bytes(v) of {
-        true -> (acc, overflow);
+        true -> (acc, 0);
         false -> {
-            c: string <- substring(v, i, i + 1);
-            d: int64 <- case c of {
-                "0" -> 0; "1" -> 1; "2" -> 2; "3" -> 3; "4" -> 4;
-                "5" -> 5; "6" -> 6; "7" -> 7; "8" -> 8; "9" -> 9;
-                _: string -> 0 - 1
-            };
-            case d < 0 of {
-                true -> literal_digits_to_int64(v, i + 1, acc, overflow);
-                false -> case acc > 922337203685477580 of {
+            d: int64 <- string_parse@radix_digit(substring(v, i, i + 1));
+            case d < 0 or d >= radix of {
+                true -> (acc, 0);
+                false -> case acc > (9223372036854775807 - d) / radix of {
                     true -> (acc, 1);
-                    false -> literal_digits_to_int64(v, i + 1, acc * 10 + d, overflow)
+                    false -> literal_digits_to_int64(v, i + 1, radix, acc * radix + d)
                 }
             }
         }
     }
 }
 
-fn decimal_digit_value(c: string) -> int64 {
-    case c of {
-        "0" -> 0; "1" -> 1; "2" -> 2; "3" -> 3; "4" -> 4;
-        "5" -> 5; "6" -> 6; "7" -> 7; "8" -> 8; "9" -> 9;
-        _: string -> -1
-    }
-}
-
-// Digits of a literal with the sign and leading zeros removed ("-0042" -> "42").
+// Digits of a literal from `i` with the leading zeros removed ("0042" -> "42").
 fn literal_magnitude_digits(v: string, i: int64) -> string {
     case i >= length_bytes(v) of {
         true -> "";
-        false -> case substring(v, i, i + 1) == "-" or substring(v, i, i + 1) == "0" of {
+        false -> case substring(v, i, i + 1) == "0" of {
             true -> literal_magnitude_digits(v, i + 1);
             false -> substring(v, i, length_bytes(v))
         }
     }
 }
 
-// digits <= max_digits, both plain decimal strings of the same length (Silica strings
+// digits <= max_digits, both digit strings of the same radix and length (Silica strings
 // compare for equality only, so walk the digits).
 fn digits_le(digits: string, max_digits: string, i: int64) -> boolean {
     case i >= length_bytes(digits) of {
         true -> true;
         false -> {
-            d: int64 <- decimal_digit_value(substring(digits, i, i + 1));
-            m: int64 <- decimal_digit_value(substring(max_digits, i, i + 1));
+            d: int64 <- string_parse@radix_digit(substring(digits, i, i + 1));
+            m: int64 <- string_parse@radix_digit(substring(max_digits, i, i + 1));
             case d < m of {
                 true -> true;
                 false -> case d > m of {
@@ -155,14 +146,42 @@ fn digits_le(digits: string, max_digits: string, i: int64) -> boolean {
     }
 }
 
-// Magnitude of the literal text fits below or at max_digits (a decimal string).
-fn literal_magnitude_fits(v: string, max_digits: string) -> boolean {
-    digits: string <- literal_magnitude_digits(v, 0);
+// The literal's digits (leading zeros removed) fit below or at max_digits, a digit string of the
+// same radix.
+fn literal_magnitude_fits(digits: string, max_digits: string) -> boolean {
     case length_bytes(digits) < length_bytes(max_digits) of {
         true -> true;
         false -> case length_bytes(digits) > length_bytes(max_digits) of {
             true -> false;
             false -> digits_le(digits, max_digits, 0)
+        }
+    }
+}
+
+fn uint64_max_digits(radix: int64) -> string {
+    case radix of {
+        16 -> "ffffffffffffffff";
+        2 -> "1111111111111111111111111111111111111111111111111111111111111111";
+        _: int64 -> "18446744073709551615"
+    }
+}
+
+fn int64_min_magnitude_digits(radix: int64) -> string {
+    case radix of {
+        16 -> "8000000000000000";
+        2 -> "1000000000000000000000000000000000000000000000000000000000000000";
+        _: int64 -> "9223372036854775808"
+    }
+}
+
+// A magnitude past the int64 accumulator fits only uint64 (up to 2^64 - 1) or, negated, int64
+// (exactly 2^63), so those two are judged on the digit text.
+fn wide_literal_fits(digits: string, radix: int64, surface: string, negative: boolean) -> boolean {
+    case surface == "uint64" and negative == false of {
+        true -> literal_magnitude_fits(digits, uint64_max_digits(radix));
+        false -> case surface == "int64" and negative of {
+            true -> literal_magnitude_fits(digits, int64_min_magnitude_digits(radix));
+            false -> false
         }
     }
 }
@@ -188,21 +207,15 @@ fn check_numeric_literal_against_integer_kind(value: string, loc: { file: string
             true -> type_checker_core@type_check_err("E2001", loc, "integer literal required, got float literal", "sect6");
             false -> {
                 negative: boolean <- length_bytes(value) > 0 and substring(value, 0, 1) == "-";
-                (mag: int64, overflow: int64) <- literal_digits_to_int64(value, 0, 0, 0);
+                sign_end: int64 <- case negative of { true -> 1; false -> 0 };
+                radix: int64 <- string_parse@radix_at(value, sign_end);
+                digits_start: int64 <- case radix == 10 of { true -> sign_end; false -> sign_end + 2 };
+                (mag: int64, overflow: int64) <- literal_digits_to_int64(value, digits_start, radix, 0);
                 (known: boolean, lo: int64, hi: int64) <- integer_kind_bounds(surface);
                 signed_val: int64 <- case negative of { true -> 0 - mag; false -> mag };
-                // The int64 accumulator cannot hold every 64-bit literal (uint64 reaches
-                // 18446744073709551615, int64 reaches -9223372036854775808), so the two
-                // 64-bit kinds are judged on the digit text; the narrower kinds use the value.
-                out_of_range: boolean <- case surface == "uint64" of {
-                    true -> negative and mag > 0 or literal_magnitude_fits(value, "18446744073709551615") == false;
-                    false -> case surface == "int64" of {
-                        true -> case negative of {
-                            true -> literal_magnitude_fits(value, "9223372036854775808") == false;
-                            false -> literal_magnitude_fits(value, "9223372036854775807") == false
-                        };
-                        false -> known and (overflow != 0 or signed_val < lo or signed_val > hi)
-                    }
+                out_of_range: boolean <- case overflow != 0 of {
+                    true -> wide_literal_fits(literal_magnitude_digits(value, digits_start), radix, surface, negative) == false;
+                    false -> known and (signed_val < lo or signed_val > hi)
                 };
                 case out_of_range of {
                     true -> type_checker_core@type_check_err("E2011", loc, concat(concat(concat("integer literal ", value), " is out of range for "), surface), "sect6");

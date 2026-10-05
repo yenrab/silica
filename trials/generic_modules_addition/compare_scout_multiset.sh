@@ -26,6 +26,7 @@ def normalized_text(path):
     # glibc's %p prints a null pointer as "(nil)"; Darwin prints "0x0". Same value either way.
     text = re.sub(r"(?m)^actor_id:\s*(?:0x[0-9a-fA-F]+|\(nil\))\s*$", "actor_id:        <PTR>", text)
     text = re.sub(r"(?m)^supervisor_acb:\s*(?:0x[0-9a-fA-F]+|\(nil\))\s*$", "supervisor_acb:  <PTR>", text)
+    text = re.sub(r"agent_type_atom:[ \t]*[0-9]+", "agent_type_atom: <ATOM>", text)
     # Call-stack frames name C symbols, which Mach-O decorates with a leading underscore and ELF
     # does not. The frame is the same function either way, so compare the undecorated name.
     text = re.sub(r"(?m)^(\s*#\d+\s+)_", r"\1", text)

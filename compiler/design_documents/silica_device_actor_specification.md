@@ -1,6 +1,6 @@
 # Silica Device Actor Specification
 
-**Status:** Normative for the language rules below. **Not implemented** in the current compiler or runtime. Until the checker enforces these rules, `register_rwr` is only an effect name plus optional barriers. The poke prims are `map_device`, `peek`, and `poke` (§4.7); every device they reach needs a programmer-supplied device description (§4.9). Bring-up inventory: [porting_for_os_free_targets.md](porting_for_os_free_targets.md).
+**Status:** Normative for the language rules below. **Not implemented** in the current compiler or runtime. Until the checker enforces these rules, `register_rwr` is only an effect name plus optional barriers. The poke prims are `map_device`, `peek`, and `poke` (§4.7); every device they reach needs a description: the target's board pack describes the on-board devices, and the programmer describes any other device (§4.9). Bring-up inventory: [porting_for_os_free_targets.md](porting_for_os_free_targets.md).
 
 This specification is the device-register counterpart to [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md). Ordinary actors never poke MMIO. Dedicated **device worker actors** own mapped windows and execute `register_rwr` sequences. Application actors request work by `cast`.
 
@@ -23,7 +23,7 @@ This specification is the device-register counterpart to [silica_ffi_wrapper_spe
 - **Split registries.** Ordinary, FFI-dangerous, and device workers use **three** atom-keyed tables. `cast_registered` must not resolve a device worker; `cast_device_registered` must not resolve an ordinary or FFI worker.
 - **Cast-only.** Device workers, and clients that initiate device work, use cast-only behaviors (`:no_reply`). `call` to a driver that also services IRQs is unsupported.
 - **Exclusive window.** Each board-legal MMIO range is owned by at most one actor. The `device_window` from `map_device` is moved into that actor’s initial state.
-- **Described devices.** Registers are reached by name, never by address or offset, and every name, width, and access mode is checked against the device's description (§4.9).
+- **Described devices.** Registers are reached by name, never by address or offset, and every name, width, and access mode is checked against the device's description (§4.9). The board pack is the only description of a device the board pack lists; a program describes only devices the pack does not list (§4.9.1).
 - **`device_*` modules.** Modules that call `map_device`, `peek`, or `poke` use the `device_` name prefix. The prefix propagates to the root when the program depends on such a module, analogous to `dangerous_*`.
 - **Disjoint from Fifi.** A compilation unit must not `use` both a `device_*` poke module and a `dangerous_*` FFI module. Device-read bytes are not `external_danger`-touched; FFI results must not appear in `register_rwr` sequences (existing taint).
 - **Named exceptions.** Reset, early panic, and IRQ **enqueue** may touch hardware **outside** any actor. No other path may.
@@ -38,11 +38,13 @@ This specification is the device-register counterpart to [silica_ffi_wrapper_spe
 
 **Client actor.** An ordinary actor (`actor_ref`) that requests device work by `cast` to a device worker. It must not declare `register_rwr` or call poke prims.
 
+**Board pack.** The per-target module that records what the compiler knows about the board: its legal windows and the registers of its on-board devices (§4.9.1). It is part of the target, maintained with the compiler, not by programs.
+
 **Board window.** A `[base, size)` range listed in the selected board pack as legal for `map_device`.
 
-**Device tag.** A one-atom tagged tuple type, such as `(:esp32s3_uart)`, that names a device and its description.
+**Device tag.** A one-atom tagged tuple type, such as `(:esp32s3_uart)`, that names a device and its description. A tag is either a **board-pack device tag** (the target's board pack lists the device) or a **programmer-described tag** (it does not).
 
-**Device description.** The programmer-supplied implementation of `DeviceDescription` for a device tag: the device's registers with offsets, widths, and access modes (§4.9).
+**Device description.** The device's registers with offsets, widths, and access modes (§4.9). For a board-pack device tag it is the board pack's; for any other tag it is the programmer's implementation of `DeviceDescription`.
 
 **Device window.** A `device_window(R, D)` returned by `map_device`: the mapped range of device `D`.
 
@@ -64,7 +66,7 @@ Hosted `device_io` (stdout/files) is a different effect. It does not require a `
 
 ### 3.3 Device descriptions
 
-Device descriptions (§4.9) live in `device_*` modules. A later generator may produce them from vendor register files (SVD, CMSIS-like headers); its output is an ordinary description in a `device_*` module. Clients see protocol atoms, not register names or addresses.
+Programmer-written device descriptions (§4.9) live in `device_*` modules; descriptions of the target's on-board devices live in the board pack (§4.9.1), not in programs. A later generator may produce them from vendor register files (SVD, CMSIS-like headers); its output is an ordinary description in a `device_*` module. Clients see protocol atoms, not register names or addresses.
 
 ---
 
@@ -130,7 +132,7 @@ peek(window: device_window(R, D), register: atom) -> T proc[register_rwr]
 poke(window: device_window(R, D), register: atom, value: T) -> atom proc[register_rwr]
 ```
 
-`D` is a **device tag**: a one-atom tagged tuple type such as `(:esp32s3_uart)` that names a device description (§4.9). `map_device((:esp32s3_uart), 0x60000000)` binds the window `[base, base + size)`, where `size` is the extent of the description's registers; it does not allocate (§5.1). The window's type, `device_window(R, D)`, records which device it maps, so a window is never confused with a `region(R, device)` arena and `alloc_ref`, `read_ref`, and the other region prims do not accept it. `peek` is one volatile load and `poke` one volatile store of the named register. These are dedicated prims with one design for every port. The shared compiler (lexer through SIR generator) is the same on all ports, so there is no per-port choice of access design.
+`D` is a **device tag**: a one-atom tagged tuple type such as `(:esp32s3_uart)` that names a device description (§4.9). The tag names either a board-pack device or a programmer-described device. `map_device((:esp32s3_uart), 0x60000000)` binds the window `[base, base + size)`, where `size` is the extent of the description's registers; it does not allocate (§5.1). For a board-pack device the window size and the legality of `base` come from the board pack (§4.9.1); for a programmer-described device the size comes from the programmer's description and `base` is checked against the board windows. The window's type, `device_window(R, D)`, records which device it maps, so a window is never confused with a `region(R, device)` arena and `alloc_ref`, `read_ref`, and the other region prims do not accept it. `peek` is one volatile load and `poke` one volatile store of the named register. These are dedicated prims with one design for every port. The shared compiler (lexer through SIR generator) is the same on all ports, so there is no per-port choice of access design.
 
 - **Named registers.** `register` is an atom literal naming a register in `D`'s description. A variable, or a name the description does not list, is a compile-time error. Offsets appear only in the description: driver code contains no addresses or offsets, and every access is checked against the description.
 - **Width markers.** The programmer states the width of every access with a register marker (§4.8). A `peek` is always written `peek(window, register) impl RegisterN {}` and a `poke` value is always written `value impl RegisterN {}`, where `N` is 8, 16, 32, or 64. `T` is the marker's one type (`uint8`, `uint16`, `uint32`, or `uint64`), and `N` must equal the register's width in the description. `uint32` is required on every port that implements the prims; a port whose board pack does not allow a width rejects it in its emitter.
@@ -140,7 +142,7 @@ poke(window: device_window(R, D), register: atom, value: T) -> atom proc[registe
 - **Result.** `poke` returns `:ok`, as `write_ref` returns an atom.
 - **Reads are never removed.** Reading a register can change the device (a FIFO pops, a status flag clears), so every `peek` is exactly one load even when its result is unused. A read done only for its effect binds the result to `_`: `_: uint32 <- peek(uart, :int_raw) impl Register32 {};`.
 - **No read-modify-write prim.** Changing some bits of a register is a `peek` followed by a `poke`: two accesses. Bits the hardware changes between the two accesses are the driver's responsibility. For registers described as write-one-to-clear, the compiler warns about the most common mistake (§4.9).
-- **Names are not reserved.** `map_device`, `peek`, and `poke` are not keywords. An unqualified call to one of them inside a `device_*` module is the prim. Everywhere else, and whenever it is module-qualified (`m@peek`), the name is an ordinary identifier, so an unrelated function such as the standard priority queue's `peek` is unaffected. A `device_*` module must not define a function with one of these names.
+- **Names are not reserved.** `map_device`, `peek`, and `poke` are not keywords. A module may define a function with one of these names, but it must call that function module-qualified (`m@peek(...)`), even within the module itself; an unqualified call to such a name in a module that defines it is a compile error (E2020). Everywhere else, an unqualified `peek`, `poke`, or `map_device` is the prim, and a qualified call always means the named module's function, so an unrelated function such as the standard priority queue's `peek` is unaffected. See [silica-specification.md](silica-specification.md) §19.3.3. A `device_*` module must not define a function with one of these names.
 
 ```silica
 // Inside a device-worker behavior; `uart: device_window(R, (:esp32s3_uart))` is the worker's window.
@@ -178,7 +180,10 @@ The marker makes the width the programmer's explicit statement at every access, 
 
 ### 4.9 Device descriptions
 
-Every device a program accesses must have a **device description**: code, supplied by the programmer, that lists the device's registers with their offsets, widths, and access modes. It is an implementation of the built-in `DeviceDescription` trait:
+Every device a program accesses must have a **device description** that lists the device's registers with their offsets, widths, and access modes. There are two sources, and a device has exactly one:
+
+- **Board-pack devices.** A device the target's board pack lists (the on-board UARTs, GPIO, timers, and so on) is described only by the board pack shipped with the target (§4.9.1). A program cannot write its own description for one: a programmer `impl fn registers(device: (:tag))` whose tag is a board-pack device tag is a compile-time error.
+- **Programmer-described devices.** A device the board pack does not list, such as a chip on an SPI bus or a plug-in module, is described by the programmer, as an implementation of the built-in `DeviceDescription` trait:
 
 ```
 // devicedescription.silica (built-in)
@@ -203,6 +208,8 @@ impl fn registers(device: (:esp32s3_uart)) -> List[{ name: atom, offset: uint64,
 }
 ```
 
+The rest of this subsection (the trait, the rules below, and the validity checks) applies to programmer-written descriptions. The board-pack equivalents are in §4.9.1.
+
 The description covers the register layout only. The base address is not part of it: the same peripheral can appear at several addresses (UART0, UART1, …), so the base is given to `map_device` and checked against the board pack.
 
 **Rules that differ from ordinary traits.** `DeviceDescription` follows spec §3.4.8–§3.4.9 except:
@@ -210,7 +217,8 @@ The description covers the register layout only. The base address is not part of
 1. **Where it is implemented.** Implementations are written in `device_*` modules, not in `devicedescription.silica`. Such a module must `use devicedescription;`. In a `device_*` module, `impl fn registers(...)` always implements `DeviceDescription`; no other trait's `impl fn` may appear outside its own file.
 2. **What it is implemented for.** The first parameter's type is a device tag, `(:tag)`. A program has at most one description per tag; a second is a compile-time error.
 3. **Data only.** The body is a single list literal of record literals whose fields are literals. No calls, bindings, conditionals, or arithmetic. The compiler reads the description as data at compile time without running it; programs may also call `devicedescription@registers` at run time like any trait method.
-4. **Required.** A `map_device` whose tag has no description visible from the calling module (in that module, or in a module it `use`s) is a compile-time error. There is no device access without a description.
+4. **Required.** A `map_device` whose tag is neither a board-pack device tag nor described in a module visible from the calling module (in that module, or in a module it `use`s) is a compile-time error. There is no device access without a description.
+5. **Not for board-pack devices.** An `impl fn registers` whose tag is a board-pack device tag is a compile-time error, whatever the body says. The board pack's description is the only one.
 
 **Validity.** The shared compiler checks each description:
 
@@ -234,13 +242,37 @@ The description covers the register layout only. The base address is not part of
 
 The description is still the programmer's statement about the hardware: a description that does not match the silicon passes every check. Descriptions should be written from the vendor's register documentation. A generator that produces them from vendor files may come later (§3.3).
 
+### 4.9.1 Board-pack device descriptions
+
+The board pack is the authoritative description of the devices the board itself carries. It is a per-target Silica module (`emitter/<TARGET>/board_pack.silica`, one per OS-free target) of pure, flat indexed tables, with no allocation and no effects, which the compiler reads as data. It is part of the target, maintained with the compiler: programs do not supply, extend, or override it. The porting contract is [porting_for_os_free_targets.md](porting_for_os_free_targets.md) §10.
+
+The programmer-description form of §4.9 (an `impl fn registers` returning a list literal of records) does not apply to the board pack; the pack's flat tables carry the same information. A conforming board pack provides:
+
+- **Windows.** A table of board windows, each with a base, a size, and the device tag it belongs to. Windows do not overlap. `map_device` of a board-pack device tag succeeds only at a base the pack lists for that tag, and the window size is the pack's (§5.1).
+- **Registers.** For each device tag, a table of registers, each with a name, an offset, a width, and an access mode.
+- **Per-pin arrays.** A register repeated per pin or channel is expressible as `offset + stride × index`, with a stride and a count in the table. Each element is a separate named register, and the pack states the naming rule.
+
+The same validity rules as §4.9 apply, checked by the shared compiler when it reads the pack:
+
+- Register names are unique within a device.
+- `width` is 8, 16, 32, or 64 (bits).
+- `offset` (and each repeated element's offset) is a multiple of `width / 8`.
+- No two registers of a device overlap.
+- The access mode is one of the four modes of §4.9 (`:read_write`, `:read_only`, `:write_only`, `:write_one_to_clear`), and `peek` and `poke` are checked against it exactly as in §4.9.
+- Every register lies inside its device's window, and a device has at least one register.
+- Windows do not overlap.
+
+A pack that fails these rules is a defect in the target, reported when the compiler is built or run for that target, not a program error.
+
+**Status of the ESP32-S3 pack.** `emitter/ESP32-S3_raw/board_pack.silica` is not yet fully conforming. It records each register's runtime use (`register_runtime_use`: `:reads`, `:writes`, `:reads_writes`) and a stride for per-pin arrays, but not the four access modes. It must be extended to list an access mode per register before the checks above can run against it.
+
 ---
 
 ## 5. Ownership of windows and DMA
 
 ### 5.1 Exclusive map
 
-`map_device(D, base)` succeeds only if `[base, base + size)`, with `size` from `D`'s description, is a board-pack window and no other live mapping overlaps that window. The resulting `device_window(R, D)` is move-only.
+`map_device(D, base)` succeeds only if `[base, base + size)` is a board-pack window and no other live mapping overlaps that window. For a board-pack device tag, `size` and the legality of `base` come from the board pack (§4.9.1); for a programmer-described tag, `size` comes from the programmer's description and the range must lie inside a board window. The resulting `device_window(R, D)` is move-only.
 
 The window is moved into the device worker via `spawn_device` initial state, or via a later message that transfers ownership. After the move, the sender must not use the handle (§12.1.5 / §4.4.2).
 
@@ -287,6 +319,8 @@ After the actor runtime is up, **application** console print on OS-free targets 
 A supervisor may restart a device worker. Restart does **not** reset the peripheral. The replacement behavior’s first work (or `Supervisor` init for a device supervisor, if added later) must run a documented **hardware `init` / `recover`**. Otherwise MMIO after crash is undefined.
 
 `link` / `monitor` on `device_actor_ref` follow ordinary actor rules once the type is accepted by those intrinsics; until specified, monitor a wrapper ordinary actor, not the device ref.
+
+On the board, when a device actor ends on a CPU exception its standard failure report also carries the hardware fault: `exccause` (with a name for common causes), `epc` and `excvaddr`, after `reason_tag` (`runtime_failure_reporting.md` §3.2). Other actors' reports are unchanged.
 
 ---
 
@@ -335,10 +369,12 @@ The type checker uses the same style of markers as `__silica_tc_in_behavior` / `
 | `peek` call or `poke` value without a `RegisterN` marker | Error |
 | Marked expression's type is not the marker's type | Error |
 | Any `impl` of `Register8` / `Register16` / `Register32` / `Register64` outside the built-in ones | Error |
-| `map_device` with a device tag that has no description visible from the calling module | Error |
-| Second description for the same device tag | Error |
+| `map_device` with a device tag that is not a board-pack device and has no programmer description visible from the calling module (no description visible from either source) | Error |
+| Programmer `impl fn registers` whose tag is a board-pack device tag | Error |
+| `map_device` of a board-pack device tag at a base the board pack does not list for that tag | Error |
+| Second programmer description for the same device tag | Error |
 | Description body that is not a list literal of literal records | Error |
-| Description with a duplicate name, a width other than 8/16/32/64, a misaligned offset, overlapping registers, an unknown access mode, or no registers | Error |
+| Programmer description with a duplicate name, a width other than 8/16/32/64, a misaligned offset, overlapping registers, an unknown access mode, or no registers | Error |
 | `impl fn` of any trait other than `DeviceDescription` outside its trait's file | Error |
 | `peek` / `poke` register that is not an atom literal, or not in the window's description | Error |
 | Marker width differs from the register's described width | Error |

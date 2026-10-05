@@ -135,27 +135,24 @@ Silica compiler error messages are designed to be both LLM-parseable and human-r
 All compilation errors follow this pattern:
 
 ```
-❌ Compilation error: [ErrorType] error at [file]:[line]:[column] [[ErrorCode]]
+❌ Compilation error: 
+[ErrorType] error at 
+[file]
+ line: [line]
+ column: [column]
+[ErrorCode]
 
 [Human-readable error description]
 See specification: spec:[section]
 
 <!-- SILICA-ERROR-METADATA
-{
-  "@context": "https://aalang.dev/silica-dev/error/",
-  "errorCode": "[ErrorCode]",
-  "errorType": "[error|warning|info]",
-  "severity": "[error|warning|info]",
-  "location": {
-    "file": "[file]",
-    "line": [line],
-    "column": [column],
-    "offset": [offset]
-  },
-  "specification": {
-    "section": "[section]"
-  }
-}
+errorCode: [ErrorCode]
+errorType: error
+file: [file]
+line: [line]
+column: [column]
+offset: [offset]
+specSection: [section]
 -->
 ```
 
@@ -163,41 +160,38 @@ See specification: spec:[section]
 
 **Human-Readable Component**:
 - Clear, natural language description of the error
-- Specific location information (file, line, column)
+- Specific location information (file, then `line:` and `column:` on separate lines)
 - Reference to specification section using `spec:` prefix
 - Emoji indicator (❌ for errors)
 
 **LLM-Parseable Component**:
-- Structured JSON metadata embedded in HTML comment
-- Error code classification (e.g., `E2000`)
-- Error type and severity level
-- Location information with file, line, column, and offset
-- Reference to specification section
+- A plain `key: value` metadata block, one key per line, embedded in an HTML comment (not JSON)
+- Keys, in order: `errorCode`, `errorType`, `file`, `line`, `column`, `offset`, `specSection`
+- `errorType` is `error` for errors; `offset` is the 0-based byte offset of the reported position
+- `specSection` is the section anchor without the `spec:` prefix, e.g. `sect9.3.1`
+- The same block is printed for every error kind; there are no extra per-kind keys (no effect or suggestion data)
 
 #### 1.6.3 Example Error Message
 
 ```
-❌ Compilation error: TypeError error at test_undeclared_function.silica:4:24 [E2000]
+❌ Compilation error: 
+TypeError error at 
+test_undeclared_function.silica
+ line: 3
+ column: 5
+E2005
 
-Undefined function: undeclared_function
-See specification: spec:§6.1
+unknown or unsupported function: undeclared_function
+See specification: spec:sect6
 
 <!-- SILICA-ERROR-METADATA
-{
-  "@context": "https://aalang.dev/silica-dev/error/",
-  "errorCode": "E2000",
-  "errorType": "error",
-  "severity": "error",
-  "location": {
-    "file": "test_undeclared_function.silica",
-    "line": 4,
-    "column": 24,
-    "offset": 94
-  },
-    "specification": {
-    "section": "§6.1"
-  }
-}
+errorCode: E2005
+errorType: error
+file: test_undeclared_function.silica
+line: 3
+column: 5
+offset: 60
+specSection: sect6
 -->
 ```
 
@@ -207,7 +201,7 @@ See specification: spec:§6.1
 - **Syntax Errors**: Invalid grammar, missing tokens, etc.
 - **Type Errors**: Type mismatches, missing implementations, etc.
 - **Effect Errors**: Missing effect declarations, invalid effect usage
-- **Pattern Matching Errors**: Non-exhaustive patterns, type mismatches
+- **Pattern Matching Errors**: Non-exhaustive boolean, atom or sum-type patterns; type mismatches; an integer or `string` case without a trailing catch-all arm (E2008)
 - **Module Errors**: Missing imports, circular dependencies, etc.
 - **Lifetime Errors (E21xx)**: Reference outlives region, region not in scope. See spec:§12.1.4.
 - **Region Isolation Errors (E21xx)**: Region mismatch (ref(L1, ...) used with region(L2, ...) when L1 ≠ L2). See spec:§12.4.1.
@@ -235,6 +229,8 @@ of         performance_cores proc      produces  provided pub       pure      re
 sequence   spawn     spawn_dangerous spawn_device spawn_device_registered spawn_registered spawn_registered_supervisor string    struct    supervisor_ref trait     true      type
 uint8      uint16     uint32     uint64    underscore unit       use        where
 ```
+
+`region` is both a keyword and the name of the region type constructor, so it cannot be used as the name of a binding, parameter, or field (E1040); the samples in this specification name region handles `r`.
 
 #### 2.2.2 Identifiers
 Identifiers start with a letter (a-z, A-Z) or underscore (_), followed by any number of letters, digits (0-9), or underscores.
@@ -553,8 +549,8 @@ fn categorize(x: int64) -> string {
 
 When guards are used in case expressions, exhaustiveness checking considers both pattern coverage and guard conditions:
 
-1. **Pattern Exhaustiveness**: All possible values of the matched type must be covered by patterns
-2. **Guard Exhaustiveness**: For each pattern, guards must cover all possible cases, or a catch-all pattern must be provided
+1. **Pattern Exhaustiveness**: `boolean`, atom and sum-type cases are exhaustive only when their patterns list all values or variants (or end with a catch-all)
+2. **Integer and string cases**: a `case` over an integer type (`int8` through `int64`, `uint8` through `uint64`) or `string` must **end with a catch-all arm** (`_: T -> ...`, typed with the scrutinee's type). It does not need an arm per value, and guards never substitute for the catch-all, however completely they appear to cover the integers. A case without the trailing catch-all arm is rejected with **E2008** (a type/pattern error)
 
 **Exhaustiveness Rules:**
 
@@ -664,16 +660,16 @@ fn process_number(n: int64) -> int64 {
         n: int64 if n < 0 -> -1           // Negative numbers
         n: int64 if n >= 0 and n < 100 -> n * 2  // Range [0, 100)
         n: int64 if n >= 100 -> n + 100   // Range [100, infinity)
-        // Exhaustive: covers all int64 values
+        _: int64 -> 0                     // Required trailing catch-all (nothing is left over here, but the arm is still required)
     }
 }
 ```
 
-This case expression is exhaustive because:
+This case expression is accepted because it ends with the catch-all arm:
 - First pattern covers all negative values (`n < 0`)
 - Second pattern covers range [0, 100) (`n >= 0 and n < 100`)
 - Third pattern covers range [100, infinity) (`n >= 100`)
-- Union covers all possible int64 values
+- The trailing `_: int64` arm is required for every integer case, whether or not the guards happen to cover every value
 
 **Example 2: Guard Exhaustiveness with Catch-All**
 
@@ -683,26 +679,24 @@ fn process_with_guard(x: int64) -> int64 {
         x: int64 if x > 0 -> x * 2        // Positive numbers only
         x: int64 if x < 0 -> x * -1       // Negative numbers only
         _: int64 -> 0                     // Catch-all: covers x == 0
-        // Exhaustive: guarded patterns + catch-all cover all values
+        // Accepted: the case ends with a catch-all arm
     }
 }
 ```
 
-This case expression is exhaustive because:
+This case expression is accepted because it ends with a catch-all arm:
 - First pattern covers positive values (`x > 0`)
 - Second pattern covers negative values (`x < 0`)
-- Catch-all pattern covers zero (`x == 0`)
-- Union covers all possible int64 values
+- Catch-all pattern covers zero (`x == 0`) and everything else
 
-**Example 3: Non-Exhaustive Guards (Error Case)**
+**Example 3: Missing Catch-All Arm (Error Case)**
 
 ```silica
 fn incomplete_guards(x: int64) -> int64 {
     case x of {
         x: int64 if x > 0 -> x * 2        // Positive numbers
         x: int64 if x < 0 -> x * -1      // Negative numbers
-        // ERROR: Not exhaustive - missing case for x == 0
-        // Compiler error: pattern match is not exhaustive
+        // ERROR E2008: the case has no catch-all arm; add `_: int64 -> ...` as the last arm
     }
 }
 ```
@@ -718,12 +712,12 @@ fn process_even_odd(n: int64) -> int64 {
     case n of {
         n: int64 if is_even(n) -> n / 2      // Even numbers
         n: int64 if not is_even(n) -> n * 3 + 1  // Odd numbers
-        // Exhaustive: is_even(n) and not is_even(n) cover all values
+        _: int64 -> 0                         // Required trailing catch-all
     }
 }
 ```
 
-**Note**: When guards use function calls, the compiler conservatively assumes the guard may not cover all cases unless it can prove exhaustiveness. In this example, `is_even(n)` and `not is_even(n)` are complementary and cover all values.
+**Note**: Guards, including guards that call functions, never replace the trailing catch-all arm. Even though `is_even(n)` and `not is_even(n)` are complementary, the case still ends with `_: int64`.
 
 **Example 5: Complex Guard Conditions**
 
@@ -735,12 +729,12 @@ fn categorize_age(age: int64) -> string {
         age: int64 if age >= 13 and age < 18 -> "teen"     // [13, 18)
         age: int64 if age >= 18 and age < 65 -> "adult"    // [18, 65)
         age: int64 if age >= 65 -> "senior"          // [65, infinity)
-        // Exhaustive: covers all int64 values with non-overlapping ranges
+        _: int64 -> "unknown"                        // Required trailing catch-all
     }
 }
 ```
 
-**Example 6: Non-Exhaustive with Overlapping Guards**
+**Example 6: Overlapping Guards**
 
 ```silica
 fn overlapping_guards(x: int64) -> int64 {
@@ -748,12 +742,12 @@ fn overlapping_guards(x: int64) -> int64 {
         x: int64 if x > 10 -> x * 2        // x > 10
         x: int64 if x > 5 -> x + 1         // x > 5 (overlaps with x > 10)
         _: int64 -> 0                      // Catch-all for x <= 5
-        // Exhaustive: overlapping guards are allowed, catch-all covers remainder
+        // Accepted: overlapping guards are allowed, the catch-all arm covers the remainder
     }
 }
 ```
 
-**Note**: Overlapping guards are allowed - the first matching guard is used. The catch-all pattern ensures exhaustiveness.
+**Note**: Overlapping guards are allowed - the first matching guard is used. The trailing catch-all arm is what the compiler requires.
 
 **Example 7: Boolean Exhaustiveness**
 
@@ -779,26 +773,36 @@ fn process_boolean_simple(b: boolean) -> int64 {
 }
 ```
 
-**Example 8: Guard Exhaustiveness Error Messages**
+**Example 8: Missing Catch-All Error Message**
 
-When guards are not exhaustive, the compiler reports:
+When a case over an integer type or `string` has no catch-all arm, the compiler reports E2008. For the source of Example 3 (saved as `example.silica`), the `case` keyword is at line 2, column 5, byte offset 46:
 
 ```
-❌ Compilation error: PatternMatchError at example.silica:15:5 [E3000]
+❌ Compilation error: 
+TypeError error at 
+example.silica
+ line: 2
+ column: 5
+E2008
 
-Pattern match is not exhaustive: missing case for x == 0
-Guards cover: x < 0, x > 0
-Missing: x == 0
-See specification: spec:§3.6.3
-    }
-}
+case over int64 has no catch-all arm; add `_: int64 -> ...` as the last arm
+See specification: spec:sect3.6.3
+
+<!-- SILICA-ERROR-METADATA
+errorCode: E2008
+errorType: error
+file: example.silica
+line: 2
+column: 5
+offset: 46
+specSection: sect3.6.3
+-->
 ```
 
-This case expression is NOT exhaustive because:
-- First pattern covers positive values (`x > 0`)
-- Second pattern covers negative values (`x < 0`)
-- Missing: zero case (`x == 0`)
-- Union does NOT cover all possible int64 values
+The error is raised because:
+- The case matches an `int64` scrutinee, so its last arm must be `_: int64 -> ...`
+- The two guarded arms (`x > 0`, `x < 0`) do not count as a catch-all, even where together they cover most values
+- Adding `_: int64 -> 0` as the last arm fixes it
 
 **Example 4: Complex Guard Conditions**
 
@@ -810,14 +814,12 @@ fn complex_guards(n: int64) -> string {
         n: int64 if n > 0 and n <= 10 -> "small positive"
         n: int64 if n > 10 and n <= 100 -> "medium positive"
         n: int64 if n > 100 -> "large positive"
-        // Exhaustive: covers all int64 values with overlapping guards
+        _: int64 -> "zero or negative"   // Required trailing catch-all
     }
 }
 ```
 
-This case expression is exhaustive because:
-- Guards cover all possible ranges: (-infinity, 0), [0, 0], (0, 10], (10, 100], (100, infinity)
-- Union covers all possible int64 values
+This case expression is accepted because it ends with a catch-all arm. The guards cover the ranges (-infinity, 0), [0, 0], (0, 10], (10, 100], (100, infinity), but the trailing `_: int64` arm is still required.
 
 **Example 5: Guard with Pattern and Type Matching**
 
@@ -830,7 +832,7 @@ fn guarded_pattern_matching(msg: Message) -> int {
         PrintMsg {text} if text != "" -> length_chars(text)
         PrintMsg {text} if text == "" -> 0
         _: Message -> -1
-        // Exhaustive: all Message variants covered with guards
+        // Sum-type arms are listed per variant; the catch-all here is optional
     }
 }
 ```
@@ -847,15 +849,15 @@ fn guard_edge_cases(n: int64) -> int64 {
     case n of {
         n: int64 if n == 0 -> 0           // Exact match
         n: int64 if n != 0 -> n * 2       // All other values
-        // Exhaustive: n == 0 and n != 0 cover all values
+        _: int64 -> 0                     // Required trailing catch-all
     }
 }
 ```
 
-This case expression is exhaustive because:
+This case expression is accepted because it ends with a catch-all arm:
 - First pattern covers exactly zero (`n == 0`)
 - Second pattern covers all non-zero values (`n != 0`)
-- Union covers all possible int64 values
+- The catch-all arm is still required, even though the two guards are complementary
 
 **Example 7: Guard Performance Implications**
 
@@ -937,7 +939,7 @@ end function
 
 **Example 10: Common Guard Patterns**
 
-Common guard patterns that ensure exhaustiveness:
+Common guard patterns (every integer case ends with a catch-all arm):
 
 ```silica
 // Pattern 1: Range partitioning
@@ -945,12 +947,14 @@ case n of {
     n: int64 if n < 0 -> ...
     n: int64 if n >= 0 and n < 100 -> ...
     n: int64 if n >= 100 -> ...
+    _: int64 -> ...
 }
 
 // Pattern 2: Equality partitioning
 case x of {
     x: int64 if x == 0 -> ...
     x: int64 if x != 0 -> ...
+    _: int64 -> ...
 }
 
 // Pattern 3: Guarded + catch-all
@@ -1095,20 +1099,22 @@ Coverage analysis: `{n > 100} ∪ {n > 10 and n <= 100} ∪ {n > 0 and n <= 10} 
 The exhaustiveness checker verifies guards as follows:
 
 1. **Compute Coverage**: For each guarded pattern, compute `Coverage(P, G)`
-2. **Handle Unknown Coverage**: If `Coverage(P, G) = unknown_coverage()`, require catch-all pattern
-3. **Union Coverage**: Compute union of all coverage sets
-4. **Check Completeness**: Verify union equals `Domain(T)` or catch-all pattern exists
+2. **Handle Unknown Coverage**: If `Coverage(P, G) = unknown_coverage()`, the guarded arm contributes nothing to coverage
+3. **Integer and string cases**: Require the trailing catch-all arm (E2008 if absent); the coverage union is not consulted
+4. **Boolean, atom and sum-type cases**: Verify the union equals `Domain(T)` or a catch-all pattern exists
 
-**Note**: Guard coverage computation is conservative - if the compiler cannot determine guard coverage statically (e.g., for function calls or complex expressions), it assumes the guard may not cover all cases and requires a catch-all pattern for exhaustiveness.
+**Note**: For integer and string cases the trailing catch-all arm is always required; guard coverage never substitutes for it.
 
-**Rule 7: Integer Guard Exhaustiveness**
+**Rule 7: Integer and String Cases Require a Catch-All Arm**
 
-For integer types with guards, exhaustiveness requires:
+For a case over an integer type or `string`, with or without guards:
 
-1. **Complete Guard Coverage**: Guards must cover all integer values, OR
-2. **Catch-All Pattern**: A catch-all pattern must be provided
+1. **Catch-All Arm Required**: The last arm must be a catch-all pattern `_: T`, typed with the scrutinee's type
+2. **No Arm Per Value**: Integer cases need no arm per value; the catch-all covers every value not matched earlier
+3. **Guards Do Not Count**: Complete guard coverage of the integers does not replace the catch-all arm
+4. **Error**: A case without the trailing catch-all arm is rejected with E2008
 
-**Example: Exhaustive Integer Guards**
+**Example: Accepted Integer Case**
 
 ```silica
 case x of {
@@ -1118,39 +1124,17 @@ case x of {
 }
 ```
 
-**Coverage Analysis:**
-
-```
-Coverage(n: int64 if n > 0) = { n | n ∈ int64 and n > 0 } = {1, 2, 3, ...}
-Coverage(n: int64 if n < 0) = { n | n ∈ int64 and n < 0 } = {..., -3, -2, -1}
-Coverage(_: int64) = {0} ∪ (all other unmatched values)
-
-Total Coverage = {1, 2, 3, ...} ∪ {..., -3, -2, -1} ∪ {0} = Domain(int64)
-```
-
-**Result**: EXHAUSTIVE
-
-**Example: Non-Exhaustive Integer Guards**
+**Example: Rejected Integer Case (E2008)**
 
 ```silica
 case x of {
-    n: int64 if n > 0 -> expr1;    // Covers positive integers
-    n: int64 if n < 0 -> expr2;    // Covers negative integers
-    // ERROR: Zero is not covered
+    n: int64 if n > 0 -> expr1;
+    n: int64 if n < 0 -> expr2;
+    // ERROR E2008: no catch-all arm; add `_: int64 -> ...` as the last arm
 }
 ```
 
-**Coverage Analysis:**
-
-```
-Coverage(n: int64 if n > 0) = {1, 2, 3, ...}
-Coverage(n: int64 if n < 0) = {..., -3, -2, -1}
-
-Total Coverage = {1, 2, 3, ...} ∪ {..., -3, -2, -1} ≠ Domain(int64)
-Uncovered = {0}
-```
-
-**Result**: NOT_EXHAUSTIVE (missing coverage for 0)
+An integer case whose guards happen to cover every value (for example `n >= 0` and `n < 0`) is rejected in the same way.
 
 **Rule 8: Boolean Guard Exhaustiveness**
 
@@ -1203,15 +1187,15 @@ Total Coverage = {101, 102, ...} ∪ {11, 12, ..., 100} ∪ {..., 10} = Domain(i
 
 **Formal Exhaustiveness Theorem:**
 
-A case expression `case e of { P1 if G1 -> E1; ...; Pn -> En }` is exhaustive if and only if:
+For `boolean`, atom and sum-type scrutinees, a case expression `case e of { P1 if G1 -> E1; ...; Pn -> En }` is exhaustive if and only if:
 
 ```
 ∀v ∈ Domain(T). ∃i ∈ {1, ..., n}. (v matches Pi) ∧ (Gi(v) = true ∨ Gi is absent)
 ```
 
-where `T` is the type of `e`, `Pi` are patterns, and `Gi` are guard expressions (or `true` if absent).
+where `T` is the type of `e`, `Pi` are patterns, and `Gi` are guard expressions (or `true` if absent). For integer and `string` scrutinees the condition is instead syntactic: the last arm is `_: T` (E2008 otherwise).
 
-**Example - Exhaustive with guards:**
+**Example - Accepted with guards:**
 ```silica
 fn classify(x: int64) -> string {
     case x of {
@@ -1221,23 +1205,23 @@ fn classify(x: int64) -> string {
     }
 }
 ```
-This is exhaustive because:
+This is accepted because it ends with a catch-all arm:
 - Positive integers are covered by `n: int64 if n > 0`
 - Negative integers are covered by `n: int64 if n < 0`
 - Zero and all other cases are covered by `_: int64`
 
-**Example - Non-exhaustive (missing catch-all):**
+**Example - Rejected (missing catch-all, E2008):**
 ```silica
 fn classify(x: int64) -> string {
     case x of {
         n: int64 if n > 0 -> "positive";
         n: int64 if n < 0 -> "negative";
-        // ERROR: Zero is not covered - exhaustiveness check fails
+        // ERROR E2008: no catch-all arm; add `_: int64 -> ...` as the last arm
     }
 }
 ```
 
-**Example - Exhaustive with overlapping guards:**
+**Example - Accepted with overlapping guards:**
 ```silica
 fn categorize(x: int64) -> string {
     case x of {
@@ -1248,7 +1232,7 @@ fn categorize(x: int64) -> string {
     }
 }
 ```
-This is exhaustive because:
+This is accepted because it ends with a catch-all arm:
 - Values > 100 are covered by the first branch
 - Values 11-100 are covered by the second branch (first match wins)
 - Values 1-10 are covered by the third branch
@@ -1370,7 +1354,7 @@ The compiler performs exhaustiveness checking as follows:
 
 1. **Collect all patterns**: Identify all patterns in the case expression
 2. **Identify uncovered values**: For each pattern type, determine which values are not covered
-3. **Check guard coverage**: For patterns with guards, verify that guards cover all cases or catch-all exists
+3. **Check guard coverage**: For boolean, atom and sum-type patterns with guards, verify that guards cover all cases or a catch-all exists. Integer and `string` cases are not checked this way: they require the trailing catch-all arm (E2008)
 4. **Verify completeness**: Ensure all possible values are covered by either:
    - A pattern without guards
    - A pattern with a guard that evaluates to `true` for that value
@@ -1501,7 +1485,7 @@ If you need to define a helper function that is only used within another functio
 - **Move the function to top-level**: Declare it at the module level and pass any needed context as parameters
 - **Use function literals (lambdas)**: Anonymous functions created with `fn(...) { ... }` can be used within expressions and can capture variables from their enclosing scope
 
-**Restriction: A function may have at most 8 parameters.** The AArch64 architecture provides 8 argument registers (X0–X7) per procedure call. Arguments beyond the first 8 must be passed on the stack, which is less efficient than register passing. Silica enforces this limit at parse time (error E3010) so that all parameters are passed in registers and code generation remains efficient. Functions requiring more than 8 arguments should be refactored to use tuples or records to group related parameters.
+**Restriction: A function may have at most 8 parameters.** The AArch64 architecture provides 8 argument registers (X0–X7) per procedure call. Arguments beyond the first 8 must be passed on the stack, which is less efficient than register passing. Silica enforces this limit at parse time (error E1070) so that all parameters are passed in registers and code generation remains efficient. Functions requiring more than 8 arguments should be refactored to use tuples or records to group related parameters.
 
 **Example - Invalid (nested function):**
 ```silica
@@ -1683,6 +1667,8 @@ fn counter_actor(
 Silica **does not** provide **custom types**: declarations that introduce a **new user-defined type name** are absent. There is no `type Ping = …`, no `struct Ping { … }`, and no `enum` that binds a fresh type identifier for application code. **Composite types are always structural and written inline** wherever a type is required (parameters, returns, `impl … for …`, pattern annotations, etc.): tuples `(T1, …, Tn)`, inline records `{ f1: T1, …, fn: Tn }`, tagged tuples `( :tag, T1, …)` (§3.7), lists, variants written as sum types, and combinations thereof.
 
 **Record values (struct literals only):** Values of record type are always written as **struct literals** (§3.3.7)—for example `p: { x: int64, y: int64 } <- { x: 42, y: 23 }` or `{ x: 42, y: 23 }` in an expression. The reserved keyword `struct` does **not** begin a record type declaration; unnamed record shape is carried by inline `{ field: Type, … }` in type positions and `{ field: expression, … }` in expression positions.
+
+**Sum types with record variants:** A sum may hold record variants with any field names and types beside atom, tuple and other record variants. A case over such a sum excludes the atom variants first, then compares the first word behind the pointer: a tuple variant's tag atom or a record variant's shape number (§3.7). A record pattern matches the first record variant whose fields it names.
 
 The identifiers `int64`, `string`, `atom`, and other **built-in** names are predefined. **Trait implementations** attach to these **inline type expressions** via `impl fn` entries in the trait's file (§3.4.8), for example `impl { seq: int64 };` or `impl (:ping, int64);` in `actormessage.silica` (§16.3.2).
 
@@ -1988,12 +1974,14 @@ impl fn format(n: int64) -> string { "int64: " ++ int_to_string(n) }
 
 ```silica
 fn test() -> string {
-    // ERROR: Which implementation? int32 or int64?
-    display@format(42)
+    // Which implementation? int32 or int64? The compiler picks int64 (rule 2 below).
+    Display@format(42)
 }
 ```
 
-The compiler cannot determine whether the literal `42` should be treated as `int32` or `int64`.
+The literal `42` could be treated as `int32` or `int64`. The compiler does not reject the call and does not report
+an ambiguity; it applies the selection rule below. (The trait module is named `Display`, in `Display.silica`:
+an exported trait name must match its file name, E4017.)
 
 **Resolution: Inference from the viable implementations**
 
@@ -2004,38 +1992,61 @@ inhabit, and:
 1. **Exactly one viable implementation**: that implementation is selected and the literal takes
    its parameter type. No annotation is needed. `Shape@double_area(5)` where the only numeric
    implementation is `impl fn area(side: int32)` resolves to `int32`.
-2. **More than one viable implementation**: the call is ambiguous and is rejected (E4001).
-   Disambiguate by binding the value to a typed name and passing that name.
-3. **No viable implementation**: the call is rejected; no implementation accepts the argument.
+2. **More than one viable implementation**: the call is not rejected and there is no ambiguity error. The
+   compiler selects one implementation by this rule, verified against the compiler:
+   - if an `int64` implementation is among the viable ones, it is selected (an untyped integer literal
+     defaults to `int64`), whatever the order of the `impl fn` declarations;
+   - otherwise the first viable implementation in declaration order is selected (with `impl fn format(n: int16)`
+     declared before `impl fn format(n: int32)`, `Display@format(42)` calls the `int16` one; declared the other
+     way round it calls the `int32` one).
 
-**Disambiguating an ambiguous call:**
+   The rule is positional and implicit, so a program that depends on it is fragile. Bind the value to a typed
+   name and pass that name to choose the implementation explicitly.
+3. **No viable implementation**: the call is rejected with the ordinary argument type error E2003, reported
+   against the call's parameter type (see the sample below). There is no trait-specific error code for this case.
+
+**Choosing an implementation explicitly (the typed form always selects the matching implementation):**
 ```silica
 fn test() -> string {
     sequence proc[mem(normal)]
         small: int32 <- 42;
         large: int64 <- 42;
-        result1: string <- display@format(small);
-        result2: string <- display@format(large)
+        result1: string <- Display@format(small);
+        result2: string <- Display@format(large)
     produces
         pure result1
     end
 }
 ```
 
-**Compiler Error for an Ambiguous Trait Call:**
+**Compiler Error for a Call with No Viable Implementation:**
+
+`Display@format("hi")` with the two numeric implementations above:
 
 ```
-❌ Compilation error: AmbiguousTypeImplementationError at example.silica:5:10 [E4001]
+❌ Compilation error: 
+TypeError error at 
+main.silica
+ line: 4
+ column: 20
+E2003
 
-Cannot infer type for trait method call: display@format()
-Multiple implementations exist: impl fn format for int32, impl fn format for int64
-Bind the argument to a typed name and pass that name to select an implementation
-Example: small: int32 <- 42; display@format(small)
-See specification: spec:§3.4.12
+argument type string does not match parameter type int64 for Display@format
+See specification: spec:sect6
+
+<!-- SILICA-ERROR-METADATA
+errorCode: E2003
+errorType: error
+file: main.silica
+line: 4
+column: 20
+offset: 55
+specSection: sect6
+-->
 ```
 
-The error is reported at the call site that supplies the ambiguous argument, and names the
-competing implementations.
+The error is reported at the argument. E4001 is not used for trait calls; it is an internal code reporting a
+builtin that the type checker accepted but the code generator cannot lower.
 
 #### 3.4.13 Actor System Traits
 
@@ -2272,7 +2283,9 @@ For each field fᵢ: pᵢ in the record pattern,
 
 #### 3.6.3 Exhaustiveness Checking
 
-Pattern matches must be exhaustive - every possible value must be matched.
+Pattern matches over `boolean`, atom and sum types must be exhaustive: every value or variant must be matched, either by listing them or with a catch-all.
+
+**Integer and string cases:** a `case` over an integer type (`int8`, `int16`, `int32`, `int64`, `uint8`, `uint16`, `uint32`, `uint64`) or `string` must **end with a catch-all arm** (`_: int64 -> ...`, typed with the scrutinee's type). Integer cases do not need an arm per value, and guards never replace the catch-all arm. A case without it is rejected with **E2008** (a type/pattern error): `case over int64 has no catch-all arm; add `_: int64 -> ...` as the last arm`. See the Example 8 error message in §3.3.3.
 
 **Type Coverage Analysis:**
 For a type τ, a set of patterns P covers τ if:
@@ -2280,7 +2293,7 @@ For a type τ, a set of patterns P covers τ if:
 - No pattern in P matches impossible values
 
 **Exhaustiveness Algorithm:**
-1. **Literal Types**: Check that all possible literal values are covered
+1. **Literal Types**: Integer and `string` cases require the trailing catch-all arm (E2008 otherwise); `boolean` and atom cases must cover all values
 2. **Variant Types**: Check that all constructors are present
 3. **Tuple/Record Types**: Check that destructuring covers all components
 4. **Wildcard Patterns**: `_: type` covers all remaining cases of the specified type
@@ -2288,7 +2301,6 @@ For a type τ, a set of patterns P covers τ if:
 **Non-Exhaustive Match Detection:**
 If a match is not exhaustive, the compiler reports an error with:
 - The uncovered cases
-- Suggestions for additional patterns to add
 
 #### 3.6.4 Pattern Compilation Strategy
 
@@ -2925,12 +2937,17 @@ tuple_type      ::= "(" type {"," type} ")"
                 | tagged_tuple_type
 tagged_tuple_type ::= "(" atom_literal "," type {"," type} ")"
 record_type     ::= "{" identifier ":" type {"," identifier ":" type} "}"
-variant_type    ::= identifier {"|" identifier}
+variant_type    ::= variant {"|" variant}
+variant         ::= identifier | atom_literal | tuple_type | record_type
 
 effect_type     ::= "proc" "[" effect_list "]" type
 effect_list     ::= effect {"," effect}
 effect          ::= effect_identifier
 ```
+
+**Record layout:** Every record value begins with a shape word: the build-wide number of its shape, which is its field names and field types in declared order. Shapes are numbered once per build, from 65536, in `silica.shapes`; the fields follow the shape word, one word each. In memory, word 0 is the shape; word k+1 is field k; a record's size is 8 + 8·fields. Records the runtime builds (child_info, core_info, cpu_topology, numa_node, memory_range, cache_hierarchy, cache_level, actor_memory_usage) carry reserved shapes 65536..65543.
+
+**Variants:** a `variant` of a sum is an atom (a bare identifier or `atom_literal`), a tuple (including a tagged tuple), or a record; see §3.4.2 for how a case distinguishes them.
 
 **Tagged tuple types:** `tagged_tuple_type` fixes the first component to a specific atom literal `:tag` (see §2.2.3). It is **not** interchangeable with `(atom, T1, …)` (first slot any atom). For actor mailboxes, tagged tuples require an explicit `impl ActorMessage` as described in §16.3.2.1.
 
@@ -3141,7 +3158,7 @@ Examples:
 ```
 
 - **Base case:** The atom `:none` denotes an empty recursive position.
-- **Construction:** `alloc_rec(region, (value, ...))` allocates a recursive tuple in a region; returns `ref(R, Space, tuple_type)`. Effect: `mem(Space)`.
+- **Construction:** `alloc_rec(r, (value, ...))` allocates a recursive tuple in a region; returns `ref(R, Space, tuple_type)`. Effect: `mem(Space)`.
 - **Decomposition:** Use `read_ref(ref)` to obtain the tuple value, then decompose with `(pattern) <- expr`. Pattern match on `ref?` slots: `case slot of { :none -> ...; ref_var: ref(R, rec) -> ... }`.
 - **Type checking:** Structural equality with `rec`-scoped occurs check. `rec` is valid only inside a tuple type.
 
@@ -3198,7 +3215,7 @@ Process types represent monadic computations and have the form `proc[Effects] Re
 Examples:
 ```
 proc[] int                           // pure computation returning int
-proc[mem(normal)] ref(region, int)   // computation allocating memory
+proc[mem(normal)] ref(R, normal, int)   // computation allocating memory
 proc[concurrency] actor_ref          // computation spawning an actor
 ```
 
@@ -3269,7 +3286,7 @@ Region-backed collections grow functionally: allocate a fresh region and larger 
 
 #### 4.4.5 Atomic memory space
 
-Atomic-capable cells use **`ref(L, atomic, T)`**. The **`atomic`** memory space (second parameter) selects hardware atomic-capable backing; there is no separate **`atomic_ref`** type name. **`alloc_atomic(region, initial)`** produces **`ref(R, atomic, T)`** (see §22).
+Atomic-capable cells use **`ref(L, atomic, T)`**. The **`atomic`** memory space (second parameter) selects hardware atomic-capable backing; there is no separate **`atomic_ref`** type name. **`alloc_atomic(r, initial)`** produces **`ref(R, atomic, T)`** (see §22).
 
 ```
 ref(L1, atomic, int)                  // reference in atomic memory space
@@ -3402,7 +3419,7 @@ The `Pred` type represents a predicate mask used for conditional vector operatio
 
 ## 5. Built-in Functions and Primitives
 
-Silica provides a comprehensive set of built-in functions and language primitives for common operations. These are always available without requiring imports.
+Silica provides a comprehensive set of built-in functions and language primitives for common operations. These are always available without requiring imports. A builtin is always called unqualified; a module that defines a function with a builtin's name must call its own function qualified (`module@name(...)`), and an unqualified call to it is a compile error (E2020, §19.3.3).
 
 ### 5.1 Print Functions
 
@@ -4752,7 +4769,7 @@ poke(window: device_window(R, D), register: atom, value: T) -> atom proc[registe
 `map_device((:esp32s3_uart), base)` binds the device's registers at `base` (a bind, not an allocation); the window's size comes from the description. `peek` is one volatile load and `poke` one volatile store of a register named by an atom literal, never by offset. The programmer states every access width with one of four closed built-in marker traits, `Register8`, `Register16`, `Register32`, and `Register64`, each implemented only by `uint8`, `uint16`, `uint32`, or `uint64` respectively. The marker is required: `peek(uart, :status) impl Register32 {}` and `poke(uart, :fifo, value impl Register32 {})`. The marked expression's type must be the marker's type, and the marker's width must be the register's described width. A `poke` to a read-only register or a `peek` of a write-only one is a compile-time error. Every `peek` is performed even when its result is unused; a read done only for its effect binds to `_`. There is no read-modify-write prim.
 
 - **Where they may appear:** only in a `register_rwr` sequence of a device-worker behavior installed by `spawn_device` / `spawn_device_registered`, in a `device_*` module.
-- **Names:** `map_device`, `peek`, and `poke` are not reserved words. An unqualified call inside a `device_*` module is the prim; elsewhere, and when module-qualified, the name is an ordinary identifier.
+- **Names:** `map_device`, `peek`, and `poke` are not reserved words, but they are builtins, so the builtin-name rule of §19.3.3 applies: an unqualified call is always the prim (and is rejected where it is not allowed, as above), and a module's own function with one of these names is called only module-qualified (`m@peek(...)`), never unqualified.
 - **Targets:** every port checks these rules the same way. An OS-hosted target rejects each call at compile time in its code generator, naming the module, function, and prim.
 
 Full rules (markers, device descriptions, access modes, handle movement, enforcement): [silica_device_actor_specification.md](silica_device_actor_specification.md) §4.7–§4.9, §10, §11.
@@ -4801,9 +4818,9 @@ Effects form a subeffecting lattice:
 
 2. **Single Effect**: Effects are declared on the sequence block:
    ```
-   fn allocate(region: region(R, normal)) -> ref(R, normal, int) {
+   fn allocate(r: region(R, normal)) -> ref(R, normal, int) {
        sequence proc[mem(normal)]
-           ref: ref(R, normal, int) <- alloc_ref(region, 0);
+           ref: ref(R, normal, int) <- alloc_ref(r, 0);
        produces
            pure ref
        end
@@ -4812,9 +4829,9 @@ Effects form a subeffecting lattice:
 
 3. **Multiple Effects**: All effects are declared on the sequence:
    ```
-   fn allocate_and_print(region: region(R, normal)) -> ref(R, normal, int) {
+   fn allocate_and_print(r: region(R, normal)) -> ref(R, normal, int) {
        sequence proc[mem(normal), device_io]
-           ref: ref(R, normal, int) <- alloc_ref(region, 0);
+           ref: ref(R, normal, int) <- alloc_ref(r, 0);
            print_string("Allocated");
        produces
            pure ref
@@ -5055,8 +5072,8 @@ When effects are not properly declared, compilation errors occur:
 
 ```silica
 // ERROR: Function uses mem(normal) but doesn't declare it
-fn allocate_missing_effect(region: region(R, normal)) -> ref(R, normal, int) {
-    alloc_ref(region, 0)  // Error: mem(normal) effect not declared
+fn allocate_missing_effect(r: region(R, normal)) -> ref(R, normal, int) {
+    alloc_ref(r, 0)  // Error: mem(normal) effect not declared
 }
 
 // ERROR: Function calls helper with effects but doesn't declare them
@@ -5065,8 +5082,8 @@ fn caller_missing_effects() -> int {
 }
 
 // CORRECT: All effects properly declared
-fn allocate_correct(region: region(R, normal)) -> ref(R, normal, int) {
-    alloc_ref(region, 0)  // Correct: mem(normal) declared
+fn allocate_correct(r: region(R, normal)) -> ref(R, normal, int) {
+    alloc_ref(r, 0)  // Correct: mem(normal) declared
 }
 
 fn caller_correct() -> ref(R, normal, int) {
@@ -5194,8 +5211,8 @@ Silica does not infer effects. If a function uses an effect but does not declare
 
 ```
 // ERROR: Function uses mem(normal) but doesn't declare it
-fn allocate(region: region(R, normal)) -> ref(R, normal, int) {
-    alloc_ref(region, 0)  // Error: mem(normal) effect not declared
+fn allocate(r: region(R, normal)) -> ref(R, normal, int) {
+    alloc_ref(r, 0)  // Error: mem(normal) effect not declared
 }
 ```
 
@@ -5216,48 +5233,31 @@ Function literals must declare all effects they use, just like regular function 
 
 #### 9.3.3 Effect Error Examples
 
-Silica's effect system requires explicit effect declarations. When effects are missing or mismatched, the compiler generates specific error messages with suggestions for fixing the errors. This section provides examples of common effect errors and their error messages.
-
-**Effect Error Suggestions:**
-
-The compiler may include suggestions in effect error messages to help developers fix missing effect declarations:
-
-- **Suggestion Format**: Error messages may include a "Suggestion:" section showing the corrected function signature
-- **Automatic Detection**: The compiler analyzes the function body to determine which effects should be declared
-- **Signature Generation**: The compiler generates a suggested function signature with the correct effect declarations
-- **Optional Feature**: Effect suggestions are optional - compilers may choose to include or omit them based on implementation preferences
+Silica's effect system requires explicit effect declarations. When effects are missing or mismatched, the compiler generates specific error messages. This section provides examples of common effect errors and their error messages.
 
 **Error Message Format:**
 
-Effect errors follow the standard Silica error message format with LLM-parseable metadata:
+Effect errors follow the standard Silica error message format (§1.6.1) with the same metadata block as every other error:
 
 ```
-❌ Compilation error: [EffectError] error at [file]:[line]:[column] [[ErrorCode]]
+❌ Compilation error: 
+[ErrorType] error at 
+[file]
+ line: [line]
+ column: [column]
+[ErrorCode]
 
 [Human-readable error description]
 See specification: spec:[section]
 
 <!-- SILICA-ERROR-METADATA
-{
-  "@context": "https://aalang.dev/silica-dev/error/",
-  "errorCode": "[ErrorCode]",
-  "errorType": "error",
-  "severity": "error",
-  "location": {
-    "file": "[file]",
-    "line": [line],
-    "column": [column],
-    "offset": [offset]
-  },
-  "specification": {
-    "section": "[section]"
-  },
-  "effect": {
-    "missing": ["effect1", "effect2"],
-    "declared": ["effect3"],
-    "required": ["effect1", "effect2", "effect3"]
-  }
-}
+errorCode: [ErrorCode]
+errorType: error
+file: [file]
+line: [line]
+column: [column]
+offset: [offset]
+specSection: [section]
 -->
 ```
 
@@ -5265,133 +5265,89 @@ See specification: spec:[section]
 
 **Code:**
 ```silica
-fn allocate_int(region: region(R, normal)) -> ref(R, normal, int) {
-    alloc_ref(region, 0)  // Error: mem(normal) effect not declared
+fn allocate_int(r: region(R, normal)) -> ref(R, normal, int) {
+    alloc_ref(r, 0)  // Error: mem(normal) effect not declared
 }
 ```
 
 **Error Message:**
 ```
-❌ Compilation error: EffectError error at example.silica:2:5 [E3001]
+❌ Compilation error: 
+EffectError error at 
+example.silica
+ line: 2
+ column: 5
+E3001
 
-Function uses mem(normal) effect but does not declare it on sequence.
-Required effects: [mem(normal)]
-Declared effects: []
-See specification: spec:§9.3.1
-
-Suggestion: Use a sequence block with `sequence proc[mem(normal)]` in the function body:
-  fn allocate_int(region: region(R, normal)) -> ref(R, normal, int) {
-      sequence proc[mem(normal)]
-          ref: ref(R, normal, int) <- alloc_ref(region, 0);
-      produces
-          pure ref
-      end
-  }
+Function 'allocate_int' uses effect mem(normal) but the effectful code is not inside a sequence block. Add proc[mem(normal)] to a sequence-produces pure-end block for region operations (alloc_region, alloc_ref, read_ref, write_ref, alloc_rec, build) and list operations (literals, empty, prepend, remove_head, length, map, filter, reduce)
+See specification: spec:sect9.3.1
 
 <!-- SILICA-ERROR-METADATA
-{
-  "@context": "https://aalang.dev/silica-dev/error/",
-  "errorCode": "E3001",
-  "errorType": "error",
-  "severity": "error",
-  "location": {
-    "file": "example.silica",
-    "line": 2,
-    "column": 5,
-    "offset": 45
-  },
-  "specification": {
-    "section": "§9.3.1"
-  },
-  "effect": {
-    "missing": ["mem(normal)"],
-    "declared": [],
-    "required": ["mem(normal)"]
-  },
-  "suggestion": {
-    "type": "add_effect_declaration",
-    "suggested_signature": "fn allocate_int(region: region(R, normal)) -> ref(R, normal, int) — use sequence proc[mem(normal)] in body"
-  }
-}
+errorCode: E3001
+errorType: error
+file: example.silica
+line: 2
+column: 5
+offset: 67
+specSection: sect9.3.1
 -->
 ```
 
 **Fix:**
 ```silica
-fn allocate_int(region: region(R, normal)) -> ref(R, normal, int) {
-    alloc_ref(region, 0)
+fn allocate_int(r: region(R, normal)) -> int64 {
+    sequence proc[mem(normal)]
+        x: ref(R, normal, int) <- alloc_ref(r, 0);
+        v: int64 <- read_ref(x)
+    produces
+        pure v
+    end
 }
 ```
 
-**Example 2: Missing Effect in Function Call Chain**
+**Example 2: Missing Effect on a Sequence**
 
 **Code:**
 ```silica
-fn helper() -> ref(R, normal, int) {
-    region: region(R, normal) <- alloc_region(normal);
-    alloc_ref(region, 0)
-}
-
-fn caller() -> ref(R, normal, int) {  // Error: missing mem(normal) effect
-    helper()
+fn caller() -> int64 {
+    sequence
+        r: region(R, normal) <- alloc_region(normal)  // Error: mem(normal) effect not declared
+    produces
+        pure 0
+    end
 }
 ```
 
 **Error Message:**
 ```
-❌ Compilation error: EffectError error at example.silica:6:5 [E3002]
+❌ Compilation error: 
+EffectError error at 
+example.silica
+ line: 3
+ column: 33
+E3002
 
-Function calls helper() which requires mem(normal) effect, but the sequence does not declare it.
-Required effects: [mem(normal)]
-Declared effects: []
-See specification: spec:§9.3.1
-
-Suggestion: Use `sequence proc[mem(normal)]` in the function body:
-  fn caller() -> ref(R, normal, int) {
-      sequence proc[mem(normal)]
-          ref: ref(R, normal, int) <- helper();
-      produces
-          pure ref
-      end
-  }
+Effect not declared in caller: mem(normal)
+See specification: spec:sect9.3.1
 
 <!-- SILICA-ERROR-METADATA
-{
-  "@context": "https://aalang.dev/silica-dev/error/",
-  "errorCode": "E3002",
-  "errorType": "error",
-  "severity": "error",
-  "location": {
-    "file": "example.silica",
-    "line": 6,
-    "column": 5,
-    "offset": 78
-  },
-  "specification": {
-    "section": "§9.3.1"
-  },
-  "effect": {
-    "missing": ["mem(normal)"],
-    "declared": [],
-    "required": ["mem(normal)"],
-    "called_function": "helper",
-    "called_function_effects": ["mem(normal)"]
-  },
-  "suggestion": {
-    "type": "add_effect_declaration",
-    "suggested_signature": "fn caller() -> ref(R, normal, int) — use sequence proc[mem(normal)] in body"
-  }
-}
+errorCode: E3002
+errorType: error
+file: example.silica
+line: 3
+column: 33
+offset: 68
+specSection: sect9.3.1
 -->
 ```
 
 **Fix:**
 ```silica
-fn caller() -> ref(R, normal, int) {
+fn caller() -> int64 {
     sequence proc[mem(normal)]
-        ref: ref(R, normal, int) <- helper();
+        r: region(R, normal) <- alloc_region(normal)
     produces
-        pure ref
+        pure 0
     end
 }
 ```
@@ -5414,37 +5370,27 @@ fn low_level() -> atom {
 
 **Error Message:**
 ```
-❌ Compilation error: EffectError error at example.silica:8:5 [E3003]
+❌ Compilation error: 
+EffectError error at 
+example.silica
+ line: 8
+ column: 5
+E3003
 
 Function calls high_level() which requires [mem(normal), device_io] effects, but low_level() only declares [mem(normal)].
 Required effects: [mem(normal), device_io]
 Declared effects: [mem(normal)]
 Missing effects: [device_io]
-See specification: spec:§9.3.1
+See specification: spec:sect9.3.1
 
 <!-- SILICA-ERROR-METADATA
-{
-  "@context": "https://aalang.dev/silica-dev/error/",
-  "errorCode": "E3003",
-  "errorType": "error",
-  "severity": "error",
-  "location": {
-    "file": "example.silica",
-    "line": 8,
-    "column": 5,
-    "offset": 112
-  },
-  "specification": {
-    "section": "§9.3.1"
-  },
-  "effect": {
-    "missing": ["device_io"],
-    "declared": ["mem(normal)"],
-    "required": ["mem(normal)", "device_io"],
-    "called_function": "high_level",
-    "called_function_effects": ["mem(normal)", "device_io"]
-  }
-}
+errorCode: E3003
+errorType: error
+file: example.silica
+line: 8
+column: 5
+offset: 112
+specSection: sect9.3.1
 -->
 ```
 
@@ -5470,35 +5416,26 @@ fn create_actor() -> actor_ref {
 
 **Error Message:**
 ```
-❌ Compilation error: EffectError error at example.silica:3:9 [E3004]
+❌ Compilation error: 
+EffectError error at 
+example.silica
+ line: 3
+ column: 9
+E3004
 
 Function literal uses device_io effect but does not declare it on sequence.
 Required effects: [device_io]
 Declared effects: []
-See specification: spec:§9.3.1
+See specification: spec:sect9.3.1
 
 <!-- SILICA-ERROR-METADATA
-{
-  "@context": "https://aalang.dev/silica-dev/error/",
-  "errorCode": "E3004",
-  "errorType": "error",
-  "severity": "error",
-  "location": {
-    "file": "example.silica",
-    "line": 3,
-    "column": 9,
-    "offset": 67
-  },
-  "specification": {
-    "section": "§9.3.1"
-  },
-  "effect": {
-    "missing": ["device_io"],
-    "declared": [],
-    "required": ["device_io"],
-    "context": "function_literal"
-  }
-}
+errorCode: E3004
+errorType: error
+file: example.silica
+line: 3
+column: 9
+offset: 67
+specSection: sect9.3.1
 -->
 ```
 
@@ -5513,49 +5450,41 @@ fn create_actor() -> actor_ref {
 }
 ```
 
-**Example 5: Multiple Missing Effects**
+**Example 5: Multiple Missing Effects (First One Reported)**
 
 **Code:**
 ```silica
 fn complex_operation() -> atom {
     sequence
-        region: region(R, normal) <- alloc_region(normal);
+        r: region(R, normal) <- alloc_region(normal);
         print_string("Allocated")
-    produces pure ()
+    produces pure :ok
     end
 }
 ```
 
 **Error Message:**
-```
-❌ Compilation error: EffectError error at example.silica:2:5 [E3005]
 
-Function uses [mem(normal), device_io] effects but does not declare them on sequence.
-Required effects: [mem(normal), device_io]
-Declared effects: []
-See specification: spec:§9.3.1
+The compiler reports only the first unsubsumed effect (here `device_io`, from the `print_string` line); `mem(normal)` is reported after that one is fixed.
+```
+❌ Compilation error: 
+EffectError error at 
+example.silica
+ line: 4
+ column: 9
+E3002
+
+Effect not declared in caller: device_io
+See specification: spec:sect9.3.1
 
 <!-- SILICA-ERROR-METADATA
-{
-  "@context": "https://aalang.dev/silica-dev/error/",
-  "errorCode": "E3005",
-  "errorType": "error",
-  "severity": "error",
-  "location": {
-    "file": "example.silica",
-    "line": 2,
-    "column": 5,
-    "offset": 23
-  },
-  "specification": {
-    "section": "§9.3.1"
-  },
-  "effect": {
-    "missing": ["mem(normal)", "device_io"],
-    "declared": [],
-    "required": ["mem(normal)", "device_io"]
-  }
-}
+errorCode: E3002
+errorType: error
+file: example.silica
+line: 4
+column: 9
+offset: 113
+specSection: sect9.3.1
 -->
 ```
 
@@ -5563,9 +5492,9 @@ See specification: spec:§9.3.1
 ```silica
 fn complex_operation() -> atom {
     sequence proc[mem(normal), device_io]
-        region: region(R, normal) <- alloc_region(normal);
+        r: region(R, normal) <- alloc_region(normal);
         print_string("Allocated")
-    produces pure ()
+    produces pure :ok
     end
 }
 ```
@@ -5581,11 +5510,17 @@ When encountering effect errors, consider:
 
 **Effect Error Codes:**
 
+- **E3000**: Effect checker fallback code: an effect failure that carries no code of its own is reported as E3000
 - **E3001**: Missing effect declaration on sequence
-- **E3002**: Missing effect in function call chain
+- **E3002**: Effect not declared in caller: an effect required by a called operation is not subsumed by the effects declared on the enclosing sequence (reported for the first such effect)
 - **E3003**: Effect mismatch in function call
 - **E3004**: Missing effect in function literal
-- **E3005**: Multiple missing effects
+- **E3005**: Undeclared effect: an effect named in a declaration is not a built-in effect, built-in alias, or user-defined effect/alias
+- **E3007**: Invalid parameter on an effect (a parameter given to an effect alias or user-defined effect that takes none)
+- **E3009**: Effect declared on a function's return type; functions never declare effects, `proc[...]` is allowed only directly after the `sequence` keyword
+- **E3010**: Unused effect declaration (UnusedEffectDeclaration): an effect declared on a sequence that nothing in the block requires
+- **E3011**: List memory space mismatch: a `List[T, S]` inside a sequence uses a space `S` different from the sequence's declared `mem(...)`
+- **E3012**: Nested `external_danger`: `sequence proc[external_danger]` is valid only as the root body of a function
 
 #### 9.3.2 Effect Composition
 Effect polymorphism is achieved through concrete functions for each effect combination, preserving all effect information.
@@ -5597,13 +5532,13 @@ Effects compose naturally in `sequence...produces pure...end` blocks. When bindi
 fn example() -> atom {
     sequence proc[mem(normal), device_io]
         // Creates process with mem(normal) effect
-        region: region(R, normal) <- alloc_region(normal);
+        r: region(R, normal) <- alloc_region(normal);
         
         // Creates process with device_io effect
         print_string("Region allocated");
         
         // Creates process with mem(normal) effect
-        ref: ref(R, normal, int64) <- alloc_ref(region, 42);
+        ref: ref(R, normal, int64) <- alloc_ref(r, 42);
         
         // Result process has both mem(normal) and device_io effects
     produces
@@ -5619,7 +5554,7 @@ Nested `sequence...produces pure...end` blocks compose effects from inner to out
 fn nested_example() -> atom {
     sequence proc[mem(normal), device_io, concurrency]
         // Outer sequence block
-        region: region(R, normal) <- alloc_region(normal);
+        r: region(R, normal) <- alloc_region(normal);
         
         inner_result: unit <- sequence proc[device_io]
             // Inner sequence block with device_io
@@ -6043,7 +5978,7 @@ Runtime enforces effect capabilities when processes are executed via `spawn()`:
 
 ```
 // Creates process value (not executed yet)
-process: proc[mem(normal)] ref(R, normal, int) <- alloc_ref(region, value)
+process: proc[mem(normal)] ref(R, normal, int) <- alloc_ref(r, value)
 // ✓ Allowed: mem(normal) effect declared
 
 // Execute the process
@@ -6051,7 +5986,7 @@ ref: ref(R, normal, int) <- spawn(process)
 // ✓ Allowed: mem(normal) capability active during execution
 
 // Invalid process (missing required effect)
-bad_process: proc[] ref(R, normal, int) <- alloc_ref(region, value)
+bad_process: proc[] ref(R, normal, int) <- alloc_ref(r, value)
 // ✗ Type Error: process requires mem(normal) but declares []
 ```
 
@@ -6072,8 +6007,8 @@ Processes are executed using the `spawn()` function:
 ```
 // Process creation (not executed)
 computation: proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) <- sequence proc[mem(normal)]
-    x: ref(R, normal, int) <- alloc_ref(region, 1)
-    y: ref(R, normal, int) <- alloc_ref(region, 2)
+    x: ref(R, normal, int) <- alloc_ref(r, 1)
+    y: ref(R, normal, int) <- alloc_ref(r, 2)
 produces pure (x, y)
 end
 
@@ -6093,7 +6028,7 @@ fn allocate_pair(r: region(R, normal))
 }
 
 // Usage: the function returns a process value that must be spawned
-pair_process: proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) <- allocate_pair(region)
+pair_process: proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) <- allocate_pair(r)
 result: (ref(R, normal, int), ref(R, normal, int)) <- spawn(pair_process)
 
 fn allocate_quad(r: region(R, normal))
@@ -7041,7 +6976,7 @@ When the **message** operand to `call()` or `cast()` (Chapter 16) **contains** a
 References are allocated within regions:
 
 ```
-alloc_ref(region, initial_value) -> ref(R, Space, T) proc[mem(Space)]
+alloc_ref(r, initial_value) -> ref(R, Space, T) proc[mem(Space)]
 ```
 
 #### 12.2.2 Reference Operations
@@ -7056,8 +6991,8 @@ write_ref(reference, value) -> atom proc[mem(Space)]
 References are identity-based:
 
 ```
-r1: ref(R, normal, int) <- alloc_ref(region, 42)
-r2: ref(R, normal, int) <- alloc_ref(region, 42)
+r1: ref(R, normal, int) <- alloc_ref(r, 42)
+r2: ref(R, normal, int) <- alloc_ref(r, 42)
 r1 ≠ r2    // different references, even with same value
 ```
 
@@ -7087,8 +7022,8 @@ Buffer access is bounds-checked. The compiler emits bounds checks before every `
 - **Software fallback**: When MTE is not available, the compiler emits a comparison and conditional branch before each load/store: compare index against buffer size N (from `buf(L, Space, T, N)`), trap on out-of-bounds.
 
 ```
-buf: buf(L1, normal, int, 10) <- alloc_buf(region, 10)  // buffer of size 10
-dynamic: buf(L1, normal, int64, capacity) <- alloc_buf(region, capacity)
+buf: buf(L1, normal, int, 10) <- alloc_buf(r, 10)  // buffer of size 10
+dynamic: buf(L1, normal, int64, capacity) <- alloc_buf(r, capacity)
 x: int <- read_buf(buf, 5)           // ✓ valid index
 y: int <- read_buf(buf, 15)          // ✗ runtime bounds error (traps)
 ```
@@ -8157,7 +8092,7 @@ actor_runtime_state {
 
 ```silica
 // Allocate region on NUMA node 0
-region: region(R, normal) <- alloc_region_on_numa(0, normal);
+r: region(R, normal) <- alloc_region_on_numa(0, normal);
 
 // Spawn actor on same NUMA node
 actor_ref: actor_ref <- spawn_on_numa(initial_state, behavior, 0);
@@ -10336,7 +10271,7 @@ ref(R, atomic, T)    // reference in atomic memory space
 Atomic operations work in designated memory spaces:
 
 ```
-alloc_atomic(region, initial_value) -> ref(R, atomic, T) proc[mem(atomic), atomic]
+alloc_atomic(r, initial_value) -> ref(R, atomic, T) proc[mem(atomic), atomic]
 ```
 
 ### 17.2 Memory Ordering Semantics
@@ -10363,7 +10298,7 @@ type order = relaxed | acquire | release | acq_rel | seq_cst
 
 ```silica
 // Example: Simple counter (ordering doesn't matter)
-counter: ref(R, atomic, int64) <- alloc_atomic(region, 0);
+counter: ref(R, atomic, int64) <- alloc_atomic(r, 0);
 
 fn increment() -> atom proc[mem(normal), atomic] {
     atomic_fetch_add(counter, 1, relaxed)  // Fast, no ordering needed
@@ -10377,8 +10312,8 @@ fn increment() -> atom proc[mem(normal), atomic] {
 
 ```silica
 // Example: Reading published data
-data: ref(R, atomic, Data) <- alloc_atomic(region, initial_data);
-ready: ref(R, atomic, boolean) <- alloc_atomic(region, false);
+data: ref(R, atomic, Data) <- alloc_atomic(r, initial_data);
+ready: ref(R, atomic, boolean) <- alloc_atomic(r, false);
 
 // Publisher (Actor A)
 fn publish(new_data: Data) -> atom proc[mem(normal), atomic] {
@@ -10403,7 +10338,7 @@ fn consume() -> Data proc[mem(normal), atomic] {
 
 ```silica
 // Example: Publishing initialization complete
-init_complete: ref(R, atomic, boolean) <- alloc_atomic(region, false);
+init_complete: ref(R, atomic, boolean) <- alloc_atomic(r, false);
 
 // Initializer (Actor A)
 fn initialize() -> atom proc[mem(normal), atomic] {
@@ -10424,7 +10359,7 @@ fn wait_for_init() -> atom proc[mem(normal), atomic] {
 
 ```silica
 // Example: Atomic counter with ordering
-shared_counter: ref(R, atomic, int64) <- alloc_atomic(region, 0);
+shared_counter: ref(R, atomic, int64) <- alloc_atomic(r, 0);
 
 fn increment_with_ordering() -> int64 proc[mem(normal), atomic] {
     // acq_rel ensures this operation synchronizes both ways
@@ -10443,7 +10378,7 @@ fn increment_with_ordering() -> int64 proc[mem(normal), atomic] {
 
 ```silica
 // Example: Global flag coordination
-global_flag: ref(R, atomic, boolean) <- alloc_atomic(region, false);
+global_flag: ref(R, atomic, boolean) <- alloc_atomic(r, false);
 
 // Actor A
 fn set_flag() -> atom proc[mem(normal), atomic] {
@@ -10502,8 +10437,8 @@ fn consume(
 **Flag-Based Coordination:**
 ```silica
 // Coordination flag between actors
-ready_flag: ref(R, atomic, boolean) <- alloc_atomic(region, false);
-data: ref(R, normal, SharedData) <- alloc_ref(region, initial_data);
+ready_flag: ref(R, atomic, boolean) <- alloc_atomic(r, false);
+data: ref(R, normal, SharedData) <- alloc_ref(r, initial_data);
 
 // Actor A: Prepare and signal
 fn prepare_and_signal(new_data: SharedData) -> atom proc[mem(normal), atomic] {
@@ -10530,7 +10465,7 @@ fn push(
     stack: { top: ref(R, atomic, ref(R, normal, (int64, ref?(R, normal, rec)))) },
     value: int64
 ) -> atom proc[mem(normal), atomic] {
-    new_cell: ref(R, normal, (int64, ref?(R, normal, rec))) <- alloc_ref(region, (value, :none));
+    new_cell: ref(R, normal, (int64, ref?(R, normal, rec))) <- alloc_ref(r, (value, :none));
     try_push(stack, new_cell)
 }
 
@@ -10551,7 +10486,7 @@ fn try_push(
 **Actor Synchronization with Atomics:**
 ```silica
 // Shared counter accessed by multiple actors
-shared_count: ref(R, atomic, int64) <- alloc_atomic(region, 0);
+shared_count: ref(R, atomic, int64) <- alloc_atomic(r, 0);
 
 // Actor behavior that increments counter
 fn counter_actor(msg: IncrementMsg, state: unit) -> atom proc[mem(normal), atomic] {
@@ -10578,7 +10513,7 @@ Atomic operations provide synchronization between actors, complementing message 
 **Combining Both:**
 ```silica
 // Use atomics for fast shared state, messages for coordination
-shared_stats: ref(R, atomic, Stats) <- alloc_atomic(region, initial_stats);
+shared_stats: ref(R, atomic, Stats) <- alloc_atomic(r, initial_stats);
 
 // Fast path: atomic update
 fn update_stats_fast(increment: int64) -> atom proc[mem(normal), atomic] {
@@ -10595,7 +10530,7 @@ fn request_detailed_report(reply_to: actor_ref) -> atom proc[concurrency] {
 **Happens-Before with Actors:**
 ```silica
 // Atomic release in one actor, message cast, atomic acquire in another
-flag: ref(R, atomic, boolean) <- alloc_atomic(region, false);
+flag: ref(R, atomic, boolean) <- alloc_atomic(r, false);
 
 // Actor A
 fn actor_a_behavior(msg: StartMsg, state: unit) -> atom proc[mem(normal), atomic, concurrency] {
@@ -11397,7 +11332,7 @@ LDR   W1, [X1]      // Load data (guaranteed to see producer's write due to LDAR
 Atomic operations prevent data races:
 
 ```
-counter: ref(R, atomic, int) <- alloc_atomic(region, 0)
+counter: ref(R, atomic, int) <- alloc_atomic(r, 0)
 
 // Multiple actors can safely increment
 fn increment_counter() {
@@ -11552,7 +11487,7 @@ The `@` operator separates the module name (which matches the filename without t
 
 #### 19.3.3 Name Disambiguation
 
-Because imported functions are always called with module-qualified syntax (`module_name@function_name(args)`), multiple modules may export functions with the same name without conflict. The module name in the call unambiguously identifies which function is being invoked.
+Because imported functions are always called with module-qualified syntax (`module_name@function_name(args)`), multiple modules may export functions with the same name without conflict. The module name in the call unambiguously identifies which function is being invoked. `use alpha, beta;` is legal even when both modules export the same name; the calls `alpha@area(4)` and `beta@area(4)` stay distinct.
 
 ```silica
 // math.silica
@@ -11565,7 +11500,7 @@ export add/2, remove/1;
 fn add(list: List[int64, normal], item: int64) -> List[int64, normal] { ... }
 fn remove(list: List[int64, normal]) -> List[int64, normal] { ... }
 
-// main.silica
+// main.silica (both modules export add/2; every call is qualified)
 use math, collections;
 
 fn main() -> int {
@@ -11577,9 +11512,31 @@ fn main() -> int {
 }
 ```
 
+**Builtin name overlap:**
+
+If there is a builtin that has the same name as a module's function, and the module calls the function without qualifying it, this is a compile error (E2020). Modules that want to have a function with the same name as a builtin must call it qualified (`module@name(...)`), even within the same module. If no builtin matches a module's function name, the module can call that function without qualifying it.
+
+In other words: a module may define a function named like a builtin; a builtin is always called unqualified; a qualified call `m@name(...)` always means module `m`'s function, never a builtin; and an unqualified call to a function defined only in another module is E2007 (imported functions are always called module-qualified).
+
+```silica
+// mymod.silica
+export peek/1;
+fn peek(q: List[int64, normal]) -> int64 { ... }
+
+fn first(q: List[int64, normal]) -> int64 {
+    mymod@peek(q)      // accepted: qualified, even inside mymod itself
+}
+
+fn bad(q: List[int64, normal]) -> int64 {
+    peek(q)            // rejected: unqualified call to a function whose name is also a builtin
+}
+```
+
+The rejected call reports E2020 (`AmbiguousBuiltinCallName`): ``call to `peek` is ambiguous: `peek` is a builtin and a function of this module; call the module's function as `mod@peek(...)` ``
+
 **Local vs. imported name overlap:**
 
-If a local function has the same name as an exported function in an imported module, there is no ambiguity:
+If a local function has the same name as an exported function in an imported module, and the name is not a builtin, there is no ambiguity:
 - An unqualified call (`function_name(args)`) always refers to the local function.
 - A qualified call (`module_name@function_name(args)`) always refers to the imported function.
 
@@ -13103,7 +13060,7 @@ Tagged pointer operations work with any type that implements the `tagged` trait.
 ```
 // Allocate tagged pointer (type must implement tagged trait)
 // For NodeData type (example):
-alloc_tagged_nodedata(region: region(R, normal), size: int) -> ref(R, normal, NodeData) proc[mem(normal)]
+alloc_tagged_nodedata(r: region(R, normal), size: int) -> ref(R, normal, NodeData) proc[mem(normal)]
 
 // Free tagged pointer
 free_tagged_nodedata(ptr: ref(R, normal, NodeData)) -> atom proc[mem(normal)]
@@ -13177,7 +13134,7 @@ If MTE is not available or has limited support:
 When allocating tagged memory:
 
 ```
-alloc_tagged_nodedata(region: region(R, normal), size: int) -> ref(R, normal, NodeData) proc[mem(normal)]
+alloc_tagged_nodedata(r: region(R, normal), size: int) -> ref(R, normal, NodeData) proc[mem(normal)]
 ```
 
 The runtime:
@@ -13320,7 +13277,7 @@ The runtime handles tag storage exhaustion:
 ```silica
 // Attempt tagged allocation
 result: result<ref(R, normal, NodeData), alloc_error> <- 
-    alloc_tagged_nodedata(region, size);
+    alloc_tagged_nodedata(r, size);
 
 case result of {
     {ok, ptr} -> // Tagged allocation succeeded
@@ -13384,7 +13341,7 @@ When tag storage is exhausted:
 Tag storage capacity exhausted
 Tag storage usage: 95% of capacity
 Consider freeing tagged memory or reducing tagged allocations
-See specification: spec:§21.3.3.1
+See specification: spec:sect21.3.3.1
 ```
 
 **Cross-References:**
@@ -14152,7 +14109,7 @@ Context values provide additional security by binding pointers to specific conte
 ```silica
 // Sign pointer with function address as context
 fn create_secure_ptr(data: SecureData) -> ref(R, normal, SecureData) proc[mem(normal)] {
-    ptr: ref(R, normal, SecureData) <- alloc_ref(region, data);
+    ptr: ref(R, normal, SecureData) <- alloc_ref(r, data);
     // Sign with function address as context
     fn_addr: int <- get_function_address(create_secure_ptr);
     sign_ptr_securedata(ptr, fn_addr)
@@ -14201,7 +14158,7 @@ PAC integrates with Silica's region-based memory model:
 fn secure_operation(data: { value: int64, metadata: string }) -> atom proc[mem(normal)] {
     sequence proc[mem(normal)]
         // Allocate secure data
-        ptr: ref(R, normal, { value: int64, metadata: string }) <- alloc_ref(region, data);
+        ptr: ref(R, normal, { value: int64, metadata: string }) <- alloc_ref(r, data);
         
         // Sign pointer with context
         context: int <- 0x1234;  // Context value
@@ -14252,7 +14209,7 @@ module arch.apple.amx {
 
 ## 22. Built-in Functions
 
-This section documents all built-in functions and primitives available in Silica. These are always available without requiring imports.
+This section documents all built-in functions and primitives available in Silica. These are always available without requiring imports. A builtin is always called unqualified; a module function with a builtin's name is called only as `module@name(...)` (§19.3.3).
 
 ### 22.1 Memory Management Primitives
 
@@ -14265,9 +14222,9 @@ Returns a unique lifetime value. Each call produces a distinct lifetime. Use whe
 **Region Allocation:**
 ```
 alloc_region(space: memory_space) -> region(L, space) proc[mem(space)]
-alloc_ref(region, initial_value) -> ref(L, space, T) proc[mem(space)]
-alloc_buf(region, capacity) -> buf(L, space, T, capacity) proc[mem(space)]
-alloc_atomic(region, initial_value) -> ref(L, space, T) proc[mem(space), atomic]
+alloc_ref(r, initial_value) -> ref(L, space, T) proc[mem(space)]
+alloc_buf(r, capacity) -> buf(L, space, T, capacity) proc[mem(space)]
+alloc_atomic(r, initial_value) -> ref(L, space, T) proc[mem(space), atomic]
 alloc_region_on_numa_node(numa_node: int, space: memory_space) -> region(L, space) proc[mem(space)]
 ```
 The lifetime L is taken from the binding's explicit type annotation (e.g. `region(L1, Space)`). L is typically obtained from `fresh_lifetime()`. Region allocation is permitted only within sequence blocks.
@@ -15081,7 +15038,7 @@ cache_info: cache_info <- get_cache_hierarchy()
 // Returns cache levels with sizes, line sizes, and associativity
 
 // Regions are automatically aligned to cache line boundaries
-region: region(R, normal) <- alloc_region(normal)
+r: region(R, normal) <- alloc_region(normal)
 // Compiler ensures region data structures align to cache lines (typically 64 bytes on AArch64)
 ```
 

@@ -1,0 +1,62 @@
+// UART0 (the ROM console) as a device worker: window 0 of board_pack.silica at 0x60000000,
+// registers :fifo and :status (TXFIFO_CNT is bits 16-25 of :status). The worker maps its window on
+// :init inside a register_rwr sequence (nothing maps at the spawn site, device spec §4.3) and keeps
+// the move-only handle in its state; every register access is inside a sequence proc[register_rwr].
+// Messages: { op: :init | :putc | :discard, byte: uint32 }. No message asks for a reply.
+// :discard reads :status only for its effect (the load must still be emitted, spec §4.7).
+use DeviceDescription;
+
+export registers/1;
+export uart_worker/2;
+
+impl fn registers(device: (:esp32s3_uart)) -> List[{ name: atom, offset: uint64, width: uint64, access: atom }, mem(normal)] {
+    [
+        { name: :fifo,   offset: 0x00, width: 32, access: :read_write },
+        { name: :status, offset: 0x1C, width: 32, access: :read_only }
+    ]
+}
+
+fn put_byte(w: device_window(L, (:esp32s3_uart)), byte: uint32) -> device_window(L, (:esp32s3_uart)) {
+    sequence proc[register_rwr]
+        status: uint32 <- peek(w, :status) impl Register32 {};
+        queued: uint32 <- (status shr 16) band 1023;
+        r: device_window(L, (:esp32s3_uart)) <- case queued < 120 of {
+            true -> {
+                _: atom <- poke(w, :fifo, byte impl Register32 {});
+                w
+            };
+            false -> put_byte(w, byte)
+        }
+    produces
+        pure r
+    end
+}
+
+fn discard_status(w: device_window(L, (:esp32s3_uart))) -> device_window(L, (:esp32s3_uart)) {
+    sequence proc[register_rwr]
+        _: uint32 <- peek(w, :status) impl Register32 {}
+    produces
+        pure w
+    end
+}
+
+fn uart_worker(msg: { op: atom, byte: uint32 }, state: :unmapped | (:mapped, device_window(L, (:esp32s3_uart)))) -> (:no_reply, :unmapped | (:mapped, device_window(L, (:esp32s3_uart)))) {
+    sequence proc[register_rwr]
+        next: :unmapped | (:mapped, device_window(L, (:esp32s3_uart))) <- case state of {
+            :unmapped -> case msg.op of {
+                :init -> {
+                    w: device_window(L, (:esp32s3_uart)) <- map_device((:esp32s3_uart), 0x60000000);
+                    (:mapped, w)
+                };
+                _: atom -> :unmapped
+            };
+            (:mapped, w: device_window(L, (:esp32s3_uart))) -> case msg.op of {
+                :putc -> (:mapped, put_byte(w, msg.byte));
+                :discard -> (:mapped, discard_status(w));
+                _: atom -> (:mapped, w)
+            }
+        }
+    produces
+        pure (:no_reply, next)
+    end
+}

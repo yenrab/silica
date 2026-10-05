@@ -1,0 +1,28 @@
+// The GPIO worker enables the LED pin, turns the LED on, reads the Left button (GPIO21, idle 0) and
+// casts the level to an ordinary printer actor, then turns the LED off. Expected: left 0 / status 0
+// (nobody presses Left during the run).
+use device_gpio_lib;
+
+fn printer(level: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        print("left ");
+        _: atom <- print_int64(level);
+        println("")
+    produces
+        pure (:no_reply, state + 1)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency]
+        p: actor_ref <- spawn(0, printer, stack_policy(0, :keep_last_message));
+        g: device_actor_ref <- spawn_device(:unmapped, device_gpio_lib@gpio_worker, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_device(g, { op: :init, reply_to: p } impl ActorMessage {});
+        _: boolean <- cast_device(g, { op: :led_on, reply_to: p } impl ActorMessage {});
+        _: boolean <- cast_device(g, { op: :read_left, reply_to: p } impl ActorMessage {});
+        _: boolean <- cast_device(g, { op: :led_off, reply_to: p } impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

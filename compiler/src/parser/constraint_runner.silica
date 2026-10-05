@@ -145,29 +145,91 @@ fn tokens_to_slots(tokens: List[{ kind: int64, lexeme: string, location: { file:
 }
 
 fn is_type_keyword(token_kind: int64) -> boolean {
-    token_kind == lexer_token_kind@token_kind_int8_keyword() or token_kind == lexer_token_kind@token_kind_int16_keyword() or token_kind == lexer_token_kind@token_kind_int32_keyword() or token_kind == lexer_token_kind@token_kind_int64_keyword() or token_kind == lexer_token_kind@token_kind_uint8_keyword() or token_kind == lexer_token_kind@token_kind_uint16_keyword() or token_kind == lexer_token_kind@token_kind_uint32_keyword() or token_kind == lexer_token_kind@token_kind_uint64_keyword() or token_kind == lexer_token_kind@token_kind_float16_keyword() or token_kind == lexer_token_kind@token_kind_float32_keyword() or token_kind == lexer_token_kind@token_kind_float64_keyword() or token_kind == lexer_token_kind@token_kind_bool_keyword() or token_kind == lexer_token_kind@token_kind_char_keyword() or token_kind == lexer_token_kind@token_kind_string_keyword() or token_kind == lexer_token_kind@token_kind_bytes_keyword() or token_kind == lexer_token_kind@token_kind_unit_keyword() or token_kind == lexer_token_kind@token_kind_atom_keyword() or token_kind == lexer_token_kind@token_kind_ref_keyword() or token_kind == lexer_token_kind@token_kind_region_keyword() or token_kind == lexer_token_kind@token_kind_buf_keyword() or token_kind == lexer_token_kind@token_kind_atomic_keyword() or token_kind == lexer_token_kind@token_kind_normal_keyword() or token_kind == lexer_token_kind@token_kind_normal_writeback_keyword() or token_kind == lexer_token_kind@token_kind_normal_writethrough_keyword() or token_kind == lexer_token_kind@token_kind_normal_noncacheable_keyword() or token_kind == lexer_token_kind@token_kind_device_keyword() or token_kind == lexer_token_kind@token_kind_list_keyword() or token_kind == lexer_token_kind@token_kind_actor_ref_keyword() or token_kind == lexer_token_kind@token_kind_dangerous_actor_ref_keyword() or token_kind == lexer_token_kind@token_kind_supervisor_ref_keyword() or token_kind == lexer_token_kind@token_kind_failure_reason_keyword()
+    token_kind == lexer_token_kind@token_kind_int8_keyword() or token_kind == lexer_token_kind@token_kind_int16_keyword() or token_kind == lexer_token_kind@token_kind_int32_keyword() or token_kind == lexer_token_kind@token_kind_int64_keyword() or token_kind == lexer_token_kind@token_kind_uint8_keyword() or token_kind == lexer_token_kind@token_kind_uint16_keyword() or token_kind == lexer_token_kind@token_kind_uint32_keyword() or token_kind == lexer_token_kind@token_kind_uint64_keyword() or token_kind == lexer_token_kind@token_kind_float16_keyword() or token_kind == lexer_token_kind@token_kind_float32_keyword() or token_kind == lexer_token_kind@token_kind_float64_keyword() or token_kind == lexer_token_kind@token_kind_bool_keyword() or token_kind == lexer_token_kind@token_kind_char_keyword() or token_kind == lexer_token_kind@token_kind_string_keyword() or token_kind == lexer_token_kind@token_kind_bytes_keyword() or token_kind == lexer_token_kind@token_kind_unit_keyword() or token_kind == lexer_token_kind@token_kind_atom_keyword() or token_kind == lexer_token_kind@token_kind_ref_keyword() or token_kind == lexer_token_kind@token_kind_region_keyword() or token_kind == lexer_token_kind@token_kind_buf_keyword() or token_kind == lexer_token_kind@token_kind_atomic_keyword() or token_kind == lexer_token_kind@token_kind_normal_keyword() or token_kind == lexer_token_kind@token_kind_normal_writeback_keyword() or token_kind == lexer_token_kind@token_kind_normal_writethrough_keyword() or token_kind == lexer_token_kind@token_kind_normal_noncacheable_keyword() or token_kind == lexer_token_kind@token_kind_device_keyword() or token_kind == lexer_token_kind@token_kind_list_keyword() or token_kind == lexer_token_kind@token_kind_actor_ref_keyword() or token_kind == lexer_token_kind@token_kind_dangerous_actor_ref_keyword() or token_kind == lexer_token_kind@token_kind_device_actor_ref_keyword() or token_kind == lexer_token_kind@token_kind_supervisor_ref_keyword() or token_kind == lexer_token_kind@token_kind_failure_reason_keyword()
 }
 
 // Detect proc after return type: -> type_name proc[...] is invalid (spec §9.3.1)
+// E3009: a function declaration's return type followed by proc[...], whatever the type. Only the
+// declaration's own `->` is examined, so effects inside parameter function types and `->` in case
+// arms are not; a `{` opens a record type only as the first token after the arrow, else the body.
 fn has_proc_after_return_type(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> (boolean, { file: string, line: int64, column: int64, offset: int64 }) {
     case slots.is_nil of {
         true -> (false, parser_ast@zero_location());
-        false -> case slots.tail.is_nil of {
-            true -> (false, parser_ast@zero_location());
-            false -> case slots.tail.tail.is_nil of {
-                true -> (false, parser_ast@zero_location());
-                false -> case slots.head.token.kind == lexer_token_kind@token_kind_right_arrow() of {
-                    true -> case is_type_keyword(slots.tail.head.token.kind) of {
-                        true -> case slots.tail.tail.head.token.kind == lexer_token_kind@token_kind_proc_keyword() of {
-                            true -> (true, slots.tail.tail.head.token.location);
-                            false -> has_proc_after_return_type(slots.tail)
-                        };
-                        false -> has_proc_after_return_type(slots.tail)
-                    };
-                    false -> has_proc_after_return_type(slots.tail)
-                }
+        false -> case is_declaration_start(slots) of {
+            true -> declaration_return_proc(skip_declaration_head(slots.tail), slots.tail);
+            false -> has_proc_after_return_type(slots.tail)
+        }
+    }
+}
+
+fn is_declaration_start(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> boolean {
+    after: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_leading_whitespace_slots(slots.tail);
+    slots.head.token.kind == lexer_token_kind@token_kind_fn_keyword() and after.is_nil == false and after.head.token.kind == lexer_token_kind@token_kind_identifier()
+}
+
+// From the declaration's name: past the name and the parameter list.
+fn skip_declaration_head(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] {
+    after_name: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_leading_whitespace_slots(skip_leading_whitespace_slots(slots).tail);
+    case after_name.is_nil == false and after_name.head.token.kind == lexer_token_kind@token_kind_left_paren() of {
+        true -> skip_leading_whitespace_slots(skip_function_parameter_list(after_name, 0));
+        false -> after_name
+    }
+}
+
+fn declaration_return_proc(after_params: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], rest: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> (boolean, { file: string, line: int64, column: int64, offset: int64 }) {
+    case after_params.is_nil == false and after_params.head.token.kind == lexer_token_kind@token_kind_right_arrow() of {
+        false -> has_proc_after_return_type(rest);
+        true -> {
+            (found: boolean, loc: { file: string, line: int64, column: int64, offset: int64 }) <- return_type_proc(after_params.tail, 0, true);
+            case found of {
+                true -> (true, loc);
+                false -> has_proc_after_return_type(rest)
             }
         }
+    }
+}
+
+fn return_type_token_class(lexeme: string) -> atom {
+    case lexeme of {
+        "proc" -> :proc;
+        "{" -> :brace;
+        "(" -> :open;
+        "[" -> :open;
+        ")" -> :close;
+        "]" -> :close;
+        "}" -> :close;
+        ";" -> :stop;
+        _: string -> :other
+    }
+}
+
+fn return_type_proc(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], depth: int64, first: boolean) -> (boolean, { file: string, line: int64, column: int64, offset: int64 }) {
+    case slots.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> case slot_is_whitespace(slots.head) of {
+            true -> return_type_proc(slots.tail, depth, first);
+            false -> return_type_proc_at(slots, depth, first, return_type_token_class(slots.head.token.lexeme))
+        }
+    }
+}
+
+fn return_type_proc_at(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)], depth: int64, first: boolean, class: atom) -> (boolean, { file: string, line: int64, column: int64, offset: int64 }) {
+    case class of {
+        :proc -> case depth == 0 of {
+            true -> (true, slots.head.token.location);
+            false -> return_type_proc(slots.tail, depth, false)
+        };
+        :brace -> case depth == 0 and first == false of {
+            true -> (false, parser_ast@zero_location());
+            false -> return_type_proc(slots.tail, depth + 1, false)
+        };
+        :open -> return_type_proc(slots.tail, depth + 1, false);
+        :close -> return_type_proc(slots.tail, depth - 1, false);
+        :stop -> case depth == 0 of {
+            true -> (false, parser_ast@zero_location());
+            false -> return_type_proc(slots.tail, depth, false)
+        };
+        _: atom -> return_type_proc(slots.tail, depth, false)
     }
 }
 
@@ -267,7 +329,7 @@ fn arrow_has_no_return_type_before_body(slots_after_arrow: List[{ token: { kind:
             true -> {
                 brace_loc: { file: string, line: int64, column: int64, offset: int64 } <- after_arrow.head.token.location;
                 after_group: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_brace_group_slots(after_arrow.tail, 1);
-                after_proc: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_optional_proc_effects_slots(after_group);
+                after_proc: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_optional_proc_effects_slots(skip_sum_options_after_record_slots(after_group));
                 after_final: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_leading_whitespace_slots(after_proc);
                 case after_final.is_nil of {
                     true -> case brace_group_starts_record_like(after_arrow.tail) of {
@@ -288,13 +350,39 @@ fn arrow_has_no_return_type_before_body(slots_after_arrow: List[{ token: { kind:
     }
 }
 
-// Inside `fn name ( ...`, a `{ ... }` group is a record/struct type when the next token is `,` or `)`.
-// Otherwise the function body began while the parameter list was still open (E1065).
+// Inside `fn name ( ...`, a `{ ... }` group is a record/struct type when the next token is `,`, `)`
+// or `|` (a record variant of an inline sum type, `{ id: uint32 } | :none`, silica-specification
+// §3.4.2). Otherwise the function body began while the parameter list was still open (E1065).
 fn brace_group_is_param_record_type(after_brace_group: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> boolean {
     trimmed: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_leading_whitespace_slots(after_brace_group);
     case trimmed.is_nil of {
         true -> false;
-        false -> trimmed.head.token.kind == lexer_token_kind@token_kind_comma() or trimmed.head.token.lexeme == "," or trimmed.head.token.kind == lexer_token_kind@token_kind_right_paren() or trimmed.head.token.lexeme == ")"
+        false -> trimmed.head.token.kind == lexer_token_kind@token_kind_comma() or trimmed.head.token.lexeme == "," or trimmed.head.token.kind == lexer_token_kind@token_kind_right_paren() or trimmed.head.token.lexeme == ")" or trimmed.head.token.lexeme == "|"
+    }
+}
+
+// After a record return type, the remaining options of an inline sum type (`{ id: uint32 } | :none`,
+// `| (:found, uint32)`, `| { x: int64 }`), so the body `{` is found after the whole type.
+fn skip_sum_options_after_record_slots(slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] {
+    trimmed: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> trimmed;
+        false -> case trimmed.head.token.lexeme == "|" of {
+            false -> trimmed;
+            true -> {
+                option: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- skip_leading_whitespace_slots(trimmed.tail);
+                case option.is_nil of {
+                    true -> option;
+                    false -> case option.head.token.lexeme == "{" of {
+                        true -> skip_sum_options_after_record_slots(skip_brace_group_slots(option.tail, 1));
+                        false -> case option.head.token.lexeme == "(" of {
+                            true -> skip_sum_options_after_record_slots(skip_function_parameter_list(option, 0));
+                            false -> skip_sum_options_after_record_slots(option.tail)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -656,7 +744,7 @@ fn skip_leading_horizontal_whitespace_slots(slots: List[{ token: { kind: int64, 
 }
 
 fn is_record_field_name_token(tok: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }) -> boolean {
-    lexer_token_kind@is_identifier_lexeme_token(tok.kind) or tok.kind == lexer_token_kind@token_kind_buf_keyword() or tok.kind == lexer_token_kind@token_kind_ref_keyword() or tok.kind == lexer_token_kind@token_kind_region_keyword() or tok.kind == lexer_token_kind@token_kind_atomic_keyword() or tok.kind == lexer_token_kind@token_kind_end_keyword()
+    lexer_token_kind@is_identifier_lexeme_token(tok.kind) or tok.kind == lexer_token_kind@token_kind_buf_keyword() or tok.kind == lexer_token_kind@token_kind_ref_keyword() or tok.kind == lexer_token_kind@token_kind_region_keyword() or tok.kind == lexer_token_kind@token_kind_device_window_keyword() or tok.kind == lexer_token_kind@token_kind_atomic_keyword() or tok.kind == lexer_token_kind@token_kind_end_keyword()
 }
 
 fn brace_group_starts_record_like(slots_after_lbrace: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)]) -> boolean {
@@ -1446,7 +1534,7 @@ fn has_arrow_sequence_case_rhs(slots: List[{ token: { kind: int64, lexeme: strin
 }
 
 
-fn parse_program(tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> { is_ok: boolean, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } proc[DeviceIO] {
+fn parse_program(tokens: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)]) -> { is_ok: boolean, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     reversed: List[{ kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] <- reverse_tokens(lexer_runner@empty_token_list(), tokens);
     slots: List[{ token: { kind: int64, lexeme: string, location: { file: string, line: int64, column: int64, offset: int64 } }, possible_roles: List[int64, mem(normal)] }, mem(normal)] <- tokens_to_slots(reversed);
     all_c: List[{ trigger_role: int64, next_token_roles: List[int64, mem(normal)], prev_token_roles: List[int64, mem(normal)], constraint_id: int64 }, mem(normal)] <- all_constraints();

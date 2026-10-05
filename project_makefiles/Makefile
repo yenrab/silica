@@ -166,7 +166,7 @@ assembly: check-seed silica.config record-compile-start
 	    fi; \
 	  done < silica.config; \
 	  echo "Invalidated $$removed unit artifact set(s)"; \
-	  rm -f __silica_runtime.sams silica.link silica.needs_runtime; \
+	  rm -f __silica_runtime.sams silica.link silica.needs_runtime silica.atoms silica.shapes; \
 	  : > silica.compile.order; \
 	  while IFS= read -r unit || [ -n "$$unit" ]; do \
 	    [ -z "$$unit" ] && continue; \

@@ -154,7 +154,7 @@ For stack growth and message-boundary semantics, see [actor_growable_stack_desig
 ## 5. Implementation Notes
 
 1. **Detection phase**: These checks run during or after SIR construction, before optimization passes that would have previously remediated them.
-2. **Diagnostics**: Each error should suggest the fix (e.g. "move outside the loop", "use shift").
+2. **Diagnostics**: Each error names the problem and the specification section.
 3. **No escape hatches**: These are hard errors. There are no pragmas or attributes to disable them.
 4. **Order of application**: Dead code, CSE, and algebraic checks can run on SIR. Loop-invariant and guard-invariant checks require control-flow analysis (tail recursion structure, case structure).
 

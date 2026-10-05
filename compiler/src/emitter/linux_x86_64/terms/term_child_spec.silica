@@ -125,25 +125,25 @@ fn is_supervisor_reply_record_type(R: string) -> boolean {
         and length_bytes(prims_record@find_field_type_in_record(R, "error")) > 0
 }
 
-// The child_spec hidden trampoline field sits at offset 56 of the record. That
-// record now lives in a fixed-frame region, so the old hardcoded "[SP, #56]"
-// wrote into whatever happened to be at SP -- nested :supervisor children lost
-// their trampoline symbol and failed to start. Addressing is inlined here rather
+// The child_spec hidden trampoline field sits at offset 64 of the record (after the shape
+// word and the seven field slots). That record lives in a fixed-frame region, so a hardcoded
+// "[SP, #64]" would write into whatever happened to be at SP -- nested :supervisor children
+// lost their trampoline symbol and failed to start. Addressing is inlined here rather
 // than reusing term_aggregate_helpers, which imports this module (cycle).
 fn hidden_field_store(store_base: string, reg: string) -> string {
     fb: int64 <- var@parse_x29_neg_offset_bytes(store_base);
     case fb > 0 of {
         true -> {
-            d: int64 <- fb - 56;
+            d: int64 <- fb - 64;
             case d <= 255 and d >= 0 of {
                 true -> x86_mem@x86_str(reg, concat("[X29, #-", concat(atom_table@int64_to_decimal_string(d), "]")));
                 false -> {
                     setup: string <- x86_isa@x86_sub("X16", "X29", concat("#", atom_table@int64_to_decimal_string(fb)));
-                    concat(setup, x86_mem@x86_str(reg, "[X16, #56]"))
+                    concat(setup, x86_mem@x86_str(reg, "[X16, #64]"))
                 }
             }
         };
-        false -> x86_mem@x86_str(reg, "[SP, #56]")
+        false -> x86_mem@x86_str(reg, "[SP, #64]")
     }
 }
 
@@ -169,23 +169,26 @@ fn emit_child_spec_hidden_trampoline_store(term: { nodes: List[{ kind: int64, ty
     }
 }
 
+// The child-spec ABI the actor runtime reads (shape word at 0): id@8, agent_type@16,
+// initial_state / start.0@24, behavior / start.1@32, restart@40, shutdown@48, flavor@56,
+// hidden supervisor trampoline@64.
 fn child_spec_field_abi_offset(fname: string) -> int64 {
     case fname == "id" of {
-        true -> 0;
+        true -> 8;
         false -> case fname == "agent_type" of {
-            true -> 8;
+            true -> 16;
             false -> case fname == "initial_state" of {
-                true -> 16;
+                true -> 24;
                 false -> case fname == "behavior" of {
-                    true -> 24;
+                    true -> 32;
                     false -> case fname == "start" of {
-                        true -> 16;
+                        true -> 24;
                         false -> case fname == "restart" of {
-                            true -> 32;
+                            true -> 40;
                             false -> case fname == "shutdown" of {
-                                true -> 40;
+                                true -> 48;
                                 false -> case fname == "flavor" of {
-                                    true -> 48;
+                                    true -> 56;
                                     false -> -1
                                 }
                             }

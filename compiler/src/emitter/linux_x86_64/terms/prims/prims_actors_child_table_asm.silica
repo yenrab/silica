@@ -258,9 +258,9 @@ Lsscr_register_done:
 }
 
 // Phase E e3b: silica_rt_supervisor_materialize_init_children
-// X0=ACB*, X1=tuple_ptr (init return: flags record at +0..+23, children list head at +24).
-// Walks the list-literal handle of child_spec records (visible payload 56 B plus hidden
-// supervisor_start_trampoline at +56 in each child_spec element).
+// X0=ACB*, X1=tuple_ptr (init return: flags record pointer in slot 0 -- shape word at +0, fields at +8..+31 -- children list head at +8).
+// Walks the list-literal handle of child_spec records (shape word plus 56 B of fields, then the hidden
+// supervisor_start_trampoline at +64 in each child_spec element).
 // Payload layout matches emitter value-flat record: id@0, agent@8, start@(16,24), restart@32, shutdown@40, flavor@48.
 // For each child_spec: spawn_linked(start.0, start.1, agent_type, row_ptr), append a linked row node (88 B; 80 B payload).
 // Stores strategy atom, allowed_restart_count, and restarts_time_frame at ACB#296/#304/#312 for
@@ -282,11 +282,11 @@ silica_rt_supervisor_materialize_init_children:
 	cmp	r8, 4096
 	jb	Lmat_pre_flags_flat
 	mov	QWORD PTR [rbp - 96], 8
-	mov	r9, QWORD PTR [r8]
-	mov	QWORD PTR [rdi + 296], r9
 	mov	r9, QWORD PTR [r8 + 8]
-	mov	QWORD PTR [rdi + 304], r9
+	mov	QWORD PTR [rdi + 296], r9
 	mov	r9, QWORD PTR [r8 + 16]
+	mov	QWORD PTR [rdi + 304], r9
+	mov	r9, QWORD PTR [r8 + 24]
 	mov	QWORD PTR [rdi + 312], r9
 	jmp	Lmat_pre_flags_done
 Lmat_pre_flags_flat:
@@ -320,17 +320,17 @@ Lmat_loop:
 	jz	Lmat_done
 	add	rax, QWORD PTR [rbp - 88]
 	mov	QWORD PTR [rbp - 96], rax
-	mov	rcx, QWORD PTR [rax + 16]
-	mov	QWORD PTR [rbp - 32], rcx
 	mov	rcx, QWORD PTR [rax + 24]
-	mov	QWORD PTR [rbp - 40], rcx
-	mov	rcx, QWORD PTR [rax + 8]
-	mov	QWORD PTR [rbp - 48], rcx
-	mov	rcx, QWORD PTR [rax]
-	mov	QWORD PTR [rbp - 56], rcx
+	mov	QWORD PTR [rbp - 32], rcx
 	mov	rcx, QWORD PTR [rax + 32]
-	mov	QWORD PTR [rbp - 64], rcx
+	mov	QWORD PTR [rbp - 40], rcx
+	mov	rcx, QWORD PTR [rax + 16]
+	mov	QWORD PTR [rbp - 48], rcx
+	mov	rcx, QWORD PTR [rax + 8]
+	mov	QWORD PTR [rbp - 56], rcx
 	mov	rcx, QWORD PTR [rax + 40]
+	mov	QWORD PTR [rbp - 64], rcx
+	mov	rcx, QWORD PTR [rax + 48]
 	mov	QWORD PTR [rbp - 72], rcx
 # Phase E e4f + Option B: ensure one more list node, then walk `len` links from head for stable row ptr (no realloc).
 	mov	rdi, QWORD PTR [rbp - 8]
@@ -352,7 +352,7 @@ Lmat_walk_row:
 Lmat_walk_row_done:
 	mov	QWORD PTR [rbp - 80], rcx
 ";
-    post: string <- concat("    mov QWORD PTR [rcx], 0\n    mov rax, QWORD PTR [rbp - 56]\n    mov QWORD PTR [rcx + 8], rax\n    mov rax, QWORD PTR [rbp - 48]\n    mov QWORD PTR [rcx + 16], rax\n    mov rax, QWORD PTR [rbp - 32]\n    mov QWORD PTR [rcx + 24], rax\n    mov rax, QWORD PTR [rbp - 40]\n    mov QWORD PTR [rcx + 32], rax\n    mov rax, QWORD PTR [rbp - 64]\n    mov QWORD PTR [rcx + 40], rax\n    mov rax, QWORD PTR [rbp - 72]\n    mov QWORD PTR [rcx + 48], rax\n    mov QWORD PTR [rcx + 56], 0\n    mov rax, QWORD PTR [rbp - 96]\n    mov r9, QWORD PTR [rax + 48]\n    mov QWORD PTR [rcx + 64], r9\n    mov r9, QWORD PTR [rax + 56]\n    mov QWORD PTR [rcx + 72], r9\n", case danger_idx < 0 of {
+    post: string <- concat("    mov QWORD PTR [rcx], 0\n    mov rax, QWORD PTR [rbp - 56]\n    mov QWORD PTR [rcx + 8], rax\n    mov rax, QWORD PTR [rbp - 48]\n    mov QWORD PTR [rcx + 16], rax\n    mov rax, QWORD PTR [rbp - 32]\n    mov QWORD PTR [rcx + 24], rax\n    mov rax, QWORD PTR [rbp - 40]\n    mov QWORD PTR [rcx + 32], rax\n    mov rax, QWORD PTR [rbp - 64]\n    mov QWORD PTR [rcx + 40], rax\n    mov rax, QWORD PTR [rbp - 72]\n    mov QWORD PTR [rcx + 48], rax\n    mov QWORD PTR [rcx + 56], 0\n    mov rax, QWORD PTR [rbp - 96]\n    mov r9, QWORD PTR [rax + 56]\n    mov QWORD PTR [rcx + 64], r9\n    mov r9, QWORD PTR [rax + 64]\n    mov QWORD PTR [rcx + 72], r9\n", case danger_idx < 0 of {
         true -> "    mov rdi, QWORD PTR [rbp - 32]\n    mov rsi, QWORD PTR [rbp - 40]\n    mov rdx, QWORD PTR [rbp - 48]\n    mov r8, QWORD PTR [rcx + 72]\n    call silica_rt_actor_spawn_linked\n    mov rax, QWORD PTR [rbp - 8]\n    mov QWORD PTR [rdi + 192], rax\n    mov rcx, QWORD PTR [rbp - 80]\n    mov QWORD PTR [rcx], rdi\n    mov QWORD PTR [rcx + 56], 0\n    mov rdi, QWORD PTR [rcx]\n    mov rsi, QWORD PTR [rcx + 8]\n    call silica_rt_register_actor_named\n";
         false -> concat(concat("    mov r9, QWORD PTR [rcx + 64]\n    cmp r9, ", atom_table@int64_to_decimal_string(danger_idx)), "\n    je Lmat_row_spawn_dangerous\n    mov rdi, QWORD PTR [rbp - 32]\n    mov rsi, QWORD PTR [rbp - 40]\n    mov rdx, QWORD PTR [rbp - 48]\n    mov r8, QWORD PTR [rcx + 72]\n    call silica_rt_actor_spawn_linked\n    mov rax, QWORD PTR [rbp - 8]\n    mov QWORD PTR [rdi + 192], rax\n    mov rcx, QWORD PTR [rbp - 80]\n    mov QWORD PTR [rcx], rdi\n    mov QWORD PTR [rcx + 56], 0\n    mov rdi, QWORD PTR [rcx]\n    mov rsi, QWORD PTR [rcx + 8]\n    call silica_rt_register_actor_named\n    jmp Lmat_row_spawn_done\nLmat_row_spawn_dangerous:\n    mov rdi, QWORD PTR [rbp - 80]\n    mov rsi, QWORD PTR [rbp - 8]\n    call silica_rt_supervisor_spawn_child_row_by_flavor\nLmat_row_spawn_done:\n")
     });
@@ -375,7 +375,7 @@ Lmat_done:
 }
 
 // Phase E e3b2: silica_rt_supervisor_start_child
-// X0 = child_spec record pointer (value-flat 56 B: id@+0, agent_type@+8, start.0@+16, start.1@+24, restart@+32, shutdown@+40,
+// X0 = child_spec record pointer (shape word@+0, id@+8, agent_type@+16, start.0@+24, start.1@+32, restart@+40, shutdown@+48,
 // flavor@+48; hidden supervisor_start_trampoline@+56).
 // Layout matches `silica_rt_supervisor_materialize_init_children` (cons payload) so the compiler can build a single
 // stack record and pass it to either path. (Earlier comment claimed +40/+48 — that 72 B layout never matched the
@@ -396,17 +396,17 @@ silica_rt_supervisor_start_child:
 	mov	rbp, rsp
 	sub	rsp, 80
 	mov	QWORD PTR [rbp - 16], rdi
-	mov	rax, QWORD PTR [rdi]
-	mov	QWORD PTR [rbp - 24], rax
 	mov	rax, QWORD PTR [rdi + 8]
-	mov	QWORD PTR [rbp - 32], rax
+	mov	QWORD PTR [rbp - 24], rax
 	mov	rax, QWORD PTR [rdi + 16]
-	mov	QWORD PTR [rbp - 40], rax
+	mov	QWORD PTR [rbp - 32], rax
 	mov	rax, QWORD PTR [rdi + 24]
-	mov	QWORD PTR [rbp - 48], rax
+	mov	QWORD PTR [rbp - 40], rax
 	mov	rax, QWORD PTR [rdi + 32]
-	mov	QWORD PTR [rbp - 56], rax
+	mov	QWORD PTR [rbp - 48], rax
 	mov	rax, QWORD PTR [rdi + 40]
+	mov	QWORD PTR [rbp - 56], rax
+	mov	rax, QWORD PTR [rdi + 48]
 	mov	QWORD PTR [rbp - 64], rax
 Lsc_tls_prep:
 	call	silica_rt_tls_current_actor_get
@@ -462,11 +462,11 @@ Lsc_use_reuse_row:
 	mov	QWORD PTR [rbp - 80], 0
 Lsc_post_row:
 	mov	rax, QWORD PTR [rbp - 16]
-	mov	r8, QWORD PTR [rax + 56]
+	mov	r8, QWORD PTR [rax + 64]
 	mov	rcx, QWORD PTR [rbp - 72]
 	mov	QWORD PTR [rcx + 72], r8
 ";
-    post: string <- concat("    mov r9, QWORD PTR [rax + 48]\n    mov QWORD PTR [rcx], 0\n    mov rax, QWORD PTR [rbp - 24]\n    mov QWORD PTR [rcx + 8], rax\n    mov rax, QWORD PTR [rbp - 32]\n    mov QWORD PTR [rcx + 16], rax\n    mov rax, QWORD PTR [rbp - 40]\n    mov QWORD PTR [rcx + 24], rax\n    mov rax, QWORD PTR [rbp - 48]\n    mov QWORD PTR [rcx + 32], rax\n    mov rax, QWORD PTR [rbp - 56]\n    mov QWORD PTR [rcx + 40], rax\n    mov rax, QWORD PTR [rbp - 64]\n    mov QWORD PTR [rcx + 48], rax\n    mov QWORD PTR [rcx + 56], 0\n    mov QWORD PTR [rcx + 64], r9\n", case danger_idx < 0 of {
+    post: string <- concat("    mov r9, QWORD PTR [rax + 56]\n    mov QWORD PTR [rcx], 0\n    mov rax, QWORD PTR [rbp - 24]\n    mov QWORD PTR [rcx + 8], rax\n    mov rax, QWORD PTR [rbp - 32]\n    mov QWORD PTR [rcx + 16], rax\n    mov rax, QWORD PTR [rbp - 40]\n    mov QWORD PTR [rcx + 24], rax\n    mov rax, QWORD PTR [rbp - 48]\n    mov QWORD PTR [rcx + 32], rax\n    mov rax, QWORD PTR [rbp - 56]\n    mov QWORD PTR [rcx + 40], rax\n    mov rax, QWORD PTR [rbp - 64]\n    mov QWORD PTR [rcx + 48], rax\n    mov QWORD PTR [rcx + 56], 0\n    mov QWORD PTR [rcx + 64], r9\n", case danger_idx < 0 of {
         true -> "    mov rdi, QWORD PTR [rbp - 40]\n    mov rsi, QWORD PTR [rbp - 48]\n    mov rdx, QWORD PTR [rbp - 32]\n    mov r8, QWORD PTR [rcx + 72]\n    call silica_rt_actor_spawn_linked\n    mov rax, QWORD PTR [rbp - 8]\n    mov QWORD PTR [rdi + 192], rax\n    mov QWORD PTR [rbp - 16], rdi\n    mov rcx, QWORD PTR [rbp - 72]\n    mov QWORD PTR [rcx], rdi\n    mov QWORD PTR [rcx + 56], 0\n    mov rdi, QWORD PTR [rcx]\n    mov rsi, QWORD PTR [rcx + 8]\n    call silica_rt_register_actor_named\n";
         false -> concat(concat("    mov r9, QWORD PTR [rcx + 64]\n    cmp r9, ", atom_table@int64_to_decimal_string(danger_idx)), "\n    je Lsc_row_spawn_dangerous\n    mov rdi, QWORD PTR [rbp - 40]\n    mov rsi, QWORD PTR [rbp - 48]\n    mov rdx, QWORD PTR [rbp - 32]\n    mov r8, QWORD PTR [rcx + 72]\n    call silica_rt_actor_spawn_linked\n    mov rax, QWORD PTR [rbp - 8]\n    mov QWORD PTR [rdi + 192], rax\n    mov QWORD PTR [rbp - 16], rdi\n    mov rcx, QWORD PTR [rbp - 72]\n    mov QWORD PTR [rcx], rdi\n    mov QWORD PTR [rcx + 56], 0\n    mov rdi, QWORD PTR [rcx]\n    mov rsi, QWORD PTR [rcx + 8]\n    call silica_rt_register_actor_named\n    jmp Lsc_row_spawn_done\nLsc_row_spawn_dangerous:\n    mov rdi, QWORD PTR [rbp - 72]\n    mov rsi, QWORD PTR [rbp - 8]\n    call silica_rt_supervisor_spawn_child_row_by_flavor\n    mov QWORD PTR [rbp - 16], rdi\nLsc_row_spawn_done:\n")
     });
@@ -1162,20 +1162,21 @@ Lsgetinfo_next:
 	jmp	Lsgetinfo_loop
 Lsgetinfo_found:
 	mov	QWORD PTR [rbp - 8], r9
-	mov	edi, 32
+	mov	edi, 40
 	call	silica_rt_region_alloc
 	mov	QWORD PTR [rbp - 24], rdi
+	mov	QWORD PTR [rdi], 65536
 	mov	rax, QWORD PTR [rbp - 16]
-	mov	QWORD PTR [rdi], rax
+	mov	QWORD PTR [rdi + 8], rax
 	mov	rax, QWORD PTR [rbp - 8]
 	mov	r11, QWORD PTR [rax + 16]
 	cmp	r11, 7
 	jne	Lsgetinfo_agent_done
 	mov	r11, QWORD PTR [rax + 8]
 Lsgetinfo_agent_done:
-	mov	QWORD PTR [rdi + 8], r11
+	mov	QWORD PTR [rdi + 16], r11
 	mov	r8, QWORD PTR [rax]
-	mov	QWORD PTR [rdi + 16], r8
+	mov	QWORD PTR [rdi + 24], r8
 	mov	r8, QWORD PTR [rax + 40]
 	test	r8, r8
 	jz	Lsgetinfo_restart_default
@@ -1183,7 +1184,7 @@ Lsgetinfo_agent_done:
 Lsgetinfo_restart_default:
 	mov	r8d, 9
 Lsgetinfo_restart_done:
-	mov	QWORD PTR [rdi + 24], r8
+	mov	QWORD PTR [rdi + 32], r8
 	jmp	Lsgetinfo_done
 Lsgetinfo_none:
 	mov	rax, QWORD PTR [rbp - 8]
@@ -1197,13 +1198,14 @@ Lsgetinfo_fallback_scan:
 	mov	r9, QWORD PTR [r9 + 80]
 	jmp	Lsgetinfo_fallback_scan
 Lsgetinfo_zero:
-	mov	edi, 32
+	mov	edi, 40
 	call	silica_rt_region_alloc
 	mov	QWORD PTR [rbp - 24], rdi
-	mov	QWORD PTR [rdi], 0
+	mov	QWORD PTR [rdi], 65536
 	mov	QWORD PTR [rdi + 8], 0
 	mov	QWORD PTR [rdi + 16], 0
 	mov	QWORD PTR [rdi + 24], 0
+	mov	QWORD PTR [rdi + 32], 0
 Lsgetinfo_done:
 	leave
 	ret
@@ -1323,22 +1325,23 @@ Lswhich_scan:
 	mov	QWORD PTR [rbp - 32], rcx
 	test	rcx, rcx
 	jz	Lswhich_next
-	mov	edi, 32
+	mov	edi, 40
 	call	silica_rt_region_alloc
 	mov	QWORD PTR [rbp - 40], rdi
+	mov	QWORD PTR [rdi], 65536
 	mov	rax, QWORD PTR [rbp - 16]
 	mov	rcx, QWORD PTR [rax + 8]
 	mov	QWORD PTR [rbp - 48], rcx
-	mov	QWORD PTR [rdi], rcx
+	mov	QWORD PTR [rdi + 8], rcx
 	mov	rcx, QWORD PTR [rax + 16]
 	mov	QWORD PTR [rbp - 56], rcx
-	mov	QWORD PTR [rdi + 8], rcx
-	mov	rcx, QWORD PTR [rbp - 32]
 	mov	QWORD PTR [rdi + 16], rcx
+	mov	rcx, QWORD PTR [rbp - 32]
+	mov	QWORD PTR [rdi + 24], rcx
 	mov	rcx, QWORD PTR [rax + 40]
 	mov	QWORD PTR [rbp - 64], rcx
-	mov	QWORD PTR [rdi + 24], rcx
-	mov	edi, 40
+	mov	QWORD PTR [rdi + 32], rcx
+	mov	edi, 56
 	call	silica_rt_region_alloc
 	mov	QWORD PTR [rbp - 48], rdi
 	mov	rax, QWORD PTR [rbp - 40]
@@ -1350,14 +1353,16 @@ Lswhich_scan:
 	mov	QWORD PTR [rdi + 16], r8
 	mov	r8, QWORD PTR [rax + 24]
 	mov	QWORD PTR [rdi + 24], r8
+	mov	r8, QWORD PTR [rax + 32]
+	mov	QWORD PTR [rdi + 32], r8
 	mov	rax, QWORD PTR [rbp - 24]
 	test	rax, rax
 	jz	Lswhich_chunk_nil
 	mov	r8, QWORD PTR [rax + 8]
-	mov	QWORD PTR [rdi + 32], r8
+	mov	QWORD PTR [rdi + 48], r8
 	jmp	Lswhich_chunk_ready
 Lswhich_chunk_nil:
-	mov	QWORD PTR [rdi + 32], 0
+	mov	QWORD PTR [rdi + 48], 0
 Lswhich_chunk_ready:
 	mov	edi, 24
 	call	silica_rt_region_alloc

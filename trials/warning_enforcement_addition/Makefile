@@ -7,6 +7,8 @@ include $(THIS_DIR)../silica_compiler.mk
 FFI_FIXTURES_LIB := $(abspath $(THIS_DIR)../ffi_addition/fixtures/dangerous_exposure_source/lib)
 
 TRIALS := dangerous_legacy_stub
+DEVICE_TRIALS := device_w1c_read_modify_write
+STDLIB_DIR := $(abspath $(THIS_DIR)../../compiler/stdlib)
 
 .DEFAULT_GOAL := all
 .PHONY: all integrate fixtures clean help
@@ -26,6 +28,34 @@ integrate-run: fixtures clean
 		ln -s "$(THIS_DIR)dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta" "$$tmpdir/dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta"; \
 		ln -sf "$(FFI_FIXTURES_LIB)" "$$tmpdir/dangerous_exposure_source/lib"; \
 		echo "$$trial.silica" > "$$tmpdir/silica.config"; \
+		out="$$tmpdir/out.txt"; \
+		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$$out" 2>&1; status=$$?; \
+		if [ "$$status" -ne 0 ]; then \
+			echo "❌❌ warning_enforcement_addition/$$trial: compilation failed"; \
+			$(INTEGRATE_DOT_FAIL); \
+			cat "$$out"; \
+			ko=$$((ko + 1)); failed=1; rm -rf "$$tmpdir"; continue; \
+		fi; \
+		awk 'BEGIN { keep=0 } /^WARNING:/ { keep=1 } keep { print } /^-->$$/ && keep { keep=0 }' "$$out" \
+			| sed "s|$$tmpdir/||g" > "$(THIS_DIR)$$trial.cur_warn"; \
+		rm -rf "$$tmpdir"; \
+		if diff -q "$(THIS_DIR)$$trial.cur_warn" "$(THIS_DIR)$$trial.golden_warn" > /dev/null 2>&1; then \
+			echo "✅✅ warning_enforcement_addition/$$trial"; \
+			$(INTEGRATE_DOT_OK); \
+			ok=$$((ok + 1)); \
+		else \
+			echo "❌❌ warning_enforcement_addition/$$trial: .cur_warn differs from .golden_warn"; \
+			$(INTEGRATE_DOT_FAIL); \
+			diff "$(THIS_DIR)$$trial.cur_warn" "$(THIS_DIR)$$trial.golden_warn" || true; \
+			ko=$$((ko + 1)); failed=1; \
+		fi; \
+	done; \
+	for trial in $(DEVICE_TRIALS); do \
+		tmpdir=$$(mktemp -d); \
+		ln -s "$(THIS_DIR)$$trial.silica" "$$tmpdir/$$trial.silica"; \
+		ln -s "$(STDLIB_DIR)/DeviceDescription.silica" "$$tmpdir/DeviceDescription.silica"; \
+		ln -s "$(STDLIB_DIR)/Register32.silica" "$$tmpdir/Register32.silica"; \
+		printf '%s\n' DeviceDescription.silica Register32.silica "$$trial.silica" > "$$tmpdir/silica.config"; \
 		out="$$tmpdir/out.txt"; \
 		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$$out" 2>&1; status=$$?; \
 		if [ "$$status" -ne 0 ]; then \

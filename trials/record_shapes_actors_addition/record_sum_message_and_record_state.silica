@@ -1,0 +1,42 @@
+// An actor whose state is a record and whose message is a sum of two records with no atom field,
+// `{ add: int64 } | { scale: int64 }`. The message is copied at send time with its shape word, so the
+// behaviour's case tells the variants apart by that word; the state record is moved out of each
+// behaviour and read back by the caller. (A message that is a call expression is bound first: an
+// actor call whose message argument is itself a call is an open seed defect.) Expected: prints 12,
+// 36, 2, done; exits 0.
+
+fn counter(msg: { add: int64 } | { scale: int64 }, state: { total: int64, count: int64 }) -> (:reply, { total: int64, count: int64 }, { total: int64, count: int64 }) {
+    next: { total: int64, count: int64 } <- case msg of {
+        { add: n } -> { total: state.total + n, count: state.count + 1 };
+        { scale: k } -> { total: state.total * k, count: state.count + 1 }
+    };
+    (:reply, next, next)
+}
+
+fn mk_add(n: int64) -> { add: int64 } | { scale: int64 } {
+    { add: n }
+}
+
+fn mk_scale(k: int64) -> { add: int64 } | { scale: int64 } {
+    { scale: k }
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        c: actor_ref <- spawn({ total: 2, count: 0 }, counter, stack_policy(0, :keep_last_message));
+        m1: { add: int64 } | { scale: int64 } <- mk_add(10);
+        r1: { total: int64, count: int64 } <- call(c, m1 impl ActorMessage {});
+        _: atom <- print_int64(r1.total);
+        println("");
+        m2: { add: int64 } | { scale: int64 } <- mk_scale(3);
+        r2: { total: int64, count: int64 } <- call(c, m2 impl ActorMessage {});
+        _: atom <- print_int64(r2.total);
+        println("");
+        _: atom <- print_int64(r2.count);
+        println("");
+        println("done");
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

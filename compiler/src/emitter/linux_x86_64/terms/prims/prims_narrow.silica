@@ -22,6 +22,8 @@ use arithmetic;
 use comparison;
 use logical;
 use reg_conventions;
+use bitwise;
+use x86_isa;
 
 export emit_prim_op/2;
 
@@ -74,6 +76,16 @@ fn sir_term_at(term: { nodes: List[{ kind: int64, type_name: string, value: stri
     { nodes: term.nodes, root: idx }
 }
 
+// shl and bnot on uint8 / uint16 are 32-bit operations; the result is cut back to its width the way
+// the hardware would have wrapped it.
+fn narrow_mask(dest: string, type_name: string) -> string {
+    case type_name of {
+        "uint8" -> x86_isa@x86_ext("UXTB", dest, dest);
+        "uint16" -> x86_isa@x86_ext("UXTH", dest, dest);
+        _: string -> ""
+    }
+}
+
 fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
     operand_type: string <- sir_term_root_node(sir_term_at(term, sir_term_root_node(term).inner)).type_name;
     is_unsigned: boolean <- reg_conventions@is_unsigned_type(operand_type);
@@ -115,6 +127,11 @@ fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: str
         "nq" -> comparison@emit_ne_op(dest_w, reg_prefix);
         "and" -> logical@emit_and_op(dest_w, reg_prefix);
         "or" -> logical@emit_or_op(dest_w, reg_prefix);
-        _: string -> concat("    // unsupported narrow prim: ", sir_term_root_node(term).name)
+        "bor" -> bitwise@emit_bor_op(dest_w, reg_prefix);
+        "band" -> bitwise@emit_band_op(dest_w, reg_prefix);
+        "shr" -> bitwise@emit_shr_op(dest_w, reg_prefix);
+        "shl" -> concat(bitwise@emit_shl_op(dest_w, reg_prefix), narrow_mask(dest_w, sir_term_root_node(term).type_name));
+        "bnot" -> concat(bitwise@emit_bnot_op(dest_w, reg_prefix), narrow_mask(dest_w, sir_term_root_node(term).type_name));
+        _: string -> concat(".error \"unsupported narrow prim: ", concat(sir_term_root_node(term).name, "\"\n"))
     }
 }

@@ -112,7 +112,7 @@ map_device(device: D, base: uint64)
     proc[register_rwr]
 ```
 
-`D` is a device tag whose programmer-supplied device description gives the register layout, and so the window's size. The prim's language rules are in [silica_device_actor_specification.md](silica_device_actor_specification.md) §4.7 and §4.9. Constraints on the port:
+`D` is a device tag whose description gives the register layout, and so the window's size. For a device the board pack lists, the description and the legal bases are the board pack's (§10); for a device it does not list, the description is the programmer's. The prim's language rules are in [silica_device_actor_specification.md](silica_device_actor_specification.md) §4.7, §4.9, and §4.9.1. Constraints on the port:
 
 - `base` and the described size must be board-legal (alignment, peripheral window). Illegal maps fail at compile time in the port's emitter when the board pack can prove it, otherwise at initialization with a hard halt.
 - The window is **not** bump-allocated RAM. Loads/stores go to that physical/bus range.
@@ -147,7 +147,7 @@ Spec §9.1.1: `register_rwr` → `DSB SY` before and `ISB` after on AArch64. ESP
 
 - Not user-facing CPU GPR moves.
 - Not `device_io` (print/file/console as hosted syscalls).
-- Not a vendor HAL. The register map is the programmer-supplied **device description** ([silica_device_actor_specification.md](silica_device_actor_specification.md) §4.9); a later generator may produce descriptions from vendor files (SVD, CMSIS-like headers).
+- Not a vendor HAL. The register map is the **device description**: the board pack's for on-board devices, the programmer's for the rest ([silica_device_actor_specification.md](silica_device_actor_specification.md) §4.9, §4.9.1); a later generator may produce descriptions from vendor files (SVD, CMSIS-like headers).
 
 ### 5.5 Where the checks live
 
@@ -155,7 +155,7 @@ The lexer, parser, checkers, and SIR generator are the same for every port; a po
 
 | Stage | What it does with the poke prims |
 | --- | --- |
-| Shared (lexer → SIR) | Reads and validates device descriptions, types `map_device`, `peek`, and `poke`, enforces every language rule in the device spec §11, and lowers each call to a SIR prim node carrying `[register_rwr]` (as `spawn` carries `[concurrency]`) with the register's resolved offset and width. Identical on every port. |
+| Shared (lexer → SIR) | Reads and validates device descriptions (the board pack's and the programmer's), types `map_device`, `peek`, and `poke`, enforces every language rule in the device spec §11, and lowers each call to a SIR prim node carrying `[register_rwr]` (as `spawn` carries `[concurrency]`) with the register's resolved offset and width. Identical on every port. |
 | OS-free emitter (ESP32-S3, later bare-metal AArch64) | Emits the mapping, the volatile accesses, and the port's barriers (§5.3); rejects widths the board pack does not allow. |
 | OS-hosted emitter (Apple Silicon, Linux AArch64, later hosted ports) | Rejects each poke prim in its `emit_prim_op` with a compile-time error naming the module, the enclosing function, and the prim. The rejection is explicit: the AArch64 emitters' catch-all for an unknown prim writes only a comment, which would compile the access into nothing. |
 
@@ -235,21 +235,22 @@ module `use`s a `device_*` module. It does not apply when the runtime starts a d
 
 ## 10. Board pack contract
 
-Each pack is a named directory or fragment (exact layout later) that states:
+Each pack is a per-target Silica module, `emitter/<TARGET>/board_pack.silica`, of pure, flat indexed tables that the compiler reads as data. It is part of the target, maintained with the compiler, not by programs. It is the **authoritative description of the board's on-board devices**: a program cannot describe a device the pack lists, and describes only devices the pack does not (device spec §4.9, §4.9.1). It states:
 
 | Field | Example |
 | --- | --- |
 | Triple / chip family | `aarch64-none-elf`, `xtensa-esp32s3-elf` |
 | Memory map | RAM, flash, peripheral windows |
 | `Space` realization | exact / emulated / unsupported |
-| Legal `map_device` ranges | list of `[base, size)` |
+| Legal `map_device` ranges | list of `[base, size)`, each tied to a device tag; windows do not overlap |
+| Device registers | per device tag: name, offset, width, access mode (`:read_write`, `:read_only`, `:write_only`, `:write_one_to_clear`); per-pin arrays as offset + stride × index |
 | Console | UART base + register offsets, or semihosting |
 | Timer | IRQ number, programming sequence |
 | IRQ → worker | Which `device_actor_ref` / registered atom owns each IRQ |
 | Privileged boot | who sets MAIR/PTE or IDF cache mode |
 | Fifi (optional, §9.1) | The C runtime that wrapper archives link against, and the trap vector that ends a faulting FFI worker |
 
-The port's emitter refuses a constant `map_device` outside the pack’s windows (the pack is per port, so this check is not in the shared compiler). A pack is how “raw metal” stays typed instead of `uint64` everywhere.
+The register tables follow the validity rules of device spec §4.9.1 (unique names per device, width 8/16/32/64, aligned offsets, no overlap, a known access mode, non-overlapping windows). The ESP32-S3 pack does not yet list access modes (it records runtime use) and must be extended. The port's emitter refuses a constant `map_device` outside the pack’s windows (the pack is per port, so this check is not in the shared compiler). A pack is how “raw metal” stays typed instead of `uint64` everywhere.
 
 ---
 

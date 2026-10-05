@@ -25,7 +25,7 @@
 # The suite's layout is read, not configured, and matches what the host Makefiles do:
 #   - program trials: the top-level <stem>.silica files; <stem>.scout is the golden. All the suite's
 #     sources (subdirectories such as lib/ and traits/ included) are compiled in one run, as on the
-#     host; each program's image links its .sams with every subdirectory .sams and the runtime.
+#     host; each program's image links its .sams with the modules it reaches through `use` and the runtime.
 #   - compile-failure trials: a top-level <stem>.silica with <stem>.golden_fail, compiled alone
 #     (a one-line silica.config), the compiler output compared with the golden, as on the host.
 #   - a top-level <stem>.no_golden_fail marks a file that is not a trial (as on the host).
@@ -222,14 +222,40 @@ if [ "${#programs[@]}" -gt 0 ]; then
         tail -n 40 build/compile.log
         ko=$((ko + 1))
     else
-        extra=()
-        while IFS= read -r m; do [ -n "$m" ] && extra+=("src/$m"); done < <(cd src && find . -mindepth 2 -name '*.sams' | sed 's|^\./||' | LC_ALL=C sort)
-        [ -f src/__silica_runtime.sams ] && extra+=("src/__silica_runtime.sams")
-        # Top-level support modules: the find above only reaches subdirectories, so without this a
-        # program that calls one links against nothing and the loader reports its functions missing.
-        for m in ${modules[@]+"${modules[@]}"}; do
-            [ -f "src/$m.sams" ] && extra+=("src/$m.sams")
-        done
+        # Each program links only the units it transitively reaches through `use` declarations, plus the
+        # runtime support unit. Board memory is small and a unit cannot be garbage-collected (each
+        # compiled unit is one .text section and carries the application's atom table in .rodata), so
+        # linking every staged module gave unused code a share of the heap and starved the programs.
+        # A `use` whose .sams is not found is skipped (inlined or unstaged; the compiler resolved it).
+        link_closure() {
+            local stem=$1 queue=$1 seen cur f s m out=""
+            seen=$'\n'"$1"$'\n'
+            while [ -n "$queue" ]; do
+                cur=${queue%%$'\n'*}
+                case "$queue" in *$'\n'*) queue=${queue#*$'\n'} ;; *) queue="" ;; esac
+                if [ "$cur" = "$stem" ]; then
+                    f="src/$stem.silica"
+                else
+                    # A top-level entry program (it has a golden and its own main) is never a library:
+                    # a suite such as compiler_addition links each entry alone, and a second main
+                    # fails the link with "multiple definition of `main'".
+                    case " ${programs[*]} " in *" $cur "*) continue ;; esac
+                    s=$(find src -name "$cur.sams" | LC_ALL=C sort | head -n 1)
+                    [ -n "$s" ] || continue
+                    out+="$s"$'\n'
+                    f="${s%.sams}.silica"
+                fi
+                [ -f "$f" ] || continue
+                while IFS= read -r m; do
+                    case "$seen" in *$'\n'"$m"$'\n'*) continue ;; esac
+                    seen+="$m"$'\n'
+                    queue+="${queue:+$'\n'}$m"
+                done < <(sed -E 's|//.*||' "$f" | sed -nE 's/^[[:space:]]*use[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*;.*/\1/p')
+            done
+            [ -n "$out" ] && printf '%s' "$out" | LC_ALL=C sort
+            [ -f src/__silica_runtime.sams ] && echo "src/__silica_runtime.sams"
+            return 0
+        }
         left=${#programs[@]}
         for stem in "${programs[@]}"; do
             if [ -f "$MARK_ROOT/.board_lost" ]; then
@@ -243,6 +269,8 @@ if [ "${#programs[@]}" -gt 0 ]; then
                 mark_fail; printf '❌❌ %s%s: no %s.sams was emitted\n' "$prefix" "$stem" "$stem"; ko=$((ko + 1)); continue
             fi
             img="build/$stem/$stem"
+            extra=()
+            while IFS= read -r m; do [ -n "$m" ] && extra+=("$m"); done < <(link_closure "$stem")
             if ! sh "$BOARD_TOOLS/build_image.sh" -q -r "$BOARD_RT_CACHE" -o "$img" "src/$stem.sams" ${extra[@]+"${extra[@]}"} > "build/$stem.image.log" 2>&1; then
                 mark_fail
                 printf '❌❌ %s%s: image build failed (assembler or linker)\n' "$prefix" "$stem"

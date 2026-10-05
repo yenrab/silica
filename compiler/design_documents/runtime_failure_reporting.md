@@ -183,6 +183,25 @@ off, only the current register window live, PS reset, the 2 KB fault stack) and 
 `  addr=0x<excvaddr>` for the causes that set EXCVADDR, ends the line, writes the exit marker with status
 70, then the board-only details, and halts.
 
+**Device-actor fault details (board only).** An actor started with `spawn_device` or
+`spawn_device_registered` is flagged in its ACB (`ACB_DEVICE`, offset 192; set by
+`silica_rt_actor_mark_device`, which the emitter calls right after the spawn, and by
+`silica_rt_register_device_actor_named`). When such an actor ends on a CPU exception, the fault hook
+(`silica_rt_actor_fault_hook`) has saved EXCCAUSE+1, EPC1 and EXCVADDR into the ACB (offsets 196/200/204; causes
+from 1001 up, the runtime's own, are not saved), and the standard `=== Silica Actor Failure ===` block gains three
+lines directly after `reason_tag`:
+
+    exccause:        29 (StoreProhibited)
+    epc:             0x40388019
+    excvaddr:        0x00000018
+
+The name is printed for the common causes (0 IllegalInstruction, 2 InstructionFetchError, 3 LoadStoreError,
+6 IntegerDivideByZero, 9 LoadStoreAlignment, 20 InstrFetchProhibited, 28 LoadProhibited, 29 StoreProhibited)
+and omitted for the rest. Non-device actors, and device actors that end for any other reason, print the block
+unchanged, byte for byte. Hosts never have device actors (device actor specification, E2220), so the host
+report has no such lines. A restarted device child that a supervisor spawns from a child row is not flagged
+(rows carry no device flavor yet).
+
 **Runtime abort.** The entries `silica_rt_abort_with(reason)` and `silica_rt_abort_<site>()` (`rt_console.S`)
 are windowed functions reached with CALL8. Each names its reason in `a2` and jumps to
 `silica_rt_abort_body`, which turns the return address in `a0` into the address of the CALL8 (bits 31:30

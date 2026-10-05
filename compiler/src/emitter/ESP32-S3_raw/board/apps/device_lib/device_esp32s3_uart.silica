@@ -1,0 +1,99 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not USE this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// UART0 (the ROM console, 115200 8N1 after reset) as a device worker: board_pack.silica window 0
+// at 0x60000000, registers :fifo and :status (TXFIFO_CNT is bits 16-25 of :status; the runtime
+// console keeps at most 120 bytes queued, board_pack uart_txfifo_max). The device specification's
+// own worked example is this device (spec §4.7, §4.9).
+//
+// State: `:unmapped` until the :init message maps the window inside a register_rwr sequence, then
+// (:mapped, window). Messages: { op: :init | :putc | :puts, byte: uint32, text: string }. :puts
+// walks the text one character at a time; a character's byte comes from a flat table, since a
+// string has no byte accessor -- only the characters the apps print are listed.
+
+use DeviceDescription;
+
+export registers/1;
+export uart_worker/2;
+
+impl fn registers(device: (:esp32s3_uart)) -> List[{ name: atom, offset: uint64, width: uint64, access: atom }, mem(normal)] {
+    [
+        { name: :fifo,   offset: 0x00, width: 32, access: :read_write },
+        { name: :status, offset: 0x1C, width: 32, access: :read_only }
+    ]
+}
+
+fn byte_of(ch: string) -> uint32 {
+    case ch of {
+        " " -> 32; "\n" -> 10; "a" -> 97; "b" -> 98; "c" -> 99; "d" -> 100; "e" -> 101; "f" -> 102;
+        "g" -> 103; "h" -> 104; "i" -> 105; "j" -> 106; "k" -> 107; "l" -> 108; "m" -> 109; "n" -> 110;
+        "o" -> 111; "p" -> 112; "q" -> 113; "r" -> 114; "s" -> 115; "t" -> 116; "u" -> 117; "v" -> 118;
+        "w" -> 119; "x" -> 120; "y" -> 121; "z" -> 122; "0" -> 48; "1" -> 49; "2" -> 50; "3" -> 51;
+        "4" -> 52; "5" -> 53; "6" -> 54; "7" -> 55; "8" -> 56; "9" -> 57; "." -> 46; ":" -> 58;
+        _: string -> 63
+    }
+}
+
+// Waits until the transmit FIFO has room, then queues the byte. The poll is a read whose value
+// matters, one peek per turn (spec §4.7 "Reads are never removed").
+fn put_byte(w: device_window(L, (:esp32s3_uart)), byte: uint32) -> device_window(L, (:esp32s3_uart)) {
+    sequence proc[register_rwr]
+        status: uint32 <- peek(w, :status) impl Register32 {};
+        queued: uint32 <- (status shr 16) band 1023;
+        r: device_window(L, (:esp32s3_uart)) <- case queued < 120 of {
+            true -> {
+                _: atom <- poke(w, :fifo, byte impl Register32 {});
+                w
+            };
+            false -> put_byte(w, byte)
+        }
+    produces
+        pure r
+    end
+}
+
+fn put_text(w: device_window(L, (:esp32s3_uart)), text: string, i: int64) -> device_window(L, (:esp32s3_uart)) {
+    sequence proc[register_rwr]
+        r: device_window(L, (:esp32s3_uart)) <- case i >= length_bytes(text) of {
+            true -> w;
+            false -> put_text(put_byte(w, byte_of(substring(text, i, i + 1))), text, i + 1)
+        }
+    produces
+        pure r
+    end
+}
+
+fn uart_worker(msg: { op: atom, byte: uint32, text: string }, state: :unmapped | (:mapped, device_window(L, (:esp32s3_uart)))) -> (:no_reply, :unmapped | (:mapped, device_window(L, (:esp32s3_uart)))) {
+    sequence proc[register_rwr]
+        next: :unmapped | (:mapped, device_window(L, (:esp32s3_uart))) <- case state of {
+            :unmapped -> case msg.op of {
+                :init -> {
+                    w: device_window(L, (:esp32s3_uart)) <- map_device((:esp32s3_uart), 0x60000000);
+                    (:mapped, w)
+                };
+                _: atom -> :unmapped
+            };
+            (:mapped, w: device_window(L, (:esp32s3_uart))) -> case msg.op of {
+                :putc -> (:mapped, put_byte(w, msg.byte));
+                :puts -> (:mapped, put_text(w, msg.text, 0));
+                _: atom -> (:mapped, w)
+            }
+        }
+    produces
+        pure (:no_reply, next)
+    end
+}

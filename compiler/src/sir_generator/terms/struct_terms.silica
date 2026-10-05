@@ -29,11 +29,19 @@ export is_last_struct_literal_node/1;
 export build_record_make_layer/4;
 export build_record_proj_prim/3;
 
-// Prefer contextual record type; otherwise infer `{ f: T, ... }` from field initializers.
+// Prefer contextual record type (the record variant of an expected inline sum type, chosen as the
+// type checker chose it); otherwise infer `{ f: T, ... }` from field initializers.
 fn record_type_for_struct_literal(context: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] }, expr: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, expected_type: string) -> string {
-    case type_checker_record_types@record_type_starts(expected_type) of {
-        true -> expected_type;
-        false -> terms_helpers@sir_infer_struct_literal_type(context, expr)
+    sum_variant: string <- case type_checker_tuple_decompose_helpers@case_sum_bar_depth0(expected_type, 0, 0) >= 0 of {
+        true -> type_checker_tuple_decompose_helpers@struct_literal_sum_variant(expr, expected_type);
+        false -> ""
+    };
+    case length_bytes(sum_variant) > 0 of {
+        true -> sum_variant;
+        false -> case type_checker_record_types@record_type_starts(expected_type) of {
+            true -> expected_type;
+            false -> terms_helpers@sir_infer_struct_literal_type(context, expr)
+        }
     }
 }
 

@@ -509,7 +509,7 @@ clean:
 		[ -f "$$s" ] || continue; \
 		rm -f "$${s%.sams}"; \
 	done
-	@cd "$(THIS_DIR)" && rm -f *.sams lib/*.sams *.o lib/*.o *.iface lib/*.iface __silica_runtime.o __silica_runtime.sams.* *.checked .integrate_results smoke_harness_ready *.sout silica.config .integrate_counts silica.compile.order silica.needs_runtime silica.link
+	@cd "$(THIS_DIR)" && rm -f *.sams lib/*.sams *.o lib/*.o *.iface lib/*.iface __silica_runtime.o __silica_runtime.sams.* *.checked .integrate_results smoke_harness_ready *.sout silica.config .integrate_counts silica.compile.order silica.needs_runtime silica.atoms silica.link
 	@cd "$(THIS_DIR)" && rm -rf $(LEAF_SANDBOX)
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 

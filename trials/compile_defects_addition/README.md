@@ -10,6 +10,18 @@ directory. This directory holds only this README (it has no Makefile, so it is n
 
 Open:
 
+- From the behaviour parameter shadow fix (2026-10-02, open): `compile_defects_float64_actor_message_addition` (a
+  `float64` message cast to a behaviour does not assemble: the cast prim stages the message word from the let's D
+  register with an integer `MOV X10, D8`, and the actor dispatch delivers every message word in X0 while a float64
+  first parameter is read from D0; topic suite `actors_addition`, next to `behaviour_uint32_message_survives_call`).
+
+- From the ESP32-S3 board pack (2026-10-01, open): `compile_defects_tagged_tuple_first_addition` (an inline sum
+  type spelled tuple first, `(:found, uint32) | :none`, was rejected by the parser (E1069/E1040), the atom-literal
+  check (E2001) and misclassified by reg_conventions@is_tuple_type; all three fixed in the tree the same day, the
+  trial waits for a compiler built from it). `compile_defects_qualified_call_literal_arg_addition` (an integer
+  literal argument to a `uint32` parameter was E2003 through a `module@fn` call) was fixed the same day and moved,
+  see below.
+
 - From book-verification (2026-09-19, open): `compile_defects_priority_queue_supervisor_addition` (a supervisor
   child spec's `initial_state` typed `PriorityQueue[...]` is E2003 "type mismatch: children"); the field-annotation
   and field-projection half of the same bracket-representation family was fixed on 2026-09-19 (see below).
@@ -23,6 +35,17 @@ Open:
   literal is not accepted as a case pattern -- on its own or as a tuple element -- because
   `case_parse_pattern` classifies numeric literals with `case_string_is_signed_int_literal`, E2005;
   the emitter matches a float tuple element already).
+
+Fixed 2026-10-01 (type checker) and moved: `compile_defects_qualified_call_literal_arg_addition` ->
+`modules_addition/qualified_call_literal_arg_uint32` (with `lib/literal_param_lib`; the uint32 suite's Makefile does not
+link helper modules, modules_addition's does). The qualified-call argument walk
+(type_checker_expressions_user_call_resolve_infer@resolve_site_bucket_type_for_param) compared a literal's inferred
+type (int64, or float32 for an unsuffixed float) with the formal by name and raised E2003; a numeric literal now
+takes a numeric formal's type there, as it does in a same-module call, and the ordinary argument check then applies
+the formal's range (E2011) and integer/float rule (E2001). Siblings: `modules_addition/qualified_call_literal_arg_narrow`
+(uint8, uint16, int8, int16, int32, uint64), `modules_addition/qualified_call_literal_arg_float` (an unsuffixed
+float literal to float64 and float32 parameters, with `lib/float_literal_param_lib`), and the rejections
+`error_enforcement_addition/qualified_call_literal_out_of_range_trial` and `qualified_call_literal_negative_trial`.
 
 Resolved 2026-09-24: the float64 literal pool did not walk case nodes (`case x > 2.0 of` emitted `L_f64_-1`);
 fixed in both float literal pools and the trial moved to `float64_addition/float_literal_case_scrutinee`.

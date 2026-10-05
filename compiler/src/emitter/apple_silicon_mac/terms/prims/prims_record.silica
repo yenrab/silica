@@ -31,10 +31,16 @@
 // offset after `value` (trials/generic_modules_addition/record_item_through_generic_result,
 // record_tuple_field_then_list_read, and the *_through_generic trials beside them).
 // The exceptions are the two records the actor runtime lays out by hand, and only those
-// (record_type_keeps_inline_layout): the supervisor reply (80 bytes, child_info spliced inline)
+// (record_type_keeps_inline_layout): the supervisor reply (96 bytes, child_info spliced inline)
 // and the `start:`-form child spec, whose (state, behaviour) tuple keeps its 16-byte shell so
-// restart/shutdown/flavor sit at the runtime's child-spec ABI offsets 32/40/48
+// restart/shutdown/flavor sit at the runtime's child-spec ABI offsets 40/48/56
 // (term_child_spec@child_spec_field_abi_offset). They keep the legacy inline rules.
+//
+// Shape word (2026-10-02, record_shape.silica): every record value, boxed or spliced inline,
+// starts with one word holding its build-wide shape number; the fields follow from offset 8.
+// Every offset and size here counts that word: offset_bytes_before_field is 8 for the first
+// field, record_type_value_flat_byte_size is 8 plus one slot per field, and a spliced nested
+// record (the reply's child_info) carries its own shape word inside the outer slab.
 
 use reg_conventions;
 
@@ -56,6 +62,7 @@ export record_type_list_cons_payload_bytes/1;
 export record_type_is_supervisor_reply/1;
 export record_type_keeps_inline_layout/1;
 export record_type_is_start_child_spec/1;
+export shape_word_bytes/0;
 
 
 // Local SIRTerm arena helpers (sir_ast node accessors are not exported).
@@ -235,13 +242,17 @@ fn record_type_keeps_inline_layout(record_str: string) -> boolean {
     record_type_is_supervisor_reply(record_str) or record_type_is_start_child_spec(record_str)
 }
 
+fn shape_word_bytes() -> int64 {
+    8
+}
+
 fn record_type_value_flat_byte_size(record_str: string) -> int64 {
     t: string <- strip_spaces_rt(record_str);
     case record_type_starts(t) of {
         false -> 8;
         true -> case record_type_keeps_inline_layout(t) of {
-            true -> sum_field_value_flat_loop_inline(extract_braced_body(t));
-            false -> sum_field_value_flat_loop(extract_braced_body(t))
+            true -> shape_word_bytes() + sum_field_value_flat_loop_inline(extract_braced_body(t));
+            false -> shape_word_bytes() + sum_field_value_flat_loop(extract_braced_body(t))
         }
     }
 }
@@ -250,7 +261,7 @@ fn record_type_value_flat_byte_size_inline(record_str: string) -> int64 {
     t: string <- strip_spaces_rt(record_str);
     case record_type_starts(t) of {
         false -> 8;
-        true -> sum_field_value_flat_loop_inline(extract_braced_body(t))
+        true -> shape_word_bytes() + sum_field_value_flat_loop_inline(extract_braced_body(t))
     }
 }
 
@@ -292,7 +303,7 @@ fn record_type_list_cons_payload_bytes(record_str: string) -> int64 {
     case record_type_starts(R) of {
         false -> 8;
         true -> case record_type_is_child_spec(R) of {
-            true -> 56;
+            true -> 64;
             false -> list_cons_stack_round16(record_type_value_flat_byte_size(R))
         }
     }
@@ -663,7 +674,11 @@ fn offset_bytes_before_field(record_str: string, field: string) -> int64 {
         false -> -1;
         true -> {
             content: string <- extract_braced_body(t);
-            offset_bytes_before_field_in_content(content, field, 0, 0, record_type_keeps_inline_layout(t))
+            inner: int64 <- offset_bytes_before_field_in_content(content, field, 0, 0, record_type_keeps_inline_layout(t));
+            case inner < 0 of {
+                true -> -1;
+                false -> shape_word_bytes() + inner
+            }
         }
     }
 }
@@ -771,7 +786,7 @@ fn record_type_flat_stack_bytes(record_str: string) -> int64 {
             cnt: int64 <- count_record_fields(R);
             shell: int64 <- tuple_shell_flat_bytes(cnt);
             nest: int64 <- record_fields_nested_stack_bytes_loop(content);
-            shell + nest
+            shape_word_bytes() + shell + nest
         }
     }
 }

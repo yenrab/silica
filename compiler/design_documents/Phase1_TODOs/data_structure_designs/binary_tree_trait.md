@@ -84,7 +84,7 @@ The owning value carries:
 
 ```text
 {
-    region: region(R, SpaceType),
+    r: region(R, SpaceType),
     root: ref?(R, SpaceType, RecursiveBinaryNode),
     specialization_key: int64
 }

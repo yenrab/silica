@@ -35,6 +35,7 @@ use xt_vr;
 export xt_imm_value/1;
 export xt_is_imm/1;
 export xt_movi/2;
+export xt_movi_u32/2;
 export xt_movi_text/2;
 export xt_mov/2;
 export xt_adr/2;
@@ -128,7 +129,34 @@ fn hi32s(n: int64) -> int64 {
 }
 
 fn movi_line(reg: string, value: int64) -> string {
-    xt_vr@xt_ins("movi", concat(reg, concat(", ", xt_vr@xt_itos(value))))
+    movi_line_text(reg, xt_vr@xt_itos(value))
+}
+
+fn movi_line_text(reg: string, value: string) -> string {
+    xt_vr@xt_ins("movi", concat(reg, concat(", ", value)))
+}
+
+fn u32_digit(d: uint32) -> string {
+    case d of {
+        0 -> "0";
+        1 -> "1";
+        2 -> "2";
+        3 -> "3";
+        4 -> "4";
+        5 -> "5";
+        6 -> "6";
+        7 -> "7";
+        8 -> "8";
+        9 -> "9";
+        _: uint32 -> "?"
+    }
+}
+
+fn u32_text(n: uint32) -> string {
+    case n < 10 of {
+        true -> u32_digit(n);
+        false -> concat(u32_text(n / 10), u32_digit(n % 10))
+    }
 }
 
 // --- small emit helpers ----------------------------------------------------------------------
@@ -197,17 +225,27 @@ fn xt_movi(dst: string, n: int64) -> string {
     movi_words(dst, lo32s(n), hi32s(n))
 }
 
+// A uint32 constant: the low word is the value itself, the high word zero.
+fn xt_movi_u32(dst: string, n: uint32) -> string {
+    movi_words_text(dst, u32_text(n), "0")
+}
+
 // Constant given as its two signed 32-bit words.
 fn movi_words(dst: string, lo: int64, hi: int64) -> string {
+    movi_words_text(dst, xt_vr@xt_itos(lo), xt_vr@xt_itos(hi))
+}
+
+// Constant given as the assembler text of its two 32-bit words.
+fn movi_words_text(dst: string, lo: string, hi: string) -> string {
     c: string <- xt_vr@vr_class(dst);
     case c == "ZR" of {
         true -> "";
         false -> case xt_vr@vr_is_phys(dst) of {
             true -> case c == "W" of {
-                true -> concat(movi_line(xt_vr@vr_phys_lo(dst), lo), movi_line(xt_vr@vr_phys_hi(dst), 0));
-                false -> concat(movi_line(xt_vr@vr_phys_lo(dst), lo), movi_line(xt_vr@vr_phys_hi(dst), hi))
+                true -> concat(movi_line_text(xt_vr@vr_phys_lo(dst), lo), movi_line_text(xt_vr@vr_phys_hi(dst), "0"));
+                false -> concat(movi_line_text(xt_vr@vr_phys_lo(dst), lo), movi_line_text(xt_vr@vr_phys_hi(dst), hi))
             };
-            false -> concat(concat(movi_line("a8", lo), movi_line("a9", hi)), xt_vr@vr_put(dst, "a8", "a9"))
+            false -> concat(concat(movi_line_text("a8", lo), movi_line_text("a9", hi)), xt_vr@vr_put(dst, "a8", "a9"))
         }
     }
 }

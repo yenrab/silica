@@ -17,7 +17,7 @@
 
 // Default const emission (int32, int16, int8, uint32, uint16, uint8, etc.)
 // AArch64: MOV only for immediates encodable in one instruction; else LDR from int64 literal pool.
-// W* destinations cannot use ADRP on the same reg — use X9 scratch for ADRP+LDR Wn.
+// A W destination takes the page address in its X view (X9 as scratch clobbered a left operand).
 
 use atom_table;
 use constraints;
@@ -96,18 +96,13 @@ fn emit_from_term(term: { nodes: List[{ kind: int64, type_name: string, value: s
         false -> {
             idx: int64 <- int64_literal_pool@int64_literal_value_to_index(literal_table, val);
             label: string <- concat("L_i64_", atom_table@int64_to_decimal_string(idx));
-            case substring(dest, 0, 1) == "W" of {
-                true -> {
-                    adrp: string <- concat(concat(concat("    ADRP X9, ", label), ""), "\n");
-                    ldr: string <- concat(concat(concat(concat("    LDR ", dest), ", [X9, :lo12:"), label), "]");
-                    concat(adrp, ldr)
-                };
-                false -> {
-                    adrp: string <- concat(concat(concat(concat("    ADRP ", dest), ", "), concat(label, "")), "\n");
-                    ldr: string <- concat(concat(concat(concat(concat("    LDR ", dest), ", ["), concat(dest, ", ")), concat(":lo12:", label)), "]");
-                    concat(adrp, ldr)
-                }
-            }
+            base: string <- case substring(dest, 0, 1) == "W" of {
+                true -> concat("X", substring(dest, 1, length_bytes(dest)));
+                false -> dest
+            };
+            adrp: string <- concat(concat(concat(concat("    ADRP ", base), ", "), label), "\n");
+            ldr: string <- concat(concat(concat(concat(concat("    LDR ", dest), ", ["), concat(base, ", ")), concat(":lo12:", label)), "]");
+            concat(adrp, ldr)
         }
     }
 }

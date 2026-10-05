@@ -63,6 +63,8 @@ use var;
 use ffi_foreign;
 
 export emit_module/1;
+export unsupported_prim_reason/1;
+export target_name/0;
 export emit_module_debug/2;
 export emit_module_with_atom_table/2;
 export emit_module_with_atom_and_debug/3;
@@ -640,12 +642,15 @@ fn bind_reg_for_param(param_types: string, idx: int64, ptype: string, string_sha
 // handle stays in its ABI home register, and a later statement's result landing
 // in X0 silently replaces it -- alloc_buf(r, n) after alloc_ref(r, n) then passes
 // the ref, not the region.
+// A device_window is the same kind of handle. It never reaches codegen on this target (device prims
+// are refused, device spec §10); it is classified here so the four emitters agree.
 fn type_name_is_region_handle(ptype: string) -> boolean {
     n: int64 <- length_bytes(ptype);
     (n >= 7 and substring(ptype, 0, 7) == "region(")
         or (n >= 5 and substring(ptype, 0, 5) == "ref?(")
         or (n >= 4 and substring(ptype, 0, 4) == "ref(")
         or (n >= 4 and substring(ptype, 0, 4) == "buf(")
+        or (n >= 14 and substring(ptype, 0, 14) == "device_window(")
 }
 
 fn is_gpr64_param_type(ptype: string) -> boolean {
@@ -1468,6 +1473,22 @@ fn fs_term_has_hazard(t: { nodes: List[{ kind: int64, type_name: string, value: 
     }
 }
 
+fn fs_term_has_let(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
+    case t.root < 0 of {
+        true -> false;
+        false -> case sir_term_root_node(t).kind of {
+            2 -> true;
+            3 -> case fs_term_has_let(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_let(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            4 -> fs_term_has_let(sir_term_at(t, sir_term_root_node(t).inner));
+            5 -> case fs_term_has_let(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_let(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            6 -> case fs_term_has_let(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_let(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            7 -> case fs_term_has_let(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_let(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            8 -> case fs_term_has_let(sir_term_at(t, sir_term_root_node(t).inner)) of { true -> true; false -> fs_term_has_let(sir_term_at(t, sir_term_root_node(t).right_expr)) };
+            _: int64 -> false
+        }
+    }
+}
+
 fn fs_term_has_case(t: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }) -> boolean {
     case t.root < 0 of {
         true -> false;
@@ -1942,7 +1963,7 @@ fn fs_is_program_main_name(name: string) -> boolean {
 }
 
 // Gate: shadow whenever the body contains a user call or case, every param fits in one GPR, and the
-// function has no float spills / actor-reply-sret / concurrency.  High spill pressure is not a
+// function has no float spills / concurrency.  High spill pressure is not a
 // reason to leave parameters in caller-saved registers; those are exactly the functions where
 // helper calls are most likely to clobber still-live params before the body can rebuild aggregate
 // values.
@@ -1958,9 +1979,12 @@ fn fs_is_program_main_name(name: string) -> boolean {
 fn use_full_param_shadow(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> boolean {
     case fs_is_program_main_name(fn_val.name) of {
         true -> false;
-        false -> case use_actor_reply_sret_buffer(fn_val) of {
-                true -> false;
-                false -> case emitter_effects@has_concurrency(fn_val.effects) of {
+        // A behaviour that stores its reply through the runtime's buffer (X2 at entry) is shadowed like
+        // any other function; the buffer pointer takes the callee-saved home after the shadowed GPR
+        // parameters (actor_reply_sret_reg). Excluding it left a narrow, atom, boolean or float first
+        // parameter in its ABI home, where the first unrelated call's unit result replaced it.
+        // See trials/actors_addition/behaviour_uint32_message_survives_call.
+        false -> case emitter_effects@has_concurrency(fn_val.effects) of {
                     true -> false;
                     // Float lets no longer opt a function out: their spill registers come from
                     // fp_spill_reg_chain_from_outer, which skips the D8.. homes the shadow binds, and the D-pair
@@ -1985,12 +2009,35 @@ fn use_full_param_shadow(fn_val: { name: string, return_type: string, effects: s
                             // See trials/standard_data_structures/wbt_core/wbt_validate_malformed_fixture.
                             // A float param is live across float arithmetic too, which stages its operands
                             // in D0-D2 -- the ABI homes of the first float params.
-                            true -> fs_subtree_has_user_call(fn_val.body) or fs_term_has_case(fn_val.body) or body_has_bl_producing_prim(fn_val.body) or fs_float_param_count(fn_val.param_types, n) > 0
+                            // A let is a hazard on its own: its right-hand side is staged through X0-X3 / W0-W2
+                            // (let_dispatcher rhs_reg_*), the ABI homes of the first parameters, and that register
+                            // choice never consults the parameter bindings. The int64 and string entry shadows move
+                            // only int64/uint64/handle and string first parameters out first, so an atom first
+                            // parameter died under an atom let and a narrow second parameter under a narrow let.
+                            // See trials/functions_addition/emitter_defect_param_in_let_staging_register.
+                            true -> fs_subtree_has_user_call(fn_val.body) or fs_term_has_case(fn_val.body) or body_has_bl_producing_prim(fn_val.body) or fs_term_has_let(fn_val.body) or fs_float_param_count(fn_val.param_types, n) > 0
                             }
                         }
                     }
                 }
-            }
+    }
+}
+
+// Callee-saved home of the actor reply buffer pointer (X2 at entry). Under the full shadow it is the
+// register after the last shadowed GPR parameter, so the parameters and the buffer stay live together;
+// the int64 entry shadow keeps X20 and moves the second GPR parameter to X21 instead
+// (actor_reply_sret_second_param_uses_x21).
+fn actor_reply_sret_reg(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> string {
+    case use_full_param_shadow(fn_val) of {
+        true -> concat("X", atom_table@int64_to_decimal_string(19 + fs_gpr_param_count(fn_val.param_types, fs_count_params(fn_val.param_names))));
+        false -> "X20"
+    }
+}
+
+fn actor_reply_sret_shadow_regs(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> int64 {
+    case use_actor_reply_sret_buffer(fn_val) of {
+        true -> 1;
+        false -> 0
     }
 }
 
@@ -2006,7 +2053,7 @@ fn use_full_param_shadow(fn_val: { name: string, return_type: string, effects: s
 // See trials/codegen_regressions/shadow_x21.silica.
 fn full_shadow_pressure_bump(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> int64 {
     case use_full_param_shadow(fn_val) of {
-        true -> fs_gpr_param_count(fn_val.param_types, fs_count_params(fn_val.param_names));
+        true -> fs_gpr_param_count(fn_val.param_types, fs_count_params(fn_val.param_names)) + actor_reply_sret_shadow_regs(fn_val);
         false -> shadowed_param_reg_count(fn_val)
     }
 }
@@ -2094,6 +2141,45 @@ fn fs_emit_moves_loop(param_types: string, idx: int64, n: int64) -> string {
 
 fn fs_emit_moves(param_types: string, n: int64) -> string {
     fs_emit_moves_loop(param_types, 0, n)
+}
+
+// The runtime enters a behaviour with the message in X0, the state in X1 and the reply buffer in X2,
+// one word each whatever the parameter types, while a float parameter's ABI home is D0/S0/H0 and the
+// GPR parameter after it sits one slot lower: show(v: float64, state: int64) read v from D0 and state
+// from X0. Each word moves into its ABI home before the shadows read them; a float word is a bit copy
+// into the float register, not a conversion. Ascending order never overwrites a later source.
+// See trials/compile_defects_float64_actor_message_addition.
+fn behaviour_entry_moves(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> string {
+    case behavior_return_uses_actor_sret_tuple(fn_val.return_type) of {
+        true -> behaviour_entry_moves_loop(fn_val.param_types, 0, fs_count_params(fn_val.param_names));
+        false -> ""
+    }
+}
+
+fn behaviour_entry_word_view(abi: string, word: string) -> string {
+    case substring(abi, 0, 1) of {
+        "D" -> word;
+        _: string -> concat("W", substring(word, 1, length_bytes(word)))
+    }
+}
+
+fn behaviour_entry_moves_loop(param_types: string, idx: int64, n: int64) -> string {
+    case idx >= n of {
+        true -> "";
+        false -> {
+            ptype: string <- param_type_at_index(param_types, idx);
+            abi: string <- param_reg_for_index(param_types, idx, ptype);
+            word: string <- concat("X", atom_table@int64_to_decimal_string(idx));
+            mv: string <- case fs_x_view_of_abi(abi) == word of {
+                true -> "";
+                false -> case param_consumes_fp_only(ptype) of {
+                    true -> concat("    FMOV ", concat(abi, concat(", ", concat(behaviour_entry_word_view(abi, word), "\n"))));
+                    false -> concat("    MOV ", concat(fs_x_view_of_abi(abi), concat(", ", concat(word, "\n"))))
+                }
+            };
+            concat(mv, behaviour_entry_moves_loop(param_types, idx + 1, n))
+        }
+    }
 }
 
 fn fs_name_at_index(param_names: string, idx: int64) -> string {
@@ -2555,6 +2641,16 @@ fn sum_variant_tuple_return_promotes_in_epilogue(fn_val: { name: string, return_
         and sir_term_root_node(fn_val.body).name == "tuple_make"
 }
 
+// The record variant of such a sum, `:none | { id: uint32 }`, with a bare record_make body: the
+// epilogue owns the promote and the pop for the same reason, sized by the make's own record type.
+fn sum_variant_record_return_promotes_in_epilogue(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }) -> boolean {
+    reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type)
+        and reg_conventions@is_tuple_type(fn_val.return_type) == false
+        and reg_conventions@is_inline_struct_type(fn_val.return_type) == false
+        and sir_term_root_node(fn_val.body).kind == 6
+        and sir_term_root_node(fn_val.body).name == "record_make"
+}
+
 fn esf_tuple_ret_promote(fn_val: { name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, kind5_tail_returns_directly: boolean) -> string {
     case kind5_tail_returns_directly of {
             true -> "";
@@ -2585,7 +2681,10 @@ fn esf_tuple_ret_promote(fn_val: { name: string, return_type: string, effects: s
                         // Copy the shell this make built in its frame region. The sum type's own element
                         // count is useless here (count_type_elements of `:none | (:some, int64)` is 1).
                         true -> term_aggregate_helpers@aggregate_return_heap_promote_x0(term_aggregate_helpers@agg_shell_bytes(fn_val.body));
-                        false -> ""
+                        false -> case sum_variant_record_return_promotes_in_epilogue(fn_val) of {
+                            true -> term_aggregate_helpers@aggregate_return_heap_promote_x0(term_record_layout@record_make_stack_alloc_size(sir_term_root_node(fn_val.body).type_name));
+                            false -> ""
+                        }
                     }
                 }
             }
@@ -2640,7 +2739,16 @@ fn esf_tuple_ret_dealloc(fn_val: { name: string, return_type: string, effects: s
                                 false -> ""
                             }
                         };
-                        false -> ""
+                        false -> case sum_variant_record_return_promotes_in_epilogue(fn_val) of {
+                            true -> {
+                                rs_sum: int64 <- term_aggregate_helpers@flat_record_dealloc_size(fn_val.body);
+                                case rs_sum > 0 of {
+                                    true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(rs_sum), "\n"));
+                                    false -> ""
+                                }
+                            };
+                            false -> ""
+                        }
                     }
                 }
             }
@@ -2705,11 +2813,11 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
             }
         };
         actor_sret_mov: string <- case use_actor_reply_sret_buffer(fn_val) of {
-            true -> "    MOV X20, X2\n";
+            true -> concat("    MOV ", concat(actor_reply_sret_reg(fn_val), ", X2\n"));
             false -> ""
         };
         param_outer_emit: string <- case use_actor_reply_sret_buffer(fn_val) of {
-            true -> concat(param_outer_for_body, "|_tuple_sret=X20");
+            true -> concat(param_outer_for_body, concat("|_tuple_sret=", actor_reply_sret_reg(fn_val)));
             false -> case reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) of {
                 true -> concat(param_outer_for_body, "|_callee_sret=X8");
                 false -> param_outer_for_body
@@ -2778,7 +2886,7 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
             true -> "    STP D14, D15, [SP, #-16]!\n";
             false -> ""
         };
-        prologue_full: string <- concat(prologue, concat(frame_spill_alloc, concat(shadow_prologue, concat(callee_saved_frame, concat(actor_x21_x22_frame, concat(callee_x23_x24_frame, concat(callee_x25_x26_frame, concat(callee_x27_x28_frame, concat(callee_x29_frame, concat(callee_d8_d9_frame, concat(callee_d10_d11_frame, concat(callee_d12_d13_frame, concat(callee_d14_d15_frame, concat(int64_abi_shadow_asm, concat(aggregate_x11_mov, actor_sret_mov)))))))))))))));
+        prologue_full: string <- concat(prologue, concat(concat(frame_spill_alloc, behaviour_entry_moves(fn_val)), concat(shadow_prologue, concat(callee_saved_frame, concat(actor_x21_x22_frame, concat(callee_x23_x24_frame, concat(callee_x25_x26_frame, concat(callee_x27_x28_frame, concat(callee_x29_frame, concat(callee_d8_d9_frame, concat(callee_d10_d11_frame, concat(callee_d12_d13_frame, concat(callee_d14_d15_frame, concat(int64_abi_shadow_asm, concat(aggregate_x11_mov, actor_sret_mov)))))))))))))));
         fpb_verify: int64 <- prologue_bytes_below_fp(prologue_full, frame_spill_nbytes);
         fpb_comment: string <- "";
         // RA1/RA2 analysis is diagnostic only and is O(n^2) or worse per function
@@ -2818,7 +2926,7 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
         // stores the actor_ref in _silica_pid_registry_ref.
         is_program_main: boolean <- fn_val.name == "main" or fn_val.name == "main.main" or fn_val.name == "main.m";
         registry_init_inject: string <- case is_program_main of {
-            true -> "    BL _silica_pid_registry_init\n    BL _silica_dangerous_pid_registry_init\n";
+            true -> "    BL _silica_pid_registry_init\n    BL _silica_dangerous_pid_registry_init\n    BL _silica_device_pid_registry_init\n";
             false -> ""
         };
         // A function whose body IS a tuple literal used to get |_tuple_sret=X8, making the make store its
@@ -2880,6 +2988,11 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
         };
         tuple_ret_promote: string <- esf_tuple_ret_promote(fn_val, kind5_tail_returns_directly);
         tuple_ret_dealloc: string <- esf_tuple_ret_dealloc(fn_val, kind5_tail_returns_directly);
+        // A kind-5 body's callee has this return type too and runs the move itself.
+        behaviour_move: string <- case kind5_tail_returns_directly == false and sir_term_root_node(fn_val.body).kind != 5 and behavior_return_uses_actor_sret_tuple(fn_val.return_type) of {
+            true -> prims_actors@behaviour_result_move_asm(fn_val.return_type, entry_label);
+            false -> ""
+        };
 
         // Owned region handle: park it at the deepest frame slot on entry, while the
         // argument register still holds it, and destroy from there in the epilogue.
@@ -2963,7 +3076,7 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
                     ep_sh_6: string <- concat(callee_d10_d11_restore, ep_sh_5);
                     ep_sh_7: string <- concat(callee_d12_d13_restore, ep_sh_6);
                     ep_sh_8: string <- concat(callee_d14_d15_restore, ep_sh_7);
-                    concat(concat(tuple_ret_promote, tuple_ret_dealloc), ep_sh_8)
+                    concat(concat(tuple_ret_promote, concat(tuple_ret_dealloc, behaviour_move)), ep_sh_8)
                 };
                 false -> {
                     ep_ns: string <- concat(callee_saved_restore, concat(frame_spill_dealloc, control@function_epilogue_with_effects(fn_val.effects)));
@@ -2976,7 +3089,7 @@ fn emit_sir_function(fn_val: { name: string, return_type: string, effects: strin
                     ep_ns_6: string <- concat(callee_d10_d11_restore, ep_ns_5);
                     ep_ns_7: string <- concat(callee_d12_d13_restore, ep_ns_6);
                     ep_ns_8: string <- concat(callee_d14_d15_restore, ep_ns_7);
-                    concat(concat(tuple_ret_promote, tuple_ret_dealloc), ep_ns_8)
+                    concat(concat(tuple_ret_promote, concat(tuple_ret_dealloc, behaviour_move)), ep_ns_8)
                 }
             }
         };
@@ -3040,4 +3153,20 @@ fn main_returns_float16(name: string, return_type: string) -> boolean {
         };
         false -> false
     }
+}
+
+// Capability query for the driver's pre-emit rejection pass (device spec §10; peek/poke plan items
+// 10-11): "" when this target lowers the prim, otherwise one line saying why it cannot.
+fn unsupported_prim_reason(prim_name: string) -> string {
+    case prim_name of {
+        "map_device" -> "this target cannot reach a device (silica_device_actor_specification.md §10)";
+        "peek" -> "this target cannot reach a device (silica_device_actor_specification.md §10)";
+        "poke" -> "this target cannot reach a device (silica_device_actor_specification.md §10)";
+        _: string -> ""
+    }
+}
+
+// The emit target this compiler was built for (emitter/<TARGET>/), for diagnostics.
+fn target_name() -> string {
+    "apple_silicon_mac"
 }

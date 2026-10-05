@@ -131,7 +131,41 @@ fn has_top_level_comma_regcv(s: string, i: int64, depth: int64) -> boolean {
 
 fn is_atom_option_type_regcv(type_name: string) -> boolean {
     t: string <- unwrap_atom_option_parens_regcv(type_name);
-    length_bytes(t) > 0 and substring(t, 0, 1) == ":" and has_top_level_comma_regcv(t, 0, 0) == false
+    case length_bytes(t) > 0 and substring(t, 0, 1) == ":" and has_top_level_comma_regcv(t, 0, 0) == false of {
+        true -> true;
+        false -> tagged_tuple_heads_sum_regcv(t) or record_heads_sum_regcv(t)
+    }
+}
+
+// The same sum written record first, `{ id: uint32 } | :none` (silica-specification §3.4.2,
+// §15.4.8): an inline record followed by a top-level `|`.
+fn record_heads_sum_regcv(t: string) -> boolean {
+    length_bytes(t) > 1 and substring(t, 0, 1) == "{" and find_top_bar_regcv(t, 0, 0) >= 0
+}
+
+// The same sum written tuple first, `(:found, uint32) | :none` (silica-specification §16.1,
+// `(:reply, Reply) | :timeout`): a tagged tuple followed by a top-level `|`, and not a function type.
+fn tagged_tuple_heads_sum_regcv(t: string) -> boolean {
+    length_bytes(t) > 2 and substring(t, 0, 2) == "(:" and find_top_bar_regcv(t, 0, 0) >= 0 and find_top_arrow_from_regcv(t, 1, 1) < 0
+}
+
+fn find_top_bar_regcv(s: string, i: int64, depth: int64) -> int64 {
+    case i >= length_bytes(s) of {
+        true -> -1;
+        false -> {
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "[" or c == "{" of {
+                true -> find_top_bar_regcv(s, i + 1, depth + 1);
+                false -> case c == ")" or c == "]" or c == "}" of {
+                    true -> find_top_bar_regcv(s, i + 1, depth - 1);
+                    false -> case c == "|" and depth == 0 of {
+                        true -> i;
+                        false -> find_top_bar_regcv(s, i + 1, depth)
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn is_atom_option_type(type_name: string) -> boolean {
@@ -175,9 +209,10 @@ fn is_tuple_type(type_name: string) -> boolean {
 }
 
 // Inline struct: { f1: T1, f2: T2, ... } — same pointer/flat return path as tuples in the emitter.
+// A record-headed sum (`{ id: uint32 } | :none`) is a sum, not a record.
 fn is_inline_struct_type(type_name: string) -> boolean {
     case length_bytes(type_name) >= 1 of {
-        true -> substring(type_name, 0, 1) == "{";
+        true -> substring(type_name, 0, 1) == "{" and find_top_bar_regcv(type_name, 0, 0) < 0;
         false -> false
     }
 }
@@ -188,10 +223,11 @@ fn is_inline_struct_type(type_name: string) -> boolean {
 // in its own frame and returned a pointer into it, which the caller read after the frame had died
 // (case_addition/tagged_optional_type printed a stack address on linux_x86_64, and survived on
 // AArch64 only because nothing had overwritten the bytes yet).
+// A record variant (`:none | { id: uint32 }`) is returned the same way, a pointer to the promoted record.
 fn atom_option_carries_tuple_regcv(s: string, i: int64) -> boolean {
     case i >= length_bytes(s) of {
         true -> false;
-        false -> case substring(s, i, i + 1) == "(" of {
+        false -> case substring(s, i, i + 1) == "(" or substring(s, i, i + 1) == "{" of {
             true -> true;
             false -> atom_option_carries_tuple_regcv(s, i + 1)
         }

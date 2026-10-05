@@ -22,15 +22,22 @@
 // ones rt_actors.S defines (supervisor, agent type, row, child table head/len, strategy, restart
 // caps, sync_failure_reported).
 //
-// Child table: a singly linked list of 88-byte rows anchored at ACB+116 (head) with the high-water
+// Child table: a singly linked list of 96-byte rows anchored at ACB+116 (head) with the high-water
 // row count at ACB+120; a row whose child is 0 is a tombstone (:temporary / :transient children
 // that were not restarted, terminated children). Row layout, 8-byte slots as the reference's:
 //   +0 child_ref  +8 id atom  +16 agent_type atom  +24 initial state  +32 behaviour  +40 restart atom
 //   +48 shutdown  +56 exit_done  +64 flavor atom  +72 supervisor start trampoline  +80 next row
-// A child spec record (value-flat, as the emitter lays it out in a child-spec list cell or a
-// start_child argument): id@0, agent_type@8, initial_state@16, behavior@24, restart@32,
-// shutdown@40, flavor@48, hidden start trampoline@56 (64 bytes; the child-spec list keeps one such
-// cell per 64-byte chunk, prims_list.silica chunk_elem_slot_bytes).
+//   +88 initial state bytes (the shell size of a composite initial state; 0 for a scalar)
+// A child spec record (as the emitter lays it out in a child-spec list cell or a start_child
+// argument): shape word@0, id@8, agent_type@16, initial_state@24, behavior@32, restart@40,
+// shutdown@48, flavor@56, hidden start trampoline@64 with the initial state's shell size in its
+// high word@68 (terms/term_child_spec.silica; 72 bytes; the child-spec list keeps one such cell per
+// 72-byte chunk, prims_list.silica chunk_elem_slot_bytes).
+//
+// A composite initial state is copied into a fresh heap block for every spawn of the row
+// (silica_rt_supervisor_spawn_child_row_by_flavor), owned by that child (rt_actors.S
+// ACB_STATE_OWNED) and freed at its end, so a restarted child starts from the spec's init again
+// and never shares a state block with a dead predecessor.
 //
 // Cooperative model: the reference kills a sibling by marking it and spinning on the row's exit_done
 // flag while the child's own thread unwinds; here a parked child is ended synchronously in the
@@ -59,6 +66,7 @@
 #define ACB_RESTARTS     148
 #define ACB_WINDOW       152
 #define ACB_REASON_TAG   156
+#define ACB_STATE_OWNED  188
 #define ACB_IN_HEAD      40
 #define ACB_IN_TAIL      44
 #define ACB_IN_DEPTH     48
@@ -81,17 +89,24 @@
 #define ROW_FLAVOR       64
 #define ROW_TRAMP        72
 #define ROW_NEXT         80
-#define ROW_SIZE         88
+#define ROW_INIT_BYTES   88
+#define ROW_SIZE         96
 
-#define SPEC_ID          0
-#define SPEC_AGENT       8
-#define SPEC_INIT        16
-#define SPEC_BEH         24
-#define SPEC_RESTART     32
-#define SPEC_SHUTDOWN    40
-#define SPEC_FLAVOR      48
-#define SPEC_TRAMP       56
-#define SPEC_LIST_CHUNK  64
+#define SPEC_SHAPE       0
+#define SPEC_ID          8
+#define SPEC_AGENT       16
+#define SPEC_INIT        24
+#define SPEC_BEH         32
+#define SPEC_RESTART     40
+#define SPEC_SHUTDOWN    48
+#define SPEC_FLAVOR      56
+#define SPEC_TRAMP       64
+#define SPEC_INIT_BYTES  68
+#define SPEC_LIST_CHUNK  72
+
+// Reserved shape numbers of the records this runtime builds (emitter record_shape.silica,
+// atom_table.silica seed_actor_runtime_atoms): the word every record starts with.
+#define SHAPE_CHILD_INFO 65536
 
 #define ATOM_UNKNOWN     7
 #define ATOM_PERMANENT   9
@@ -225,6 +240,7 @@ silica_rt_child_table_row_at:
 
 // silica_rt_supervisor_spawn_child_row(row, sup) -> child. spawn_linked(initial state, behaviour,
 // agent type, row, trampoline); a :dangerous child is registered in the dangerous registry as well.
+// Frame: [a1] the initial state handed to the child, [a1+4] 1 when it is the child's own copy.
     .align  4
     .global silica_rt_supervisor_spawn_child_row_by_flavor
     .type   silica_rt_supervisor_spawn_child_row_by_flavor, @function
@@ -232,7 +248,29 @@ silica_rt_supervisor_spawn_child_row_by_flavor:
     entry   a1, 48
     mov     a6, a2                      // a6 = row
     mov     a7, a3                      // a7 = supervisor
-    rur     a8, threadptr               // this core's register block (X3.. at 0)
+    l32i    a5, a6, ROW_INIT
+    s32i    a5, a1, 0
+    movi    a4, 0
+    s32i    a4, a1, 4
+    l32i    a4, a6, ROW_INIT_BYTES
+    beqz    a4, 2f
+    movi    a9, 65536
+    bltu    a5, a9, 2f                  // an atom alternative of a sum-typed init is a value
+    mov     a10, a4
+    call8   silica_rt_alloc
+    mov     a8, a5                      // copy the shell word by word
+    mov     a9, a10
+    add     a4, a5, a4
+1:  bgeu    a8, a4, 11f
+    l32i    a3, a8, 0
+    s32i    a3, a9, 0
+    addi    a8, a8, 4
+    addi    a9, a9, 4
+    j       1b
+11: s32i    a10, a1, 0
+    movi    a3, 1
+    s32i    a3, a1, 4
+2:  rur     a8, threadptr               // this core's register block (X3.. at 0)
     s32i    a6, a8, 0                   // X3 = row
     movi    a9, 0
     s32i    a9, a8, 4
@@ -242,8 +280,8 @@ silica_rt_supervisor_spawn_child_row_by_flavor:
     s32i    a9, a8, 12
     s32i    a7, a8, 16                  // X5 = the supervisor whose stack reserve the child inherits
     s32i    a9, a8, 20
-    l32i    a10, a6, ROW_INIT
-    l32i    a11, a6, ROW_INIT + 4
+    l32i    a10, a1, 0
+    movi    a11, 0
     l32i    a12, a6, ROW_BEH
     l32i    a13, a6, ROW_BEH + 4
     l32i    a14, a6, ROW_AGENT
@@ -252,6 +290,8 @@ silica_rt_supervisor_spawn_child_row_by_flavor:
     mov     a5, a10                     // a5 = child
     beqz    a5, 9f
     s32i    a7, a5, ACB_SUP
+    l32i    a9, a1, 4
+    s32i    a9, a5, ACB_STATE_OWNED
     s32i    a5, a6, ROW_CHILD
     movi    a9, 0
     s32i    a9, a6, ROW_CHILD + 4
@@ -305,6 +345,8 @@ silica_rt_fill_row_from_spec:
     s32i    a4, a2, ROW_FLAVOR
     l32i    a4, a3, SPEC_TRAMP
     s32i    a4, a2, ROW_TRAMP
+    l32i    a4, a3, SPEC_INIT_BYTES
+    s32i    a4, a2, ROW_INIT_BYTES
     retw
     .size   silica_rt_fill_row_from_spec, . - silica_rt_fill_row_from_spec
 
@@ -323,12 +365,12 @@ silica_rt_supervisor_materialize_init_children:
     l32i    a5, a4, 0
     movi    a8, 4096
     bltu    a5, a8, 1f
-    // slot 0 is the flags record
-    l32i    a8, a5, 0
-    s32i    a8, a6, ACB_STRATEGY
+    // slot 0 is the flags record (shape word at 0, fields from 8)
     l32i    a8, a5, 8
-    s32i    a8, a6, ACB_ALLOWED
+    s32i    a8, a6, ACB_STRATEGY
     l32i    a8, a5, 16
+    s32i    a8, a6, ACB_ALLOWED
+    l32i    a8, a5, 24
     s32i    a8, a6, ACB_TIMEFRAME
     l32i    a7, a4, 8                   // a7 = list handle
     j       2f
@@ -794,7 +836,7 @@ silica_rt_supervisor_get_child:
 9:  retw
     .size   silica_rt_supervisor_get_child, . - silica_rt_supervisor_get_child
 
-// silica_rt_supervisor_get_child_info(X0 sup, X1 id) -> { id, agent_type, child, restart } (32 B)
+// silica_rt_supervisor_get_child_info(X0 sup, X1 id) -> { id, agent_type, child, restart } (40 B: shape word, four slots)
     .align  4
     .global silica_rt_supervisor_get_child_info
     .type   silica_rt_supervisor_get_child_info, @function
@@ -807,23 +849,25 @@ silica_rt_supervisor_get_child_info:
     mov     a10, a6
     call8   silica_rt_first_live_row
     mov     a5, a10
-    movi    a10, 32
+    movi    a10, 40
     call8   silica_rt_alloc
     mov     a2, a10
     movi    a3, 0
+    movi    a4, SHAPE_CHILD_INFO
+    s32i    a4, a2, 0
     beqz    a5, 9f
-    s32i    a7, a2, 0
+    s32i    a7, a2, 8
     l32i    a4, a5, ROW_AGENT
     movi    a8, ATOM_UNKNOWN
     bne     a4, a8, 1f
     l32i    a4, a5, ROW_ID
-1:  s32i    a4, a2, 8
+1:  s32i    a4, a2, 16
     l32i    a4, a5, ROW_CHILD
-    s32i    a4, a2, 16
+    s32i    a4, a2, 24
     l32i    a4, a5, ROW_RESTART
     bnez    a4, 2f
     movi    a4, ATOM_PERMANENT
-2:  s32i    a4, a2, 24
+2:  s32i    a4, a2, 32
 9:  retw
     .size   silica_rt_supervisor_get_child_info, . - silica_rt_supervisor_get_child_info
 
@@ -873,7 +917,8 @@ silica_rt_supervisor_row_field:
     .size   silica_rt_supervisor_row_field, . - silica_rt_supervisor_row_field
 
 // silica_rt_supervisor_which_children(X0 sup) -> List[{ id, agent_type, child, restart }]: built the
-// way the reference builds it, one 32-byte record per 40-byte chunk, newest first.
+// way the reference builds it, one 40-byte record (shape word, four slots) per 56-byte chunk
+// (next chunk at 48), newest first.
     .align  4
     .global silica_rt_supervisor_which_children
     .type   silica_rt_supervisor_which_children, @function
@@ -887,20 +932,22 @@ silica_rt_supervisor_which_children:
 1:  beqz    a5, 9f
     l32i    a4, a5, ROW_CHILD
     beqz    a4, 8f
-    movi    a10, 40
+    movi    a10, 56
     call8   silica_rt_alloc
     mov     a2, a10                     // a2 = chunk
-    l32i    a4, a5, ROW_ID
+    movi    a4, SHAPE_CHILD_INFO
     s32i    a4, a2, 0
-    l32i    a4, a5, ROW_AGENT
+    l32i    a4, a5, ROW_ID
     s32i    a4, a2, 8
-    l32i    a4, a5, ROW_CHILD
+    l32i    a4, a5, ROW_AGENT
     s32i    a4, a2, 16
-    l32i    a4, a5, ROW_RESTART
+    l32i    a4, a5, ROW_CHILD
     s32i    a4, a2, 24
+    l32i    a4, a5, ROW_RESTART
+    s32i    a4, a2, 32
     beqz    a7, 2f
     l32i    a4, a7, 8
-    s32i    a4, a2, 32
+    s32i    a4, a2, 48
 2:  movi    a10, 24
     call8   silica_rt_alloc
     movi    a4, 1

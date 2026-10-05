@@ -19,9 +19,12 @@
 // Seed-legal: no named structs. Work tables carry next_index; export tables omit it.
 
 use compiler_maps;
+use record_shape;
 
 export empty_atom_table/0;
 export build_atom_table/1;
+export build_atom_table_extending/2;
+export atom_table_lexemes_in_order/1;
 export build_atom_table_executable/1;
 export seed_actor_runtime_atoms/0;
 export to_export_table/1;
@@ -29,6 +32,8 @@ export atom_lexeme_to_index/2;
 export int64_to_decimal_string/1;
 export reverse_lexemes/1;
 export lexeme_to_index_first_added_order/2;
+export shape_lexemes_in_order/1;
+export shape_index_base/0;
 
 // Local SIRTerm arena helpers (sir_ast node accessors are not exported).
 fn sir_term_nodes_len(nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)]) -> int64 {
@@ -94,6 +99,26 @@ fn cons_lexeme(s: string, t: List[string, mem(normal)]) -> List[string, mem(norm
     end
 }
 
+// Record shapes (record_shape.silica) share this table but not the atom index space: a shape
+// lexeme starts with `{` and is numbered shape_index_base() + its position among the shapes, so
+// adding shapes never moves an atom's index, a shape word can never equal a tuple tag, and the
+// shapes are written to silica.shapes beside silica.atoms.
+fn shape_index_base() -> int64 {
+    65536
+}
+
+fn is_shape_lexeme(s: string) -> boolean {
+    length_bytes(s) > 0 and substring(s, 0, 1) == "{"
+}
+
+fn lexemes_len(l: List[string, mem(normal)]) -> int64 {
+    sequence proc[mem(normal)]
+        result: int64 <- length[string, mem(normal)](l)
+    produces
+        pure result
+    end
+}
+
 fn empty_work_table() -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 } {
     sequence
         index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 } <- compiler_maps@empty_string_int64_map();
@@ -120,12 +145,17 @@ fn empty_atom_table() -> { is_empty: boolean, index_map: { root: ref?(L, normal,
 
 fn add_atom(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 }, lexeme: string) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 } {
 
-    r: { map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, index: int64, inserted: boolean } <- compiler_maps@map_insert_or_get_index(table.index_map, lexeme, table.next_index);
+    shape: boolean <- is_shape_lexeme(lexeme);
+    index_for: int64 <- case shape of {
+        true -> shape_index_base() + (lexemes_len(table.lexemes) - table.next_index);
+        false -> table.next_index
+    };
+    r: { map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, index: int64, inserted: boolean } <- compiler_maps@map_insert_or_get_index(table.index_map, lexeme, index_for);
     new_lexemes: List[string, mem(normal)] <- case r.inserted of {
         true -> cons_lexeme(lexeme, table.lexemes);
         false -> table.lexemes
     };
-    new_next: int64 <- case r.inserted of {
+    new_next: int64 <- case r.inserted and shape == false of {
         true -> table.next_index + 1;
         false -> table.next_index
     };
@@ -181,6 +211,7 @@ fn collect_atoms_from_term(term: { nodes: List[{ kind: int64, type_name: string,
                 <- case node.name of {
                             "comparator_result_valid" -> add_implicit_comparator_atoms(table, false);
                             "comparator_result_validate" -> add_implicit_comparator_atoms(table, true);
+                            "record_make" -> add_atom(table, record_shape@record_shape_lexeme(node.type_name));
                             _: string -> table
                         };
                         t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 } <- collect_atoms_from_term(sir_term_at(term, node.inner), prim);
@@ -194,7 +225,10 @@ fn collect_atoms_from_term(term: { nodes: List[{ kind: int64, type_name: string,
                         pattern: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 }
                 <- case node.value == "atom" and node.name != ":none" of {
                             true -> add_atom(table, node.name);
-                            false -> table
+                            false -> case node.value == "record" or node.value == "tuple" of {
+                                true -> add_atoms_in_order(record_shape@record_lexemes_in_type(node.type_name, nil_lexemes()), table);
+                                false -> table
+                            }
                         };
                         t1: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 } <- collect_atoms_from_term(sir_term_at(term, node.inner), pattern);
                         collect_atoms_from_term(sir_term_at(term, node.right_expr), t1)
@@ -257,7 +291,7 @@ fn seed_actor_runtime_atoms() -> { is_empty: boolean, index_map: { root: ref?(L,
         t20: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 } <- add_atom(t19, ":unknown_op");
         // Flavor atoms in the fixed runtime prefix (process-per-unit runtime emit is seed-only).
         t21: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 } <- add_atom(t20, ":plain");
-        result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 } <- add_atom(t21, ":dangerous")
+        result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 } <- add_atoms_in_order(record_shape@runtime_shape_lexemes(), add_atom(t21, ":dangerous"))
     produces
         pure result
     end
@@ -332,7 +366,10 @@ fn lexeme_to_index_in_list(lexemes: List[string, mem(normal)], lexeme: string, p
             []: List[string, mem(normal)] -> 0 - 1;
             [head: string, tail: List[string, mem(normal)]] -> case head == lexeme of {
                 true -> pos;
-                false -> lexeme_to_index_in_list(tail, lexeme, pos + 1)
+                false -> case is_shape_lexeme(head) of {
+                    true -> lexeme_to_index_in_list(tail, lexeme, pos);
+                    false -> lexeme_to_index_in_list(tail, lexeme, pos + 1)
+                }
             };
             _: List[string, mem(normal)] -> 0 - 1
         }
@@ -374,4 +411,49 @@ fn digit_to_char(d: int64) -> string {
         9 -> "9";
         _: int64 -> "0"
     }
+}
+
+// The build's atom table (silica.atoms, in index order) extended with this unit's atoms: entries keep
+// their indices, new atoms are appended, so every unit of a build agrees on each atom's index.
+fn build_atom_table_extending(prior: List[string, mem(normal)], sir_module: { module_name: string, used_modules: List[string, mem(normal)], exports: List[{ fn_name: string, arity: string }, mem(normal)], export_trait_names: List[string, mem(normal)], marker_impl_types: List[string, mem(normal)], supervisor_impl_types: List[string, mem(normal)], supervisor_phase_e: List[{ actor_type: string, init_return_sir: string, init_return_type_name: string }, mem(normal)], failure_reporter_impl_types: List[string, mem(normal)], required_method_sigs: List[{ name: string, param_names: string, param_types: string, return_type: string, effects: string }, mem(normal)], runtime_dependencies: List[string, mem(normal)], is_dangerous_module: boolean, wrapper_meta_paths: List[string, mem(normal)], foreign_bindings: List[{ local_name: string, c_symbol: string, meta_path: string, return_type: string, param_names: string, param_types: string }, mem(normal)], link_libraries: List[string, mem(normal)], functions: List[{ name: string, return_type: string, effects: string, body: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, param_names: string, param_types: string }, mem(normal)] }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] } {
+    sequence
+        start: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 } <- case prior.is_nil of {
+            true -> seed_actor_runtime_atoms();
+            false -> add_atoms_in_order(record_shape@runtime_shape_lexemes(), add_atoms_in_order(prior, empty_work_table()))
+        };
+        collected: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 } <- collect_atoms_from_functions(sir_module.functions, start);
+        result: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] } <- to_export_table(collected)
+    produces
+        pure result
+    end
+}
+
+fn add_atoms_in_order(lexemes: List[string, mem(normal)], table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 }) -> { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)], next_index: int64 } {
+    case lexemes.is_nil of {
+        true -> table;
+        false -> add_atoms_in_order(lexemes.tail, add_atom(table, lexemes.head))
+    }
+}
+
+fn atom_table_lexemes_in_order(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> List[string, mem(normal)] {
+    keep_lexemes(reverse_lexemes(table.lexemes), false)
+}
+
+fn shape_lexemes_in_order(table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] }) -> List[string, mem(normal)] {
+    keep_lexemes(reverse_lexemes(table.lexemes), true)
+}
+
+fn keep_lexemes(lexemes: List[string, mem(normal)], shapes: boolean) -> List[string, mem(normal)] {
+    sequence
+        result: List[string, mem(normal)] <- case lexemes of {
+            []: List[string, mem(normal)] -> nil_lexemes();
+            [head: string, tail: List[string, mem(normal)]] -> case is_shape_lexeme(head) == shapes of {
+                true -> cons_lexeme(head, keep_lexemes(tail, shapes));
+                false -> keep_lexemes(tail, shapes)
+            };
+            _: List[string, mem(normal)] -> nil_lexemes()
+        }
+    produces
+        pure result
+    end
 }

@@ -145,6 +145,9 @@ if [ "$lib_pending" -gt 0 ]; then
 		exit 1
 	fi
 	echo "${MSG_PREFIX}lib units compiled; later trials will reuse their .o files"
+	# The lib units' atom numbering; every trial starts from it, so a trial's atom indices
+	# depend on the libs and itself only, not on the trials compiled before it.
+	cp silica.atoms .compile_libs.atoms 2>/dev/null || true
 else
 	echo "${MSG_PREFIX}all lib units already have .iface; reusing .o files"
 fi
@@ -171,6 +174,7 @@ while IFS= read -r trial || [ -n "$trial" ]; do
 	write_config "$trial"
 	echo "${MSG_PREFIX}trial ${trial_index}/${total_trials}: ${trial} (trial unit only)..."
 	rm -f silica.needs_runtime
+	if [ -f .compile_libs.atoms ]; then cp .compile_libs.atoms silica.atoms; else rm -f silica.atoms; fi
 	printf '%s\n' "$trial" > silica.compile.order
 	set +e
 	run_compiler "$trial" 1

@@ -41,6 +41,7 @@ export agg_subtree_bytes/2;
 export agg_offset_for/4;
 export type_name_is_list_like/1;
 export outer_for_aggregate_let_rhs/2;
+export hide_actor_sret/1;
 export outer_append_id_ret_tuple_sret/3;
 export compute_let_rhs_spill_reg/3;
 export mov_spill_from_rhs/2;
@@ -351,10 +352,22 @@ fn type_name_is_memory_handle_like(type_name: string) -> boolean {
 // tuple_of_lists_call_reply). A let RHS is never the reply, so it gets its own frame region; the
 // body keeps the binding for the tail. Aggregate ELEMENTS are hidden from it the same way
 // (term_emit_kind_compound_part1 elem_outer).
+// Every let RHS is hidden from it, not only a direct make: a case or block RHS whose arms build the
+// state (`next <- case state of { ... -> (:mapped, w) }`) also wrote into the reply buffer, so the
+// installed state was the buffer's own address and the next dispatch overwrote it
+// (design_documents/esp32s3_memory_budget_plan.md item B).
 fn outer_for_aggregate_let_rhs(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, outer_reg: string) -> string {
-    case is_aggregate_make(term_sir_helpers@sir_term_at(term, term_sir_helpers@sir_term_root_node(term).inner)) of {
-        true -> var@strip_sp_binding(outer_reg, "_tuple_sret");
-        false -> outer_reg
+    hide_actor_sret(outer_reg)
+}
+
+// The buffer register stays reserved while hidden: a let inside the hidden subtree must not spill
+// into it (var@is_reg_bound sees any binding whose value is the register).
+fn hide_actor_sret(outer_reg: string) -> string {
+    sret: string <- var@find_sp_binding(outer_reg, "_tuple_sret");
+    stripped: string <- var@strip_sp_binding(outer_reg, "_tuple_sret");
+    case length_bytes(sret) > 0 of {
+        true -> concat(stripped, concat("|_sret_keep=", sret));
+        false -> stripped
     }
 }
 
@@ -368,6 +381,13 @@ fn outer_append_id_ret_tuple_sret(term: { nodes: List[{ kind: int64, type_name: 
 // the same sequence body.
 
 fn let_rhs_type_spills_across_io(type_name: string) -> boolean {
+    case length_bytes(type_name) >= 14 and substring(type_name, 0, 14) == "device_window(" of {
+        true -> true;
+        false -> let_rhs_type_spills_across_io_table(type_name)
+    }
+}
+
+fn let_rhs_type_spills_across_io_table(type_name: string) -> boolean {
     case type_name of {
         "int64" -> true;
         "i64" -> true;
@@ -397,6 +417,10 @@ fn let_rhs_type_spills_across_io(type_name: string) -> boolean {
         // first cast(w, ..) had put its boolean there, and the second cast locked address 0x11
         // (trials/ffi_addition/app_worker_second_message).
         "dangerous_actor_ref" -> true;
+        // device_actor_ref and device_window are the same kind of handle: `u <- spawn_device(..)`
+        // was read back from X0 after the first cast_device(u, ..), so every later message went to
+        // address 1 (board/apps/silica_16_device_uart on its second message).
+        "device_actor_ref" -> true;
         "monitor_ref" -> true;
         "stack_policy" -> true;
         "string" -> true;

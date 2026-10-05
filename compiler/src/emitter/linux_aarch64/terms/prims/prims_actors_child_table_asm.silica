@@ -262,10 +262,10 @@ Lsscr_register_done:
 }
 
 // Phase E e3b: silica_rt_supervisor_materialize_init_children
-// X0=ACB*, X1=tuple_ptr (init return: flags record at +0..+23, children list head at +24).
-// Walks the list-literal handle of child_spec records (visible payload 56 B plus hidden
-// supervisor_start_trampoline at +56 in each child_spec element).
-// Payload layout matches emitter value-flat record: id@0, agent@8, start@(16,24), restart@32, shutdown@40, flavor@48.
+// X0=ACB*, X1=tuple_ptr (init return: flags record pointer in slot 0 -- shape word at +0, fields at +8..+31 -- children list head at +8).
+// Walks the list-literal handle of child_spec records (shape word plus 56 B of fields, then the hidden
+// supervisor_start_trampoline at +64 in each child_spec element).
+// Payload layout matches the emitter's record: shape@0, id@8, agent@16, start@(24,32), restart@40, shutdown@48, flavor@56.
 // For each child_spec: spawn_linked(start.0, start.1, agent_type, row_ptr), append a linked row node (88 B; 80 B payload).
 // Stores strategy atom, allowed_restart_count, and restarts_time_frame at ACB#296/#304/#312 for
 // restart strategy dispatch (e3d) and frequency cap (e3e). Current record emission returns a pointer
@@ -280,11 +280,11 @@ silica_rt_supervisor_materialize_init_children:
 	cmp	x8, #4096
 	b.lo	Lmat_pre_flags_flat
 	mov	x15, #8
-	ldr	x9, [x8]
-	str	x9, [x0, #296]
 	ldr	x9, [x8, #8]
-	str	x9, [x0, #304]
+	str	x9, [x0, #296]
 	ldr	x9, [x8, #16]
+	str	x9, [x0, #304]
+	ldr	x9, [x8, #24]
 	str	x9, [x0, #312]
 	b	Lmat_pre_flags_done
 Lmat_pre_flags_flat:
@@ -325,12 +325,12 @@ Lmat_loop:
 	cbz	x20, Lmat_done
 	cbz	x21, Lmat_done
 	add	x15, x21, x14
-	ldr	x22, [x15, #16]
-	ldr	x23, [x15, #24]
-	ldr	x24, [x15, #8]
-	ldr	x25, [x15]
-	ldr	x26, [x15, #32]
-	ldr	x27, [x15, #40]
+	ldr	x22, [x15, #24]
+	ldr	x23, [x15, #32]
+	ldr	x24, [x15, #16]
+	ldr	x25, [x15, #8]
+	ldr	x26, [x15, #40]
+	ldr	x27, [x15, #48]
 // Phase E e4f + Option B: ensure one more list node, then walk `len` links from head for stable row ptr (no realloc).
 	mov	x0, x19
 	ldr	x1, [x19, #264]
@@ -347,7 +347,7 @@ Lmat_walk_row:
 	b	Lmat_walk_row
 Lmat_walk_row_done:
 ";
-    post: string <- concat("    str xzr, [x28]\n    str x25, [x28, #8]\n    str x24, [x28, #16]\n    str x22, [x28, #24]\n    str x23, [x28, #32]\n    str x26, [x28, #40]\n    str x27, [x28, #48]\n    str xzr, [x28, #56]\n    ldr x9, [x15, #48]\n    str x9, [x28, #64]\n    ldr x9, [x15, #56]\n    str x9, [x28, #72]\n", case danger_idx < 0 of {
+    post: string <- concat("    str xzr, [x28]\n    str x25, [x28, #8]\n    str x24, [x28, #16]\n    str x22, [x28, #24]\n    str x23, [x28, #32]\n    str x26, [x28, #40]\n    str x27, [x28, #48]\n    str xzr, [x28, #56]\n    ldr x9, [x15, #56]\n    str x9, [x28, #64]\n    ldr x9, [x15, #64]\n    str x9, [x28, #72]\n", case danger_idx < 0 of {
         true -> "    mov x0, x22\n    mov x1, x23\n    mov x2, x24\n    mov x3, x28\n    ldr x4, [x28, #72]\n    bl silica_rt_actor_spawn_linked\n    str x19, [x0, #192]\n    str x0, [x28]\n    str xzr, [x28, #56]\n    ldr x0, [x28]\n    ldr x1, [x28, #8]\n    bl silica_rt_register_actor_named\n";
         false -> concat(concat("    ldr x9, [x28, #64]\n    cmp x9, #", atom_table@int64_to_decimal_string(danger_idx)), "\n    b.eq Lmat_row_spawn_dangerous\n    mov x0, x22\n    mov x1, x23\n    mov x2, x24\n    mov x3, x28\n    ldr x4, [x28, #72]\n    bl silica_rt_actor_spawn_linked\n    str x19, [x0, #192]\n    str x0, [x28]\n    str xzr, [x28, #56]\n    ldr x0, [x28]\n    ldr x1, [x28, #8]\n    bl silica_rt_register_actor_named\n    b Lmat_row_spawn_done\nLmat_row_spawn_dangerous:\n    mov x0, x28\n    mov x1, x19\n    bl silica_rt_supervisor_spawn_child_row_by_flavor\nLmat_row_spawn_done:\n")
     });
@@ -375,8 +375,8 @@ Lmat_done:
 }
 
 // Phase E e3b2: silica_rt_supervisor_start_child
-// X0 = child_spec record pointer (value-flat 56 B: id@+0, agent_type@+8, start.0@+16, start.1@+24, restart@+32, shutdown@+40,
-// flavor@+48; hidden supervisor_start_trampoline@+56).
+// X0 = child_spec record pointer (shape word@+0, id@+8, agent_type@+16, start.0@+24, start.1@+32, restart@+40, shutdown@+48,
+// flavor@+56; hidden supervisor_start_trampoline@+64).
 // Layout matches `silica_rt_supervisor_materialize_init_children` (cons payload) so the compiler can build a single
 // stack record and pass it to either path. (Earlier comment claimed +40/+48 — that 72 B layout never matched the
 // emitter's value-flat record_make output; e4b corrects this to the canonical +32/+40 used elsewhere.)
@@ -409,12 +409,12 @@ silica_rt_supervisor_start_child:
 	.cfi_offset w27, -88
 	.cfi_offset w28, -80
 	mov	x20, x0
-	ldr	x21, [x20]
-	ldr	x22, [x20, #8]
-	ldr	x23, [x20, #16]
-	ldr	x24, [x20, #24]
-	ldr	x25, [x20, #32]
-	ldr	x26, [x20, #40]
+	ldr	x21, [x20, #8]
+	ldr	x22, [x20, #16]
+	ldr	x23, [x20, #24]
+	ldr	x24, [x20, #32]
+	ldr	x25, [x20, #40]
+	ldr	x26, [x20, #48]
 Lsc_tls_prep:
 	bl	silica_rt_tls_current_actor_get
 	mov	x19, x0
@@ -458,10 +458,10 @@ Lsc_append_at_row:
 Lsc_use_reuse_row:
 	mov	x28, xzr
 Lsc_post_row:
-	ldr	x4, [x20, #56]
+	ldr	x4, [x20, #64]
 	str	x4, [x27, #72]
 ";
-    post: string <- concat("    ldr x9, [x20, #48]\n    str xzr, [x27]\n    str x21, [x27, #8]\n    str x22, [x27, #16]\n    str x23, [x27, #24]\n    str x24, [x27, #32]\n    str x25, [x27, #40]\n    str x26, [x27, #48]\n    str xzr, [x27, #56]\n    str x9, [x27, #64]\n", case danger_idx < 0 of {
+    post: string <- concat("    ldr x9, [x20, #56]\n    str xzr, [x27]\n    str x21, [x27, #8]\n    str x22, [x27, #16]\n    str x23, [x27, #24]\n    str x24, [x27, #32]\n    str x25, [x27, #40]\n    str x26, [x27, #48]\n    str xzr, [x27, #56]\n    str x9, [x27, #64]\n", case danger_idx < 0 of {
         true -> "    mov x0, x23\n    mov x1, x24\n    mov x2, x22\n    mov x3, x27\n    ldr x4, [x27, #72]\n    bl silica_rt_actor_spawn_linked\n    str x19, [x0, #192]\n    mov x20, x0\n    str x20, [x27]\n    str xzr, [x27, #56]\n    ldr x0, [x27]\n    ldr x1, [x27, #8]\n    bl silica_rt_register_actor_named\n";
         false -> concat(concat("    ldr x9, [x27, #64]\n    cmp x9, #", atom_table@int64_to_decimal_string(danger_idx)), "\n    b.eq Lsc_row_spawn_dangerous\n    mov x0, x23\n    mov x1, x24\n    mov x2, x22\n    mov x3, x27\n    ldr x4, [x27, #72]\n    bl silica_rt_actor_spawn_linked\n    str x19, [x0, #192]\n    mov x20, x0\n    str x20, [x27]\n    str xzr, [x27, #56]\n    ldr x0, [x27]\n    ldr x1, [x27, #8]\n    bl silica_rt_register_actor_named\n    b Lsc_row_spawn_done\nLsc_row_spawn_dangerous:\n    mov x0, x27\n    mov x1, x19\n    bl silica_rt_supervisor_spawn_child_row_by_flavor\n    mov x20, x0\nLsc_row_spawn_done:\n")
     });
@@ -1097,26 +1097,29 @@ Lsgetinfo_next:
 	b	Lsgetinfo_loop
 Lsgetinfo_found:
 	mov	x19, x9
-	mov	x0, #32
+	mov	x0, #40
 	bl	silica_rt_region_alloc
 	mov	x21, x0
-	str	x20, [x21]
+	movz	x8, #1, lsl #16
+	movk	x8, #0
+	str	x8, [x21]
+	str	x20, [x21, #8]
 	ldr	x11, [x19, #16]
 	mov	x12, #7
 	cmp	x11, x12
 	b.ne	Lsgetinfo_agent_done
 	ldr	x11, [x19, #8]
 Lsgetinfo_agent_done:
-	str	x11, [x21, #8]
+	str	x11, [x21, #16]
 	ldr	x8, [x19]
-	str	x8, [x21, #16]
+	str	x8, [x21, #24]
 	ldr	x8, [x19, #40]
 	cbz	x8, Lsgetinfo_restart_default
 	b	Lsgetinfo_restart_done
 Lsgetinfo_restart_default:
 	mov	x8, #9
 Lsgetinfo_restart_done:
-	str	x8, [x21, #24]
+	str	x8, [x21, #32]
 	mov	x0, x21
 	b	Lsgetinfo_done
 Lsgetinfo_none:
@@ -1128,13 +1131,16 @@ Lsgetinfo_fallback_scan:
 	ldr	x9, [x9, #80]
 	b	Lsgetinfo_fallback_scan
 Lsgetinfo_zero:
-	mov	x0, #32
+	mov	x0, #40
 	bl	silica_rt_region_alloc
 	mov	x21, x0
-	str	xzr, [x21]
+	movz	x8, #1, lsl #16
+	movk	x8, #0
+	str	x8, [x21]
 	str	xzr, [x21, #8]
 	str	xzr, [x21, #16]
 	str	xzr, [x21, #24]
+	str	xzr, [x21, #32]
 	mov	x0, x21
 Lsgetinfo_done:
 	ldr	x30, [sp, #32]
@@ -1254,17 +1260,20 @@ Lswhich_scan:
 	cbz	x20, Lswhich_done
 	ldr	x22, [x20]
 	cbz	x22, Lswhich_next
-	mov	x0, #32
+	mov	x0, #40
 	bl	silica_rt_region_alloc
 	mov	x23, x0
 	ldr	x24, [x20, #8]
 	ldr	x25, [x20, #16]
 	ldr	x26, [x20, #40]
-	str	x24, [x23]
-	str	x25, [x23, #8]
-	str	x22, [x23, #16]
-	str	x26, [x23, #24]
-	mov	x0, #40
+	movz	x8, #1, lsl #16
+	movk	x8, #0
+	str	x8, [x23]
+	str	x24, [x23, #8]
+	str	x25, [x23, #16]
+	str	x22, [x23, #24]
+	str	x26, [x23, #32]
+	mov	x0, #56
 	bl	silica_rt_region_alloc
 	mov	x24, x0
 	ldr	x8, [x23]
@@ -1275,12 +1284,14 @@ Lswhich_scan:
 	str	x8, [x24, #16]
 	ldr	x8, [x23, #24]
 	str	x8, [x24, #24]
+	ldr	x8, [x23, #32]
+	str	x8, [x24, #32]
 	cbz	x21, Lswhich_chunk_nil
 	ldr	x8, [x21, #8]
-	str	x8, [x24, #32]
+	str	x8, [x24, #48]
 	b	Lswhich_chunk_ready
 Lswhich_chunk_nil:
-	str	xzr, [x24, #32]
+	str	xzr, [x24, #48]
 Lswhich_chunk_ready:
 	mov	x0, #24
 	bl	silica_rt_region_alloc

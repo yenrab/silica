@@ -1,0 +1,81 @@
+// A device window parameter survives a let in a call-free register body. gate(w) has the shape of
+// device_esp32s3_spi2@spi2_enable: two lets, a peek and a poke, no call and no case, so neither
+// the full parameter shadow nor the int64 ABI shadow used to fire and the window stayed in X0;
+// `keep <- bnot led` is staged through X0, so the peek read the input word through the mask and
+// the poke stored through the value it read (StoreProhibited at 0x18 on the board, the worker
+// ended with reason_tag 3). The emitter now classifies device_window as a GPR64 handle
+// (emitter_core type_name_is_region_handle) and counts peek/poke as X0 hazards
+// (body_has_device_prim), so the window moves to X19 at entry. The poke writes 0 to :out_w1tc
+// (clears nothing); the worker then casts the Left level read through the returned window.
+// Expected: left 0 / status 0 (nobody presses Left during the run).
+use device_gpio_lib;
+
+fn gate(w: device_window(L, (:esp32s3_gpio))) -> device_window(L, (:esp32s3_gpio)) {
+    sequence proc[register_rwr]
+        led: uint32 <- 0x40;
+        keep: uint32 <- bnot led;
+        pads: uint32 <- peek(w, :in) impl Register32 {};
+        _: atom <- poke(w, :out_w1tc, ((pads band led) band keep) impl Register32 {})
+    produces
+        pure w
+    end
+}
+
+fn left(w: device_window(L, (:esp32s3_gpio))) -> (device_window(L, (:esp32s3_gpio)), int64) {
+    sequence proc[register_rwr]
+        pads: uint32 <- peek(w, :in) impl Register32 {};
+        bit: uint32 <- (pads shr 21) band 1;
+        level: int64 <- case bit == 1 of {
+            true -> 1;
+            false -> 0
+        }
+    produces
+        pure (w, level)
+    end
+}
+
+fn worker(msg: { op: atom, reply_to: actor_ref }, state: :unmapped | (:mapped, device_window(L, (:esp32s3_gpio)))) -> (:no_reply, :unmapped | (:mapped, device_window(L, (:esp32s3_gpio)))) {
+    sequence proc[register_rwr, concurrency]
+        next: :unmapped | (:mapped, device_window(L, (:esp32s3_gpio))) <- case state of {
+            :unmapped -> case msg.op of {
+                :init -> {
+                    w: device_window(L, (:esp32s3_gpio)) <- map_device((:esp32s3_gpio), 0x60004000);
+                    (:mapped, gate(w))
+                };
+                _: atom -> :unmapped
+            };
+            (:mapped, w: device_window(L, (:esp32s3_gpio))) -> case msg.op of {
+                :read_left -> {
+                    (w2, level) <- left(w);
+                    _: boolean <- cast(msg.reply_to, level impl ActorMessage {});
+                    (:mapped, w2)
+                };
+                _: atom -> (:mapped, w)
+            }
+        }
+    produces
+        pure (:no_reply, next)
+    end
+}
+
+fn printer(level: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        print("left ");
+        _: atom <- print_int64(level);
+        println("")
+    produces
+        pure (:no_reply, state + 1)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        p: actor_ref <- spawn(0, printer, stack_policy(0, :keep_last_message));
+        d: device_actor_ref <- spawn_device(:unmapped, worker, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_device(d, { op: :init, reply_to: p } impl ActorMessage {});
+        _: boolean <- cast_device(d, { op: :read_left, reply_to: p } impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

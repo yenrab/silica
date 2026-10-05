@@ -145,7 +145,7 @@ Each non-empty recursive representation is rooted in a collection arena:
 
 ```text
 {
-    region: region(R, SpaceType),
+    r: region(R, SpaceType),
     root: ref?(R, SpaceType, RecursiveNodeShape),
     ...
 }

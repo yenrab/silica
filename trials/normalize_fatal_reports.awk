@@ -14,6 +14,8 @@
 # trials/targets/board_suite.sh (through those scripts), the ESP32-S3 board's tools/compare_sout.sh and
 # the x86-64 ladder; see compiler/design_documents/runtime_failure_reporting.md.
 { sub(/\r$/, "") }
+# The atom index of the failed actor's type depends on the build (host 25, board 28 for one program).
+{ sub(/agent_type_atom:[ \t]*[0-9]+/, "agent_type_atom: <ATOM>") }
 {
     i = index($0, "[silica] fault at ")
     if (i > 0) {

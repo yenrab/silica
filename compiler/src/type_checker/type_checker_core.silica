@@ -37,6 +37,8 @@ export add_effect_alias_symbol/3;
 export lookup_symbol/2;
 export lookup_symbol_surface/2;
 export lookup_symbol_found/2;
+export lookup_behavior_found/2;
+export lookup_behavior_surface/2;
 export lookup_symbol_source_module/2;
 export lookup_function_for_call/2;
 export lookup_function_type_for_call/2;
@@ -299,6 +301,34 @@ fn lookup_symbol_found(env: List[{ name: string, type_id: int64, surface_type: s
             true -> (true, env.head.type_id);
             false -> lookup_symbol_found(env.tail, name)
         }
+    }
+}
+
+// A behaviour named in a spawn: a local name, or module@fn for a function of a used module
+// (spec §3.3.2). Returns (found, type_id).
+fn lookup_behavior_found(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], composite: string) -> (boolean, int64) {
+    (mod_part: string, fn_part: string) <- split_module_qualified_call_name(composite);
+    case length_bytes(mod_part) == 0 of {
+        true -> lookup_symbol_found(env, composite);
+        false -> lookup_symbol_found_in_module(env, fn_part, mod_part)
+    }
+}
+
+fn lookup_symbol_found_in_module(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], fn_name: string, mod: string) -> (boolean, int64) {
+    case env.is_nil of {
+        true -> (false, type_interner@invalid_type_id());
+        false -> case env.head.name == fn_name and env.head.source_module == mod of {
+            true -> (true, env.head.type_id);
+            false -> lookup_symbol_found_in_module(env.tail, fn_name, mod)
+        }
+    }
+}
+
+fn lookup_behavior_surface(env: List[{ name: string, type_id: int64, surface_type: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)], composite: string) -> string {
+    (mod_part: string, fn_part: string) <- split_module_qualified_call_name(composite);
+    case length_bytes(mod_part) == 0 of {
+        true -> lookup_symbol_surface(env, composite);
+        false -> lookup_fn_surface_by_name_and_module(env, fn_part, mod_part)
     }
 }
 

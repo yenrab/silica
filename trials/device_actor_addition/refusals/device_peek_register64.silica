@@ -1,0 +1,32 @@
+// ESP32-S3 emitter refusal: a 64-bit peek cannot be one load on the 32-bit peripheral bus, so the
+// emitter writes .error "ESP32-S3: peek of a 64-bit register is not supported on this board
+// (Register32 only)" and the image build fails at assembly. The description declares the register
+// 64 bits wide so the shared checker accepts the marker.
+use DeviceDescription;
+
+export registers/1;
+export worker/2;
+
+impl fn registers(device: (:esp32s3_systimer)) -> List[{ name: atom, offset: uint64, width: uint64, access: atom }, mem(normal)] {
+    [
+        { name: :unit0_value, offset: 0x40, width: 64, access: :read_only }
+    ]
+}
+
+fn worker(msg: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[register_rwr]
+        w: device_window(L, (:esp32s3_systimer)) <- map_device((:esp32s3_systimer), 0x60023000);
+        _: uint64 <- peek(w, :unit0_value) impl Register64 {}
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency]
+        d: device_actor_ref <- spawn_device(0, worker, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_device(d, 1 impl ActorMessage {})
+    produces
+        pure 0
+    end
+}

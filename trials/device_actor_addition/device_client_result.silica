@@ -1,0 +1,35 @@
+// The handshake of device spec §4.6: an ordinary client actor receives work by cast, requests the
+// device work with cast_device naming a receiver, and the worker casts the result to that receiver.
+// Expected: left 0 / status 0.
+use device_gpio_lib;
+
+fn printer(level: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        print("left ");
+        _: atom <- print_int64(level);
+        println("")
+    produces
+        pure (:no_reply, state + 1)
+    end
+}
+
+fn client(msg: atom, state: { g: device_actor_ref, p: actor_ref }) -> (:no_reply, { g: device_actor_ref, p: actor_ref }) {
+    sequence proc[concurrency]
+        _: boolean <- cast_device(state.g, { op: :read_left, reply_to: state.p } impl ActorMessage {})
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency]
+        p: actor_ref <- spawn(0, printer, stack_policy(0, :keep_last_message));
+        g: device_actor_ref <- spawn_device(:unmapped, device_gpio_lib@gpio_worker, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_device(g, { op: :init, reply_to: p } impl ActorMessage {});
+        c: actor_ref <- spawn({ g: g, p: p }, client, stack_policy(0, :keep_last_message));
+        _: boolean <- cast(c, :go impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

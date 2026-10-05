@@ -249,68 +249,9 @@ fn find_function_decl_by_name_arity(decls: List[{ tag: int64, name: string, para
     }
 }
 
-fn find_module_for_export_key(marks: List[{ export_key: string, from_module: string }, mem(normal)], key: string) -> string {
-    case marks.is_nil of {
-        true -> "";
-        false -> case marks.head.export_key == key of {
-            true -> marks.head.from_module;
-            false -> find_module_for_export_key(marks.tail, key)
-        }
-    }
-}
 
-fn merge_export_items_cross_module(items: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], mod: string, marks: List[{ export_key: string, from_module: string }, mem(normal)], err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> ({ is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, List[{ export_key: string, from_module: string }, mem(normal)]) {
-    case items.is_nil of {
-        true -> (type_checker_core@type_check_ok(), marks);
-        false -> {
-            key: string <- export_key(items.head.name, items.head.type_name);
-            prev_mod: string <- find_module_for_export_key(marks, key);
-            case prev_mod == "" of {
-                true -> merge_export_items_cross_module(items.tail, mod, cons_export_mark(key, mod, marks), err_loc);
-                false -> case prev_mod == mod of {
-                    true -> merge_export_items_cross_module(items.tail, mod, marks, err_loc);
-                    false -> (type_checker_core@type_check_err("E4001", err_loc, concat(concat(concat(concat(concat(concat("name conflict for exported ", key), ": modules "), prev_mod), " and "), mod), " (spec 19.3.3)"), "sect19.3.3"), marks)
-                }
-            }
-        }
-    }
-}
 
-fn accum_exports_cross_module(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], mod: string, marks: List[{ export_key: string, from_module: string }, mem(normal)], err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> ({ is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, List[{ export_key: string, from_module: string }, mem(normal)]) {
-    case decls.is_nil of {
-        true -> (type_checker_core@type_check_ok(), marks);
-        false -> case decls.head.tag == 3 of {
-            true -> {
-                (r1: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, m1: List[{ export_key: string, from_module: string }, mem(normal)]) <- merge_export_items_cross_module(decls.head.parameters, mod, marks, err_loc);
-                case r1.is_ok of {
-                    true -> accum_exports_cross_module(decls.tail, mod, m1, err_loc);
-                    false -> (r1, m1)
-                }
-            };
-            false -> accum_exports_cross_module(decls.tail, mod, marks, err_loc)
-        }
-    }
-}
 
-fn check_use_conflicts_ordered(mod_names: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], world: List[{ module_name: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], marks: List[{ export_key: string, from_module: string }, mem(normal)], err_loc: { file: string, line: int64, column: int64, offset: int64 }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    case mod_names.is_nil of {
-        true -> type_checker_core@type_check_ok();
-        false -> {
-            m: string <- mod_names.head.name;
-            (found: boolean, prog: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }) <- parser_ast@find_named_program(m, world);
-            case found of {
-                false -> check_use_conflicts_ordered(mod_names.tail, world, marks, err_loc);
-                true -> {
-                    (r2: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, m2: List[{ export_key: string, from_module: string }, mem(normal)]) <- accum_exports_cross_module(prog.declarations, m, marks, err_loc);
-                    case r2.is_ok of {
-                        true -> check_use_conflicts_ordered(mod_names.tail, world, m2, err_loc);
-                        false -> r2
-                    }
-                }
-            }
-        }
-    }
-}
 
 fn mark_has_export_key(marks: List[{ export_key: string, from_module: string }, mem(normal)], key: string) -> boolean {
     case marks.is_nil of {
@@ -525,13 +466,7 @@ fn apply_use_declaration_for_module(decl: { tag: int64, name: string, parameters
     self_chk: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- validate_no_self_import(decl.parameters, current_module, decl.location);
     case self_chk.is_ok of {
         false -> (self_chk, ctx);
-        true -> {
-            cf: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_use_conflicts_ordered(decl.parameters, world, empty_export_marks(), decl.location);
-            case cf.is_ok of {
-                false -> (cf, ctx);
-                true -> apply_use_add_symbols_loop(decl.parameters, ctx, world, decl.location, refs)
-            }
-        }
+        true -> apply_use_add_symbols_loop(decl.parameters, ctx, world, decl.location, refs)
     }
 }
 

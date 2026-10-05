@@ -27,6 +27,7 @@ use type_checker_recursive_tuples;
 use types;
 use terms_helpers;
 use type_checker_tuple_decompose_helpers;
+use string_parse;
 
 export case_expr_to_sir/8;
 export if_expr_to_sir/8;
@@ -77,30 +78,6 @@ fn is_atom_literal_pat(raw: string) -> boolean {
                 true -> false;
                 false -> find_colon_from(atom_rest, 0) < 0
             }
-        }
-    }
-}
-
-fn is_digit_char(c: string) -> boolean {
-    c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9"
-}
-
-fn all_digits_from(s: string, i: int64) -> boolean {
-    case i >= length_bytes(s) of {
-        true -> length_bytes(s) > 0;
-        false -> case is_digit_char(substring(s, i, i + 1)) of {
-            true -> all_digits_from(s, i + 1);
-            false -> false
-        }
-    }
-}
-
-fn is_int_literal_pat(t: string) -> boolean {
-    case length_bytes(t) == 0 of {
-        true -> false;
-        false -> case substring(t, 0, 1) == "-" of {
-            true -> case length_bytes(t) > 1 of { true -> all_digits_from(t, 1); false -> false };
-            false -> all_digits_from(t, 0)
         }
     }
 }
@@ -245,7 +222,7 @@ fn branch_ast_to_sir_after_atom(raw: string, branch: { nodes: List[{ kind: int64
                             };
                             false -> case length_bytes(raw) >= 3 and substring(raw, 0, 1) == "'" and substring(raw, length_bytes(raw) - 1, length_bytes(raw)) == "'" of {
                                 true -> make_case_branch("int", "int64", literals@int64_to_decimal_string(literals@char_lexeme_to_utf8_encoded(raw)), ctx, branch, opts, lower_expected, lower_in_body);
-                                false -> case is_int_literal_pat(raw) of {
+                                false -> case string_parse@is_integer_literal_text(raw) of {
                                     true -> make_case_branch("int", types@type_name_to_sir(scrutinee_ast_type), raw, ctx, branch, opts, lower_expected, lower_in_body);
                                     false -> case is_atom_literal_pat(raw) of {
                                         true -> case scrutinee_ast_type == "failure_reason" of {
@@ -257,7 +234,16 @@ fn branch_ast_to_sir_after_atom(raw: string, branch: { nodes: List[{ kind: int64
                                             true -> case type_checker_record_types@record_type_braces_balanced(raw) of {
                                                 true -> {
                                                     ctx_re: { env: List[{ name: string, type_name: string, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], is_effect_alias: boolean, source_module: string }, mem(normal)] } <- terms_helpers@sir_case_extend_context_for_pattern(ctx, scrutinee_ast_type, raw);
-                                                    make_case_branch("record", types@type_name_to_sir(scrutinee_ast_type), raw, ctx_re, branch, opts, lower_expected, lower_in_body)
+                                                    // A sum-typed scrutinee (`:none | { id: uint32 }`, spec §3.4.2, §15.4.8): the branch
+                                                    // carries the record variant this pattern matches, chosen as the type checker chose it.
+                                                    record_branch_t: string <- case type_checker_tuple_decompose_helpers@case_sum_bar_depth0(scrutinee_ast_type, 0, 0) >= 0 of {
+                                                        false -> scrutinee_ast_type;
+                                                        true -> {
+                                                            variant_r: string <- type_checker_tuple_decompose_helpers@case_record_variant_for_pattern(raw, scrutinee_ast_type);
+                                                            case length_bytes(variant_r) >= 2 of { true -> variant_r; false -> scrutinee_ast_type }
+                                                        }
+                                                    };
+                                                    make_case_branch("record", types@type_name_to_sir(record_branch_t), raw, ctx_re, branch, opts, lower_expected, lower_in_body)
                                                 };
                                                 false -> branch_from_bind_or_wild(raw, scrutinee_ast_type, branch, ctx, opts, lower_expected, lower_in_body)
                                             };

@@ -22,6 +22,7 @@ use atom_table;
 use build_output;
 use module_checker_core;
 use main_compile_pipeline;
+use main_lists;
 
 export maybe_write_runtime_assembly/1;
 export compile_parsed_unit/6;
@@ -83,10 +84,15 @@ fn compile_parsed_unit(filename: string, program: { declarations: List[{ tag: in
             true -> (sir_code, false);
             false -> {
                 _: int8 <- println("  Emitting...");
-                asm: string <- case debug_compile(filename) of {
-                    true -> emitter_core@emit_module_with_atom_and_debug(sir_module, atom_table@build_atom_table(sir_module), true);
-                    false -> emitter_core@emit_module(sir_module)
+                prior_atoms: List[string, mem(normal)] <- main_lists@read_atom_file();
+                atoms: List[string, mem(normal)] <- case prior_atoms.is_nil of {
+                    true -> prior_atoms;
+                    false -> main_lists@append_list_string_hygiene(prior_atoms, main_lists@read_shape_file())
                 };
+                table: { is_empty: boolean, index_map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, lexemes: List[string, mem(normal)] } <- atom_table@build_atom_table_extending(atoms, sir_module);
+                _: int64 <- main_lists@write_paths_file(main_lists@atom_file_path(), atom_table@atom_table_lexemes_in_order(table));
+                _: int64 <- main_lists@write_paths_file(main_lists@shape_file_path(), atom_table@shape_lexemes_in_order(table));
+                asm: string <- emitter_core@emit_module_with_atom_and_debug(sir_module, table, debug_compile(filename));
                 _: int8 <- build_output@write_assembly(filename, asm);
                 _: int64 <- main_compile_pipeline@publish_unit_iface(filename, program, config_files);
                 _: int64 <- announce_compiled_file(filename);
