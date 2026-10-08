@@ -1,10 +1,7 @@
 # Build prebuilt C wrapper static libraries for ffi_addition trials.
 # Included by ffi_addition/Makefile and common_app.mk (app integrate targets).
 
-FFI_FIXTURES_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/fixtures)
-FFI_SRC_DIR := $(FFI_FIXTURES_DIR)/src
-FFI_LIB_DIR := $(FFI_FIXTURES_DIR)/dangerous_exposure_source/lib
-FFI_BUILD_DIR := $(FFI_FIXTURES_DIR)/build
+include $(dir $(abspath $(lastword $(MAKEFILE_LIST))))fixtures_paths.mk
 
 FFI_CC := clang
 FFI_ARCH := arm64
@@ -16,9 +13,9 @@ else
   FFI_HOST_CFLAGS := -D_GNU_SOURCE
 endif
 FFI_CFLAGS := -std=c11 -Wall -Wextra -O2 $(FFI_HOST_CFLAGS) \
-	-I$(FFI_FIXTURES_DIR)/dangerous_exposure_source/legacy \
-	-I$(FFI_FIXTURES_DIR)/dangerous_exposure_source/text \
-	-I$(FFI_FIXTURES_DIR)/dangerous_exposure_source/net
+	-I$(FFI_SHARED_SOURCE)/legacy \
+	-I$(FFI_SHARED_SOURCE)/text \
+	-I$(FFI_SHARED_SOURCE)/net
 
 FFI_LEGACY_OBJ := $(FFI_BUILD_DIR)/silica_legacy_math.o
 FFI_FAULT_OBJ := $(FFI_BUILD_DIR)/silica_ffi_fault.o
@@ -45,8 +42,12 @@ ffi-wrapper-archives: $(FFI_WRAPPER_ARCHIVES)
 $(FFI_BUILD_DIR):
 	@mkdir -p $(FFI_BUILD_DIR)
 
+# The platform's view of dangerous_exposure_source: its own lib/ plus links to the shared sources.
+# ln -sfn, never ln -sf: BSD ln follows an existing link to a directory and would write the new link
+# inside the shared fixtures.
 $(FFI_LIB_DIR):
 	@mkdir -p $(FFI_LIB_DIR)
+	@for d in abi legacy net other text; do ln -sfn ../../../dangerous_exposure_source/$$d "$(FFI_SOURCE_VIEW)/$$d"; done
 
 $(FFI_LEGACY_OBJ): $(FFI_SRC_DIR)/silica_legacy_math.c | $(FFI_BUILD_DIR)
 	$(FFI_CC) $(FFI_CFLAGS) -c $< -o $@

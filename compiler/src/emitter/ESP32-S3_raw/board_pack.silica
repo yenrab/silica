@@ -32,13 +32,13 @@
 // rt_supervisors.S and silica_esp32s3.ld (every address), the bring-up apps board/apps/asm_02_rgb,
 // asm_03_buttons, asm_04_buzzer, asm_08_gpio_diag, asm_10_pin_hunt, asm_11_addressable_leds (what was
 // found on the hardware), and asm_13_display_hello with the read-back probes written for it on
-// 2026-09-29 (the display section: controller ID, status, frame memory, and the two protocol rules). One row does not come from this tree: the SPI2 window (index 9) is from
-// ESP-IDF's soc headers and is TRM-unconfirmed, marked by `window_base_verified`. The other two places where
+// 2026-09-29 (the display section: controller ID, status, frame memory, and the two protocol rules). Three rows do not come from this tree: the SPI2 window (index 9), the
+// RMT window (index 10) and the LEDC window (index 11) are from ESP-IDF's soc headers and are TRM-unconfirmed, marked by `window_base_verified`. The other two places where
 // the TRM has the final word are marked below.
 //
 // Shape: pure functions, no allocation, no effects. Every number is a uint32, the width of the bus,
 // so a result feeds back in as an index or an address; a search that can miss answers
-// `:none | (:found, i)`. Tables are indexed (`window_base(i)`), so the emitter reads a row without
+// `(:found, i) | :none`. Tables are indexed (`window_base(i)`), so the emitter reads a row without
 // building a list; a device description is still the programmer's
 // `impl fn registers(device: (:tag))` (device spec §4.9) -- the register rows here record what the
 // runtime drives today and are the material for writing the first ones.
@@ -301,9 +301,18 @@ fn is_sram_address(a: uint32) -> boolean {
 //
 // The legal [base, base + size) ranges for map_device and the widths the pack allows (porting
 // document §5.1, §10; device spec §2 "Board window"). Every base is a constant the runtime already
-// uses, verified on the test board, except SPI2 (index 9): its base is ESP-IDF's SPI2 register base
-// for the ESP32-S3 (the display's bus, board sheet "Display (SPI2)"), nothing in this tree drives it
-// yet, and it is TRM-unconfirmed until the address-map table is checked; the 4 KB extents are the pack's
+// uses, verified on the test board, except SPI2 (index 9) and RMT (index 10): the SPI2 base is ESP-IDF's
+// SPI2 register base for the ESP32-S3 (the display's bus, board sheet "Display (SPI2)"), nothing in this
+// tree drives it yet, and it is TRM-unconfirmed until the address-map table is checked. The RMT base is
+// ESP-IDF's DR_REG_RMT_BASE (reg_base.h); its 4 KB window holds the 52 registers of rmt_reg.h at
+// 0x000-0x0CC and the channel RAM (pulse memory, ESP-IDF's RMTMEM = base + 0x800, 8 channels x 48
+// words = 0x600 bytes, 0x800-0xDFF), both described by board/pack/device_esp32s3_rmt_registers.silica;
+// it drives the WS2813 LED row (board sheet, GPIO48 data line) once a driver exists, and is
+// TRM-unconfirmed like SPI2. The LEDC base (index 11) is ESP-IDF's DR_REG_LEDC_BASE (reg_base.h,
+// 0x60019000); its 4 KB window holds the 54 registers of ledc_reg.h (channels 0-7 at 0x00-0x9C, timers
+// 0-3 at 0xA0-0xBC, interrupt registers, CONF at 0xD0, DATE at 0xFC, described by
+// board/pack/device_esp32s3_ledc_registers.silica); it drives the buzzer (GPIO48) and is TRM-unconfirmed
+// like RMT; the 4 KB extents are the pack's
 // statement and are the first of the two TRM checks (address-map table). Widths: 32 only until the TRM confirms sub-word peripheral
 // access (the second TRM check); a 64-bit access cannot be one load or store on this bus.
 
@@ -312,7 +321,7 @@ fn peripheral_bus_base() -> uint32 {
 }
 
 fn window_count() -> uint32 {
-    10
+    12
 }
 
 fn window_tag(i: uint32) -> string {
@@ -327,6 +336,8 @@ fn window_tag(i: uint32) -> string {
         7 -> ":esp32s3_usb_serial_jtag";
         8 -> ":esp32s3_system";
         9 -> ":esp32s3_spi2";
+        10 -> ":esp32s3_rmt";
+        11 -> ":esp32s3_ledc";
         _: uint32 -> ""
     }
 }
@@ -343,6 +354,8 @@ fn window_base(i: uint32) -> uint32 {
         7 -> 0x60038000;
         8 -> 0x600C0000;
         9 -> 0x60024000;
+        10 -> 0x60016000;
+        11 -> 0x60019000;
         _: uint32 -> 0
     }
 }
@@ -355,12 +368,12 @@ fn window_size(i: uint32) -> uint32 {
 }
 
 // True when the base is a constant a runtime routine or bring-up app in this tree uses on the test
-// board. False for a row taken from vendor headers and not yet confirmed against the TRM (SPI2).
+// board. False for a row taken from vendor headers and not yet confirmed against the TRM (SPI2, RMT, LEDC).
 fn window_base_verified(i: uint32) -> boolean {
-    i < window_count() and i != 9
+    i < window_count() and i != 9 and i != 10 and i != 11
 }
 
-fn window_index_of_from(tag: string, i: uint32) -> :none | (:found, uint32) {
+fn window_index_of_from(tag: string, i: uint32) -> (:found, uint32) | :none {
     case i of {
         n: uint32 if n >= window_count() -> :none;
         n: uint32 if window_tag(n) == tag -> (:found, n);
@@ -368,7 +381,7 @@ fn window_index_of_from(tag: string, i: uint32) -> :none | (:found, uint32) {
     }
 }
 
-fn window_index_of(tag: string) -> :none | (:found, uint32) {
+fn window_index_of(tag: string) -> (:found, uint32) | :none {
     window_index_of_from(tag, 0)
 }
 
@@ -383,7 +396,7 @@ fn window_shared_with_runtime(i: uint32) -> boolean {
     i == 0 or i == 6
 }
 
-fn window_containing_from(base: uint32, size: uint32, i: uint32) -> :none | (:found, uint32) {
+fn window_containing_from(base: uint32, size: uint32, i: uint32) -> (:found, uint32) | :none {
     case i of {
         n: uint32 if n >= window_count() -> :none;
         n: uint32 if size <= window_size(n) and base >= window_base(n) and base - window_base(n) <= window_size(n) - size -> (:found, n);
@@ -394,7 +407,7 @@ fn window_containing_from(base: uint32, size: uint32, i: uint32) -> :none | (:fo
 // The window that holds all of [base, base + size): the compile-time check for a constant
 // map_device, and the row rt_device.S finds for a non-constant one. The range test subtracts rather
 // than adds so that a base near the top of the bus cannot wrap into a window.
-fn window_containing(base: uint32, size: uint32) -> :none | (:found, uint32) {
+fn window_containing(base: uint32, size: uint32) -> (:found, uint32) | :none {
     case size of {
         0 -> :none;
         _: uint32 -> window_containing_from(base, size, 0)
@@ -585,7 +598,7 @@ fn register_runtime_use(i: uint32) -> string {
     }
 }
 
-fn register_offset_of_from(window: uint32, name: string, i: uint32) -> :none | (:found, uint32) {
+fn register_offset_of_from(window: uint32, name: string, i: uint32) -> (:found, uint32) | :none {
     case i of {
         n: uint32 if n >= register_count() -> :none;
         n: uint32 if register_window(n) == window and register_name(n) == name -> (:found, register_offset(n));
@@ -594,7 +607,7 @@ fn register_offset_of_from(window: uint32, name: string, i: uint32) -> :none | (
 }
 
 // Offset of the named register in the window.
-fn register_offset_of(window: uint32, name: string) -> :none | (:found, uint32) {
+fn register_offset_of(window: uint32, name: string) -> (:found, uint32) | :none {
     register_offset_of_from(window, name, 0)
 }
 

@@ -47,6 +47,8 @@ SRC_REL="compiler/src"
 SRC="$REPO/$SRC_REL"
 BIN="$REPO/binaries"
 PLATFORM_MK="$REPO/project_makefiles/platform/platforms.mk"
+# One list of what never crosses between machines (built artifacts); shared with the other scripts.
+. "$(dirname "${BASH_SOURCE[0]}")/sync_excludes.sh"
 
 DO_FIXPOINT=1
 DO_TRIALS=0
@@ -338,7 +340,7 @@ seed_here() {
 local_build() {  # $1 = emit target
     local t="$1" log="$LOG_DIR/build-$1.log"
     echo "== build $t (here)"
-    ( cd "$SRC" && make clean SILICA_TARGET_PROMPT=0 && \
+    ( cd "$SRC" && make clean TARGET="$t" SILICA_TARGET_PROMPT=0 && \
       make build TARGET="$t" SILICA_TARGET_PROMPT=0 ${JOBS:+JOBS=$JOBS} ) >>"$log" 2>&1 || {
         echo "  FAILED (see $log)"; return 1; }
     grep -hE "Installed (selfhost|target).*compiler:" "$log" | tail -1 | sed 's/^/  /'
@@ -365,9 +367,10 @@ local_fixpoint() {
 
 # ---------------------------------------------------------------- remote helpers
 
-RSYNC_EX=( --exclude '*.o' --exclude '*.sout' --exclude '.integrate*' --exclude '.stdlib_cache'
-           --exclude '__pycache__' --exclude '.git' --exclude 'silica.target'
-           --exclude '.silica.config.units' --exclude 'silica.config' --exclude '*.tmp'
+# SYNC_BUILD_EXCLUDES (sync_excludes.sh) keeps every built artifact (.o .a .so .dylib, .sams, .iface,
+# trial outputs and executables, compiler/build/, fixtures/build/) on the machine that built it.
+RSYNC_EX=( "${SYNC_BUILD_EXCLUDES[@]}"
+           --exclude '.git' --exclude '*.tmp'
            # *.tmp: write-then-rename Makefile artifacts (silica.config.compiler.tmp,
            # .silica.config.units.tmp); if a build is running here mid-sync, rsync can catch one
            # existing and then find it gone by the time it reads it (exit 23, "open (2): No such
@@ -390,8 +393,11 @@ remote_build_and_fixpoint() {  # $1 = target, $2 = user@host, $3 = remote repo p
     remote_sh "$conn" "true" >/dev/null 2>&1 || { echo "  cannot reach $conn over ssh"; return 1; }
 
     echo "  sync sources"
-    rsync -a "${RSYNC_EX[@]}" --exclude '*.sams' --exclude '*.iface' --exclude 'binaries/' \
-        "$REPO/" "$conn:$rpath/" >>"$log" 2>&1 || { echo "  sync failed (see $log)"; return 1; }
+    local exfile; exfile="$(mktemp "${TMPDIR:-/tmp}/silica-sync-exe.XXXXXX")"
+    sync_exe_excludes "$REPO/trials" "/trials" > "$exfile"
+    rsync -a "${RSYNC_EX[@]}" --exclude-from="$exfile" --exclude 'binaries/' \
+        "$REPO/" "$conn:$rpath/" >>"$log" 2>&1 || { rm -f "$exfile"; echo "  sync failed (see $log)"; return 1; }
+    rm -f "$exfile"
 
     # rsync adds and updates but never removes, so a directory renamed here survives on the remote
     # as a stale duplicate of the whole compiler tree. Nothing builds from it, but it costs disk on
@@ -404,17 +410,21 @@ remote_build_and_fixpoint() {  # $1 = target, $2 = user@host, $3 = remote repo p
 
     if ! remote_sh "$conn" "test -x $rpath/binaries/silica-compiler" >/dev/null 2>&1; then
         echo "  no compiler there yet: handing one over (build here, emit here, link there)"
-        ( cd "$SRC" && make clean SILICA_TARGET_PROMPT=0 && \
+        ( cd "$SRC" && make clean TARGET="$t" SILICA_TARGET_PROMPT=0 && \
           make build TARGET="$t" SILICA_TARGET_PROMPT=0 INSTALL_SELFHOST=0 ${JOBS:+JOBS=$JOBS} && \
           make bootstrap-assembly BOOTSTRAP_TARGET="$t" SILICA_TARGET_PROMPT=0 ) >>"$log" 2>&1 || {
             echo "  hand-off build failed (see $log)"; return 1; }
-        rsync -a "${RSYNC_EX[@]}" --exclude 'binaries/silica-*' \
-            "$REPO/$SRC_REL/" "$conn:$rpath/$SRC_REL/" >>"$log" 2>&1 || {
+        # The emitted assembly lives in compiler/build/<t>/, which the general sync excludes. Send
+        # exactly what bootstrap-link needs from it: the .sams and silica.link (no objects, no
+        # compiler, no unit symlinks, which point at this machine's paths).
+        remote_sh "$conn" "mkdir -p $rpath/compiler/build/$t" >>"$log" 2>&1
+        rsync -a --include '*/' --include '*.sams' --include 'silica.link' --exclude '*' \
+            "$REPO/compiler/build/$t/" "$conn:$rpath/compiler/build/$t/" >>"$log" 2>&1 || {
             echo "  sync of the emitted assembly failed"; return 1; }
         remote_sh "$conn" "cd $rpath/$SRC_REL && make bootstrap-link" >>"$log" 2>&1 || {
             echo "  bootstrap-link failed on $conn (see $log)"; return 1; }
         echo "  first compiler linked on $conn"
-        ( cd "$SRC" && make clean SILICA_TARGET_PROMPT=0 ) >/dev/null 2>&1
+        ( cd "$SRC" && make clean TARGET="$t" SILICA_TARGET_PROMPT=0 ) >/dev/null 2>&1
     fi
 
     if [ "$DO_FIXPOINT" = 1 ]; then
@@ -494,7 +504,8 @@ for t in $OTHER_HOSTED; do
     if remote_build_and_fixpoint "$t" "$conn" "$rpath"; then ok+=("$t@$conn"); else bad+=("$t@$conn"); fi
 done
 
-( cd "$SRC" && make clean SILICA_TARGET_PROMPT=0 ) >/dev/null 2>&1
+# No `make clean` here any more: each target builds in its own compiler/build/<target>/, so the
+# next build, of any target, is not poisoned by this one and keeps its incremental state.
 
 if [ "$DO_TRIALS" = 1 ]; then
     echo "== trials here"

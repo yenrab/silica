@@ -38,6 +38,7 @@ export parse_config_lines/3;
 export reverse_list_string/1;
 export list_contains/2;
 export validate_config_files/1;
+export validate_config_module_names/1;
 
 fn compile_order_path() -> string {
      "silica.compile.order" 
@@ -233,6 +234,44 @@ fn validate_config_files(files: List[string, mem(normal)]) -> int64 {
     produces
         pure result
     end
+}
+
+// First path in the list (other than `path` itself) whose module name is `mod_name`, or "".
+fn config_other_path_for_module(files: List[string, mem(normal)], mod_name: string, path: string) -> string {
+    case files.is_nil of {
+        true -> "";
+        false -> case files.head != path and module_checker_core@module_from_path(files.head) == mod_name of {
+            true -> files.head;
+            false -> config_other_path_for_module(files.tail, mod_name, path)
+        }
+    }
+}
+
+// Two different files in one build must not share a module name (spec 19.3.1, E4012).
+fn validate_config_module_names_loop(files: List[string, mem(normal)]) -> int64 {
+    sequence proc[DeviceIO]
+        result: int64 <- case files.is_nil of {
+            true -> 0;
+            false -> {
+                mod_name: string <- module_checker_core@module_from_path(files.head);
+                other: string <- config_other_path_for_module(files.tail, mod_name, files.head);
+                case length_bytes(other) == 0 of {
+                    true -> validate_config_module_names_loop(files.tail);
+                    false -> {
+                        _: int8 <- println(concat(concat(concat(concat(concat("Error E4012: two modules named ", mod_name), ": "), files.head), " and "), other));
+                        _: int8 <- println("Every file in a build needs a distinct module name (spec 19.3.1).");
+                        1
+                    }
+                }
+            }
+        }
+    produces
+        pure result
+    end
+}
+
+fn validate_config_module_names(files: List[string, mem(normal)]) -> int64 {
+    validate_config_module_names_loop(files)
 }
 
 // The build-wide atom table: one atom lexeme per line, in index order (runtime prefix first).

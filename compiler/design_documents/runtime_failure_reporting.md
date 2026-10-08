@@ -297,8 +297,8 @@ Where it is applied:
   report lines too since defect batch 2, for `app_process_fatal_paths`.
 - **Board trial runs** (`trials/targets/board_suite.sh`) use the suite's `compare_scout_normalized.sh` when
   it has one, so the same `.scout` holds on the host and on the board.
-- **Board apps**: `board/tools/host_reference.sh` writes `expected.sout` in the folded form, and
-  `board/tools/compare_sout.sh <run.sout> <app>/expected.sout` compares a board run with it.
+- **Board apps**: `board/tools/host_reference.sh` writes `expected.scout` in the folded form, and
+  `board/tools/compare_sout.sh <run.sout> <app>/expected.scout` compares a board run with it.
 - **The x86-64 ladder** (`emitter/linux_x86_64/ladder/README.md`) folds both sides before its `diff`.
 
 ## 6. Limits

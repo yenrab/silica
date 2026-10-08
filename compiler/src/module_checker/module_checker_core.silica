@@ -521,6 +521,48 @@ fn validate_use_declarations_against_config(decls: List[{ tag: int64, name: stri
     }
 }
 
+fn use_names_contain(names: List[string, mem(normal)], name: string) -> boolean {
+    case names.is_nil of {
+        true -> false;
+        false -> case names.head == name of {
+            true -> true;
+            false -> use_names_contain(names.tail, name)
+        }
+    }
+}
+
+// A module name may appear only once across a file's `use` declarations (spec 19.3.1, E4009).
+fn first_duplicate_use_params(params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], earlier: List[string, mem(normal)], rest_decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)]) -> (boolean, string, { file: string, line: int64, column: int64, offset: int64 }, string, string) {
+    case params.is_nil of {
+        true -> first_duplicate_use_decls(rest_decls, earlier);
+        false -> case use_names_contain(earlier, params.head.name) of {
+            true -> {
+                msg: string <- concat(concat("module ", params.head.name), " is already used by this file (spec 19.3.1)");
+                (false, "E4009", params.head.location, msg, "sect19.3.1")
+            };
+            false -> first_duplicate_use_params(params.tail, cons_string(params.head.name, earlier), rest_decls)
+        }
+    }
+}
+
+fn first_duplicate_use_decls(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], earlier: List[string, mem(normal)]) -> (boolean, string, { file: string, line: int64, column: int64, offset: int64 }, string, string) {
+    case decls.is_nil of {
+        true -> (true, "", parser_ast@zero_location(), "", "");
+        false -> case decls.head.tag == 2 of {
+            true -> first_duplicate_use_params(decls.head.parameters, earlier, decls.tail);
+            false -> first_duplicate_use_decls(decls.tail, earlier)
+        }
+    }
+}
+
+fn validate_use_declarations(decls: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], config_files: List[string, mem(normal)]) -> (boolean, string, { file: string, line: int64, column: int64, offset: int64 }, string, string) {
+    (dup_ok: boolean, dup_code: string, dup_loc: { file: string, line: int64, column: int64, offset: int64 }, dup_msg: string, dup_spec: string) <- first_duplicate_use_decls(decls, empty_list_string());
+    case dup_ok of {
+        false -> (dup_ok, dup_code, dup_loc, dup_msg, dup_spec);
+        true -> validate_use_declarations_against_config(decls, config_files)
+    }
+}
+
 fn use_params_name_module(params: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], mod_name: string) -> int64 {
     case params.is_nil of {
         true -> 0;
@@ -1083,7 +1125,7 @@ fn validate_exports_match_functions_program(decls: List[{ tag: int64, name: stri
 // (avoids returning a 5-tuple to main.silica — tuple codegen can mis-read the status field).
 // `current_path`: source path for this unit (used for `export trait` vs filename, spec §3.4.8); may be "" to skip.
 fn module_checker_check_program(program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } }, config_files: List[string, mem(normal)], all_parsed: List[{ path: string, program: { declarations: List[{ tag: int64, name: string, parameters: List[{ name: string, type_name: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)], return_type_name: string, return_type_location: { file: string, line: int64, column: int64, offset: int64 }, location: { file: string, line: int64, column: int64, offset: int64 }, body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, declared_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], location: { file: string, line: int64, column: int64, offset: int64 } } }, mem(normal)], current_path: string) -> int64 {
-    (use_ok: boolean, use_code: string, use_loc: { file: string, line: int64, column: int64, offset: int64 }, use_msg: string, use_spec: string) <- validate_use_declarations_against_config(program.declarations, config_files);
+    (use_ok: boolean, use_code: string, use_loc: { file: string, line: int64, column: int64, offset: int64 }, use_msg: string, use_spec: string) <- validate_use_declarations(program.declarations, config_files);
     case use_ok of {
     false -> {
         err_code: string <- case use_code == "" of {

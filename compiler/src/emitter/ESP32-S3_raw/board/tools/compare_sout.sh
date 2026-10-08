@@ -13,19 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Compare a board run with an app's expected.sout the way the trial harness compares a .sout with its
+# Compare a board run with an app's expected.scout the way the trial harness compares a .sout with its
 # .scout: byte for byte except the process-fatal report lines of spec §15.4.5.5, whose addresses (and,
 # on the host, the symbol and actor fields) differ between runs and targets. Both files go through
 # trials/normalize_fatal_reports.awk, which folds such a line to "[silica] fault at <PTR>" or
 # "[silica] abort: <reason> at <PTR>", and are then compared with diff. Exit status: diff's.
 #
-#   compare_sout.sh <board.sout> <apps/silica_NN_name/expected.sout>
+#   compare_sout.sh <board.sout> <apps/silica_NN_name/expected.scout>
 #
 # (run_on_board.py prints the .sout form: redirect its standard output to a file first.)
 
 set -eu
 if [ "$#" -ne 2 ]; then
-    echo "usage: $0 <actual.sout> <expected.sout>" >&2
+    echo "usage: $0 <actual.sout> <expected.scout>" >&2
     exit 2
 fi
 here=$(cd "$(dirname "$0")" && pwd)

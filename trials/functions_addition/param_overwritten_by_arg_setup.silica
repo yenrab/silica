@@ -1,0 +1,41 @@
+// Regression for a seed miscompile found in the lexer's advance_by: a call whose argument
+// expression reads a parameter that the earlier argument setup has already overwritten.
+// Mirrors lexer_core advance_by: offset + length_bytes(substring(source, position, position + n)).
+// With a 36-byte source, position 20 and n 3 the substring is 3 bytes, so the new offset is
+// 225 + 3 = 228 (the seed produced a wrong value, which showed up as offset 392 in a golden).
+// Expected output: 3, 23, 8, 228, then exit 0.
+
+fn span_bytes(text: string, position: int64, n: int64) -> int64 {
+    length_bytes(substring(text, position, position + n))
+}
+
+fn advance_by(lexer: { source: string, position: int64, column: int64, offset: int64 }, n: int64) -> { source: string, position: int64, column: int64, offset: int64 } {
+    sequence
+        result: { source: string, position: int64, column: int64, offset: int64 } <- {
+        source: lexer.source,
+        position: lexer.position + n,
+        column: lexer.column + n,
+        offset: lexer.offset + length_bytes(substring(lexer.source, lexer.position, lexer.position + n))
+    }
+    produces
+        pure result
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[device_io]
+        text: string <- "abcdefghijklmnopqrstuvwxyz0123456789";
+        start: { source: string, position: int64, column: int64, offset: int64 } <- { source: text, position: 20, column: 5, offset: 225 };
+        moved: { source: string, position: int64, column: int64, offset: int64 } <- advance_by(start, 3);
+        print_int64(span_bytes(text, 20, 3));
+        println("");
+        print_int64(moved.position);
+        println("");
+        print_int64(moved.column);
+        println("");
+        print_int64(moved.offset);
+        println("")
+    produces
+        pure 0
+    end
+}

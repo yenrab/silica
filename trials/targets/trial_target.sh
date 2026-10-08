@@ -248,7 +248,10 @@ $(head -5 "$mirror/.rt.log")"
             reason=$(awk -v s="$s" '!/^[[:space:]]*#/ && NF >= 1 && $1 == s { $1 = ""; sub(/^[[:space:]]+/, ""); print; exit }' "$skipfile")
             [ -n "$reason" ] || reason=$(awk -v s="$s" '!/^[[:space:]]*#/ && NF == 1 && $1 == s { print "listed in '"$target"'.skip"; exit }' "$skipfile")
         fi
-        if [ -z "$reason" ] && [ -f "$trials_root/$s/INTEGRATE_PENDING" ]; then
+        # INTEGRATE_PENDING keeps a suite out of whole-tree runs only; a suite named by TRIAL_SUITES
+        # or run from its own directory is run (board-only suites such as device_actor_addition).
+        if [ -z "$reason" ] && [ "$dir" = "$trials_root" ] && [ -z "${TRIAL_SUITES:-}" ] \
+            && [ -f "$trials_root/$s/INTEGRATE_PENDING" ]; then
             reason="INTEGRATE_PENDING (see $s/README.md)"
         fi
         if [ -n "$reason" ]; then

@@ -41,6 +41,11 @@
 use DeviceDescription;
 use device_esp32s3_gpio;
 use device_esp32s3_spi2;
+use device_esp32s3_gpio_registers;
+use device_esp32s3_io_mux_registers;
+use device_esp32s3_spi2_registers;
+use device_esp32s3_system_registers;
+use board_pack;
 
 export st7789_worker/2;
 
@@ -56,9 +61,9 @@ fn settle(n: int64) -> int64 {
     case n == 0 of { true -> 0; false -> settle(n - 1) + spin2(n) }
 }
 
-fn mask_cs() -> uint32 { one: uint32 <- 1; one shl 0 }
-fn mask_rst() -> uint32 { one: uint32 <- 1; one shl 1 }
-fn mask_dc() -> uint32 { one: uint32 <- 1; one shl 13 }
+fn mask_cs() -> uint32 { one: uint32 <- 1; pin: uint32 <- board_pack@pin_display_cs(); one shl (pin band 31) }
+fn mask_rst() -> uint32 { one: uint32 <- 1; pin: uint32 <- board_pack@pin_display_reset(); one shl (pin band 31) }
+fn mask_dc() -> uint32 { one: uint32 <- 1; pin: uint32 <- board_pack@pin_display_dc(); one shl (pin band 31) }
 
 fn cs(g: device_window(L, (:esp32s3_gpio)), high: boolean) -> device_window(L, (:esp32s3_gpio)) {
     sequence proc[register_rwr]
@@ -380,11 +385,11 @@ fn draw_text(g: device_window(L, (:esp32s3_gpio)), w: device_window(L, (:esp32s3
 // Five pads as outputs; then SCL and SDA hand their pads to SPI2's clock and data signals.
 fn configure_pins(g: device_window(L, (:esp32s3_gpio)), m: device_window(L, (:esp32s3_io_mux))) -> (device_window(L, (:esp32s3_gpio)), device_window(L, (:esp32s3_io_mux))) {
     sequence proc[register_rwr]
-        cs: uint32 <- 0;
-        rst: uint32 <- 1;
-        sda: uint32 <- 3;
-        dc: uint32 <- 45;
-        scl: uint32 <- 46;
+        cs: uint32 <- board_pack@pin_display_cs();
+        rst: uint32 <- board_pack@pin_display_reset();
+        sda: uint32 <- board_pack@pin_display_mosi();
+        dc: uint32 <- board_pack@pin_display_dc();
+        scl: uint32 <- board_pack@pin_display_clk();
         fspiclk_out: uint32 <- 101;
         fspid_out: uint32 <- 103;
         (g1, m1) <- device_esp32s3_gpio@make_output(g, m, cs);
@@ -404,10 +409,10 @@ fn st7789_worker(msg: { op: atom, x: uint32, y: uint32, colour: uint32, text: st
         next: :unmapped | (:mapped, device_window(L, (:esp32s3_gpio)), device_window(L, (:esp32s3_io_mux)), device_window(L, (:esp32s3_spi2)), device_window(L, (:esp32s3_system))) <- case state of {
             :unmapped -> case msg.op of {
                 :init -> {
-                    g: device_window(L, (:esp32s3_gpio)) <- map_device((:esp32s3_gpio), 0x60004000);
-                    m: device_window(L, (:esp32s3_io_mux)) <- map_device((:esp32s3_io_mux), 0x60009000);
-                    s: device_window(L, (:esp32s3_system)) <- map_device((:esp32s3_system), 0x600C0000);
-                    w: device_window(L, (:esp32s3_spi2)) <- map_device((:esp32s3_spi2), 0x60024000);
+                    g: device_window(L, (:esp32s3_gpio)) <- map_device((:esp32s3_gpio), 0x60004000); // board_pack window 1
+                    m: device_window(L, (:esp32s3_io_mux)) <- map_device((:esp32s3_io_mux), 0x60009000); // board_pack window 3
+                    s: device_window(L, (:esp32s3_system)) <- map_device((:esp32s3_system), 0x600C0000); // board_pack window 8
+                    w: device_window(L, (:esp32s3_spi2)) <- map_device((:esp32s3_spi2), 0x60024000); // board_pack window 9
                     s1: device_window(L, (:esp32s3_system)) <- device_esp32s3_spi2@spi2_enable(s);
                     w1: device_window(L, (:esp32s3_spi2)) <- device_esp32s3_spi2@spi2_init(w);
                     (g1, m1) <- configure_pins(g, m);

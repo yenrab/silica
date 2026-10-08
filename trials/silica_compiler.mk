@@ -66,6 +66,10 @@ SILICA_CROSS_NOTE := emit target $(SILICA_EMIT_TARGET) is not this host ($(SILIC
 # writes the same name, so one checkout serves every target it has goldens for.
 ASCOMP_EXT := $(if $(filter apple_silicon_mac,$(SILICA_EMIT_TARGET)),.ascomp,.$(SILICA_EMIT_TARGET).ascomp)
 
+# The error golden a trial is compared against: <stem>.<target>.golden_fail when it exists, else the
+# plain <stem>.golden_fail (the macOS golden). GOLDEN_FAIL_EXT is empty on the Mac.
+GOLDEN_FAIL_EXT := $(if $(filter apple_silicon_mac,$(SILICA_EMIT_TARGET)),,.$(SILICA_EMIT_TARGET))
+
 # Toolchain for the emitted target's code: trials/platform/<emit target>.mk (assembler, linker,
 # link flags, FFI fixture flags, golden suffix, skip list). Optional while the per-trial makefiles
 # still carry their own macOS values; once those lines are deleted this include is the only source.
@@ -387,7 +391,7 @@ integrate-report:
 # label. A host run must not walk into it: doing so put board failures in the host report, where they
 # looked like this machine's and drowned the real ones.
 define INTEGRATE_FAILURE_DETAILS
-logs=$$(find "$(INTEGRATE_DIR)" -name '.target' -prune -o -name .integrate_log -print 2>/dev/null | awk '{ n = gsub("/", "/"); print n "\t" $$0 }' | sort -rn | cut -f2-); \
+logs=$$(find $(or $(INTEGRATE_LOG_ROOTS),"$(INTEGRATE_DIR)") -name '.target' -prune -o -name .integrate_log -print 2>/dev/null | awk '{ n = gsub("/", "/"); print n "\t" $$0 }' | sort -rn | cut -f2-); \
 [ -n "$$logs" ] && awk -v cap="$(INTEGRATE_DETAIL_LINES)" ' \
 	function flush() { if (blk != "") print blk; blk = "" } \
 	FNR == 1 { flush(); skip = 1 } \
@@ -433,7 +437,7 @@ define INTEGRATE_CHILD
 cd "$(INTEGRATE_DIR)" || exit 1; \
 dir="$(1)"; \
 rm -f "$$dir/.integrate_counts" "$$dir/.integrate_report" "$$dir/.integrate_status" "$$dir/.integrate_skipped"; \
-if [ -f "$$dir/INTEGRATE_PENDING" ]; then \
+if [ -f "$$dir/INTEGRATE_PENDING" ] && [ -z "$(INTEGRATE_NAMED_SUITES)" ]; then \
 	echo "SKIP: $$dir (INTEGRATE_PENDING -- see $$dir/README.md)"; \
 	: > "$$dir/.integrate_skipped"; \
 else \

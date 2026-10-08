@@ -5,6 +5,8 @@ THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 include $(THIS_DIR)../../silica_compiler.mk
 FIXTURES_DIR := $(THIS_DIR)../../ffi_addition/fixtures
 FIXTURE_ROOT := $(FIXTURES_DIR)/dangerous_exposure_source
+# The archives are per platform (ffi_addition/fixtures_paths.mk); the .meta/.h sources are shared.
+include $(THIS_DIR)../../ffi_addition/fixtures_paths.mk
 FFI_SUCCESS_DIR := $(THIS_DIR)../../ffi_addition
 SILICA_LINK_SH := $(abspath $(THIS_DIR)../../silica_link.sh)
 
@@ -86,7 +88,7 @@ link-fail:
 		ln -s "$(FIXTURE_ROOT)/text" "$$tmpdir/dangerous_exposure_source/text"; \
 		ln -s "$(FIXTURE_ROOT)/net" "$$tmpdir/dangerous_exposure_source/net"; \
 		ln -s "$(FIXTURE_ROOT)/other" "$$tmpdir/dangerous_exposure_source/other"; \
-		ln -s "$(FIXTURE_ROOT)/lib" "$$tmpdir/dangerous_exposure_source/lib"; \
+		ln -s "$(FFI_LIB_DIR)" "$$tmpdir/dangerous_exposure_source/lib"; \
 		ln -s "$(THIS_DIR)error_app_sidecar_metadata/dangerous_exposure_source/bad_link_only_symbol.meta" "$$tmpdir/dangerous_exposure_source/bad_link_only_symbol.meta"; \
 		ln -s "$(THIS_DIR)$$case.silica" "$$tmpdir/$$base.silica"; \
 		printf "$$base.silica\n" > "$$tmpdir/silica.config"; \
@@ -153,7 +155,7 @@ archive-missing:
 	ln -s "$(FIXTURE_ROOT)/text" "$$tmpdir/dangerous_exposure_source/text"; \
 	ln -s "$(FIXTURE_ROOT)/net" "$$tmpdir/dangerous_exposure_source/net"; \
 	ln -s "$(FIXTURE_ROOT)/other" "$$tmpdir/dangerous_exposure_source/other"; \
-	ln -s "$(FIXTURE_ROOT)/lib" "$$tmpdir/dangerous_exposure_source/lib"; \
+	ln -s "$(FFI_LIB_DIR)" "$$tmpdir/dangerous_exposure_source/lib"; \
 	ln -s "$(THIS_DIR)error_app_sidecar_metadata/dangerous_exposure_source/bad_missing_archive.meta" "$$tmpdir/dangerous_exposure_source/bad_missing_archive.meta"; \
 	ln -s "$(THIS_DIR)$$case.silica" "$$tmpdir/$$base.silica"; \
 	printf "$$base.silica\n" > "$$tmpdir/silica.config"; \
@@ -189,7 +191,7 @@ compile-fail-goldens:
 		ln -s "$(FIXTURE_ROOT)/text" "$$tmpdir/dangerous_exposure_source/text"; \
 		ln -s "$(FIXTURE_ROOT)/net" "$$tmpdir/dangerous_exposure_source/net"; \
 		ln -s "$(FIXTURE_ROOT)/other" "$$tmpdir/dangerous_exposure_source/other"; \
-		ln -s "$(FIXTURE_ROOT)/lib" "$$tmpdir/dangerous_exposure_source/lib"; \
+		ln -s "$(FFI_LIB_DIR)" "$$tmpdir/dangerous_exposure_source/lib"; \
 		ln -s "$(THIS_DIR)error_app_sidecar_metadata/dangerous_exposure_source/bad_wrong_symbol.meta" "$$tmpdir/dangerous_exposure_source/bad_wrong_symbol.meta"; \
 		ln -s "$(THIS_DIR)error_app_sidecar_metadata/dangerous_exposure_source/bad_no_link_library.meta" "$$tmpdir/dangerous_exposure_source/bad_no_link_library.meta"; \
 		ln -s "$(THIS_DIR)error_app_sidecar_metadata/dangerous_exposure_source/bad_link_only_symbol.meta" "$$tmpdir/dangerous_exposure_source/bad_link_only_symbol.meta"; \

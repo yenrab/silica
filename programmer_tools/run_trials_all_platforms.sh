@@ -19,6 +19,9 @@
 #   --targets "<list>"  only those platforms (emit-target names, or the short names below)
 #   --remote <t>=<user@host>[:<path>]   a machine for one platform, for this run only
 #   --board             also run a raw target's trials on an attached board (off by default)
+#   --sync              first copy trials, stdlib and project makefiles to each remote machine
+#                       (built artifacts excluded: see sync_excludes.sh)
+#   --sync-only         do that copy and stop; no trial runs
 #
 # Short names are accepted anywhere a platform is: mac, pi, nix, esp32, all, hosted.
 #
@@ -34,6 +37,7 @@
 set -uo pipefail
 
 REPO="${SILICA_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+. "$(dirname "${BASH_SOURCE[0]}")/sync_excludes.sh"
 PLATFORM_MK="$REPO/project_makefiles/platform/platforms.mk"
 HOSTS_FILE="${SILICA_BUILD_HOSTS:-$REPO/.silica_build_hosts}"
 
@@ -48,6 +52,7 @@ SDS_linux_x86_64="${NIX_SDS_JOBS:-1}"
 STAMP="$(date '+%Y%m%d-%H%M%S')"
 LOG_DIR="${LOG_DIR:-$REPO/../silica_trial_runs/$STAMP}"
 DO_SYNC=0
+SYNC_ONLY=0
 DO_BOARD=0
 LIST_ONLY=0
 SELECTED=""
@@ -75,6 +80,7 @@ expand_name() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --sync)     DO_SYNC=1 ;;
+        --sync-only) DO_SYNC=1; SYNC_ONLY=1 ;;
         --board)    DO_BOARD=1 ;;
         --list)     LIST_ONLY=1 ;;
         --log-dir)  LOG_DIR="$2"; shift ;;
@@ -195,28 +201,37 @@ mkdir -p "$LOG_DIR"
 
 # ---------------------------------------------------------------- sync (optional)
 
-RSYNC_EXCLUDES=(
-    --exclude '*.sams' --exclude '*.o' --exclude '*.iface' --exclude '*.sout'
-    --exclude '*.cur_fail' --exclude 'silica.config' --exclude 'silica.compile.order'
-    --exclude 'silica.needs_runtime' --exclude 'silica.link' --exclude '.integrate*'
-    --exclude '.stdlib_cache' --exclude '__pycache__' --exclude '.silica.config.units'
-    --exclude 'silica.target' --exclude '.git'
-)
+# Built artifacts never cross machines (sync_excludes.sh): no .o/.a/.so/.dylib, no trial outputs or
+# executables, no fixtures/build, no compiler/build. Goldens, .ascomp files, sources and scripts do.
+RSYNC_EXCLUDES=( "${SYNC_BUILD_EXCLUDES[@]}" --exclude '.git' )
 
 sync_to() {  # $1 = user@host, $2 = remote repo
     echo "  sync -> $1"
-    rsync -a "${RSYNC_EXCLUDES[@]}" "$REPO/trials/" "$1:$2/trials/" || return 1
+    local exfile rc; exfile="$(mktemp "${TMPDIR:-/tmp}/silica-sync-exe.XXXXXX")"
+    sync_exe_excludes "$REPO/trials" "" > "$exfile"
+    rsync -a "${RSYNC_EXCLUDES[@]}" --exclude-from="$exfile" "$REPO/trials/" "$1:$2/trials/"; rc=$?
+    rm -f "$exfile"
+    [ "$rc" = 0 ] || return 1
     rsync -a "${RSYNC_EXCLUDES[@]}" "$REPO/compiler/stdlib/" "$1:$2/compiler/stdlib/" || return 1
     rsync -a "${RSYNC_EXCLUDES[@]}" "$REPO/project_makefiles/" "$1:$2/project_makefiles/" 2>/dev/null || true
+    # Board sources that board-only trials read on every host (device_actor_addition and its
+    # error_enforcement_addition E2220 twins): the board pack, the generated pack modules, the drivers.
+    ( cd "$REPO" && rsync -aR "${RSYNC_EXCLUDES[@]}" \
+        compiler/src/emitter/ESP32-S3_raw/board_pack.silica \
+        compiler/src/emitter/ESP32-S3_raw/board/pack/ \
+        compiler/src/emitter/ESP32-S3_raw/board/apps/device_lib/ \
+        "$1:$2/" ) || return 1
 }
 
 if [ "$DO_SYNC" = 1 ] && [ -n "$RUN_REMOTE" ]; then
-    echo "Syncing trials, stdlib and project makefiles (build products excluded)"
+    echo "Syncing trials, stdlib, project makefiles and board sources (build products excluded)"
     for t in $RUN_REMOTE; do
         spec="$(conn_of "$t")"
         sync_to "${spec%%:*}" "${spec#*:}" || { echo "sync for $t failed" >&2; exit 1; }
     done
 fi
+
+[ "$SYNC_ONLY" = 1 ] && { echo "sync only: done"; exit 0; }
 
 # ---------------------------------------------------------------- runs
 

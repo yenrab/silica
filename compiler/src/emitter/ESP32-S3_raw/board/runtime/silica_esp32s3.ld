@@ -77,10 +77,13 @@ SECTIONS
   {
     _silica_rodata_start = ABSOLUTE(.);
     /* {function address, name} records the emitter writes for every function (the actor failure
-       report names the failing behaviour with them); kept before the general pattern below. */
+       report names the failing behaviour with them); placed before the general pattern below. Each
+       record is a link-order section tied to its function's .text section, so --gc-sections drops
+       the record with an unused function and keeps it with a used one (no KEEP here: KEEP would
+       retain every function through the record's address word). */
     . = ALIGN(4);
     _silica_fnames_start = ABSOLUTE(.);
-    KEEP(*(.rodata.silica_fnames))
+    *(.rodata.silica_fnames)
     _silica_fnames_end = ABSOLUTE(.);
     *(.rodata .rodata.* .srodata .srodata.*)
     . = ALIGN(8);

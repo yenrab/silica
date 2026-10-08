@@ -37,6 +37,7 @@
 set -uo pipefail
 
 REPO="${SILICA_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+. "$(dirname "${BASH_SOURCE[0]}")/sync_excludes.sh"
 PLATFORM_MK="$REPO/project_makefiles/platform/platforms.mk"
 HOSTS_FILE="${SILICA_BUILD_HOSTS:-$REPO/.silica_build_hosts}"
 STAMP="$(date '+%Y%m%d-%H%M%S')"
@@ -287,18 +288,20 @@ do_remote() {
         # file-list scan can see one exist and then find it gone when it tries to read it
         # ("open (2): No such file or directory", exit 23) -- excluding them removes the race
         # instead of just tolerating the exit code.
-        rsync -a \
-            --exclude '.git' --exclude '*.o' --exclude '*.sams' --exclude '*.iface' \
+        # SYNC_BUILD_EXCLUDES (sync_excludes.sh): built artifacts stay on the machine that built them.
+        exfile="$(mktemp "${TMPDIR:-/tmp}/silica-sync-exe.XXXXXX")"
+        sync_exe_excludes "$REPO/trials" "/trials" > "$exfile"
+        rsync -a "${SYNC_BUILD_EXCLUDES[@]}" --exclude-from="$exfile" \
+            --exclude '.git' \
             --exclude '*.tmp' \
             --exclude '.target' --exclude '*.elf' --exclude '*.map' --exclude '*.image.log' \
-            --exclude '*.sout' --exclude '*.cur_fail' --exclude '.integrate*' \
-            --exclude '.stdlib_cache' --exclude '__pycache__' --exclude 'silica.config' \
-            --exclude 'silica.target' --exclude '.silica.config.units' --exclude 'binaries/' \
+            --exclude 'binaries/' \
             --exclude '.claude' --exclude '.claude-memory' --exclude '.codex_artifacts' \
             --exclude '.cursor' --exclude '.vscode' --exclude '.scratch' \
             --exclude 'board_backups' --exclude '*.pptx' --exclude '*.ndjson' \
             "$REPO/" "$conn:$rpath/" >"$LOG_DIR/$t-sync.log" 2>&1
         rsync_rc=$?
+        rm -f "$exfile"
         # 24 means some source files vanished while it ran, which is normal in a working tree.
         if [ $rsync_rc -ne 0 ] && [ $rsync_rc -ne 24 ]; then
             echo "  SYNC FAILED (rsync exit $rsync_rc), see $LOG_DIR/$t-sync.log"
@@ -394,7 +397,7 @@ for t in $RAW_PLAN; do
     echo; echo "################ $t (board)"
     if [ "$DO_BUILD" = 1 ]; then
         echo "  cross compiler, built here"
-        ( cd "$REPO/compiler/src" && make clean SILICA_TARGET_PROMPT=0 && make build TARGET="$t" SILICA_TARGET_PROMPT=0 ) \
+        ( cd "$REPO/compiler/src" && make clean TARGET="$t" SILICA_TARGET_PROMPT=0 && make build TARGET="$t" SILICA_TARGET_PROMPT=0 ) \
             >"$LOG_DIR/$t-build.log" 2>&1 || { echo "  BUILD FAILED, see $LOG_DIR/$t-build.log"; note "$t" "BUILD FAILED" - - "cross, here"; overall=1; continue; }
         grep -hE "Installed (selfhost|target).*compiler:" "$LOG_DIR/$t-build.log" | tail -1 | sed 's/^/  /'
     fi

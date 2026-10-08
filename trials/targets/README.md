@@ -106,7 +106,7 @@ error_enforcement_addition) are skipped automatically. Skips are reported, never
 | Variable | Default | Meaning |
 | -------- | ------- | ------- |
 | `TRIAL_TARGET` | ask, or `host` | `host`, a board target, or `both` |
-| `TRIAL_SUITES` | every suite | limit a board tree run to these suites (the host target ignores it: use `make -C <suite> integrate`) |
+| `TRIAL_SUITES` | every suite | limit a tree run (host or board) to these suites, e.g. `make integrate TRIAL_TARGET=host TRIAL_SUITES="actors_addition base"`; a name that is not a suite is an error, and a named suite runs even if it has `INTEGRATE_PENDING` (whole-tree runs skip those). On the host the report and failure list cover only the named suites |
 | `BOARD_PORT` | the single USB serial port | the board's serial port |
 | `BOARD_MAC` | (none) | refuse any board with another MAC |
 | `BOARD_SILICA_COMPILER` | `binaries/silica-compiler-<target>` | the board compiler |

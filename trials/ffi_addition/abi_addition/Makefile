@@ -29,7 +29,7 @@ integrate-run: fixtures $(SILICA_COMPILER)
 		base=$$(basename "$$silica" .silica); \
 		tmpdir=$$(mktemp -d); \
 		ln -s "$(THIS_DIR)$$silica" "$$tmpdir/$$base.silica"; \
-		ln -s "$(FIXTURES_DIR)/dangerous_exposure_source" "$$tmpdir/dangerous_exposure_source"; \
+		ln -s "$(FFI_SOURCE_VIEW)" "$$tmpdir/dangerous_exposure_source"; \
 		echo "$$base.silica" > "$$tmpdir/silica.config"; \
 		out="$$tmpdir/out.txt"; \
 		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$$out" 2>&1 || true; \

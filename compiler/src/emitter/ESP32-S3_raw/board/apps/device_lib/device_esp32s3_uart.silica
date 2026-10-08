@@ -25,17 +25,11 @@
 // walks the text one character at a time; a character's byte comes from a flat table, since a
 // string has no byte accessor -- only the characters the apps print are listed.
 
-use DeviceDescription;
+use device_esp32s3_uart_registers;
+use board_pack;
+use board_pack_uart0_values;
 
-export registers/1;
 export uart_worker/2;
-
-impl fn registers(device: (:esp32s3_uart)) -> List[{ name: atom, offset: uint64, width: uint64, access: atom }, mem(normal)] {
-    [
-        { name: :fifo,   offset: 0x00, width: 32, access: :read_write },
-        { name: :status, offset: 0x1C, width: 32, access: :read_only }
-    ]
-}
 
 fn byte_of(ch: string) -> uint32 {
     case ch of {
@@ -53,8 +47,11 @@ fn byte_of(ch: string) -> uint32 {
 fn put_byte(w: device_window(L, (:esp32s3_uart)), byte: uint32) -> device_window(L, (:esp32s3_uart)) {
     sequence proc[register_rwr]
         status: uint32 <- peek(w, :status) impl Register32 {};
-        queued: uint32 <- (status shr 16) band 1023;
-        r: device_window(L, (:esp32s3_uart)) <- case queued < 120 of {
+        cnt_shift: uint32 <- board_pack_uart0_values@uart0_txfifo_cnt_shift();
+        cnt_mask: uint32 <- board_pack_uart0_values@uart0_txfifo_cnt_mask();
+        fifo_max: uint32 <- board_pack@uart_txfifo_max();
+        queued: uint32 <- (status band cnt_mask) shr cnt_shift;
+        r: device_window(L, (:esp32s3_uart)) <- case queued < fifo_max of {
             true -> {
                 _: atom <- poke(w, :fifo, byte impl Register32 {});
                 w
@@ -82,7 +79,7 @@ fn uart_worker(msg: { op: atom, byte: uint32, text: string }, state: :unmapped |
         next: :unmapped | (:mapped, device_window(L, (:esp32s3_uart))) <- case state of {
             :unmapped -> case msg.op of {
                 :init -> {
-                    w: device_window(L, (:esp32s3_uart)) <- map_device((:esp32s3_uart), 0x60000000);
+                    w: device_window(L, (:esp32s3_uart)) <- map_device((:esp32s3_uart), 0x60000000); // board_pack window 0
                     (:mapped, w)
                 };
                 _: atom -> :unmapped

@@ -42,7 +42,7 @@ the program's bytes followed by the status on its own line. A process-fatal repo
 §15.4.5.5: "[silica] fault at 0x<pc>..." with status 70, "[silica] abort: <reason> at 0x<pc>"
 with status 71) is part of the program's bytes, as the host's stderr line is part of a .sout.
 Anything after the exit marker (the board-only fault details) goes to stderr. Compare with an
-expected.sout through tools/compare_sout.sh, which folds the addresses in those report lines.
+expected.scout through tools/compare_sout.sh, which folds the addresses in those report lines.
 
 Exit status: 0 a marker pair was seen; 3 no exit marker before the timeout (the raw console goes
 to stderr); 4 the board is unavailable (no or ambiguous port, cannot connect, not an ESP32-S3,

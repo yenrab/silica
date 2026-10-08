@@ -503,7 +503,7 @@ the registry by which `*_registered` intrinsic was called (`rt_actors.S:1818-186
 word, `silica_device_pid_registry_ref`, a third registry actor spawned by the same init, and a `cast_device_registered`
 path that looks up only that word, so `cast_registered` can never resolve a device worker and
 `cast_device_registered` can never resolve an ordinary or FFI one (device spec §1 "Split registries", §11 row 7). Its
-cost on the board is one more 2 KB-reserve actor plus the table ([esp32s3_memory_budget_plan.md](../esp32s3_memory_budget_plan.md)
+cost on the board is one more 2 KB-reserve actor plus the table ([actor_memory_budget_plan.md](../actor_memory_budget_plan.md)
 "Per-actor and per-supervisor cost"). The hosted runtimes (`emitter/<T>/terms/prims/prims_actors_runtime_asm.silica`)
 mirror the same third table.
 

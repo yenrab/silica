@@ -24,14 +24,14 @@ silica.config:
 
 check: silica.config
 	@cd "$(THIS_DIR)" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,$(COMPILER)); } > $(MAIN).cur_fail 2>&1 || true
-	@if diff -q "$(THIS_DIR)$(MAIN).cur_fail" "$(THIS_DIR)$(MAIN).golden_fail" > /dev/null 2>&1; then \
+	@if diff -q "$(THIS_DIR)$(MAIN).cur_fail" "$(or $(wildcard $(THIS_DIR)$(MAIN)$(GOLDEN_FAIL_EXT).golden_fail),$(THIS_DIR)$(MAIN).golden_fail)" > /dev/null 2>&1; then \
 		echo "✅✅ $(MSG_PREFIX)$(TRIAL_DIR)"; \
 		$(INTEGRATE_DOT_OK); \
 		printf '%d %d\n' 1 0 > "$(THIS_DIR).integrate_counts"; \
 	else \
 		echo "❌❌ $(MSG_PREFIX)$(TRIAL_DIR): .cur_fail differs from .golden_fail"; \
 		$(INTEGRATE_DOT_FAIL); \
-		diff "$(THIS_DIR)$(MAIN).cur_fail" "$(THIS_DIR)$(MAIN).golden_fail" || true; \
+		diff "$(THIS_DIR)$(MAIN).cur_fail" "$(or $(wildcard $(THIS_DIR)$(MAIN)$(GOLDEN_FAIL_EXT).golden_fail),$(THIS_DIR)$(MAIN).golden_fail)" || true; \
 		printf '%d %d\n' 0 1 > "$(THIS_DIR).integrate_counts"; \
 		exit 1; \
 	fi

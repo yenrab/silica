@@ -32,10 +32,10 @@ netlist; the supplied pin sheet has the RGB red pin wrong (1 instead of 2).
 | `runtime/silica_esp32s3.ld` | Linker script: code from IRAM 0x40378000, data after it on the D-bus (the emitter's function-name records first), heap, 128 KB machine stack below 0x3FCE9700 (the 64 KB auxiliary stack is in `.bss`) |
 | `tools/build_image.sh` | Assemble sources + runtime, link, `esptool elf2image` → `.elf`, `.map`, `.bin` (`-r <dir>` caches the assembled runtime) |
 | `tools/run_on_board.py` | Load `.bin` into RAM and run it (or `--flash` it at 0x0), capture UART0 between markers, print `.sout`-style text; `--probe` checks the board |
-| `tools/host_reference.sh` | Writes an app's `expected.sout` by building and running it with the macOS compiler (fatal-report lines folded) |
-| `tools/compare_sout.sh` | Compares a board run's `.sout` with an `expected.sout` the way the trial harness does (fatal-report addresses folded) |
+| `tools/host_reference.sh` | Writes an app's `expected.scout` by building and running it with the macOS compiler (fatal-report lines folded) |
+| `tools/compare_sout.sh` | Compares a board run's `.sout` with an `expected.scout` the way the trial harness does (fatal-report addresses folded) |
 | `apps/asm_*` | Bring-up apps in hand-written Xtensa assembly (runtime and board checks, no compiler involved) |
-| `apps/silica_*` | Early Silica apps for the port's emitter, each with the `expected.sout` from the macOS compiler |
+| `apps/silica_*` | Early Silica apps for the port's emitter, each with the `expected.scout` from the macOS compiler |
 | `tests/xt_helpers_selftest/` | 408-case hardware self-test of the emitter's Xtensa instruction helpers (`shared/xt_*.silica`) |
 
 ## Image model
@@ -83,8 +83,8 @@ host (`=== Silica Actor Failure ===` ... , frame #0 named from the emitter's fun
 the program goes on. The board-only details of a fault (the cause code, both registers, the stack-guard note)
 follow the exit marker, and `run_on_board.py` sends them to stderr. `run_on_board.py` turns the rest into
 `<program output><status>\n`, the same text the trial harness writes to a `.sout`. The addresses in a
-report differ by run and target: compare a run with an app's `expected.sout` using
-`tools/compare_sout.sh <run.sout> <app>/expected.sout`, which folds each report line to
+report differ by run and target: compare a run with an app's `expected.scout` using
+`tools/compare_sout.sh <run.sout> <app>/expected.scout`, which folds each report line to
 `[silica] fault at <PTR>` / `[silica] abort: <reason> at <PTR>` (`trials/normalize_fatal_reports.awk`,
 the same rule the trial harness applies).
 
@@ -167,7 +167,7 @@ target has not been decided.
 | `silica_15_list_index_abort` | A runtime abort: `list_at` past the end (`rt_list.S` -> `silica_rt_abort_list_index`) | not yet run on the board; expected `9`, `[silica] abort: list index out of range at 0x....`, status 71 |
 
 Every `silica_*` app is compiled by the ESP32-S3_raw emitter and compared byte for byte with the
-`expected.sout` the macOS compiler produced for the same source (`tools/host_reference.sh <app dir>`
+`expected.scout` the macOS compiler produced for the same source (`tools/host_reference.sh <app dir>`
 writes that file: it compiles, links and runs the app on the Mac), except that a process-fatal report
 line is compared with its addresses folded (`tools/compare_sout.sh`, see Console protocol).
 An app that needs other modules (the stdlib) lists them in its `extra_sources.txt`, one path per

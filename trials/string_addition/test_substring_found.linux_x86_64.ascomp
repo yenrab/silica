@@ -28,21 +28,21 @@ main:
 
     call silica_pid_registry_init
     call silica_dangerous_pid_registry_init
-    lea rdi, [rip + L_str_0]
+    call silica_device_pid_registry_init
+    lea r10, [rip + L_str_0]
 
     lea rsp, [rsp - 16]
-    mov QWORD PTR [rsp], rdi
-    mov rsi, 0
+    mov QWORD PTR [rsp], r10
+    mov r10, 0
 
-    mov rdi, QWORD PTR [rsp]
+    lea rsp, [rsp - 16]
+    mov QWORD PTR [rsp], r10
+    mov r10, 5
+
+    mov rdx, r10
+    mov rsi, QWORD PTR [rsp]
     lea rsp, [rsp + 16]
-    lea rsp, [rsp - 16]
-    mov QWORD PTR [rsp], rdi
-    mov QWORD PTR [rsp + 8], rsi
-    mov rdx, 5
-
     mov rdi, QWORD PTR [rsp]
-    mov rsi, QWORD PTR [rsp + 8]
     lea rsp, [rsp + 16]
     call L_substring_helper
 
@@ -159,13 +159,20 @@ L_ss_bad:
 L_ss_have_base:
     cmp r12, r13
     jge L_ss_empty
-    lea rsi, [rip + L_ss_ascii_key]
-    mov rdx, QWORD PTR [rsi]
-    cmp rdx, rbx
+L_ss_lk_cls_spin:
+    mov edx, 1
+    xchg DWORD PTR [rip + L_ss_lock], edx
+    test edx, edx
+    jz L_ss_lk_cls_held
+    pause
+    jmp L_ss_lk_cls_spin
+L_ss_lk_cls_held:
+    mov rax, QWORD PTR [rip + L_ss_ascii_key]
+    mov rsi, QWORD PTR [rip + L_ss_ascii_flag]
+    mov DWORD PTR [rip + L_ss_lock], 0
+    cmp rax, rbx
     jne L_ss_ascii_classify
-    lea rsi, [rip + L_ss_ascii_flag]
-    mov rdx, QWORD PTR [rsi]
-    test rdx, rdx
+    test rsi, rsi
     jnz L_ss_ascii_fast
     jmp L_ss_utf8_slow
 L_ss_ascii_classify:
@@ -181,12 +188,21 @@ L_ss_cls:
     add r10, 1
     jmp L_ss_cls
 L_ss_cls_done:
+L_ss_lk_clw_spin:
+    mov edx, 1
+    xchg DWORD PTR [rip + L_ss_lock], edx
+    test edx, edx
+    jz L_ss_lk_clw_held
+    pause
+    jmp L_ss_lk_clw_spin
+L_ss_lk_clw_held:
     lea rsi, [rip + L_ss_ascii_key]
     mov QWORD PTR [rsi], rbx
     lea rsi, [rip + L_ss_ascii_flag]
     mov QWORD PTR [rsi], r9
     lea rsi, [rip + L_ss_cached_len]
     mov QWORD PTR [rsi], r14
+    mov DWORD PTR [rip + L_ss_lock], 0
     test r9, r9
     jnz L_ss_ascii_fast
     jmp L_ss_utf8_slow
@@ -203,14 +219,20 @@ L_ss_ascii_fast:
     sub rax, r15
     jmp L_ss_materialize
 L_ss_utf8_slow:
-    lea rsi, [rip + L_ss_cur_key]
-    mov rdx, QWORD PTR [rsi]
-    cmp rdx, rbx
+L_ss_lk_cur_spin:
+    mov edx, 1
+    xchg DWORD PTR [rip + L_ss_lock], edx
+    test edx, edx
+    jz L_ss_lk_cur_held
+    pause
+    jmp L_ss_lk_cur_spin
+L_ss_lk_cur_held:
+    mov rax, QWORD PTR [rip + L_ss_cur_key]
+    mov r9, QWORD PTR [rip + L_ss_cur_char]
+    mov r10, QWORD PTR [rip + L_ss_cur_byte]
+    mov DWORD PTR [rip + L_ss_lock], 0
+    cmp rax, rbx
     jne L_ss_from_zero
-    lea rsi, [rip + L_ss_cur_char]
-    mov r9, QWORD PTR [rsi]
-    lea rsi, [rip + L_ss_cur_byte]
-    mov r10, QWORD PTR [rsi]
     cmp r10, r14
     cmova r10, r14
     cmp r12, r9
@@ -344,12 +366,21 @@ L_ss_end_found:
     cmovg r10, r14
     mov rax, r10
     sub rax, r15
+L_ss_lk_cuw_spin:
+    mov edx, 1
+    xchg DWORD PTR [rip + L_ss_lock], edx
+    test edx, edx
+    jz L_ss_lk_cuw_held
+    pause
+    jmp L_ss_lk_cuw_spin
+L_ss_lk_cuw_held:
     lea rsi, [rip + L_ss_cur_key]
     mov QWORD PTR [rsi], rbx
     lea rsi, [rip + L_ss_cur_char]
     mov QWORD PTR [rsi], r9
     lea rsi, [rip + L_ss_cur_byte]
     mov QWORD PTR [rsi], r10
+    mov DWORD PTR [rip + L_ss_lock], 0
     jmp L_ss_materialize
 L_ss_materialize:
     test rax, rax
@@ -357,6 +388,14 @@ L_ss_materialize:
     cmp rax, 1
     jne L_ss_heap
     movzx r8d, BYTE PTR [r8 + r15]
+L_ss_lk_one_spin:
+    mov edx, 1
+    xchg DWORD PTR [rip + L_ss_lock], edx
+    test edx, edx
+    jz L_ss_lk_one_held
+    pause
+    jmp L_ss_lk_one_spin
+L_ss_lk_one_held:
     lea rdi, [rip + L_ss_1char_ready]
     mov rsi, QWORD PTR [rdi]
     test rsi, rsi
@@ -379,6 +418,7 @@ L_ss_1char_init:
     mov esi, 1
     mov QWORD PTR [rdi], rsi
 L_ss_1char_ok:
+    mov DWORD PTR [rip + L_ss_lock], 0
     lea rdi, [rip + L_ss_1char_table]
     shl r8, 5
     add rdi, r8
@@ -439,6 +479,14 @@ L_ss_bump_alloc:
     shr rdi, 3
     mov rbx, rdi
     shl rbx, 3
+L_ss_lk_bump_spin:
+    mov edx, 1
+    xchg DWORD PTR [rip + L_ss_lock], edx
+    test edx, edx
+    jz L_ss_lk_bump_held
+    pause
+    jmp L_ss_lk_bump_spin
+L_ss_lk_bump_held:
     lea r12, [rip + L_ss_arena_ptr]
     mov r13, QWORD PTR [r12]
     test r13, r13
@@ -483,6 +531,7 @@ L_ss_bump_new:
 L_ss_bump_fail:
     xor edi, edi
 L_ss_bump_out:
+    mov DWORD PTR [rip + L_ss_lock], 0
     add rsp, 8
     pop rax
     pop r11
@@ -545,6 +594,8 @@ L_ss_cur_key:
 L_ss_cur_char:
     .space 8
 L_ss_cur_byte:
+    .space 8
+L_ss_lock:
     .space 8
 L_ss_arena_ptr:
     .space 8

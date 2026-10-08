@@ -4,7 +4,9 @@
 
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 include $(THIS_DIR)../silica_compiler.mk
-FFI_FIXTURES_LIB := $(abspath $(THIS_DIR)../ffi_addition/fixtures/dangerous_exposure_source/lib)
+# The archives are per platform (ffi_addition/fixtures_paths.mk).
+include $(THIS_DIR)../ffi_addition/fixtures_paths.mk
+FFI_FIXTURES_LIB := $(FFI_LIB_DIR)
 
 TRIALS := dangerous_legacy_stub
 DEVICE_TRIALS := device_w1c_read_modify_write
@@ -26,7 +28,7 @@ integrate-run: fixtures clean
 		mkdir -p "$$tmpdir/dangerous_exposure_source/legacy"; \
 		ln -s "$(THIS_DIR)$$trial.silica" "$$tmpdir/$$trial.silica"; \
 		ln -s "$(THIS_DIR)dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta" "$$tmpdir/dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta"; \
-		ln -sf "$(FFI_FIXTURES_LIB)" "$$tmpdir/dangerous_exposure_source/lib"; \
+		ln -sfn "$(FFI_FIXTURES_LIB)" "$$tmpdir/dangerous_exposure_source/lib"; \
 		echo "$$trial.silica" > "$$tmpdir/silica.config"; \
 		out="$$tmpdir/out.txt"; \
 		(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,"$(SILICA_COMPILER)"); }) > "$$out" 2>&1; status=$$?; \

@@ -301,12 +301,12 @@ fn elem_size_bytes_from_buf_type(buf_type: string) -> int64 {
 fn emit_alloc_buf(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {
     elem_bytes: int64 <- elem_size_bytes_from_buf_type(sir_term_root_node(term).type_name);
     eb: string <- int64_to_str(elem_bytes);
-    neg_check: string <- xt_isa@xt_cmp_branch("LT", "X2", "#0", "L_buf_invalid");
+    neg_check: string <- emit_abort_when("LT", "X2", "#0", "silica_rt_abort_buf_invalid");
     ldr_bump: string <- xt_mem@xt_ldr("X3", "[X1]");
     ldr_end: string <- xt_mem@xt_ldr("X4", "[X1, #8]");
     mov_elem: string <- xt_isa@xt_mov("X8", concat("#", eb));
     mul_bytes: string <- xt_isa@xt_mul("X7", "X2", "X8");
-    mul_ov: string <- concat(xt_isa@xt_sdiv("X9", "X7", "X8"), xt_isa@xt_cmp_branch("NE", "X9", "X2", "L_buf_invalid"));
+    mul_ov: string <- concat(xt_isa@xt_sdiv("X9", "X7", "X8"), emit_abort_when("NE", "X9", "X2", "silica_rt_abort_buf_invalid"));
     // X7 = element bytes + 8 (the length word), rounded up to a multiple of 8.
     with_len: string <- concat(xt_isa@xt_add("X7", "X7", "#15"), concat(xt_isa@xt_lsr("X7", "X7", "#3"), xt_isa@xt_lsl("X7", "X7", "#3")));
     add_new: string <- xt_isa@xt_add("X5", "X3", "X7");
@@ -325,6 +325,19 @@ fn emit_alloc_buf(term: { nodes: List[{ kind: int64, type_name: string, value: s
     concat(check, alloc)
 }
 
+// Abort through the runtime when `cond` holds for a, b: a short branch over a CALL8 into the abort
+// entry, both inside the function's own section. The old shape, `bnez a8, L_buf_invalid` to one
+// stub emitted after the last function, stopped assembling once every function got its own
+// .text.<name> section (control.silica function_prologue): an Xtensa conditional branch reaches
+// +-2 KB (BNEZ) or +-128 B (two-register forms) and carries no relocation, so the assembler cannot
+// resolve one into another section ("jump target out of range; no usable trampoline found"). CALL8
+// is relocated (and -mlongcalls covers any distance), and `1f` binds to the `1:` emitted right behind
+// the call, so no label leaves the section. The abort entry reads its a0 for the banner, so the
+// report names the function that failed rather than a shared stub.
+fn emit_abort_when(cond: string, a: string, b: string, abort_entry: string) -> string {
+    concat(xt_isa@xt_cmp_flag(cond, a, b), concat("    beqz a8, 1f\n", concat(xt_isa@xt_call(abort_entry), "1:\n")))
+}
+
 fn int64_to_str(n: int64) -> string {
     case n of {
         0 -> "0";
@@ -340,9 +353,9 @@ fn int64_to_str(n: int64) -> string {
 // Bounds check before every buf_load / buf_store (spec §12.3.3): X1 = buffer, X2 = index. The
 // element count is the word below element 0 (emit_alloc_buf). One unsigned compare rejects both an
 // index at or past the length and a negative index. X17 is scratch here: nothing is live in it
-// across a buffer access.
+// across a buffer access. The abort is inline (emit_abort_when), never a branch out of the section.
 fn emit_buf_bounds_check(_term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, _outer_reg: string, _label_sfx: string) -> string {
-    concat(xt_mem@xt_ldr("X17", "[X1, #-8]"), xt_isa@xt_cmp_branch("HS", "X2", "X17", "L_buf_bounds"))
+    concat(xt_mem@xt_ldr("X17", "[X1, #-8]"), emit_abort_when("HS", "X2", "X17", "silica_rt_abort_buf_bounds"))
 }
 
 fn memory_type_contains_from(h: string, needle: string, i: int64) -> boolean {
@@ -476,8 +489,8 @@ fn emit_alloc_rec(term: { nodes: List[{ kind: int64, type_name: string, value: s
     concat(concat(concat(concat(concat(concat(bounds, retain_ref), payload), copy), publish_bump), mov_dest), "")
 }
 
-// A buffer access branches to L_buf_bounds (emit_buf_bounds_check), which emit_region_helpers
-// defines, so a module whose only buffer use is reading a buffer it was passed needs the helpers too.
+// A buffer access aborts inline (emit_buf_bounds_check), so reading a buffer the module was passed
+// counts as region use for the same reason an allocation does: the gates below report it.
 fn is_buf_access_prim(name: string) -> boolean {
     name == "buf_load" or name == "read_buf" or name == "buf_store" or name == "write_buf"
 }
@@ -551,17 +564,20 @@ fn module_uses_alloc_region(sir_module: { module_name: string, used_modules: Lis
 //
 // A block is at least 4096 data bytes so ordinary allocation keeps amortizing over one call, and
 // exactly the (16-byte rounded) request when that is larger, which is what makes a buffer bigger
-// than a block work at all. L_region_overflow remains for the one failure that is still fatal:
-// the allocator handing back nothing.
+// than a block work at all. silica_rt_abort_region_overflow is the one failure that is still fatal:
+// the allocator handing back nothing; the board runtime raises it itself.
 // Region release (silica-specification 12.1.2): free a region and every extension
 // block chained off [base+16]. A region is a discrete malloc'd pool, so releasing
 // one is independent of every other region -- no arena rewind, no ordering
 // requirement. Safe because no pointer into a region may escape without the
 // region itself, so at scope exit nothing outside can reference it.
 // ESP32-S3: region growth, containment and release are board runtime routines (rt_heap.S:
-// silica_rt_region_grow / _contains / _free); the emitted code calls them. Only the three abort
-// targets the inline sequences branch to are emitted here; each calls its runtime-abort entry in
-// board/runtime/rt_console.S (banner + exit status 71, spec §15.4.5.5).
+// silica_rt_region_grow / _contains / _free); the emitted code calls them. Nothing is emitted per
+// module: the aborts a buffer sequence can raise are CALL8s into board/runtime/rt_console.S
+// (banner + exit status 71, spec §15.4.5.5) placed at the failing site by emit_abort_when. The
+// shared L_region_overflow / L_buf_invalid / L_buf_bounds stubs that used to follow the last
+// function were reachable only by a conditional branch, which cannot leave a function's own
+// .text.<name> section, so emit_region_helpers is now empty like the three helpers below it.
 fn emit_region_free_helper() -> string {
     ""
 }
@@ -575,7 +591,7 @@ fn emit_region_contains_helper() -> string {
 }
 
 fn emit_region_helpers() -> string {
-    concat("L_region_overflow:\n", concat(xt_isa@xt_call("silica_rt_abort_region_overflow"), concat("L_buf_invalid:\n", concat(xt_isa@xt_call("silica_rt_abort_buf_invalid"), concat("L_buf_bounds:\n", xt_isa@xt_call("silica_rt_abort_buf_bounds"))))))
+    ""
 }
 
 fn emit_prim_op(term: { nodes: List[{ kind: int64, type_name: string, value: string, name: string, inner: int64, right_expr: int64 }, mem(normal)], root: int64 }, dest: string) -> string {

@@ -5,6 +5,18 @@
 # Emit target (TARGET) selects emitter/<TARGET>/ for silica.config and writes
 # silica.target. Defaults to the current host platform when unset.
 #
+# Per-target build directories: every intermediate output of a build (silica.config, silica.target,
+# .sams, .iface, .o, silica.link, the linked compiler before it is published) lives under
+# compiler/build/<TARGET>/ (BUILD_DIR), never beside the sources. The sources reach that directory
+# as symlinks (staged by the `stage` step, one per unit), so the seed, which reads silica.config from
+# its working directory and writes each unit's .sams/.iface beside the unit, runs with BUILD_DIR as
+# its working directory and leaves src/ untouched. Because each target has its own directory:
+#   - building one target after another needs no `make clean` (the old "stale target .sams trap");
+#   - each target keeps its own incremental state (a changed .silica recompiles only its unit);
+#   - two targets can build at the same time on one machine.
+# `make clean` removes the build directory of TARGET (the host's by default); `make clean-all`
+# removes compiler/build/ and any pre-per-target leftovers in src/.
+#
 # Usage:
 #   make help                   # descriptive help (project --help equivalent)
 #   make                        # assembly + objects + link silica-compiler
@@ -78,16 +90,17 @@ LIB_STDLIB_MODULES := wbt_map OrderedMap
 
 .DEFAULT_GOAL := build
 
-.PHONY: all clean build assembly objects executables lib-sources \
+.PHONY: all clean clean-all build assembly objects executables lib-sources \
 	silica.config.regen assembly-selfhost build-selfhost \
 	gen1 gen2 trials-gen1 trials-gen2 trials-both fixpoint \
 	help --help all-targets check-seed record-compile-start
 
 # Wall-clock compile timing: record epoch seconds at compile start; report
 # elapsed time on success or on compilation / emitter / linker failure.
-COMPILE_START_FILE := $(THIS_DIR).compile_start
+COMPILE_START_FILE := $(BUILD_DIR).compile_start
 
 record-compile-start:
+	@mkdir -p "$(BUILD_DIR)"
 	@date +%s > "$(COMPILE_START_FILE)"
 
 define REPORT_COMPILE_TIME
@@ -149,11 +162,14 @@ lib-sources: $(LIB_STAGED)
 # main.silica is forced last. Regenerates only when membership, a unit, TARGET,
 # or the topo script changes — not on every make.
 TOPO_SILICA_CONFIG := $(THIS_DIR)topo_silica_config.sh
-SILICA_CONFIG_UNITS_FILE := $(THIS_DIR).silica.config.units
+SILICA_CONFIG_UNITS_FILE := $(BUILD_DIR).silica.config.units
+CONFIG_COMPILER := $(BUILD_DIR)silica.config.compiler
+CONFIG_FILE := $(BUILD_DIR)silica.config
 
 # Detect add/delete: refresh membership list at parse time; mtime bumps only on change.
 $(shell \
-	if [ -x "$(TOPO_SILICA_CONFIG)" ]; then \
+	if [ -x "$(TOPO_SILICA_CONFIG)" ] && [ -d "$(EMITTER_ROOT)/$(TARGET)" ]; then \
+		mkdir -p "$(BUILD_DIR)"; \
 		"$(TOPO_SILICA_CONFIG)" --list-units "$(TARGET)" > "$(SILICA_CONFIG_UNITS_FILE).tmp" 2>/dev/null || true; \
 		if [ -f "$(SILICA_CONFIG_UNITS_FILE).tmp" ]; then \
 			if ! cmp -s "$(SILICA_CONFIG_UNITS_FILE).tmp" "$(SILICA_CONFIG_UNITS_FILE)" 2>/dev/null; then \
@@ -168,29 +184,37 @@ $(shell \
 SILICA_CONFIG_UNITS := $(addprefix $(THIS_DIR),$(shell cat "$(SILICA_CONFIG_UNITS_FILE)" 2>/dev/null))
 
 # Membership list (real file). Built when missing; parse-time shell above refreshes on add/delete.
-$(SILICA_CONFIG_UNITS_FILE): $(TOPO_SILICA_CONFIG) $(LIB_STAGED) silica.target
+$(SILICA_CONFIG_UNITS_FILE): $(TOPO_SILICA_CONFIG) $(LIB_STAGED) $(TARGET_FILE)
+	@mkdir -p "$(BUILD_DIR)"
 	@"$(TOPO_SILICA_CONFIG)" --list-units "$(TARGET)" > "$@"
 
-silica.config.compiler: silica.target $(TOPO_SILICA_CONFIG) $(LIB_STAGED) \
+$(CONFIG_COMPILER): $(TARGET_FILE) $(TOPO_SILICA_CONFIG) $(LIB_STAGED) \
 		$(SILICA_CONFIG_UNITS_FILE) $(SILICA_CONFIG_UNITS)
-	@echo "Regenerating silica.config.compiler (TARGET=$(TARGET))..."
-	@cd "$(THIS_DIR)" && "$(TOPO_SILICA_CONFIG)" --list-units "$(TARGET)" > "$(SILICA_CONFIG_UNITS_FILE)"
-	@cd "$(THIS_DIR)" && "$(TOPO_SILICA_CONFIG)" "$(TARGET)" > silica.config.compiler.tmp
-	@mv "$(THIS_DIR)silica.config.compiler.tmp" "$(THIS_DIR)silica.config.compiler"
-	@test -s "$(THIS_DIR)silica.config.compiler" || (echo "FAIL: silica.config.compiler empty"; exit 1)
+	@echo "Regenerating silica.config.compiler (TARGET=$(TARGET), build dir $(BUILD_DIR))..."
+	@mkdir -p "$(BUILD_DIR)"
+	@"$(TOPO_SILICA_CONFIG)" --list-units "$(TARGET)" > "$(SILICA_CONFIG_UNITS_FILE)"
+	@"$(TOPO_SILICA_CONFIG)" "$(TARGET)" > "$(CONFIG_COMPILER).tmp"
+	@mv "$(CONFIG_COMPILER).tmp" "$(CONFIG_COMPILER)"
+	@test -s "$(CONFIG_COMPILER)" || (echo "FAIL: silica.config.compiler empty"; exit 1)
 	@test -n "$$(find "$(THIS_DIR)emitter/$(TARGET)" -type f -name '*.silica' 2>/dev/null | head -n 1)" \
 		|| (echo "FAIL: no .silica files under emitter/$(TARGET)/"; exit 1)
-	@test "$$(tail -n 1 "$(THIS_DIR)silica.config.compiler")" = "main.silica" \
+	@test "$$(tail -n 1 "$(CONFIG_COMPILER)")" = "main.silica" \
 		|| (echo "FAIL: main.silica must be last in silica.config.compiler (mangler/other deps first)"; exit 1)
-	@echo "  $$(wc -l < "$(THIS_DIR)silica.config.compiler" | tr -d ' ') units (emit target: $(TARGET))"
+	@echo "  $$(wc -l < "$(CONFIG_COMPILER)" | tr -d ' ') units (emit target: $(TARGET))"
 
-silica.config: silica.config.compiler
-	@cmp -s "$(THIS_DIR)silica.config.compiler" "$(THIS_DIR)silica.config" 2>/dev/null \
-		|| cp "$(THIS_DIR)silica.config.compiler" "$(THIS_DIR)silica.config"
+$(CONFIG_FILE): $(CONFIG_COMPILER)
+	@cmp -s "$(CONFIG_COMPILER)" "$(CONFIG_FILE)" 2>/dev/null \
+		|| cp "$(CONFIG_COMPILER)" "$(CONFIG_FILE)"
+
+# Short names kept for the command line (make silica.config / silica.target / silica.config.compiler).
+.PHONY: silica.config silica.config.compiler silica.target
+silica.config: $(CONFIG_FILE)
+silica.config.compiler: $(CONFIG_COMPILER)
+silica.target: $(TARGET_FILE)
 
 # Force rebuild of the topo-sorted unit list (ignores incremental timestamps).
 silica.config.regen:
-	@rm -f "$(THIS_DIR)silica.config.compiler" "$(THIS_DIR)silica.config" "$(SILICA_CONFIG_UNITS_FILE)"
+	@rm -f "$(CONFIG_COMPILER)" "$(CONFIG_FILE)" "$(SILICA_CONFIG_UNITS_FILE)"
 	@$(MAKE) -f "$(THIS_DIR)Makefile" silica.config TARGET="$(TARGET)"
 
 # Stage 1: seed reads silica.config → .sams (and optional __silica_runtime.sams / silica.link).
@@ -210,8 +234,29 @@ silica.config.regen:
 # modules were recompiled and the rest were not. Comparing against $(SILICA_COMPILER) follows the
 # seed-compiler symlink to the binary it currently names, so publishing a new seed invalidates the
 # tree on the next build without anyone having to remember to clean.
-assembly: check-seed silica.config record-compile-start
-	@cd "$(THIS_DIR)" && \
+#
+# The seed runs with the target's BUILD_DIR as its working directory (see the header): `stage`
+# first makes BUILD_DIR hold one symlink per unit of silica.config (and drops links for units that
+# left it), so the relative paths in silica.config resolve there and every output lands there.
+# `-nt` and `[ -f ]` follow the links, so staleness is judged against the real source's mtime.
+.PHONY: stage
+stage: $(CONFIG_FILE)
+	@cd "$(BUILD_DIR)" && \
+	  while IFS= read -r unit || [ -n "$$unit" ]; do \
+	    [ -z "$$unit" ] && continue; \
+	    case "$$unit" in \#*) continue ;; esac; \
+	    src="$(THIS_DIR)$$unit"; \
+	    if [ ! -e "$$unit" ] || [ ! "$$unit" -ef "$$src" ]; then \
+	      d=$${unit%/*}; [ "$$d" != "$$unit" ] && mkdir -p "$$d"; \
+	      ln -sfn "$$src" "$$unit"; \
+	    fi; \
+	  done < silica.config; \
+	  for l in $$(find . -type l -name '*.silica' | sed 's|^\./||' | sort); do \
+	    grep -qxF "$$l" silica.config || { echo "  unstage: $$l"; rm -f "$$l"; }; \
+	  done
+
+assembly: check-seed silica.config stage record-compile-start
+	@cd "$(BUILD_DIR)" && \
 	  SEED_BIN="$(SILICA_COMPILER)"; \
 	  removed=0; \
 	  for art in $$(find . \( -name '*.sams' -o -name '*.iface' \) ! -path './_wd_probe/*' -type f | sed 's|^\./||' | sort); do \
@@ -302,7 +347,7 @@ assembly: check-seed silica.config record-compile-start
 FIND_UNIT_FILES = find . \( -path './emitter/*' -a ! -path './emitter/$(TARGET)' -a ! -path './emitter/$(TARGET)/*' \) -prune -o -type f -name '$(1)' ! -path './_wd_probe/*' -print
 OBJECTS_PREREQ ?= assembly
 objects: $(OBJECTS_PREREQ)
-	@cd "$(THIS_DIR)" && \
+	@cd "$(BUILD_DIR)" && \
 	obj_targets=$$($(call FIND_UNIT_FILES,*.sams) \
 		| sed 's|^\./||' | sed 's|\.sams$$|.o|' | LC_ALL=C sort | tr '\n' ' '); \
 	if [ -z "$$obj_targets" ]; then \
@@ -311,7 +356,7 @@ objects: $(OBJECTS_PREREQ)
 	fi; \
 	nobj=$$($(call FIND_UNIT_FILES,*.sams) | wc -l | tr -d ' '); \
 	echo "Assembling $$nobj .sams file(s) with -j$(JOBS)..."; \
-	if ! $(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" -j$(JOBS) $$obj_targets; then \
+	if ! $(MAKE) -C "$(BUILD_DIR)" -f "$(THIS_DIR)Makefile" -j$(JOBS) $$obj_targets; then \
 		$(REPORT_COMPILE_TIME); exit 1; \
 	fi; \
 	$(call MAYBE_REPORT_COMPILE_TIME_SUCCESS,objects)
@@ -322,10 +367,11 @@ objects: $(OBJECTS_PREREQ)
 # that still emit DeviceIO as module_user calls. main_entry_alias.s provides _main for
 # Apple ld only (asm emits `main` without underscore). HOST_RT_ASM picks the set per host.
 executables: objects
-	@cd "$(THIS_DIR)" && \
+	@cd "$(BUILD_DIR)" && \
 	if [ ! -f main.o ]; then echo "FAIL: main.o missing"; $(REPORT_COMPILE_TIME); exit 1; fi; \
 	for s in $(HOST_RT_ASM); do \
-		$(ASSEMBLER) $(ASFLAGS_host) -c "$$s" -o "$${s%.s}.o" || { $(REPORT_COMPILE_TIME); exit 1; }; \
+		d=$${s%/*}; [ "$$d" != "$$s" ] && mkdir -p "$$d"; \
+		$(ASSEMBLER) $(ASFLAGS_host) -c "$(THIS_DIR)$$s" -o "$${s%.s}.o" || { $(REPORT_COMPILE_TIME); exit 1; }; \
 	done; \
 	objs=$$($(call FIND_UNIT_FILES,*.o) | sed 's|^\./||' | sort | tr '\n' ' '); \
 	link_archives=""; \
@@ -339,13 +385,13 @@ executables: objects
 	echo "✅ Built $(EXECUTABLE)"; \
 	if [ "$(INSTALL_SELFHOST)" = "1" ] && [ "$(TARGET)" != "$(HOST_DEFAULT_TARGET)" ]; then \
 		if [ -x "$(INSTALL_COMPILER_SH)" ]; then \
-			"$(INSTALL_COMPILER_SH)" target "$(TARGET)" "$(THIS_DIR)$(EXECUTABLE)" || { $(REPORT_COMPILE_TIME); exit 1; }; \
+			"$(INSTALL_COMPILER_SH)" target "$(TARGET)" "$(BUILD_DIR)$(EXECUTABLE)" || { $(REPORT_COMPILE_TIME); exit 1; }; \
 		else \
 			echo "WARN: $(INSTALL_COMPILER_SH) missing; binaries/silica-compiler-$(TARGET) not updated"; \
 		fi; \
 	elif [ "$(INSTALL_SELFHOST)" = "1" ] && [ "$(EXECUTABLE)" = "silica-compiler" ]; then \
 		if [ -x "$(INSTALL_COMPILER_SH)" ]; then \
-			"$(INSTALL_COMPILER_SH)" selfhost "$(THIS_DIR)$(EXECUTABLE)" || { $(REPORT_COMPILE_TIME); exit 1; }; \
+			"$(INSTALL_COMPILER_SH)" selfhost "$(BUILD_DIR)$(EXECUTABLE)" || { $(REPORT_COMPILE_TIME); exit 1; }; \
 		else \
 			echo "WARN: $(INSTALL_COMPILER_SH) missing; binaries/silica-compiler still points at the previous selfhost"; \
 		fi; \
@@ -360,7 +406,8 @@ executables: objects
 #   Linux: make bootstrap-link       the system assembler and linker turn the shipped .sams and
 #                                    runtime_asm/<target>/ into silica-compiler, and install it as
 #                                    this host's selfhost compiler. No compiler runs.
-# Between the two, copy this tree with its .sams to the Linux host. Once a compiler exists there
+# Between the two, copy this tree and compiler/build/<BOOTSTRAP_TARGET>/ (its .sams and
+# silica.link) to the Linux host. Once a compiler exists there
 # the ordinary `make build` runs natively and these two targets are no longer needed.
 BOOTSTRAP_TARGET ?= linux_aarch64
 BOOTSTRAP_CROSS_COMPILER := $(BINARIES_DIR)/silica-compiler-$(BOOTSTRAP_TARGET)
@@ -368,8 +415,8 @@ BOOTSTRAP_CROSS_COMPILER := $(BINARIES_DIR)/silica-compiler-$(BOOTSTRAP_TARGET)
 bootstrap-assembly:
 	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" assembly TARGET=$(BOOTSTRAP_TARGET) \
 		SILICA_COMPILER="$(BOOTSTRAP_CROSS_COMPILER)" INSTALL_SELFHOST=0 SILICA_TARGET_PROMPT=0
-	@n=$$(find "$(THIS_DIR)" -name '*.sams' -type f ! -path '*/_wd_probe/*' | wc -l | tr -d ' '); \
-	echo "bootstrap-assembly: $$n .sams emitted for $(BOOTSTRAP_TARGET); copy this tree to the Linux host and run make bootstrap-link there"
+	@n=$$(find "$(BUILD_ROOT)/$(BOOTSTRAP_TARGET)" -name '*.sams' -type f ! -path '*/_wd_probe/*' | wc -l | tr -d ' '); \
+	echo "bootstrap-assembly: $$n .sams emitted for $(BOOTSTRAP_TARGET) into $(BUILD_ROOT)/$(BOOTSTRAP_TARGET)/; copy this tree and that directory to the Linux host and run make bootstrap-link there"
 
 bootstrap-link:
 	@if [ "$$(uname -s)" != Linux ]; then echo "FAIL: bootstrap-link assembles and links on the Linux host, not here"; exit 1; fi
@@ -402,7 +449,7 @@ GEN2_BIN := $(BINARIES_DIR)/silica-gen2
 
 gen1:
 	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" build SILICA_COMPILER="$(BINARIES_DIR)/seed-compiler"
-	@rm -f "$(GEN1_BIN)" && cp "$(THIS_DIR)$(EXECUTABLE)" "$(GEN1_BIN)" && chmod +x "$(GEN1_BIN)"
+	@rm -f "$(GEN1_BIN)" && cp "$(BUILD_DIR)$(EXECUTABLE)" "$(GEN1_BIN)" && chmod +x "$(GEN1_BIN)"
 	@echo "✅ gen1 (seed-built selfhost) saved as $(GEN1_BIN)"
 
 gen2:
@@ -410,7 +457,7 @@ gen2:
 		echo "FAIL: $(GEN1_BIN) is missing; run 'make gen1' first"; exit 1; \
 	fi
 	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" build SILICA_COMPILER="$(GEN1_BIN)"
-	@rm -f "$(GEN2_BIN)" && cp "$(THIS_DIR)$(EXECUTABLE)" "$(GEN2_BIN)" && chmod +x "$(GEN2_BIN)"
+	@rm -f "$(GEN2_BIN)" && cp "$(BUILD_DIR)$(EXECUTABLE)" "$(GEN2_BIN)" && chmod +x "$(GEN2_BIN)"
 	@touch "$(GEN1_EMISSION_STAMP)"
 	@echo "✅ gen2 (selfhost-built selfhost) saved as $(GEN2_BIN)"
 
@@ -446,8 +493,8 @@ trials-both:
 # LC_UUID and the ad-hoc signature identifier from the output path, so a binary linked under
 # another name can never be byte-identical. It is not installed (INSTALL_SELFHOST=0) and is
 # kept as silica-compiler-gen3.
-FIXPOINT_DIR := $(abspath $(THIS_DIR)..)/.src_fixpoint
-GEN1_EMISSION_STAMP := $(THIS_DIR).gen1_emission_stamp
+FIXPOINT_DIR := $(BUILD_ROOT)/$(TARGET).fixpoint
+GEN1_EMISSION_STAMP := $(BUILD_DIR).gen1_emission_stamp
 GEN3_EXE := silica-compiler-gen3
 
 fixpoint:
@@ -455,15 +502,15 @@ fixpoint:
 	@if [ ! -f "$(GEN1_EMISSION_STAMP)" ]; then \
 		echo "FAIL: the .sams here are not the fresh output of 'make gen2'; run 'make gen2' first"; exit 1; \
 	fi
-	@cd "$(THIS_DIR)" && newer=$$(find . -name '*.sams' -type f ! -path './_wd_probe/*' -newer "$(GEN1_EMISSION_STAMP)" | head -3); \
+	@cd "$(BUILD_DIR)" && newer=$$(find . -name '*.sams' -type f ! -path './_wd_probe/*' -newer "$(GEN1_EMISSION_STAMP)" | head -3); \
 	if [ -n "$$newer" ]; then \
 		echo "FAIL: .sams rewritten since 'make gen2' (e.g. $$newer); run 'make gen2' first"; exit 1; \
 	fi
-	@if ! cmp -s "$(GEN2_BIN)" "$(THIS_DIR)$(EXECUTABLE)"; then \
-		echo "FAIL: $(THIS_DIR)$(EXECUTABLE) is not the gen2 build; run 'make gen2' first"; exit 1; \
+	@if ! cmp -s "$(GEN2_BIN)" "$(BUILD_DIR)$(EXECUTABLE)"; then \
+		echo "FAIL: $(BUILD_DIR)$(EXECUTABLE) is not the gen2 build; run 'make gen2' first"; exit 1; \
 	fi
 	@rm -rf "$(FIXPOINT_DIR)" && mkdir -p "$(FIXPOINT_DIR)/gen1_sams"
-	@cd "$(THIS_DIR)" && find . -name '*.sams' -type f ! -path './_wd_probe/*' | while read -r f; do \
+	@cd "$(BUILD_DIR)" && find . -name '*.sams' -type f ! -path './_wd_probe/*' | while read -r f; do \
 		mkdir -p "$(FIXPOINT_DIR)/gen1_sams/$$(dirname "$$f")"; cp "$$f" "$(FIXPOINT_DIR)/gen1_sams/$$f"; done
 	@n=$$(find "$(FIXPOINT_DIR)/gen1_sams" -name '*.sams' -type f | wc -l | tr -d ' '); \
 	echo "saved $$n .sams (gen1's emission) to $(FIXPOINT_DIR)/gen1_sams"; \
@@ -471,8 +518,8 @@ fixpoint:
 	@rm -f "$(GEN1_EMISSION_STAMP)"
 	@echo "==== fixpoint: building gen3 with $(GEN2_BIN) ===="
 	@$(MAKE) -C "$(THIS_DIR)" -f "$(THIS_DIR)Makefile" build SILICA_COMPILER="$(GEN2_BIN)" INSTALL_SELFHOST=0
-	@rm -f "$(THIS_DIR)$(GEN3_EXE)" && cp "$(THIS_DIR)$(EXECUTABLE)" "$(THIS_DIR)$(GEN3_EXE)"
-	@cd "$(THIS_DIR)" && n=0; changed=0; added=0; missing=0; \
+	@rm -f "$(BUILD_DIR)$(GEN3_EXE)" && cp "$(BUILD_DIR)$(EXECUTABLE)" "$(BUILD_DIR)$(GEN3_EXE)"
+	@cd "$(BUILD_DIR)" && n=0; changed=0; added=0; missing=0; \
 	for f in $$(find . -name '*.sams' -type f ! -path './_wd_probe/*' | sed 's|^\./||' | sort); do \
 		n=$$((n + 1)); \
 		if [ ! -f "$(FIXPOINT_DIR)/gen1_sams/$$f" ]; then added=$$((added + 1)); echo "   + $$f (no gen1 counterpart)"; continue; fi; \
@@ -513,19 +560,29 @@ all-targets:
 	@echo ""
 	@echo "✅ all-targets complete: $(ALLOWED_TARGETS)"
 
+# clean: this target's build directory only (TARGET, the host's by default); the other targets'
+# incremental state is kept. clean-all: every target's, plus the outputs older checkouts left
+# beside the sources in src/ (before the per-target build directories existed).
 clean:
-	@echo "Cleaning generated files (including *.iface and .cache/ifaces)..."
+	@test -n "$(TARGET)" || { echo "FAIL: no TARGET (host not recognised); use make clean TARGET=<emit-target> or make clean-all"; exit 1; }
+	@echo "Cleaning $(BUILD_DIR) ..."
+	@rm -rf "$(BUILD_DIR)" "$(FIXPOINT_DIR)"
+	@echo "✅ Clean complete ($(TARGET))"
+
+clean-all:
+	@echo "Cleaning every target's build directory under $(BUILD_ROOT) and legacy outputs in src/ ..."
+	@rm -rf "$(BUILD_ROOT)"
 	@cd "$(THIS_DIR)" && \
 	  find . \( -name '*.sams' -o -name '*.o' -o -name '*.ll' -o -name '*.bc' \) ! -path './_wd_probe/*' -delete; \
-	  rm -f $(EXECUTABLE) silica.config silica.config.compiler silica.target silica.link \
+	  rm -f silica-compiler silica.config silica.config.compiler silica.target silica.link \
 	    silica.compile.order \
 	    .silica.config.units .silica.config.units.tmp silica.config.compiler.tmp \
-	    __silica_runtime.sams __silica_runtime.o "$(COMPILE_START_FILE)"; \
+	    __silica_runtime.sams __silica_runtime.o .compile_start .gen1_emission_stamp; \
 	  rm -f silica-compiler-* 2>/dev/null || true; \
 	  rm -f lib/wbt_map.silica lib/OrderedMap.silica lib/wbt_map.sams lib/OrderedMap.sams lib/*.o 2>/dev/null || true; \
 	  rm -rf .cache/ifaces; \
 	  find . -name '*.iface' -type f ! -path './_wd_probe/*' -delete 2>/dev/null || true
-	@echo "✅ Clean complete"
+	@echo "✅ Clean complete (all targets)"
 
 # Project help. Prefer: make help
 # Note: plain `make --help` is GNU Make's own help; use `make help` or `make -- --help`.
@@ -540,7 +597,7 @@ help:
 	@echo ""
 	@echo "Emit target (TARGET)"
 	@echo "  Selects which emitter/<TARGET>/ backend is included in silica.config"
-	@echo "  and writes ./silica.target (emit_target: <TARGET>)."
+	@echo "  and writes <build dir>/silica.target (emit_target: <TARGET>)."
 	@echo "  This is the code-generation / emit backend baked into this build —"
 	@echo "  not a runtime cross-compile switch inside an already-built binary."
 	@echo "  It is also not the local host binary tag used by binaries/"
@@ -549,7 +606,7 @@ help:
 	@echo "  Default: current host platform when TARGET is unset."
 	@echo "  Host:    $(HOST_UNAME_S) $(HOST_UNAME_M)"
 	@echo "  Active:  TARGET=$(TARGET)  (source: $(TARGET_ORIGIN))"
-	@echo "  File:    silica.target → emit_target: $(TARGET)"
+	@echo "  Build:   $(BUILD_DIR)  (silica.target → emit_target: $(TARGET))"
 	@echo ""
 	@echo "  Allowable emit targets (from emitter/*/):"
 	@for t in $(ALLOWED_TARGETS); do \
@@ -580,7 +637,9 @@ help:
 	@echo "  silica.config.regen       force-regenerate unit list (ignores timestamps)"
 	@echo "  silica.target             rewrite emit_target declaration"
 	@echo "  all-targets               build silica-compiler-<TARGET> for each allowable TARGET"
-	@echo "  clean                     remove generated artifacts (*.sams/*.o, silica.target, silica.compile.order, *.iface, .cache/ifaces)"
+	@echo "  clean                     remove TARGET's build directory $(BUILD_ROOT)/<TARGET>/ (other targets keep theirs)"
+	@echo "  clean-all                 remove every target's build directory and legacy outputs left in src/"
+	@echo "  stage                     link the units of silica.config into the build directory"
 	@echo "  check-target              validate TARGET against emitter/*/"
 	@echo "  check-seed                ensure binaries/seed-compiler exists"
 	@echo ""
@@ -588,3 +647,4 @@ help:
 	@echo "  Seed compiler:  $(SILICA_COMPILER)"
 	@echo "  Emitter root:   $(EMITTER_ROOT)"
 	@echo "  This tree:      $(THIS_DIR)"
+	@echo "  Build dir:      $(BUILD_DIR)"

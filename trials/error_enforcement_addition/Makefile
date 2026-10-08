@@ -22,8 +22,9 @@ TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
 MSG_PREFIX := $(TRIAL_DIR)/
 
 # Multi-file trials (subdir Makefile generates silica.config on integrate).
-SUB_TRIALS      := ffi_addition module_nonexported_callee_trial module_cycle_trial unqualified_import_call_one_use_trial unqualified_import_call_two_modules_trial unqualified_import_call_no_use_trial qualified_call_module_name_case_mismatch_trial qualified_call_wrong_arg_count_trial qualified_call_too_many_args_trial qualified_call_literal_out_of_range_trial qualified_call_literal_negative_trial qualified_call_hex_literal_out_of_range_trial qualified_call_hex_literal_uint8_just_over_trial qualified_call_negative_hex_literal_int8_just_under_trial supervisor_agent_type_invalid_atom_trial standard_data_structures \
-	device_peek_missing_marker_trial device_poke_missing_marker_trial device_peek_marker_type_trial device_peek_marker_width_trial device_poke_read_only_trial device_peek_write_only_trial device_register_not_described_trial device_description_second_trial device_description_not_literal_trial device_description_duplicate_name_trial device_description_bad_width_trial device_description_misaligned_trial device_description_overlap_trial device_description_bad_access_trial device_description_empty_trial description_outside_device_module_trial device_module_uses_dangerous_trial main_uses_device_module_trial device_hosted_rejection_trial
+SUB_TRIALS      := ffi_addition module_duplicate_name_trial module_nonexported_callee_trial module_cycle_trial unqualified_import_call_one_use_trial unqualified_import_call_two_modules_trial unqualified_import_call_no_use_trial qualified_call_module_name_case_mismatch_trial qualified_call_wrong_arg_count_trial qualified_call_too_many_args_trial qualified_call_literal_out_of_range_trial qualified_call_literal_negative_trial qualified_call_hex_literal_out_of_range_trial qualified_call_hex_literal_uint8_just_over_trial qualified_call_negative_hex_literal_int8_just_under_trial supervisor_agent_type_invalid_atom_trial standard_data_structures \
+	device_peek_missing_marker_trial device_poke_missing_marker_trial device_peek_marker_type_trial device_peek_marker_width_trial device_poke_read_only_trial device_peek_write_only_trial device_register_not_described_trial device_description_second_trial device_description_not_literal_trial device_description_duplicate_name_trial device_description_bad_width_trial device_description_misaligned_trial device_description_overlap_trial device_description_bad_access_trial device_description_empty_trial description_outside_device_module_trial device_module_uses_dangerous_trial main_uses_device_module_trial device_hosted_rejection_trial \
+	device_uart_hello_trial device_discarded_peek_trial device_cast_registered_trial device_client_result_trial device_fault_lines_trial device_fault_lines_registered_trial device_gpio_button_trial device_window_param_survives_let_trial device_led_row_constant_heap_trial
 
 # Single-file trial sources: every *.silica directly in this directory. $(wildcard)
 # rather than $(shell find): the tree holds ~20k files and this file is parsed several times.
@@ -71,7 +72,8 @@ ee-units: $(CUR_FAILS) $(SUB_TARGETS)
 %.cur_fail: %.silica
 	@cd "$(THIS_DIR)" && base="$*"; \
 	if [ -f "$$base.no_golden_fail" ]; then exit 0; fi; \
-	if [ ! -f "$$base.golden_fail" ]; then \
+	gf="$$base.golden_fail"; if [ -f "$$base$(GOLDEN_FAIL_EXT).golden_fail" ]; then gf="$$base$(GOLDEN_FAIL_EXT).golden_fail"; fi; \
+	if [ ! -f "$$gf" ]; then \
 		echo "❌❌ $(MSG_PREFIX)$$base: no matching .golden_fail file"; \
 		$(INTEGRATE_DOT_FAIL); \
 		printf 'FAIL\t%s\tno matching .golden_fail file\n' "$$base" >> .integrate_results; \
@@ -82,14 +84,14 @@ ee-units: $(CUR_FAILS) $(SUB_TARGETS)
 	echo "$$base.silica" > "$$tmpdir/silica.config"; \
 	(cd "$$tmpdir" && { $(call RUN_SILICA_COMPILER_QUIET_WITH,$(SILICA_COMPILER)); }) > "$$base.cur_fail" 2>&1 || true; \
 	rm -rf "$$tmpdir"; \
-	if diff -q "$$base.cur_fail" "$$base.golden_fail" > /dev/null 2>&1; then \
+	if diff -q "$$base.cur_fail" "$$gf" > /dev/null 2>&1; then \
 		echo "✅✅ $(MSG_PREFIX)$$base"; \
 		$(INTEGRATE_DOT_OK); \
 		printf 'PASS\t%s\n' "$$base" >> .integrate_results; \
 	else \
 		{ echo "❌❌ $(MSG_PREFIX)$$base: .cur_fail differs from .golden_fail"; \
 		$(INTEGRATE_DOT_FAIL); \
-		  diff "$$base.cur_fail" "$$base.golden_fail" || true; } > "$$base.cur_fail.msg"; \
+		  diff "$$base.cur_fail" "$$gf" || true; } > "$$base.cur_fail.msg"; \
 		cat "$$base.cur_fail.msg"; rm -f "$$base.cur_fail.msg"; \
 		printf 'FAIL\t%s\t.cur_fail differs from .golden_fail\n' "$$base" >> .integrate_results; \
 	fi

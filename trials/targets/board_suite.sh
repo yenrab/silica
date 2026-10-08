@@ -210,7 +210,7 @@ while IFS= read -r m; do
     ln -s "$f" "src/$b.silica"
     modules+=("$b")
     staged=$((staged + 1))
-done < <(sed -n 's|.*echo *"\(\.\./\.\./compiler/stdlib/[^"]*\.silica\)".*|\1|p' "$src/Makefile" 2>/dev/null | LC_ALL=C sort -u)
+done < <(sed -n 's#.*echo *"\(\.\./\.\./compiler/[^"]*\.silica\)".*#\1#p' "$src/Makefile" 2>/dev/null | LC_ALL=C sort -u)
 
 # --- program trials: one compile, then image + board run + golden per program -------------------
 if [ "${#programs[@]}" -gt 0 ]; then
@@ -250,7 +250,7 @@ if [ "${#programs[@]}" -gt 0 ]; then
                     case "$seen" in *$'\n'"$m"$'\n'*) continue ;; esac
                     seen+="$m"$'\n'
                     queue+="${queue:+$'\n'}$m"
-                done < <(sed -E 's|//.*||' "$f" | sed -nE 's/^[[:space:]]*use[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*;.*/\1/p')
+                done < <(sed -E 's|//.*||' "$f" | sed -nE 's/^[[:space:]]*use[[:space:]]+([A-Za-z_][A-Za-z0-9_, \t]*)[[:space:]]*;.*/\1/p' | tr -s ', \t' '\n\n\n' | sed '/^$/d')
             done
             [ -n "$out" ] && printf '%s' "$out" | LC_ALL=C sort
             [ -f src/__silica_runtime.sams ] && echo "src/__silica_runtime.sams"

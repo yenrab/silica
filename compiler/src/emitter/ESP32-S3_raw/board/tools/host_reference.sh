@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Produce an app's expected.sout on the macOS host: compile the app with the host compiler, link
+# Produce an app's expected.scout on the macOS host: compile the app with the host compiler, link
 # and run it, and write "<stdout><exit status>\n" -- the same text the trial harness writes and the
 # form run_on_board.py prints for the board. Run it once per app, before the app is tried on the board.
 # A process-fatal report line (spec §15.4.5.5) is written folded, "[silica] fault at <PTR>" or
@@ -58,5 +58,5 @@ set +e
 ./prog > out.txt 2>&1
 status=$?
 set -e
-{ cat out.txt; echo "$status"; } | awk -f "$normalizer" > "$OLDPWD/$app/expected.sout"
-echo "wrote $app/expected.sout (status $status)"
+{ cat out.txt; echo "$status"; } | awk -f "$normalizer" > "$OLDPWD/$app/expected.scout"
+echo "wrote $app/expected.scout (status $status)"

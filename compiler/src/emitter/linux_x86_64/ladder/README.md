@@ -2,10 +2,10 @@
 
 Fifteen small programs copied from the ESP32-S3 port's early apps
 (`emitter/ESP32-S3_raw/board/apps/silica_00_return42` … `silica_14_wbt_map`), each with the
-`expected.sout` the macOS compiler produced for the same source (`<stdout><exit status>\n`, the trial
+`expected.scout` the macOS compiler produced for the same source (`<stdout><exit status>\n`, the trial
 harness form, with a process-fatal report line folded to `[silica] fault at <PTR>` /
 `[silica] abort: <reason> at <PTR>` by `trials/normalize_fatal_reports.awk`). They are the **order of work for the debug phase**: each step adds one emitter piece,
-and a step is done when its program prints exactly its `expected.sout` on nix.
+and a step is done when its program prints exactly its `expected.scout` on nix.
 
 | Step | App | Exercises |
 | --- | --- | --- |
@@ -42,14 +42,14 @@ cp "/Volumes/2T/silica/compiler/src/emitter/linux_x86_64/ladder/$app/"*.silica .
 /Volumes/2T/silica/binaries/silica-compiler-linux_x86_64
 rsync -a --include='*.sams' --exclude='*' ./ lee@nix.local:/tmp/ladder/$app/
 rsync -a /Volumes/2T/silica/compiler/src/runtime_asm/linux_x86_64/ lee@nix.local:/tmp/ladder/rt/
-rsync -a "/Volumes/2T/silica/compiler/src/emitter/linux_x86_64/ladder/$app/expected.sout" lee@nix.local:/tmp/ladder/$app/
+rsync -a "/Volumes/2T/silica/compiler/src/emitter/linux_x86_64/ladder/$app/expected.scout" lee@nix.local:/tmp/ladder/$app/
 rsync -a /Volumes/2T/silica/trials/normalize_fatal_reports.awk lee@nix.local:/tmp/ladder/
 
 # nix: assemble (GNU as through cc), link without PIE (data tables hold absolute .quad addresses), run, diff
 ssh lee@nix.local "cd /tmp/ladder/$app && for f in *.sams; do cc -c -x assembler \$f -o \${f%.sams}.o || exit 1; done \
   && cc -no-pie -rdynamic -o prog *.o ../rt/silica_rt_shim.s ../rt/deviceio_link_thunks.s -lpthread \
   && { ./prog > out.txt 2>&1; echo \$? >> out.txt; } \
-  ; awk -f ../normalize_fatal_reports.awk out.txt > out.norm && awk -f ../normalize_fatal_reports.awk expected.sout | diff out.norm - && echo PASS"
+  ; awk -f ../normalize_fatal_reports.awk out.txt > out.norm && awk -f ../normalize_fatal_reports.awk expected.scout | diff out.norm - && echo PASS"
 ```
 
 `__silica_runtime.sams` is emitted whenever a program defines `main` (the pid registry init runs at

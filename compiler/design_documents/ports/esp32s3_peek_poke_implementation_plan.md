@@ -307,7 +307,7 @@ companion document; the item numbers match its sections.
     `trials/device_actor_addition/`) with per-target goldens `<stem>.ESP32-S3_raw.scout`
     (`board_suite.sh:34`) — a UART worker that peeks `:status` and pokes `:fifo`, a GPIO worker, a systimer reader,
     a discarded `peek` whose load must still appear — and the bring-up apps `board/apps/silica_16_device_uart` and
-    `silica_17_device_gpio` with hand-written `expected.sout` (the host reference script cannot produce them, since
+    `silica_17_device_gpio` with hand-written `expected.scout` (the host reference script cannot produce them, since
     the host rejects the program). How the host run skips (c) is a "Still to decide" item.
 20. **Documentation.** [esp32s3_port_status.md](esp32s3_port_status.md): §3 loses the `.error` rows that move to
     the diagnostic channel, §4.2 is closed, §1 gains the new suites with dates; `board/README.md` gains the window
@@ -425,7 +425,7 @@ Board release 1's peek-and-poke half is delivered when all of the following hold
   deliberately mis-lowered unit during development, not by a permanent trial).
 - **ESP32-S3 accesses.** `board/apps/silica_16_device_uart` (a device worker mapping `(:esp32s3_uart)` at
   `0x60000000`, polling `:status` with `peek`, writing `:fifo` with `poke`) prints its bytes on the console and
-  matches its hand-written `expected.sout`; `silica_17_device_gpio` toggles a port-test-board LED and reads a button
+  matches its hand-written `expected.scout`; `silica_17_device_gpio` toggles a port-test-board LED and reads a button
   through `peek` / `poke` of `(:esp32s3_gpio)` at `0x60004000`; a trial with `_: uint32 <- peek(w, :status) impl
   Register32 {};` still shows exactly one `l32i` for it in the emitted `.sams`, and every `peek` / `poke` in those
   apps is exactly one `l32i` / `s32i` at `[window, #offset]` with the barriers of work item 16 (read from the
@@ -441,7 +441,7 @@ Board release 1's peek-and-poke half is delivered when all of the following hold
 - **Documentation updated** as in work item 20, and [esp32s3_port_status.md](esp32s3_port_status.md) §3 no longer
   lists an `.error`-line refusal for foreign calls or file io.
 
-Related: [esp32s3_memory_budget_plan.md](../esp32s3_memory_budget_plan.md) (the third registry actor costs another
+Related: [actor_memory_budget_plan.md](../actor_memory_budget_plan.md) (the third registry actor costs another
 ~2 KB reserve plus a 240-slot table on a board where 55% of SRAM is claimed before the program starts),
 [esp32s3_xtensa_port.md](esp32s3_xtensa_port.md) §2, §4, §8.7, §8.9 (virtual registers, the call convention the
 runtime routines use, the registries, two cores), [runtime_failure_reporting.md](../runtime_failure_reporting.md)

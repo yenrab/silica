@@ -48,6 +48,13 @@ endif
 # Sub-makes (objects fan-out, emitter/Makefile) must not ask again: hand the choice down.
 export TARGET
 
+# Per-target build directory (trailing slash, like THIS_DIR): compiler/build/<TARGET>/. Every
+# intermediate output of a build for TARGET lives there (see the header of Makefile). It is outside
+# src/ on purpose, so no scan of the source tree ever sees a build product.
+BUILD_ROOT := $(abspath $(THIS_DIR)../build)
+BUILD_DIR := $(BUILD_ROOT)/$(TARGET)/
+TARGET_FILE := $(BUILD_DIR)silica.target
+
 # user: given on the command line or in the environment; prompt: picked from the menu;
 # host-default: left to host detection (or the menu accepted the default).
 TARGET_ORIGIN := $(if $(filter command line environment,$(origin TARGET)),user,$(if $(TARGET_CHOSEN_BY_PROMPT),prompt,host-default))
@@ -80,14 +87,16 @@ check-target:
 		exit 1; \
 	fi
 
-# Project-level emit declaration (real file). Recipe may run when check-target
-# is asked for as a prereq path elsewhere; only bump mtime when TARGET changes.
-silica.target: check-target
-	@tmp="$(THIS_DIR)silica.target.tmp"; \
+# Project-level emit declaration (real file, in the target's build directory, where the seed reads
+# it from its working directory). Recipe may run when check-target is asked for as a prereq path
+# elsewhere; only bump mtime when TARGET changes.
+$(TARGET_FILE): check-target
+	@mkdir -p "$(BUILD_DIR)"
+	@tmp="$(TARGET_FILE).tmp"; \
 	printf 'emit_target: %s\n' '$(TARGET)' > "$$tmp"; \
-	if ! cmp -s "$$tmp" "$(THIS_DIR)silica.target" 2>/dev/null; then \
-		mv "$$tmp" "$(THIS_DIR)silica.target"; \
-		echo "Wrote silica.target (emit_target: $(TARGET); source: $(TARGET_ORIGIN))"; \
+	if ! cmp -s "$$tmp" "$(TARGET_FILE)" 2>/dev/null; then \
+		mv "$$tmp" "$(TARGET_FILE)"; \
+		echo "Wrote $(TARGET_FILE) (emit_target: $(TARGET); source: $(TARGET_ORIGIN))"; \
 	else \
 		rm -f "$$tmp"; \
 	fi

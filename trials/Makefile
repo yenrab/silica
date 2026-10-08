@@ -27,6 +27,20 @@ TRIAL_SUBDIRS := $(sort $(foreach mf,$(TRIAL_MAKEFILES),$(notdir $(patsubst %/,%
 SDS_DIR := ordered_data_structures
 HEAVY_FIRST := $(SDS_DIR) error_enforcement_addition
 TRIAL_ORDER := $(filter $(HEAVY_FIRST),$(TRIAL_SUBDIRS)) $(filter-out $(HEAVY_FIRST),$(TRIAL_SUBDIRS))
+
+# TRIAL_SUITES="a b" limits a host tree run to the named suites (the board target reads the same
+# variable in targets/trial_target.sh). A name that is not a suite is an error. A named suite runs
+# even when it has INTEGRATE_PENDING (INTEGRATE_NAMED_SUITES tells INTEGRATE_CHILD so); the
+# failure report then replays only the named suites' logs, not stale ones from other suites.
+# Unset, nothing here changes. Board mirrors (TRIAL_MIRROR) are driven by trial_target.sh instead.
+ifneq ($(strip $(TRIAL_SUITES)),)
+ifeq ($(strip $(TRIAL_MIRROR)),)
+$(foreach s,$(TRIAL_SUITES),$(if $(filter $(s),$(TRIAL_SUBDIRS)),,$(error TRIAL_SUITES: no suite named $(s))))
+TRIAL_ORDER := $(filter $(TRIAL_SUITES),$(TRIAL_ORDER))
+INTEGRATE_NAMED_SUITES := 1
+INTEGRATE_LOG_ROOTS := "$(THIS_DIR).integrate_log" $(foreach s,$(TRIAL_ORDER),"$(THIS_DIR)$(s)")
+endif
+endif
 INTEGRATE_DIR_TARGETS := $(TRIAL_ORDER:%=integrate-dir-%)
 
 .PHONY: integrate-run integrate-prepare integrate-dirs integrate-summary integrate-ffi clean help $(INTEGRATE_DIR_TARGETS)
@@ -89,7 +103,7 @@ help:
 	@echo "  make integrate                 run every suite in parallel (JOBS=$(JOBS), SDS_JOBS=$(SDS_JOBS)), report per suite and overall"
 	@echo "                                 (interactive: asks where to run the trials; Enter = this Mac)"
 	@echo "  make integrate TRIAL_TARGET=T  T = host, ESP32-S3_raw (a board on USB) or both; see targets/README.md"
-	@echo "  make integrate TRIAL_TARGET=ESP32-S3_raw TRIAL_SUITES=\"a b\"   some suites on the board"
+	@echo "  make integrate TRIAL_SUITES=\"a b\"                         only these suites (host or board; a named suite runs even if INTEGRATE_PENDING)"
 	@echo "  make integrate JOBS=N          cap the parallel pool"
 	@echo "  make integrate SDS_JOBS=N      cap ordered_data_structures separately (memory-bound)"
 	@echo "  make -C <suite> integrate      one suite; prints that suite's own report"

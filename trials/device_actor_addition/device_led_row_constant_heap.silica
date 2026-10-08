@@ -1,0 +1,129 @@
+// The WS2813B LED-row worker (compiler/src/emitter/ESP32-S3_raw/board/apps/device_lib/
+// device_ws2813b) must cost a constant amount of heap per message: an LED row is updated for ever,
+// and the board runtime gives a behaviour back only its previous state block and the message copy
+// at each dispatch (rt_heap.S silica_rt_state_release, rt_actors.S silica_rt_actor_main), so
+// anything else a message allocates is lost for good. Before 2026-10-06 the worker rebuilt a 24-cell
+// list per :set (47 B at LED 0, 1.7 KB at LED 23), :set_all cost 966 B and :show 803 B in tuple
+// results, and the 111 KB heap ran out at the end of one 24-LED chase. Now :set_all, :set, :show
+// and :hold allocate only the state tuple the dispatch frees again.
+//
+// The announcer runs the script: at each mark it prints the heap growth since the previous mark
+// and sends the next batch, so the mailbox never holds more than one batch (a queued cast keeps a
+// 48-byte node and a 48-byte payload copy until it is dispatched; nodes stay on the runtime's free
+// list, so the first batch of each size grows the heap once). Round 1 warms every batch size, round
+// 2 is printed: every growth must be 0. Colour 0 throughout, so the row stays dark; a :show still
+// streams the 576-word frame through RMT channel 0 on GPIO7. Expected: seven "<batch> 0" lines,
+// status 0. Breaking the rule looks like a non-zero growth on the batch that leaks.
+use device_ws2813b;
+
+fn mark(w: device_actor_ref, a: actor_ref, code: uint32) -> boolean {
+    sequence proc[concurrency]
+        _: boolean <- cast_device(w, { op: :notify, index: 0, colour: code, reply_to: a } impl ActorMessage {});
+        sent: boolean <- cast_device(w, { op: :hold, index: 30, colour: 0, reply_to: a } impl ActorMessage {})
+    produces
+        pure sent
+    end
+}
+
+fn repeat_op(w: device_actor_ref, a: actor_ref, op: atom, index: int64, n: int64) -> boolean {
+    sequence proc[concurrency]
+        sent: boolean <- case n <= 0 of {
+            true -> true;
+            false -> {
+                _: boolean <- cast_device(w, { op: op, index: index, colour: 0, reply_to: a } impl ActorMessage {});
+                repeat_op(w, a, op, index, n - 1)
+            }
+        }
+    produces
+        pure sent
+    end
+}
+
+// LEDs i..23 one at a time as the sample app does (lit, shown, held, off), colour 0 here.
+fn chase(w: device_actor_ref, a: actor_ref, i: int64) -> boolean {
+    sequence proc[concurrency]
+        sent: boolean <- case i >= 24 of {
+            true -> true;
+            false -> {
+                _: boolean <- cast_device(w, { op: :set, index: i, colour: 0, reply_to: a } impl ActorMessage {});
+                _: boolean <- cast_device(w, { op: :show, index: 0, colour: 0, reply_to: a } impl ActorMessage {});
+                _: boolean <- cast_device(w, { op: :hold, index: 1, colour: 0, reply_to: a } impl ActorMessage {});
+                _: boolean <- cast_device(w, { op: :set, index: i, colour: 0, reply_to: a } impl ActorMessage {});
+                chase(w, a, i + 1)
+            }
+        }
+    produces
+        pure sent
+    end
+}
+
+// The batch sent after mark `code`; round 1 is codes 1-7, round 2 codes 8-14.
+fn batch(w: device_actor_ref, a: actor_ref, code: uint32) -> boolean {
+    _: boolean <- case code of {
+        1 -> repeat_op(w, a, :hold, 1, 10);
+        2 -> repeat_op(w, a, :set_all, 0, 10);
+        3 -> repeat_op(w, a, :set, 23, 10);
+        4 -> repeat_op(w, a, :set, 0, 10);
+        5 -> repeat_op(w, a, :show, 0, 10);
+        6 -> chase(w, a, 0);
+        7 -> chase(w, a, 0);
+        8 -> repeat_op(w, a, :hold, 1, 10);
+        9 -> repeat_op(w, a, :set_all, 0, 10);
+        10 -> repeat_op(w, a, :set, 23, 10);
+        11 -> repeat_op(w, a, :set, 0, 10);
+        12 -> repeat_op(w, a, :show, 0, 10);
+        13 -> chase(w, a, 0);
+        14 -> chase(w, a, 0);
+        _: uint32 -> true
+    };
+    case code >= 15 of {
+        true -> true;
+        false -> mark(w, a, code + 1)
+    }
+}
+
+// The name of the batch that preceded mark `code` in round 2.
+fn batch_name(code: uint32) -> string {
+    case code of {
+        9 -> "hold";
+        10 -> "set_all";
+        11 -> "set 23";
+        12 -> "set 0";
+        13 -> "show";
+        14 -> "chase";
+        15 -> "chase";
+        _: uint32 -> ""
+    }
+}
+
+fn announcer(code: uint32, state: (device_actor_ref, int64)) -> (:no_reply, (device_actor_ref, int64)) {
+    sequence proc[device_io, mem(normal), concurrency]
+        (w, prev) <- state;
+        now: int64 <- heap_used();
+        _: atom <- case code >= 9 of {
+            false -> :skip;
+            true -> {
+                _: atom <- print_string(batch_name(code));
+                _: atom <- print_string(" ");
+                _: atom <- print_int64(now - prev);
+                println("")
+            }
+        };
+        a: actor_ref <- self();
+        _: boolean <- batch(w, a, code)
+    produces
+        pure (:no_reply, (w, now))
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        w: device_actor_ref <- spawn_device(:unmapped, device_ws2813b@ws2813b_worker, stack_policy(0, :keep_last_message));
+        a: actor_ref <- spawn((w, 0), announcer, stack_policy(0, :keep_last_message));
+        _: boolean <- cast_device(w, { op: :init, index: 0, colour: 0, reply_to: a } impl ActorMessage {});
+        _: boolean <- mark(w, a, 1);
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

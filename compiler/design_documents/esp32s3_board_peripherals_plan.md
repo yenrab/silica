@@ -9,7 +9,7 @@ plan differs from it (§4.7 poke prims, §4.9 and §4.9.1 descriptions and the b
 windows, §5.3 DMA buffers, §9 runtime IRQ contract, §11 compile-time enforcement).
 **Related:** [porting_for_os_free_targets.md](porting_for_os_free_targets.md) §10 (board-pack contract),
 [ports/esp32s3_port_status.md](ports/esp32s3_port_status.md),
-[esp32s3_memory_budget_plan.md](esp32s3_memory_budget_plan.md),
+[actor_memory_budget_plan.md](actor_memory_budget_plan.md),
 [board_pack.silica](../src/emitter/ESP32-S3_raw/board_pack.silica),
 [PORT_TEST_BOARD_byu_idaho_v4.0_feb26.md](../src/emitter/ESP32-S3_raw/board/PORT_TEST_BOARD_byu_idaho_v4.0_feb26.md).
 
@@ -190,7 +190,7 @@ work), with SPI Ethernet as an optional hardware path and Wi-Fi left to the sepa
 - **Untrusted bytes.** Every received byte is untrusted input: buffer bounds checking (ROADMAP chunk 4).
 - **Owned packet buffers** per spec §5.3 move rules.
 - **Memory.** A TCP connection's buffers plus its actors must fit the roughly 170 KB heap; see
-  [esp32s3_memory_budget_plan.md](esp32s3_memory_budget_plan.md).
+  [actor_memory_budget_plan.md](actor_memory_budget_plan.md).
 - **Helpers.** Checksums (IP, ICMP, UDP, TCP) and byte-order conversion.
 - **Program API.** The actor surface of "Connections and endpoints are actors" below: no socket layer.
 
@@ -230,7 +230,7 @@ nothing may be pushed without credit:
 - Data messages to one owner stay in order (per-sender mailbox order). Buffers move, never copy.
 
 **Memory.** Each connection costs an actor plus its buffers against the board's roughly 170 KB heap (see
-[esp32s3_memory_budget_plan.md](esp32s3_memory_budget_plan.md)), so the number of simultaneous connections
+[actor_memory_budget_plan.md](actor_memory_budget_plan.md)), so the number of simultaneous connections
 is a budget item (§6).
 
 **Hosted targets.** The OS owns the network, so there are sockets underneath there, reached through Fifi as

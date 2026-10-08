@@ -63,7 +63,7 @@
 // high-water mark (the blocks are zeroed when handed out). Freed stacks, ACBs and message nodes go
 // on free lists.
 //
-// Composite state (esp32s3_memory_budget_plan.md item B). The emitted behaviour epilogue moves a
+// Composite state (actor_memory_budget_plan.md item B). The emitted behaviour epilogue moves a
 // composite reply and a changed composite state into fresh heap blocks and calls
 // silica_rt_state_adopt once the state is installed, so ACB_STATE_OWNED marks a state block the
 // actor must give back when it ends (silica_rt_actor_exit, the one exit path every end takes); the
@@ -2469,7 +2469,7 @@ silica_dangerous_pid_registry_init:
     .size   silica_dangerous_pid_registry_init, . - silica_dangerous_pid_registry_init
 
 // The third registry, for device workers (device spec §1): one more REGISTRY_RESERVE-stack actor
-// and a REGISTRY_SLOTS table on a board where SRAM is scarce (esp32s3_memory_budget_plan.md).
+// and a REGISTRY_SLOTS table on a board where SRAM is scarce (actor_memory_budget_plan.md).
     .align  4
     .global silica_device_pid_registry_init
     .type   silica_device_pid_registry_init, @function

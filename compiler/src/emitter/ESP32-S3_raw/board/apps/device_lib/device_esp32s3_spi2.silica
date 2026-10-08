@@ -55,60 +55,22 @@
 // A run of the same bytes (a solid fill) is loaded into W0..W15 once (spi2_load_run) and then
 // started as many times as needed (spi2_start_runs): sixteen pokes per fill, not per transfer.
 
-use DeviceDescription;
+use device_esp32s3_spi2_registers;
+use device_esp32s3_system_registers;
+use board_pack_spi2_values;
+use board_pack_system_values;
 
-export registers/1;
 export spi2_enable/1;
 export spi2_init/1;
 export spi2_send_bytes/3;
 export spi2_load_run/2;
 export spi2_start_runs/2;
 
-impl fn registers(device: (:esp32s3_spi2)) -> List[{ name: atom, offset: uint64, width: uint64, access: atom }, mem(normal)] {
-    [
-        { name: :cmd,      offset: 0x00, width: 32, access: :read_write },
-        { name: :addr,     offset: 0x04, width: 32, access: :read_write },
-        { name: :ctrl,     offset: 0x08, width: 32, access: :read_write },
-        { name: :clock,    offset: 0x0C, width: 32, access: :read_write },
-        { name: :user,     offset: 0x10, width: 32, access: :read_write },
-        { name: :user1,    offset: 0x14, width: 32, access: :read_write },
-        { name: :user2,    offset: 0x18, width: 32, access: :read_write },
-        { name: :ms_dlen,  offset: 0x1C, width: 32, access: :read_write },
-        { name: :misc,     offset: 0x20, width: 32, access: :read_write },
-        { name: :w0,       offset: 0x98, width: 32, access: :read_write },
-        { name: :w1,       offset: 0x9C, width: 32, access: :read_write },
-        { name: :w2,       offset: 0xA0, width: 32, access: :read_write },
-        { name: :w3,       offset: 0xA4, width: 32, access: :read_write },
-        { name: :w4,       offset: 0xA8, width: 32, access: :read_write },
-        { name: :w5,       offset: 0xAC, width: 32, access: :read_write },
-        { name: :w6,       offset: 0xB0, width: 32, access: :read_write },
-        { name: :w7,       offset: 0xB4, width: 32, access: :read_write },
-        { name: :w8,       offset: 0xB8, width: 32, access: :read_write },
-        { name: :w9,       offset: 0xBC, width: 32, access: :read_write },
-        { name: :w10,      offset: 0xC0, width: 32, access: :read_write },
-        { name: :w11,      offset: 0xC4, width: 32, access: :read_write },
-        { name: :w12,      offset: 0xC8, width: 32, access: :read_write },
-        { name: :w13,      offset: 0xCC, width: 32, access: :read_write },
-        { name: :w14,      offset: 0xD0, width: 32, access: :read_write },
-        { name: :w15,      offset: 0xD4, width: 32, access: :read_write },
-        { name: :clk_gate, offset: 0xE8, width: 32, access: :read_write }
-    ]
-}
-
-impl fn registers(device: (:esp32s3_system)) -> List[{ name: atom, offset: uint64, width: uint64, access: atom }, mem(normal)] {
-    [
-        { name: :perip_clk_en0, offset: 0x18, width: 32, access: :read_write },
-        { name: :perip_rst_en0, offset: 0x20, width: 32, access: :read_write }
-    ]
-}
-
-fn bit_update() -> uint32 { one: uint32 <- 1; one shl 23 }
-fn bit_usr() -> uint32 { one: uint32 <- 1; one shl 24 }
-
 fn wait_update(w: device_window(L, (:esp32s3_spi2))) -> device_window(L, (:esp32s3_spi2)) {
     sequence proc[register_rwr]
+        upd: uint32 <- board_pack_spi2_values@spi2_update_mask();
         c: uint32 <- peek(w, :cmd) impl Register32 {};
-        r: device_window(L, (:esp32s3_spi2)) <- case (c band bit_update()) == 0 of {
+        r: device_window(L, (:esp32s3_spi2)) <- case (c band upd) == 0 of {
             true -> w;
             false -> wait_update(w)
         }
@@ -119,8 +81,9 @@ fn wait_update(w: device_window(L, (:esp32s3_spi2))) -> device_window(L, (:esp32
 
 fn wait_usr(w: device_window(L, (:esp32s3_spi2))) -> device_window(L, (:esp32s3_spi2)) {
     sequence proc[register_rwr]
+        usr: uint32 <- board_pack_spi2_values@spi2_usr_mask();
         c: uint32 <- peek(w, :cmd) impl Register32 {};
-        r: device_window(L, (:esp32s3_spi2)) <- case (c band bit_usr()) == 0 of {
+        r: device_window(L, (:esp32s3_spi2)) <- case (c band usr) == 0 of {
             true -> w;
             false -> wait_usr(w)
         }
@@ -132,7 +95,8 @@ fn wait_usr(w: device_window(L, (:esp32s3_spi2))) -> device_window(L, (:esp32s3_
 // Copies the configuration registers into the SPI clock domain; needed after any of them changes.
 fn sync(w: device_window(L, (:esp32s3_spi2))) -> device_window(L, (:esp32s3_spi2)) {
     sequence proc[register_rwr]
-        _: atom <- poke(w, :cmd, bit_update() impl Register32 {});
+        upd: uint32 <- board_pack_spi2_values@spi2_update_mask();
+        _: atom <- poke(w, :cmd, upd impl Register32 {});
         r: device_window(L, (:esp32s3_spi2)) <- wait_update(w)
     produces
         pure r
@@ -141,7 +105,8 @@ fn sync(w: device_window(L, (:esp32s3_spi2))) -> device_window(L, (:esp32s3_spi2
 
 fn transfer(w: device_window(L, (:esp32s3_spi2))) -> device_window(L, (:esp32s3_spi2)) {
     sequence proc[register_rwr]
-        _: atom <- poke(w, :cmd, bit_usr() impl Register32 {});
+        usr: uint32 <- board_pack_spi2_values@spi2_usr_mask();
+        _: atom <- poke(w, :cmd, usr impl Register32 {});
         r: device_window(L, (:esp32s3_spi2)) <- wait_usr(w)
     produces
         pure r
@@ -190,8 +155,9 @@ fn load_words(w: device_window(L, (:esp32s3_spi2)), word: uint32, i: uint32, n: 
 // on what ran before it.
 fn spi2_enable(s: device_window(L, (:esp32s3_system))) -> device_window(L, (:esp32s3_system)) {
     sequence proc[register_rwr]
-        spi2: uint32 <- 0x40;
-        keep: uint32 <- bnot spi2;
+        spi2: uint32 <- board_pack_system_values@system_spi2_clk_en_mask();
+        rst_bit: uint32 <- board_pack_system_values@system_spi2_rst_mask();
+        keep: uint32 <- bnot rst_bit;
         en: uint32 <- peek(s, :perip_clk_en0) impl Register32 {};
         _: atom <- poke(s, :perip_clk_en0, (en bor spi2) impl Register32 {});
         rst: uint32 <- peek(s, :perip_rst_en0) impl Register32 {};
@@ -204,13 +170,26 @@ fn spi2_enable(s: device_window(L, (:esp32s3_system))) -> device_window(L, (:esp
 // Master, mode 0, 10 MHz from the crystal, MOSI phase only, hardware chip selects off, MSB first.
 fn spi2_init(w: device_window(L, (:esp32s3_spi2))) -> device_window(L, (:esp32s3_spi2)) {
     sequence proc[register_rwr]
-        gate_on_xtal: uint32 <- 0x3;
-        div_by_4: uint32 <- 0x3043;
-        mosi_only: uint32 <- 0x08000000;
-        all_cs_off: uint32 <- 0x3F;
-        zero: uint32 <- 0;
+        clk_en: uint32 <- board_pack_spi2_values@spi2_clk_en_mask();
+        clk_active: uint32 <- board_pack_spi2_values@spi2_mst_clk_active_mask();
+        gate_on_xtal: uint32 <- clk_en bor clk_active;
+        one: uint32 <- 1;
         three: uint32 <- 3;
-        keep_order: uint32 <- bnot (three shl 25);
+        n_shift: uint32 <- board_pack_spi2_values@spi2_clkcnt_n_shift();
+        h_shift: uint32 <- board_pack_spi2_values@spi2_clkcnt_h_shift();
+        l_shift: uint32 <- board_pack_spi2_values@spi2_clkcnt_l_shift();
+        div_by_4: uint32 <- (three shl n_shift) bor (one shl h_shift) bor (three shl l_shift);
+        mosi_only: uint32 <- board_pack_spi2_values@spi2_usr_mosi_mask();
+        cs0: uint32 <- board_pack_spi2_values@spi2_cs0_dis_mask();
+        cs1: uint32 <- board_pack_spi2_values@spi2_cs1_dis_mask();
+        cs2: uint32 <- board_pack_spi2_values@spi2_cs2_dis_mask();
+        cs3: uint32 <- board_pack_spi2_values@spi2_cs3_dis_mask();
+        cs4: uint32 <- board_pack_spi2_values@spi2_cs4_dis_mask();
+        cs5: uint32 <- board_pack_spi2_values@spi2_cs5_dis_mask();
+        all_cs_off: uint32 <- cs0 bor cs1 bor cs2 bor cs3 bor cs4 bor cs5;
+        zero: uint32 <- 0;
+        order_mask: uint32 <- board_pack_spi2_values@spi2_wr_bit_order_mask();
+        keep_order: uint32 <- bnot order_mask;
         _: atom <- poke(w, :clk_gate, gate_on_xtal impl Register32 {});
         _: atom <- poke(w, :clock, div_by_4 impl Register32 {});
         _: atom <- poke(w, :user, mosi_only impl Register32 {});

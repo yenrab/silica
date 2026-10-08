@@ -246,6 +246,10 @@ The description is still the programmer's statement about the hardware: a descri
 
 The board pack is the authoritative description of the devices the board itself carries. It is a per-target Silica module (`emitter/<TARGET>/board_pack.silica`, one per OS-free target) of pure, flat indexed tables, with no allocation and no effects, which the compiler reads as data. It is part of the target, maintained with the compiler: programs do not supply, extend, or override it. The porting contract is [porting_for_os_free_targets.md](porting_for_os_free_targets.md) §10.
 
+A board pack describes every register and every bit field of every on-board peripheral, with its access mode, generated from the vendor's register headers. Drivers, runtime helpers and ROM routines are optional layers over the same registers and never the only way to reach one; windows the runtime shares (the UART0 console, SYSTIMER) stay mappable, and interleaving with the runtime is documented, not prevented.
+
+On the ESP32-S3 the board pack's descriptions are generated modules (`device_esp32s3_<peripheral>_registers`, `board_pack_<peripheral>_values`) produced by `emitter/ESP32-S3_raw/board/tools/gen_board_pack.py` into `emitter/ESP32-S3_raw/board/pack/`. Programs `use` them, and unused functions are dropped when the image is linked.
+
 The programmer-description form of §4.9 (an `impl fn registers` returning a list literal of records) does not apply to the board pack; the pack's flat tables carry the same information. A conforming board pack provides:
 
 - **Windows.** A table of board windows, each with a base, a size, and the device tag it belongs to. Windows do not overlap. `map_device` of a board-pack device tag succeeds only at a base the pack lists for that tag, and the window size is the pack's (§5.1).

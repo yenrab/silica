@@ -48,11 +48,12 @@ fi
 
 list_units() {
   {
-    find . \( -path './_wd_probe' -o -path './emitter' \) -prune -o -type f -name '*.silica' -print
+    # ./build: a build directory placed inside src (the Makefile's is compiler/build, outside it).
+    find . \( -path './_wd_probe' -o -path './emitter' -o -path './build' \) -prune -o -type f -name '*.silica' -print
     find ./emitter -maxdepth 1 -type f -name '*.silica' -print 2>/dev/null || true
-    # board/apps (ESP32) and ladder (x86-64) hold sample programs, each with its own main; they are
-    # built and run on their own, never linked into the compiler.
-    find ./emitter/"$TARGET" \( -path "./emitter/$TARGET/board/apps" -o -path "./emitter/$TARGET/ladder" \) -prune \
+    # board (ESP32: runtime, tools, sample apps, generated pack modules) and ladder (x86-64) hold
+    # board programs and samples, each built and run on their own, never linked into the compiler.
+    find ./emitter/"$TARGET" \( -path "./emitter/$TARGET/board" -o -path "./emitter/$TARGET/ladder" \) -prune \
       -o -type f -name '*.silica' -print 2>/dev/null || true
     find ./lib -type f -name '*.silica' -print 2>/dev/null || true
   } | sed 's|^\./||' \

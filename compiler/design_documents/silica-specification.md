@@ -11457,6 +11457,8 @@ use collections, io, string;      // import multiple modules
 - Importing a module makes its exported functions available for qualified calls
 - No selective imports - all exports are imported
 - Imports must appear at the top level of a module (before any function definitions)
+- A module name may appear only once in a file's `use` declarations, across all of its `use` lines: `use alpha; use alpha;` and `use alpha, alpha;` are both a compile error at the second occurrence (E4009, "module alpha is already used by this file"). Different modules that happen to export the same function name may still be imported together (§19.3.3).
+- Two different files in one build may not share a module name, because a module's name is its file name without the `.silica` extension and the name must identify exactly one file. A build whose `silica.config` lists, say, `a/alpha.silica` and `b/alpha.silica` is rejected before compilation with E4012 ("two modules named alpha: a/alpha.silica and b/alpha.silica"), whether or not any file uses that module. Listing the same path twice is not a conflict.
 
 #### 19.3.2 Name Resolution
 

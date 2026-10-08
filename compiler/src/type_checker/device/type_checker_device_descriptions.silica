@@ -23,6 +23,7 @@
 use parser_ast;
 use type_checker_core;
 use type_checker_expressions_helpers;
+use compiler_maps;
 
 export is_device_tag_type/1;
 export is_description_declaration/1;
@@ -280,28 +281,43 @@ fn access_is_valid(a: string) -> boolean {
     }
 }
 
-fn rows_overlap(o1: int64, w1: int64, o2: int64, w2: int64) -> boolean {
-    o1 < o2 + w2 / 8 and o2 < o1 + w1 / 8
-}
-
-fn check_row_against_later(body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, n: int64, i: int64, j: int64) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
-    case j >= n of {
-        true -> type_checker_core@type_check_ok();
+// Overlap and duplicate checks use ordered maps instead of comparing every pair: a map from register name
+// to row index (E2203) and a map from each byte offset to the row index that claims it (E2206). Both are
+// filled as rows are visited in order, so a row is checked only against earlier rows, in O(n log n).
+fn claim_bytes(map: { root: ref?(L, normal, rec), compare_key: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, o: int64, count: int64, k: int64, id: int64, conflict: int64) -> { map: { root: ref?(L, normal, rec), compare_key: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, conflict: int64 } {
+    case k >= count of {
+        true -> { map: map, conflict: conflict };
         false -> {
-            a: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- list_element_at(body, i);
-            b: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- list_element_at(body, j);
-            case row_name(a) == row_name(b) of {
-                true -> type_checker_core@type_check_err("E2203", type_checker_expressions_helpers@expr_loc(b), concat("device description lists register ", concat(row_name(b), " twice (silica_device_actor_specification.md §4.9)")), "sect4.9");
-                false -> case rows_overlap(row_offset(a), row_width(a), row_offset(b), row_width(b)) of {
-                    true -> type_checker_core@type_check_err("E2206", type_checker_expressions_helpers@expr_loc(b), concat("registers ", concat(row_name(a), concat(" and ", concat(row_name(b), " overlap (silica_device_actor_specification.md §4.9)")))), "sect4.9");
-                    false -> check_row_against_later(body, n, i, j + 1)
+            r: { map: { root: ref?(L, normal, rec), compare_key: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, index: int64, inserted: boolean } <- compiler_maps@int64_map_insert_or_get_index(map, o + k, id);
+            case r.inserted of {
+                true -> claim_bytes(r.map, o, count, k + 1, id, conflict);
+                false -> case conflict < 0 or r.index < conflict of {
+                    true -> claim_bytes(r.map, o, count, k + 1, id, r.index);
+                    false -> claim_bytes(r.map, o, count, k + 1, id, conflict)
                 }
             }
         }
     }
 }
 
-fn check_rows(body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, n: int64, i: int64) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
+fn check_row_against_earlier(body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, row: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, i: int64, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, claimed: { root: ref?(L, normal, rec), compare_key: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }) -> { result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, claimed: { root: ref?(L, normal, rec), compare_key: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 } } {
+    nm: { map: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, index: int64, inserted: boolean } <- compiler_maps@map_insert_or_get_index(names, row_name(row), i);
+    case nm.inserted of {
+        false -> { result: type_checker_core@type_check_err("E2203", type_checker_expressions_helpers@expr_loc(row), concat("device description lists register ", concat(row_name(row), " twice (silica_device_actor_specification.md §4.9)")), "sect4.9"), names: nm.map, claimed: claimed };
+        true -> {
+            cl: { map: { root: ref?(L, normal, rec), compare_key: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, conflict: int64 } <- claim_bytes(claimed, row_offset(row), row_width(row) / 8, 0, i, 0 - 1);
+            case cl.conflict < 0 of {
+                true -> { result: type_checker_core@type_check_ok(), names: nm.map, claimed: cl.map };
+                false -> {
+                    a: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 } <- list_element_at(body, cl.conflict);
+                    { result: type_checker_core@type_check_err("E2206", type_checker_expressions_helpers@expr_loc(row), concat("registers ", concat(row_name(a), concat(" and ", concat(row_name(row), " overlap (silica_device_actor_specification.md §4.9)")))), "sect4.9"), names: nm.map, claimed: cl.map }
+                }
+            }
+        }
+    }
+}
+
+fn check_rows(body: { nodes: List[{ kind: int64, value: string, name: string, location: { file: string, line: int64, column: int64, offset: int64 }, inner: int64, right_expr: int64, pattern_bindings: List[{ name: string, path: string, type_str: string }, mem(normal)], sequence_effects: List[{ name: string, parameter: string, location: { file: string, line: int64, column: int64, offset: int64 } }, mem(normal)] }, mem(normal)], root: int64 }, n: int64, i: int64, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, claimed: { root: ref?(L, normal, rec), compare_key: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }) -> { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } {
     case i >= n of {
         true -> type_checker_core@type_check_ok();
         false -> {
@@ -315,10 +331,10 @@ fn check_rows(body: { nodes: List[{ kind: int64, value: string, name: string, lo
                         true -> case access_is_valid(row_access(row)) of {
                             false -> type_checker_core@type_check_err("E2207", type_checker_expressions_helpers@expr_loc(row), concat("register ", concat(row_name(row), " access must be :read_write, :read_only, :write_only or :write_one_to_clear (silica_device_actor_specification.md §4.9)")), "sect4.9");
                             true -> {
-                                later: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string } <- check_row_against_later(body, n, i, i + 1);
-                                case later.is_ok of {
-                                    false -> later;
-                                    true -> check_rows(body, n, i + 1)
+                                later: { result: { is_ok: boolean, error_code: string, error_location: { file: string, line: int64, column: int64, offset: int64 }, error_message: string, spec_section: string }, names: { root: ref?(L, normal, rec), compare_key: fn(string, string) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 }, claimed: { root: ref?(L, normal, rec), compare_key: fn(int64, int64) -> :less | :equal | :greater, compare_value: fn(int64, int64) -> :less | :equal | :greater, region: region(L, normal), specialization_key: int64, compare_key_ordering_bundle: int64, compare_value_ordering_bundle: int64 } } <- check_row_against_earlier(body, row, i, names, claimed);
+                                case later.result.is_ok of {
+                                    false -> later.result;
+                                    true -> check_rows(body, n, i + 1, later.names, later.claimed)
                                 }
                             }
                         }
@@ -338,7 +354,7 @@ fn validate_description_decl(decl: { tag: int64, name: string, parameters: List[
                 true -> type_checker_core@type_check_err("E2202", decl.location, "device description body must be a single list literal of literal records (silica_device_actor_specification.md §4.9)", "sect4.9");
                 false -> case n == 0 of {
                     true -> type_checker_core@type_check_err("E2208", decl.location, "device description lists no registers (silica_device_actor_specification.md §4.9)", "sect4.9");
-                    false -> check_rows(decl.body, n, 0)
+                    false -> check_rows(decl.body, n, 0, compiler_maps@empty_string_int64_map(), compiler_maps@empty_int64_int64_map())
                 }
             }
         }

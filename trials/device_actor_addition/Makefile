@@ -30,12 +30,27 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 .DEFAULT_GOAL := all
 .PHONY: all clean assembly objects executables integrate help silica.config
 
-# The built-in device trait files first (the board driver reads these echo lines to stage them too),
+# The built-in device trait files, the generated device descriptions, the board pack and the board's LED-row driver chain first
+# (the board driver reads these echo lines to stage them too),
 # then lib/ before the programs; refusals/ has its own Makefile and is not part of the suite.
 silica.config:
 	@cd "$(THIS_DIR)" && { \
 		echo "../../compiler/stdlib/DeviceDescription.silica"; \
 		echo "../../compiler/stdlib/Register32.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/pack/device_esp32s3_gpio_registers.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/pack/device_esp32s3_uart_registers.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/pack/device_esp32s3_io_mux_registers.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/pack/device_esp32s3_rmt_registers.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/pack/device_esp32s3_system_registers.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board_pack.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/pack/board_pack_gpio_values.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/pack/board_pack_io_mux_values.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/pack/board_pack_gpio_signals.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/pack/board_pack_rmt_values.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/pack/board_pack_system_values.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/apps/device_lib/device_esp32s3_gpio.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/apps/device_lib/device_esp32s3_rmt.silica"; \
+		echo "../../compiler/src/emitter/ESP32-S3_raw/board/apps/device_lib/device_ws2813b.silica"; \
 		find "$$PWD/lib" -type f -name '*.silica' | sed "s|^$$PWD/||" | LC_ALL=C sort; \
 		find "$$PWD" -maxdepth 1 -type f -name '*.silica' | sed "s|^$$PWD/||" | LC_ALL=C sort; \
 	} > silica.config

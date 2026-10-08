@@ -8,8 +8,11 @@ Phase 0 provides linkable C wrapper fixtures for outbound FFI compiler work.
 ffi_addition/
   fixtures/
     dangerous_exposure_source/
-      legacy/ … text/ … net/ … lib/
+      legacy/ … text/ … net/ …          # shared .meta / .h sources
     src/                                # C sources (not compiled by Silica)
+    build/<platform>/                   # built here, per platform, never synced (see below)
+      obj/*.o
+      dangerous_exposure_source/lib/*.a   # + links to the shared sources
   app_sidecar_legacy_math_add/          # runnable app: sidecar metadata + legacy math add
   app_cast_worker_legacy_add/           # runnable app: spawn_dangerous worker + external_danger behavior
   app_cast_worker_registered_legacy_add/  # runnable app: spawn_dangerous_registered + cast/worker e2e
@@ -86,7 +89,7 @@ Compile/link **failure** goldens for Phase 9 live under `error_enforcement_addit
 make -C compiler/trials/ffi_addition all
 ```
 
-`all` runs `phase-9` (all app integrates with `.scout` / `silica.link.scout` goldens). App `integrate` targets depend on `fixtures`, which compiles C wrapper sources into `fixtures/dangerous_exposure_source/lib/*.a` via `fixtures.mk`.
+`all` runs `phase-9` (all app integrates with `.scout` / `silica.link.scout` goldens). App `integrate` targets depend on `fixtures`, which compiles C wrapper sources into `fixtures/build/<platform>/dangerous_exposure_source/lib/*.a` via `fixtures.mk`. `<platform>` is the host's emit target (`apple_silicon_mac`, `linux_aarch64`, `linux_x86_64`), named as `ASCOMP_EXT` names it, so a tree synced between machines never reuses another platform's archives: each machine builds its own on first use, with no manual `make fixtures`. Each app's `dangerous_exposure_source` link (made with `ln -sfn`) points at the platform's view of that directory, so the `silica.link` goldens do not change. Paths are defined once, in `fixtures_paths.mk`.
 
 `make fixtures` or `make -C compiler/trials/ffi_addition fixtures` builds the wrapper archives alone.
 

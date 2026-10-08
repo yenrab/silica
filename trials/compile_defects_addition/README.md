@@ -10,6 +10,11 @@ directory. This directory holds only this README (it has no Makefile, so it is n
 
 Open:
 
+- From the ESP32-S3 device description (2026-10-05, open): `compile_defects_large_list_literal_frame_addition` (a
+  function whose body is a ~400-element list literal of records builds the whole list in its stack frame, about
+  76 KB; the ESP32-S3 assembler rejects it, `entry` allows 32,760 bytes, and the Mac assembler rejects it too,
+  `MOV X16, #76656` is not encodable; large literals must be built on the heap; topic suite `list_addition`).
+
 - From the behaviour parameter shadow fix (2026-10-02, open): `compile_defects_float64_actor_message_addition` (a
   `float64` message cast to a behaviour does not assemble: the cast prim stages the message word from the let's D
   register with an integer `MOV X10, D8`, and the actor dispatch delivers every message word in X0 while a float64

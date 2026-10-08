@@ -144,8 +144,10 @@ Codes with several meanings list each meaning on one line, separated by semicolo
 - E4006 ModuleNameMismatch — module declaration does not match the file's module name (spec 19.1)
 - E4007 DuplicateModuleDeclaration — duplicate module declaration in a file (spec 19.1)
 - E4008 SelfImport — a module cannot import itself (spec 19.4)
+- E4009 DuplicateUse — a module name appears twice in one file's `use` declarations (`use alpha; use alpha;` or `use alpha, alpha;`), reported at the second occurrence (spec 19.3.1)
 - E4010 ExportTargetMissing — exported function not found or arity mismatch; also internal: missing export target (spec 19.2.1)
 - E4011 FunctionShadowsImport — a function shadows an imported or earlier definition (spec 19.3.2)
+- E4012 DuplicateModuleName — two different files in one build share a module name; reported by the driver before compilation, naming both files (spec 19.3.1)
 - E4013 DuplicateExport — duplicate export in a module (spec 19.2.2)
 - E4014 InvalidExportArity — invalid export arity; must be a non-negative decimal (spec 19.2)
 - E4015 DuplicateFunctionDefinition — duplicate function definition with the same arity
